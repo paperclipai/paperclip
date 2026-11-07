@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { WorkspaceFileSelector } from "@paperclipai/shared";
 import type { SidePanelTabRecord, SidePanelTabsState } from "@/components/side-panel";
 
@@ -223,24 +224,24 @@ export function writeTaskSidePanelState(
 }
 
 export function taskPanelPropertiesTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: "properties", type: "properties", label: "Properties", closable: true, contentMode: "padded", payload: { kind: "properties" } };
+  return { id: "properties", type: "properties", get "label"() { return t("display:copy_d4ddc9c0bf43"); }, closable: true, contentMode: "padded", payload: { kind: "properties" } };
 }
 
 export function taskPanelSubtasksTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: "subtasks", type: "subtasks", label: "Subtasks", closable: true, contentMode: "padded", payload: { kind: "subtasks" } };
+  return { id: "subtasks", type: "subtasks", get "label"() { return t("display:copy_ac7997701d55"); }, closable: true, contentMode: "padded", payload: { kind: "subtasks" } };
 }
 
 /** Agent chats only: every task the conversation's agent has worked on. */
 export function taskPanelAgentTasksTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: "agent-tasks", type: "agent-tasks", label: "Tasks", closable: true, contentMode: "padded", payload: { kind: "agent-tasks" } };
+  return { id: "agent-tasks", type: "agent-tasks", get "label"() { return t("display:copy_f71cd4d9864e"); }, closable: true, contentMode: "padded", payload: { kind: "agent-tasks" } };
 }
 
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: "artifacts", type: "artifacts", label: "Artifacts", closable: true, contentMode: "padded", payload: { kind: "artifacts" } };
+  return { id: "artifacts", type: "artifacts", get "label"() { return t("display:copy_f7b69a3ea4ba"); }, closable: true, contentMode: "padded", payload: { kind: "artifacts" } };
 }
 
-export function taskPanelSkillTab(skillId: string, label = "Skill"): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: `skill:${skillId}`, type: "skill", label, closable: true, contentMode: "prose", payload: { kind: "skill", skillId } };
+export function taskPanelSkillTab(skillId: string, label?: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `skill:${skillId}`, type: "skill", get label() { return label ?? t("final-configuration:skillTab"); }, closable: true, contentMode: "prose", payload: { kind: "skill", skillId } };
 }
 
 export function taskPanelDocumentTab(documentKey: string, label: string, revisionId?: string, documentIssueId?: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
@@ -258,7 +259,7 @@ export function taskPanelFilesTab(): SidePanelTabRecord<TaskSidePanelTabPayload>
   return {
     id: "files",
     type: "files-browser",
-    label: "Files",
+    get "label"() { return t("display:copy_4809624a8cfe"); },
     closable: true,
     contentMode: "full-bleed",
     payload: { kind: "files-browser", query: null, folderPath: null, projectId: null, workspaceId: null },
@@ -300,7 +301,7 @@ export function taskPanelAttachmentTab(attachmentId: string, title: string): Sid
 }
 
 export function taskPanelBrowserTab(browserId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
-  return { id: `browser:${browserId}`, type: "browser", label: "Browser", closable: true, contentMode: "full-bleed", payload: { kind: "browser", browserId } };
+  return { id: `browser:${browserId}`, type: "browser", get "label"() { return t("display:copy_cc0998bc9d5b"); }, closable: true, contentMode: "full-bleed", payload: { kind: "browser", browserId } };
 }
 
 export function taskPanelPluginTab(panel: { entityId: string; slot: { pluginKey: string; id: string; displayName: string } }): SidePanelTabRecord<TaskSidePanelTabPayload> {

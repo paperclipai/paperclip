@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { Issue } from "@paperclipai/shared";
 import { TASK_VIEW_PARAM, normalizeTaskViewKey, taskView } from "./task-views";
 
@@ -157,8 +158,8 @@ function inferIssueDetailSource(
 }
 
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
-  if (source === "inbox") return { label: "Inbox", href: "/inbox" };
-  return { label: "Tasks", href: "/issues" };
+  if (source === "inbox") return { get "label"() { return t("display:copy_11cc988219a6"); }, href: "/inbox" };
+  return { get "label"() { return t("display:copy_1d29b4642efe"); }, href: "/issues" };
 }
 
 export function createIssueDetailLocationState(

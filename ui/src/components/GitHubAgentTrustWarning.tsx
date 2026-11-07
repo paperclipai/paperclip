@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import type { AgentPermissions } from "@paperclipai/shared";
 import { getTrustPreset } from "@/lib/trust-policy-ui";
@@ -16,6 +17,7 @@ export function GitHubAgentTrustWarning({
   onChangeToLowTrust?: () => void;
   disabled?: boolean;
 }) {
+  useTranslation("task-components");
   if (!agent || getTrustPreset(agent.permissions) === "low_trust_review")
     return null;
   return (
@@ -25,30 +27,19 @@ export function GitHubAgentTrustWarning({
     >
       <p className="flex items-center gap-2 font-medium">
         <AlertTriangle className="size-4 shrink-0" />
-        {agent.name} is not configured for low-trust review
+        {t("final-components-a:agentIsNotConfiguredFor_21bf13a9", { agent: agent.name })}
       </p>
-      <p>
-        GitHub comments and pull requests can contain malicious instructions. We
-        recommend a low-trust agent with a scoped work boundary and an isolated
-        sandbox runtime.
-      </p>
-      <p className="text-xs text-muted-foreground">
-        Continuing keeps this agent’s current permissions. A restricted guest
-        profile does not replace the agent’s trust and runtime settings.
-      </p>
+      <p>{t("task-components:githubCommentsAndPullRequestsCanContain_e21696ad")}</p>
+      <p className="text-xs text-muted-foreground">{t("task-components:continuingKeepsThisAgentSCurrentPermissions_63846416")}</p>
       {onChangeToLowTrust && (
-        <Button variant="outline" className="h-auto whitespace-normal" disabled={disabled} onClick={onChangeToLowTrust}>
-          Change {agent.name} to a low trust agent
-        </Button>
+        <Button variant="outline" className="h-auto whitespace-normal" disabled={disabled} onClick={onChangeToLowTrust}><Trans ns="task-components" i18nKey="sentence_e133dc275ff4" components={{ part1: <>{agent.name}</> }} /></Button>
       )}
       <a
         className="inline-flex items-center gap-1 underline underline-offset-4"
         href={LOW_TRUST_AGENT_GUIDE}
         target="_blank"
         rel="noreferrer"
-      >
-        Learn about low-trust agents
-        <ExternalLink className="size-3.5" />
+      >{t("task-components:learnAboutLowTrustAgents_3c6aaa98")}<ExternalLink className="size-3.5" />
       </a>
     </div>
   );

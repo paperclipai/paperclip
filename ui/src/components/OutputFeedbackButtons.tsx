@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useEffect, useState } from "react";
 import type { FeedbackDataSharingPreference, FeedbackVoteValue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ export function OutputFeedbackButtons({
   rightSlot?: React.ReactNode;
   inline?: boolean;
 }) {
+  useTranslation("task-components");
   const [pendingVote, setPendingVote] = useState<{
     vote: FeedbackVoteValue;
     reason?: string;
@@ -123,9 +125,7 @@ export function OutputFeedbackButtons({
           className={cn(visibleVote === "up" && "border-green-600/50 bg-green-500/10 text-green-700")}
           onClick={() => handleVote("up")}
         >
-          <ThumbsUp className="mr-1.5 h-3.5 w-3.5" />
-          Helpful
-        </Button>
+          <ThumbsUp className="mr-1.5 h-3.5 w-3.5" />{t("task-components:helpful_63c432db")}</Button>
         <Button
           type="button"
           size="sm"
@@ -134,18 +134,16 @@ export function OutputFeedbackButtons({
           className={cn(visibleVote === "down" && "border-amber-600/50 bg-amber-500/10 text-amber-800")}
           onClick={() => handleVote("down")}
         >
-          <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
-          Needs work
-        </Button>
+          <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />{t("task-components:needsWork_738a3278")}</Button>
         {rightSlot ? <div className="ml-auto">{rightSlot}</div> : null}
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("task-components:whatCouldHaveBeenBetter_829e701d")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("task-components:addAShortNote_1adb884a")}
             className="min-h-20 resize-y bg-background"
             disabled={disabled || isSaving}
           />
@@ -160,9 +158,7 @@ export function OutputFeedbackButtons({
                 setDownvoteReason("");
                 setDownvoteAllowSharing(undefined);
               }}
-            >
-              Dismiss
-            </Button>
+            >{t("task-components:dismiss_48845bff")}</Button>
             <Button
               type="button"
               size="sm"
@@ -174,7 +170,7 @@ export function OutputFeedbackButtons({
                 });
               }}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("task-components:saving_dc85af8f") : t("task-components:saveNote_6501e1ce")}
             </Button>
           </div>
         </div>
@@ -191,34 +187,20 @@ export function OutputFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
-            <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+            <DialogTitle>{t("task-components:saveYourFeedbackSharingPreference_1c562b5e")}</DialogTitle>
+            <DialogDescription>{t("task-components:chooseWhetherVotedAiOutputsCanBe_1e435dd1")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>
-              This vote is always saved locally.
-            </p>
-            <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
-            </p>
-            <p>
-              You can change this later in Settings &gt; General.
-            </p>
+            <p>{t("task-components:thisVoteIsAlwaysSavedLocally_a7cd6ce4")}</p>
+            <p><Trans ns="task-components" i18nKey="sentence_e49067638ca1" components={{ part1: <>{<span className="font-medium text-foreground">{t("task-components:alwaysAllow_977618bd")}</span>}</>, part2: <>{<span className="font-medium text-foreground">{t("task-components:donTAllow_9803bdd2")}</span>}</> }} /></p>
+            <p>{t("task-components:youCanChangeThisLaterInSettings_46238be6")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
+              >{t("task-components:readOurTermsOfService_50aceeb5")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -238,7 +220,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("task-components:saving_dc85af8f") : t("task-components:donTAllow_9803bdd2")}
             </Button>
             <Button
               type="button"
@@ -258,7 +240,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("task-components:saving_dc85af8f") : t("task-components:alwaysAllow_977618bd")}
             </Button>
           </DialogFooter>
         </DialogContent>

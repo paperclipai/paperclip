@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { brandChipBadge, type BrandChipColor } from "@/lib/status-colors";
@@ -33,40 +34,40 @@ interface VariantSpec {
 }
 
 const VARIANTS: Record<ResourceStatusVariant, VariantSpec> = {
-  ready: { color: "green", glyph: "●", label: "Ready", title: "Materialized and matches the shipped default" },
-  needs_setup: { color: "amber", glyph: "⚠", label: "Needs setup", title: "Present but not usable yet" },
-  missing: { color: "amber", glyph: "⚠", label: "Missing", title: "Expected resource absent; reconcile will recreate it" },
-  error: { color: "red", glyph: "✕", label: "Error", title: "Failed to load or reconcile" },
+  ready: { color: "green", glyph: "●", get label() { return t("task-components:ready_5fa7aac5"); }, get title() { return t("task-components:materializedAndMatchesTheShippedDefault_4dd6c838"); } },
+  needs_setup: { color: "amber", glyph: "⚠", get label() { return t("task-components:needsSetup_b6df2441"); }, get title() { return t("task-components:presentButNotUsableYet_968a2059"); } },
+  missing: { color: "amber", glyph: "⚠", get label() { return t("task-components:missing_6be36ca4"); }, get title() { return t("task-components:expectedResourceAbsentReconcileWillRecreateIt_f4936f59"); } },
+  error: { color: "red", glyph: "✕", get label() { return t("task-components:error_54a0e8c1"); }, get title() { return t("task-components:failedToLoadOrReconcile_4e42ee64"); } },
   update_available: {
     color: "blue",
     glyph: "↑",
-    label: "Update available",
-    title: "Unedited — a newer shipped default can be applied",
+    get label() { return t("task-components:updateAvailable_ff8b555d"); },
+    get title() { return t("task-components:uneditedANewerShippedDefaultCanBe_71a19f55"); },
   },
   drifted: {
     color: "gray",
     glyph: "✎",
-    label: "Drifted",
-    title: "You've edited this; your changes are kept, not overwritten",
+    get label() { return t("task-components:drifted_bb85e268"); },
+    get title() { return t("task-components:youVeEditedThisYourChangesAre_993846ba"); },
   },
   schedule_off: {
     color: "gray",
     glyph: "◌",
-    label: "Schedule off",
-    title: "No background work runs until you enable it — costs zero tokens",
+    get label() { return t("task-components:scheduleOff_e96f8077"); },
+    get title() { return t("task-components:noBackgroundWorkRunsUntilYouEnable_ef9bdba7"); },
   },
-  schedule_on: { color: "green", glyph: "●", label: "Weekly", title: "Runs on the weekly schedule" },
+  schedule_on: { color: "green", glyph: "●", get label() { return t("task-components:weekly_29751324"); }, get title() { return t("task-components:runsOnTheWeeklySchedule_47fd02dd"); } },
   pending_approval: {
     color: "amber",
     glyph: "⚠",
-    label: "Pending approval",
-    title: "Waiting on board hire approval before it can run",
+    get label() { return t("task-components:pendingApproval_bb33a7f4"); },
+    get title() { return t("task-components:waitingOnBoardHireApprovalBeforeIt_96a74263"); },
   },
   proposal_pending: {
     color: "blue",
     glyph: "↑",
-    label: "Proposal pending",
-    title: "A proposed update is waiting for your review",
+    get label() { return t("task-components:proposalPending_f8a713a2"); },
+    get title() { return t("task-components:aProposedUpdateIsWaitingForYour_ae9d5086"); },
   },
 };
 
@@ -82,6 +83,7 @@ export function ResourceStatusChip({
   compact?: boolean;
   className?: string;
 }) {
+  useTranslation("task-components");
   const spec = VARIANTS[variant];
   return (
     <Badge

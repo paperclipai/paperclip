@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { i18n } from "@/i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
@@ -27,7 +28,8 @@ async function search(value: string) {
 }
 const options = () => [...document.querySelectorAll<HTMLElement>("[role=option]")];
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   container = document.createElement("div");
@@ -38,10 +40,25 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  await i18n.changeLanguage("en");
   vi.unstubAllGlobals();
 });
 
 describe("AgentChatPicker", () => {
+  it("updates singular and plural unread labels in an open picker when the locale changes", async () => {
+    await render({ existingChatAgentIds: ["first", "second"], unreadMessageCounts: new Map([["first", 1], ["second", 12]]) });
+    expect(options()[0].querySelector('[aria-label="1 unread message from Alex"]')?.textContent).toBe("1");
+    expect(options()[1].querySelector('[aria-label="12 unread messages from Alex"]')?.textContent).toBe("12");
+    const input = document.querySelector<HTMLInputElement>("[role=combobox]")!;
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(document.querySelector("[role=combobox]")).toBe(input);
+    expect(options()[0].querySelector('[aria-label="来自 Alex 的 1 条未读消息"]')?.textContent).toBe("1");
+    expect(options()[1].querySelector('[aria-label="来自 Alex 的 12 条未读消息"]')?.textContent).toBe("12");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(options()[0].querySelector('[aria-label="1 unread message from Alex"]')?.textContent).toBe("1");
+    expect(options()[1].querySelector('[aria-label="12 unread messages from Alex"]')?.textContent).toBe("12");
+  });
+
   it("shows unread per agent through search and clears it when read state updates", async () => {
     await render({ existingChatAgentIds: ["first", "second"], unreadMessageCounts: new Map([["first", 0], ["second", 12]]) });
     expect(options()[0].querySelector('[aria-label*="unread message"]')).toBeNull();

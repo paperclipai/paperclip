@@ -1,0 +1,6 @@
+{
+  "imageUploadFailed": "图片上传失败",
+  "noImageUploadHandler": "未配置图片上传处理器",
+  "secretCreateFailure": "创建密钥失败",
+  "revisionLabel": "修订版 {{revision}}"
+}

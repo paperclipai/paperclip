@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Loader2 } from "lucide-react";
 import type { TranscriptEntry } from "../../adapters";
@@ -30,18 +31,18 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
     else other += 1;
   }
   const parts: string[] = [];
-  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
-  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
-  return parts.length > 0 ? parts.join(", ") : null;
+  if (commands > 0) parts.push(commands === 1 ? t("task-chat-ui:ranCommand", { count: commands }) : t("task-chat-ui:ranCommands", { count: commands }));
+  if (other > 0) parts.push(other === 1 ? t("task-chat-ui:calledTool", { count: other }) : t("task-chat-ui:calledTools", { count: other }));
+  return parts.length === 2 ? t("task-chat-ui:summaryJoin", { commands: parts[0], tools: parts[1] }) : parts[0] ?? null;
 }
 
 /**
  * Status pill for the experimental chat-style view's live tail (PAP-461, A1).
  *
  * Byte-for-byte the same affordance the default view shows above a run's chain
- * of thought (IssueChatThread's CoT header): a spinner + shimmering "Working"
+ * of thought (IssueChatThread's CoT header): a spinner + shimmering t("task-chat-ui:working")
  * verb + elapsed words + "· called N tools" while the run streams, settling to
- * a static emerald dot + "Worked" summary once it terminates. The verb shimmers
+ * a static emerald dot + t("task-chat-ui:worked") summary once it terminates. The verb shimmers
  * via `.shimmer-text` (reduced-motion aware) exactly as the default view does.
  */
 export function TaskChatLiveRunPill({
@@ -58,6 +59,7 @@ export function TaskChatLiveRunPill({
   finishedAtMs?: number | null;
   toolSummary: string | null;
 }) {
+  useTranslation("task-chat-ui");
   const active = !isTerminalRunStatus(status);
   const shimmer = useTaskChatShimmer("working");
   // One shared page-wide ticker drives the live elapsed readout, matching the
@@ -70,8 +72,8 @@ export function TaskChatLiveRunPill({
     ? formatDurationWords(elapsedMs)
     : null;
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = active ? "Working" : failed ? "Stopped" : "Worked";
-  const suffix = elapsed ? `for ${elapsed}` : null;
+  const verb = active ? t("task-chat-ui:working") : failed ? t("task-chat-ui:stopped") : t("task-chat-ui:worked");
+  const suffix = elapsed ? t("task-chat-ui:workedDuration", { duration: elapsed }) : null;
 
   return (
     <div

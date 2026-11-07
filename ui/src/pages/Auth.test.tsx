@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AuthPage } from "./Auth";
 import { CliAuthPage } from "./CliAuth";
 import { ApiError } from "../api/client";
+import { i18n } from "../i18n";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
@@ -126,6 +127,36 @@ describe("AuthPage", () => {
     await flushReact();
     return { root, queryClient };
   }
+
+  it("translates an already-visible validation error when the language changes", async () => {
+    await i18n.changeLanguage("en");
+    const { root } = await mount();
+    await reactAct(async () => {
+      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(container.textContent).toContain("Please fill in all required fields.");
+    await reactAct(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.textContent).toContain("请填写所有必填字段。");
+    await reactAct(async () => { await i18n.changeLanguage("en"); root.unmount(); });
+  });
+
+  it("updates mounted authentication labels on language change without clearing the email", async () => {
+    await i18n.changeLanguage("en");
+    const { root } = await mount();
+    const email = container.querySelector<HTMLInputElement>("input[name=email]")!;
+    await reactAct(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(email, "person@example.com");
+      email.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await reactAct(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.textContent).toContain("登录 Paperclip");
+    expect(container.textContent).toContain("密码");
+    expect(container.querySelector<HTMLInputElement>("input[name=email]")?.value).toBe("person@example.com");
+    expect(container.querySelector("select")?.value).toBe("zh-CN");
+    await reactAct(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Sign in to Paperclip");
+    await act(() => root.unmount());
+  });
 
   it.each(["https://my.paperclip.app", "https://my-staging.paperclip.app"])("recovers Cloud auth through %s without rendering an instance form", async (origin) => {
     healthMock.mockResolvedValue({ cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: origin, stackSlug: "team" } });

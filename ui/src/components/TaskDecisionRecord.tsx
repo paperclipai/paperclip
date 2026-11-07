@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQueryView } from "@/components/QueryView";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
@@ -12,6 +13,7 @@ import { Button } from "./ui/button";
 export function TaskDecisionRecord({ companyId, issueId, viewerId, agentMap }: {
   companyId: string; issueId: string; viewerId: string | null; agentMap?: Map<string, Agent>;
 }) {
+  useTranslation("task-components");
   const { hash } = useLocation();
   const anchor = taskChatHashAnchor(hash);
   const decisionId = anchor?.startsWith("decision-") ? anchor.slice("decision-".length) : null;
@@ -23,13 +25,13 @@ export function TaskDecisionRecord({ companyId, issueId, viewerId, agentMap }: {
   const decision = record.data;
   const matchesTask = decision?.companyId === companyId && decision.originIssueId === issueId;
   const choice = decision?.options.find((option) => option.id === decision.chosenOptionId);
-  return <section id={anchor!} aria-label="Decision record" className="space-y-3 rounded-xl border border-border bg-card p-4">
-    <h2 className="text-sm font-medium">Decision record</h2>
-    {["loading", "reconnecting"].includes(recordView.kind) ? <p role="status" className="text-sm text-muted-foreground">Loading decision…</p> : (recordView.kind === "error") ? (
-      <div role="alert" className="text-sm"><p>Could not load this decision.</p><Button size="sm" variant="ghost" onClick={() => void record.refetch()}>Retry</Button></div>
-    ) : !matchesTask ? <p role="alert" className="text-sm text-muted-foreground">This decision is not available in this task.</p> : <>
+  return <section id={anchor!} aria-label={t("final-components-a:decisionRecord_c33f22e6")} className="space-y-3 rounded-xl border border-border bg-card p-4">
+    <h2 className="text-sm font-medium">{t("task-components:sentence_c33f22e66587")}</h2>
+    {["loading", "reconnecting"].includes(recordView.kind) ? <p role="status" className="text-sm text-muted-foreground">{t("task-components:loadingDecision_ad0b2287")}</p> : (recordView.kind === "error") ? (
+      <div role="alert" className="text-sm"><p>{t("task-components:sentence_004853eadb84")}</p><Button size="sm" variant="ghost" onClick={() => void record.refetch()}>{t("task-components:retry_942087cc")}</Button></div>
+    ) : !matchesTask ? <p role="alert" className="text-sm text-muted-foreground">{t("task-components:sentence_23e9834f5913")}</p> : <>
       {decision.status !== "open" ? <dl className="space-y-2 text-sm">
-        <div><dt className="text-muted-foreground">Recorded choice</dt><dd>{choice?.label ?? (decision.chosenOptionId === "dismissed" ? "Dismissed" : decision.status)}</dd></div>
+        <div><dt className="text-muted-foreground">{t("task-components:sentence_41bdde8778b7")}</dt><dd>{choice?.label ?? (decision.chosenOptionId === "dismissed" ? t("task-components:dismissed_9d747277") : decision.status)}</dd></div>
         {(decision.inputs ?? []).filter((input) => decision.inputValues?.[input.id] !== undefined).map((input) => <div key={input.id}>
           <dt className="text-muted-foreground">{input.label}</dt><dd className="whitespace-pre-wrap">{decision.inputValues![input.id]}</dd>
         </div>)}

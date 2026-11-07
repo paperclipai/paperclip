@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { usePaneWidthReset } from "@/hooks/usePaneWidthReset";
 
@@ -18,6 +19,7 @@ export function DesignPageAside({ children, title, maximized, storageKey }: {
   maximized: boolean;
   storageKey: string;
 }) {
+  useTranslation("task-components");
   const asideRef = useRef<HTMLElement>(null);
   const [width, setWidth] = useState<number | null>(() => readWidth(storageKey));
   const [bounds, setBounds] = useState({ min: 0, max: 0, step: 0 });
@@ -119,7 +121,7 @@ export function DesignPageAside({ children, title, maximized, storageKey }: {
     "--design-page-aside-available-width": bounds.max ? `${bounds.max}px` : undefined,
   } as CSSProperties}>
     {!maximized && <div
-      role="separator" aria-label="Resize right sidebar" aria-orientation="vertical"
+      role="separator" aria-label={t("task-components:resizeRightSidebar_78f6821c")} aria-orientation="vertical"
       aria-controls="design-page-aside-content" aria-valuemin={bounds.min} aria-valuemax={bounds.max} aria-valuenow={actualWidth}
       tabIndex={0} data-dragging={dragging ? "" : undefined}
       className="pane-resize-handle design-page-aside-resize group absolute inset-y-0 z-20 cursor-col-resize touch-none outline-none"

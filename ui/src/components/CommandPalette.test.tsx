@@ -4,6 +4,7 @@ import type { KeyboardEventHandler, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "./CommandPalette";
 import { queryKeys } from "../lib/queryKeys";
@@ -101,21 +102,24 @@ vi.mock("./Identity", () => ({
 }));
 
 vi.mock("@/components/ui/command", () => ({
-  CommandDialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? <div>{children}</div> : null),
+  CommandDialog: ({ open, children, title, description }: { open: boolean; children: ReactNode; title?: string; description?: string }) => (open ? <div role="dialog" aria-label={title} aria-description={description}>{children}</div> : null),
   CommandEmpty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   CommandGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   CommandInput: ({
     value,
     onValueChange,
     onKeyDown,
+    placeholder,
   }: {
     value: string;
     onValueChange: (value: string) => void;
     onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
+    placeholder?: string;
   }) => (
     <div>
       <input
         aria-label="Command search"
+        placeholder={placeholder}
         value={value}
         onChange={(event) => onValueChange(event.currentTarget.value)}
         onKeyDown={onKeyDown}
@@ -220,6 +224,36 @@ describe("CommandPalette", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("localizes commands and full search query interpolation while preserving query syntax", async () => {
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "UserAgent", role: "engineer" }]);
+    const { root } = renderWithQueryClient(<CommandPalette />, container, client => {
+      client.setQueryData(queryKeys.agents.list("company-1"), [{ id: "agent-1", name: "UserAgent", role: "engineer" }]);
+    });
+    try {
+      await i18n.changeLanguage("zh-CN");
+      act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true })); });
+      await flush();
+      expect(container.querySelector("input")?.getAttribute("placeholder")).toBe("搜索任务、智能体和项目…");
+      expect(container.textContent).toContain("创建新任务");
+      expect(container.textContent).toContain("创建新智能体");
+      expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("命令面板");
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain("UserAgent");
+        expect(container.textContent).toContain("工程师");
+      });
+      act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Set query"]')!.click());
+      await flush();
+      expect(container.querySelector('[data-testid="command-search-all"]')?.textContent).toContain("搜索所有内容中的“pull/3303”");
+      expect(container.querySelector('[data-testid="command-search-all"] .font-semibold')?.textContent).toBe("“pull/3303”");
+      await i18n.changeLanguage("en");
+      await flush();
+      expect(container.textContent).toContain("Create new task");
+    } finally {
+      act(() => root.unmount());
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("includes routine execution issues in search queries", async () => {

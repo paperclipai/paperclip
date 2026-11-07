@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
@@ -15,6 +16,7 @@ type StandardMarkdownMentionOptionsArgs = {
 } & Partial<MarkdownMentionInputs>;
 
 export function useStandardMarkdownMentionOptions(args: StandardMarkdownMentionOptionsArgs = {}) {
+  const { t: displayT } = useTranslation("display");
   const { selectedCompanyId } = useCompany();
   const companyId = args.companyId ?? selectedCompanyId;
   const enabled = (args.enabled ?? true) && Boolean(companyId);
@@ -41,6 +43,6 @@ export function useStandardMarkdownMentionOptions(args: StandardMarkdownMentionO
 
   return useMemo(
     () => buildMarkdownMentionOptions({ agents, projects, members }),
-    [agents, members, projects],
+    [agents, members, projects, displayT],
   );
 }

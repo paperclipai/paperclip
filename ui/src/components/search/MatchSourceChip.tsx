@@ -1,10 +1,10 @@
+import { t, useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export type MatchSourceChipKind = "title" | "identifier" | "comment" | "document";
 
 const chipStyles: Record<MatchSourceChipKind, string> = {
-  title:
-    "bg-(--chip-match-title-bg) text-(--chip-match-title-fg) border-(--chip-match-title-border)",
+  get title() { return "bg-(--chip-match-title-bg) text-(--chip-match-title-fg) border-(--chip-match-title-border)"; },
   identifier:
     "bg-(--chip-match-identifier-bg) text-(--chip-match-identifier-fg) border-(--chip-match-identifier-border)",
   comment:
@@ -14,7 +14,7 @@ const chipStyles: Record<MatchSourceChipKind, string> = {
 };
 
 const chipLabels: Record<MatchSourceChipKind, string> = {
-  title: "Title",
+  get title() { return t("task-components:title_7e8cd205"); },
   identifier: "Identifier",
   comment: "Comment",
   document: "Doc",
@@ -30,6 +30,7 @@ export interface MatchSourceChipProps {
 // design-allow(pill-pattern): --chip-match-* domain token family (DESIGN.md domain tier); a
 // deliberately separate chip system, not a Badge.
 export function MatchSourceChip({ kind, count, label, className }: MatchSourceChipProps) {
+  useTranslation("task-components");
   const text = label ?? chipLabels[kind];
   const showCount = typeof count === "number" && count > 1;
   return (

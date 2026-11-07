@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus, Trash2, Users } from "lucide-react";
@@ -54,9 +55,10 @@ export function AgentsUsingSkillBadge({
   skill: CompanySkillDetail;
   canManage?: boolean;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const [open, setOpen] = useState(false);
   const count = skill.usedByAgents.length;
-  const label = `${count} ${count === 1 ? "agent uses" : "agents use"} this skill`;
+  const label = translateShell("shell:skill_agents_using", { count });
 
   return (
     <>
@@ -72,7 +74,7 @@ export function AgentsUsingSkillBadge({
         )}
       >
         <Users className="h-3.5 w-3.5" aria-hidden="true" />
-        {count} {count === 1 ? "agent" : "agents"}
+        {translateShell("shell:skill_agents_count", { count })}
       </button>
       <AgentsUsingSkillDialog
         open={open}
@@ -105,6 +107,7 @@ export function AgentsUsingSkillDialog({
   skill: CompanySkillDetail;
   canManage?: boolean;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const queryClient = useQueryClient();
   const toast = useOptionalToastActions();
   const adapterCaps = useAdapterCapabilities();
@@ -132,24 +135,24 @@ export function AgentsUsingSkillDialog({
 
   const versions = useMemo<CompanySkillVersionSummary[]>(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber),
-    [versionsQuery.data],
+    [versionsQuery.data, translateShell],
   );
   const latestRevision = skill.currentVersion?.revisionNumber ?? null;
   const revisionByVersionId = useMemo(
     () => new Map(versions.map((version) => [version.id, version.revisionNumber])),
-    [versions],
+    [versions, translateShell],
   );
 
   const agentMetaById = useMemo(
     () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent])),
-    [agentsQuery.data],
+    [agentsQuery.data, translateShell],
   );
 
   // Company agents that support skills and don't already have this one — the
   // footer add-agent picker.
   const attachedIds = useMemo(
     () => new Set(skill.usedByAgents.map((entry) => entry.id)),
-    [skill.usedByAgents],
+    [skill.usedByAgents, translateShell],
   );
   const addableAgents = useMemo(
     () =>
@@ -161,7 +164,7 @@ export function AgentsUsingSkillDialog({
             adapterCaps(agent.adapterType).supportsSkills,
         )
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [agentsQuery.data, attachedIds, adapterCaps],
+    [agentsQuery.data, attachedIds, adapterCaps, translateShell],
   );
 
   const syncMutation = useMutation({
@@ -201,11 +204,11 @@ export function AgentsUsingSkillDialog({
       ]);
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to update agent skills.";
+      const message = error instanceof Error ? error.message : translateShell("shell:failed_to_update_agent_skills");
       toast?.pushToast({
         tone: "error",
-        title: "Update failed",
-        body: message.includes("403") ? "You don't have permission to change this agent's skills." : message,
+        title: translateShell("shell:update_failed"),
+        body: message.includes("403") ? translateShell("shell:you_don_t_have_permission_to_change") : message,
       });
     },
   });
@@ -232,11 +235,11 @@ export function AgentsUsingSkillDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Agents using {skill.name}</DialogTitle>
+          <DialogTitle>{translateShell("shell:agents_using", { value1: skill.name })}</DialogTitle>
           <DialogDescription>
             {count === 0
-              ? "No agents have this skill assigned yet."
-              : `${count} ${count === 1 ? "agent has" : "agents have"} this skill in their desired set.`}
+              ? translateShell("shell:no_agents_have_this_skill_assigned_yet")
+              : translateShell("shell:skill_desired_count", { count })}
           </DialogDescription>
         </DialogHeader>
 
@@ -244,8 +247,8 @@ export function AgentsUsingSkillDialog({
           {count === 0 ? (
             <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
               {canManage
-                ? "Add an agent below to assign this skill."
-                : "This skill isn't assigned to any agents."}
+                ? translateShell("shell:add_an_agent_below_to_assign_this")
+                : translateShell("shell:this_skill_isn_t_assigned_to_any")}
             </div>
           ) : (
             <ul className="divide-y divide-border">
@@ -318,6 +321,7 @@ function AgentRow({
   onRemove: () => void;
   onPin: (versionId: string | null) => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const behindLatest =
     pinnedRevision !== null && latestRevision !== null && latestRevision > pinnedRevision
       ? latestRevision - pinnedRevision
@@ -340,12 +344,12 @@ function AgentRow({
 
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         {!hasVersions ? (
-          <span className="text-sm text-muted-foreground" aria-label={`${agent.name} version`}>
+          <span className="text-sm text-muted-foreground" aria-label={translateShell("shell:version", { value1: agent.name })}>
             —
           </span>
         ) : canManage ? (
           <select
-            aria-label={`${agent.name} skill version`}
+            aria-label={translateShell("shell:skill_version", { value1: agent.name })}
             value={agent.versionId ?? LATEST_VALUE}
             disabled={busy}
             onChange={(event) =>
@@ -353,8 +357,7 @@ function AgentRow({
             }
             className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground disabled:opacity-60"
           >
-            <option value={LATEST_VALUE}>
-              Latest{latestRevision !== null ? ` (v${latestRevision})` : ""}
+            <option value={LATEST_VALUE}>{translateShell("shell:latest")}{latestRevision !== null ? ` (v${latestRevision})` : ""}
             </option>
             {versions.map((version) => (
               <option key={version.id} value={version.id}>
@@ -367,13 +370,12 @@ function AgentRow({
           <span className="text-xs text-muted-foreground">
             {agent.versionId
               ? `v${pinnedRevision ?? "?"}`
-              : `Latest${latestRevision !== null ? ` (v${latestRevision})` : ""}`}
+              : translateShell("shell:latest_609457", { value1: latestRevision !== null ? ` (v${latestRevision})` : "" })}
           </span>
         )}
         {behindLatest > 0 ? (
           <span className="text-(length:--text-nano) text-amber-500">
-            {behindLatest} version{behindLatest === 1 ? "" : "s"} behind latest
-          </span>
+            {translateShell("final-configuration:skillBehind", { count: behindLatest })}</span>
         ) : null}
       </div>
 
@@ -385,13 +387,11 @@ function AgentRow({
               size="sm"
               onClick={onRemove}
               disabled={busy}
-              aria-label={`Confirm removing this skill from ${agent.name}`}
+              aria-label={translateShell("shell:confirm_removing_this_skill_from", { value1: agent.name })}
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Remove"}
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : translateShell("shell:remove")}
             </Button>
-            <Button variant="ghost" size="sm" onClick={onCancelRemove} disabled={busy}>
-              Cancel
-            </Button>
+            <Button variant="ghost" size="sm" onClick={onCancelRemove} disabled={busy}>{translateShell("shell:cancel")}</Button>
           </div>
         ) : (
           <Button
@@ -400,7 +400,7 @@ function AgentRow({
             onClick={onRequestRemove}
             disabled={busy}
             className="shrink-0 text-muted-foreground hover:text-destructive"
-            aria-label={`Remove this skill from ${agent.name}`}
+            aria-label={translateShell("shell:remove_this_skill_from", { value1: agent.name })}
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -421,6 +421,7 @@ function AddAgentPicker({
   disabled: boolean;
   onSelect: (agent: Agent) => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   type AgentOption = SearchableSelectOption<string> & { agent: Agent };
   const groups = useMemo<readonly SearchableSelectGroup<string, AgentOption>[]>(() => {
     const options: AgentOption[] = agents.map((agent) => ({
@@ -432,17 +433,17 @@ function AddAgentPicker({
       agent,
     }));
     return [{ id: "agents", options }];
-  }, [agents]);
+  }, [agents, translateShell]);
 
   return (
     <SearchableSelect<string, AgentOption>
       value=""
       groups={groups}
       loading={loading}
-      loadingMessage="Loading agents..."
-      placeholder="Add agent…"
-      searchPlaceholder="Search agents..."
-      emptyMessage="All eligible agents already have this skill."
+      loadingMessage={translateShell("shell:extra_7_loading_agents_")}
+      placeholder={translateShell("shell:add_agent_51189b")}
+      searchPlaceholder={translateShell("shell:search_agents")}
+      emptyMessage={translateShell("shell:extra_6_all_eligible_agents_already_have_this_skill_")}
       disabled={disabled}
       onValueChange={(_value, option) => {
         onSelect(option.agent);
@@ -452,9 +453,7 @@ function AddAgentPicker({
       contentClassName="w-72"
       renderValue={() => (
         <span className="flex items-center gap-1.5 text-muted-foreground">
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          Add agent…
-        </span>
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />{translateShell("shell:add_agent_51189b")}</span>
       )}
       renderOption={(option) => (
         <span className="flex min-w-0 flex-col">

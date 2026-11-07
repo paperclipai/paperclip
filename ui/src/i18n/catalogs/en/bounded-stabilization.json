@@ -1,0 +1,8 @@
+{
+  "timeline": "Timeline ({{count}})",
+  "deleteFolderItems": "The {{count}} {{itemLabel}} in this folder won't be deleted. They'll move to Unfiled.",
+  "skills": "skills",
+  "routines": "routines",
+  "Skills": "Skills",
+  "Routines": "Routines"
+}

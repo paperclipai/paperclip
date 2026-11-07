@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { UserCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -23,8 +24,7 @@ import { cn } from "../lib/utils";
  */
 export function commentAttributionTooltip(agentName: string, userName: string): string {
   return (
-    `${agentName} posted this on behalf of ${userName}. ${agentName} is not assigned to ` +
-    `this task — its authority to write here comes from ${userName}, and never exceeds it.`
+    t("final-components-b:agentName_posted_this_on_behalf_of_userName_agentName_is_not_assigned__2c9927", { agentName, userName })
   );
 }
 
@@ -39,6 +39,7 @@ export function CommentAttributionChip({
   userName?: string | null;
   className?: string;
 }) {
+  useTranslation("task-components");
   const user = userName?.trim();
   if (!user) return null;
   const agent = agentName?.trim() || "This agent";
@@ -49,7 +50,7 @@ export function CommentAttributionChip({
         <Badge
           variant="outline"
           data-testid="comment-attribution-chip"
-          aria-label={`Posted on behalf of ${user}`}
+          aria-label={t("task-components:postedOnBehalfOf_b3e43753", { value1: user })}
           // `Badge` renders a span, which is not focusable — without this a
           // sighted keyboard user can never open the explanation. Radix opens
           // the tooltip on focus as well as hover.
@@ -61,7 +62,7 @@ export function CommentAttributionChip({
           )}
         >
           <UserCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
-          <span className="truncate">for {user}</span>
+          <span className="truncate"><Trans ns="task-components" i18nKey="sentence_412bba4532b2" components={{ part1: <>{user}</> }} /></span>
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs text-xs">

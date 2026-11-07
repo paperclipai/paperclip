@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { FlyoutAppearanceProvider } from "@/components/ui/flyout";
@@ -11,6 +12,7 @@ export function useDesignSandbox() { return useContext(DesignSandboxContext); }
 /** Local integration experiment. Neither production builds nor ordinary dev
  * instances enable this through browser storage alone. */
 export function DesignSandboxProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("shell");
   const available = import.meta.env.DEV && import.meta.env.VITE_PAPERCLIP_DESIGN_SANDBOX === "true";
   const [selected, setSelected] = useState(() => {
     try { return localStorage.getItem(storageKey) !== "off"; } catch { return true; }
@@ -33,7 +35,7 @@ export function DesignSandboxProvider({ children }: { children: ReactNode }) {
           const next = !selected;
           setSelected(next);
           try { localStorage.setItem(storageKey, next ? "on" : "off"); } catch { /* Session-only when storage is unavailable. */ }
-        }}>Design proposals: {enabled ? "On" : "Off"}</Button>
+        }}>{t(enabled ? "shell:design_proposals_on" : "shell:design_proposals_off")}</Button>
       </div> : null}
     </FlyoutAppearanceProvider>
   </DesignSandboxContext.Provider>;

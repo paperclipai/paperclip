@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { CSSProperties, ReactNode } from "react";
 import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -33,16 +34,17 @@ export function SidePanelFrame({
   open = true,
   maximized = false,
   resizing = false,
-  label = "Side panel",
+  label,
   headerSize = "default",
   className,
   bodyClassName,
   style,
 }: SidePanelFrameProps) {
+  useTranslation("task-components");
   const handleScroll = useScrollbarWhileScrolling();
   return (
     <section
-      aria-label={label}
+      aria-label={label ?? t("deep-ui:side_panel")}
       aria-hidden={!open}
       data-presentation={presentation}
       data-open={open ? "true" : "false"}
@@ -110,7 +112,8 @@ export function SidePanelToggleButton({
   className?: string;
   highlightWhenOpen?: boolean;
 }) {
-  const label = "Toggle side panel";
+  useTranslation("task-components");
+  const label = t("deep-ui:toggle_side_panel_081f0f");
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -148,6 +151,7 @@ export function SidePanelWindowControls({
   onToggle: () => void;
   closeControl?: "toggle" | "close";
 }) {
+  useTranslation("task-components");
   return (
     <>
       <Button
@@ -156,8 +160,8 @@ export function SidePanelWindowControls({
         size="icon-sm"
         className="h-(--side-panel-tab-height) w-(--side-panel-tab-height) text-muted-foreground hover:text-foreground focus-visible:text-foreground"
         onClick={() => onMaximizedChange(!maximized)}
-        aria-label={maximized ? "Restore side panel" : "Maximize side panel"}
-        title={maximized ? "Restore side panel" : "Maximize side panel"}
+        aria-label={maximized ? t("task-components:restoreSidePanel_7013aadd") : t("task-components:maximizeSidePanel_2770d4aa")}
+        title={maximized ? t("task-components:restoreSidePanel_7013aadd") : t("task-components:maximizeSidePanel_2770d4aa")}
       >
         {maximized ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
       </Button>
@@ -168,8 +172,8 @@ export function SidePanelWindowControls({
           size="icon-sm"
           className="h-(--side-panel-tab-height) w-(--side-panel-tab-height) text-muted-foreground hover:text-foreground focus-visible:text-foreground"
           onClick={onToggle}
-          aria-label="Close side panel"
-          title="Close side panel"
+          aria-label={t("task-components:closeSidePanel_95221826")}
+          title={t("task-components:closeSidePanel_95221826")}
         >
           <X aria-hidden />
         </Button>

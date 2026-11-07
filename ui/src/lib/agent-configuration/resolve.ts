@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { agentConfigurationDocumentSchema, agentConfigurationInputSchema, type AgentConfigurationInput } from "@paperclipai/shared";
 import { equal, profileConfiguration, type AgentConfigurationSnapshot } from "./load";
 import { requireItem } from "./steps";
@@ -5,7 +6,7 @@ import { requireItem } from "./steps";
 export function resolveAgentConfiguration(snapshot: AgentConfigurationSnapshot, input: AgentConfigurationInput) {
   const document = agentConfigurationInputSchema.parse(input);
   if (document.observed !== undefined && !equal(document.observed, snapshot.document.observed)) {
-    throw new Error("observed is read-only. Remove this block and edit spec to change configuration.");
+    throw new Error(t("display:config_062f99e275df"));
   }
   const before = snapshot.document.spec;
   const spec = { ...before, ...document.spec };
@@ -25,7 +26,7 @@ export function resolveAgentConfiguration(snapshot: AgentConfigurationSnapshot, 
     for (const [path, content] of Object.entries(document.spec.instructions.files)) {
       const existing = snapshot.bundle.files.find(file => file.path === path);
       if (existing && (!existing.editable || existing.binary || existing.virtual)) {
-        throw new Error(`Instruction file ${path} cannot be edited as text.`);
+        throw new Error(t("display:config_16cfcb6db6cb", { value0: path }));
       }
       if (content === null) delete files[path];
       else files[path] = content;
@@ -36,7 +37,7 @@ export function resolveAgentConfiguration(snapshot: AgentConfigurationSnapshot, 
   if (document.spec.tools?.profiles) spec.tools!.profiles = document.spec.tools.profiles.map(row => {
     const existing = row.profileId || row.profileKey
       ? requireItem(snapshot.profiles, profile => (!row.profileId || profile.id === row.profileId)
-        && (!row.profileKey || profile.profileKey === row.profileKey), `Profile ${row.profileKey ?? row.profileId}`)
+        && (!row.profileKey || profile.profileKey === row.profileKey), t("display:config_27a6356ee1d1", { value0: row.profileKey ?? row.profileId }))
       : null;
     const binding = before.tools?.profiles.find(profile => profile.profileId === existing?.id);
     return {
@@ -48,12 +49,12 @@ export function resolveAgentConfiguration(snapshot: AgentConfigurationSnapshot, 
     };
   });
   if (document.spec.channels) spec.channels = document.spec.channels.map(row => {
-    const previous = requireItem(before.channels ?? [], channel => channel.id === row.id, `Channel ${row.id}`);
+    const previous = requireItem(before.channels ?? [], channel => channel.id === row.id, t("display:config_385e787b904f", { value0: row.id }));
     return {
       ...previous, ...row,
       settings: { ...previous.settings, ...row.settings },
       resources: row.resources?.map(resource => ({
-        ...requireItem(previous.resources, existing => existing.id === resource.id, `Channel resource ${resource.id}`), ...resource,
+        ...requireItem(previous.resources, existing => existing.id === resource.id, t("display:config_7f71c912d411", { value0: resource.id })), ...resource,
       })) ?? previous.resources,
     };
   });

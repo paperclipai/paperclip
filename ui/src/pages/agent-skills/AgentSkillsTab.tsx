@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -28,8 +29,7 @@ import { filterAgentSkills } from "./agent-skill-filter";
 import { buildAgentSkillSourceMeta } from "./agent-skill-source";
 import { AgentSkillReleasePicker, releaseShortLabel } from "./AgentSkillReleasePicker";
 
-const MATERIALIZATION_NOTE =
-  "Enabled skills are materialized into the stable Paperclip-managed prompt bundle on the agent's next run.";
+const MATERIALIZATION_NOTE_KEY = "agents:materializationNote";
 
 /** Company skill key of the Paperclip core skill that carries beta releases. */
 const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/paperclip";
@@ -60,6 +60,7 @@ function pinsFromEntries(entries: AgentDesiredSkillEntry[] | undefined): Record<
 }
 
 export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
@@ -295,15 +296,15 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const applicationLabel = useMemo(() => {
     switch (skillSnapshot?.mode) {
       case "persistent":
-        return "Kept in workspace";
+        return translateAgentPage("agents:kept_in_workspace");
       case "ephemeral":
-        return "Applied on next run";
+        return translateAgentPage("agents:applied_on_next_run");
       case "unsupported":
-        return "Tracked only";
+        return translateAgentPage("agents:tracked_only");
       default:
         return null;
     }
-  }, [skillSnapshot?.mode]);
+  }, [skillSnapshot?.mode, translateAgentPage]);
 
   const unsupportedMessage = useMemo(() => {
     if (!unsupported) return null;
@@ -312,13 +313,13 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
       typeof agent.adapterConfig.agent === "string" &&
       agent.adapterConfig.agent === "custom"
     ) {
-      return "Paperclip cannot manage skills for custom ACP commands yet.";
+      return translateAgentPage("agents:paperclip_cannot_manage_skills_for_custom_acp_commands");
     }
     if (agent.adapterType === "openclaw_gateway") {
-      return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
+      return translateAgentPage("agents:paperclip_cannot_manage_openclaw_skills_here_visit_your");
     }
-    return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
-  }, [agent.adapterConfig.agent, agent.adapterType, unsupported]);
+    return translateAgentPage("agents:paperclip_cannot_manage_skills_for_this_adapter_yet");
+  }, [agent.adapterConfig.agent, agent.adapterType, unsupported, translateAgentPage]);
 
   const hasUnsavedChanges = !sameSkillSelection(skillDraft, lastSavedSkills);
 
@@ -354,7 +355,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
       && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const rowDisabled = unsupported || legacyPaperclipBlocked;
     const rowDisabledReason = legacyPaperclipBlocked
-      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      ? translateAgentPage("agents:paperclip_runner_uses_native_semantic_coordination_and_cannot")
       : unsupportedMessage;
     const showReleasePicker =
       releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
@@ -374,8 +375,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         onCheckedChange={(next) => toggleSkill(row.key, next)}
         badge={
           showReleasePicker && pinnedRelease ? (
-            <Badge variant="secondary" className="text-(length:--text-nano)">
-              Beta · {releaseShortLabel(pinnedRelease)}
+            <Badge variant="secondary" className="text-(length:--text-nano)">{translateAgentPage("agents:beta_e44836")}{" "}{releaseShortLabel(pinnedRelease)}
             </Badge>
           ) : undefined
         }
@@ -401,8 +401,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-foreground">
-            {enabledRows.length} of {libraryRows.length} enabled
-          </span>
+            {enabledRows.length}{" "}{translateAgentPage("agents:of")}{" "}{libraryRows.length}{" "}{translateAgentPage("agents:enabled")}</span>
           {applicationLabel ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -411,7 +410,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                 </span>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs">
-                {unsupported ? unsupportedMessage : MATERIALIZATION_NOTE}
+                {unsupported ? unsupportedMessage : translateAgentPage(MATERIALIZATION_NOTE_KEY)}
               </TooltipContent>
             </Tooltip>
           ) : null}
@@ -426,16 +425,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search skills"
+                placeholder={translateAgentPage("agents:search_skills_502b0d")}
                 className="h-8 w-full pl-8 sm:w-56"
-                aria-label="Search skills"
+                aria-label={translateAgentPage("agents:search_skills_502b0d")}
               />
             </div>
             <Button asChild variant="outline" size="sm" className="shrink-0">
               <Link to="/skills" className="no-underline">
-                <Store className="h-3.5 w-3.5" />
-                Browse skills store
-              </Link>
+                <Store className="h-3.5 w-3.5" />{translateAgentPage("agents:browse_skills_store")}</Link>
             </Button>
           </div>
         </div>
@@ -463,16 +460,13 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               className="flex items-center justify-between gap-3 border-b border-amber-300/40 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 last:border-b-0 dark:border-amber-500/20 dark:bg-amber-950/20 dark:text-amber-200"
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium">{key}</span> is enabled but missing from the organization library.
-              </span>
+                <span className="font-medium">{key}</span>{" "}{translateAgentPage("agents:is_enabled_but_missing_from_the_organization_library")}</span>
               <button
                 type="button"
                 onClick={() => toggleSkill(key, false)}
                 className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/50 px-2 py-0.5 font-medium transition-colors hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
               >
-                <X className="h-3 w-3" />
-                Remove
-              </button>
+                <X className="h-3 w-3" />{translateAgentPage("agents:remove")}</button>
             </div>
           ))}
         </div>
@@ -484,26 +478,26 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         <EmptyLibraryCard />
       ) : (
         <div className="space-y-4">
-          <SkillSection title="Enabled on this agent" count={filteredEnabled.length}>
+          <SkillSection title={translateAgentPage("agents:enabled_on_this_agent")} count={filteredEnabled.length}>
             {filteredEnabled.length > 0 ? (
               filteredEnabled.map((row) => renderRow(row, "enabled"))
             ) : (
               <SectionEmpty>
-                {search ? "No enabled skills match your search." : "No skills enabled on this agent yet."}
+                {search ? translateAgentPage("agents:no_enabled_skills_match_your_search") : translateAgentPage("agents:no_skills_enabled_on_this_agent_yet")}
               </SectionEmpty>
             )}
           </SkillSection>
 
-          <SkillSection title="Available from the library" count={filteredAvailable.length}>
+          <SkillSection title={translateAgentPage("agents:available_from_the_library")} count={filteredAvailable.length}>
             {filteredAvailable.length > 0 ? (
               filteredAvailable.map((row) => renderRow(row, "available"))
             ) : (
               <SectionEmpty>
                 {search
-                  ? "No available skills match your search."
+                  ? translateAgentPage("agents:no_available_skills_match_your_search")
                   : libraryEmpty
-                    ? "Import skills into the organization library to enable them here."
-                    : "Every library skill is enabled on this agent."}
+                    ? translateAgentPage("agents:import_skills_into_the_organization_library_to_enable")
+                    : translateAgentPage("agents:every_library_skill_is_enabled_on_this_agent")}
               </SectionEmpty>
             )}
           </SkillSection>
@@ -518,9 +512,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                       detectedOpen ? "" : "-rotate-90",
                     )}
                   />
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Automatic and detected skills (read-only)
-                  </span>
+                  <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:automatic_and_detected_skills_read_only")}</span>
                   <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
@@ -529,15 +521,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                       <AgentSkillRow key={row.key} variant="readonly" data={row} />
                     ))
                   ) : (
-                    <SectionEmpty>No detected skills match your search.</SectionEmpty>
+                    <SectionEmpty>{translateAgentPage("agents:no_detected_skills_match_your_search")}</SectionEmpty>
                   )}
                 </CollapsibleContent>
               </div>
             </Collapsible>
           ) : null}
 
-          <div className="text-xs text-muted-foreground">
-            Adapter: {adapterLabels[agent.adapterType] ?? agent.adapterType}
+          <div className="text-xs text-muted-foreground">{translateAgentPage("agents:adapter")}{" "}{adapterLabels[agent.adapterType] ?? agent.adapterType}
           </div>
         </div>
       )}
@@ -554,35 +545,28 @@ function SaveStatusChip({
   unsaved: boolean;
   error: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   if (pending) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Saving…
-      </span>
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{translateAgentPage("agents:saving")}</span>
     );
   }
   if (error) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-destructive">
-        <AlertCircle className="h-3.5 w-3.5" />
-        Couldn’t save
-      </span>
+        <AlertCircle className="h-3.5 w-3.5" />{translateAgentPage("agents:couldn_t_save")}</span>
     );
   }
   if (unsaved) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Saving soon…
-      </span>
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{translateAgentPage("agents:saving_soon")}</span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-(--status-task-done)">
-      <CheckCircle2 className="h-3.5 w-3.5" />
-      Saved
-    </span>
+      <CheckCircle2 className="h-3.5 w-3.5" />{translateAgentPage("agents:saved")}</span>
   );
 }
 
@@ -611,20 +595,17 @@ function SectionEmpty({ children }: { children: React.ReactNode }) {
 }
 
 function EmptyLibraryCard() {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center">
       <Store className="h-8 w-8 text-muted-foreground/60" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No skills in the organization library</p>
-        <p className="text-xs text-muted-foreground">
-          Install skills to the organization, then enable them on this agent.
-        </p>
+        <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:no_skills_in_the_organization_library")}</p>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:install_skills_to_the_organization_then_enable_them")}</p>
       </div>
       <Button asChild variant="outline" size="sm">
         <Link to="/skills" className="no-underline">
-          <Store className="h-3.5 w-3.5" />
-          Browse skills store
-        </Link>
+          <Store className="h-3.5 w-3.5" />{translateAgentPage("agents:browse_skills_store")}</Link>
       </Button>
     </div>
   );

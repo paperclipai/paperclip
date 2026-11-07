@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
@@ -6,18 +7,18 @@ import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
 
 const items = [
-  { value: "general", label: "General", href: "/company/settings" },
-  { value: "export", label: "Export", href: "/company/export" },
-  { value: "import", label: "Import", href: "/company/import" },
-  { value: "members", label: "Members", href: "/company/settings/members" },
-  { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
-  { value: "instance-profile", label: "Profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
-  { value: "instance-environments", label: "Environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
-  { value: "connections", label: "Connections", href: "/company/settings/connections" },
-  { value: "instance-access", label: "Access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
-  { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
-  { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
-  { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
+  { value: "general", get label() { return t("agent-config:general_9239ee2"); }, href: "/company/settings" },
+  { value: "export", get label() { return t("agent-config:export_f3e4fad"); }, href: "/company/export" },
+  { value: "import", get label() { return t("agent-config:import_d6fbc9d"); }, href: "/company/import" },
+  { value: "members", get label() { return t("agent-config:members_1cb449c"); }, href: "/company/settings/members" },
+  { value: "secrets", get label() { return t("agent-config:secrets_1e3732a"); }, href: "/company/settings/secrets" },
+  { value: "instance-profile", get label() { return t("agent-config:profile_ff4fc02"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
+  { value: "instance-environments", get label() { return t("agent-config:environments_017b53c"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
+  { value: "connections", get label() { return t("agent-config:connections_8f3509b"); }, href: "/company/settings/connections" },
+  { value: "instance-access", get label() { return t("agent-config:access_2f81a22"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
+  { value: "instance-experimental", get label() { return t("agent-config:experimental_b718f8c"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  { value: "instance-plugins", get label() { return t("agent-config:plugins_ab2e26d"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
+  { value: "instance-adapters", get label() { return t("agent-config:adapters_e07a4ac"); }, href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -98,6 +99,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 }
 
 export function CompanySettingsNav() {
+  useTranslation("agent-config");
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();

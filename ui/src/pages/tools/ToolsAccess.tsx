@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect } from "react";
 import { Wrench } from "lucide-react";
 import { Link, Navigate, useParams } from "@/lib/router";
@@ -31,6 +32,7 @@ function renderTab(tab: ToolTabKey, companyId: string) {
 }
 
 export function ToolsAccess() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
@@ -40,20 +42,20 @@ export function ToolsAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: selectedCompany?.name ?? translateAgentPage("agents:company_7a1994"), href: "/dashboard" },
+      { label: translateAgentPage("agents:apps_d9a368"), href: "/apps" },
       ...(advanced
-        ? [{ label: "Advanced setup" }]
+        ? [{ label: translateAgentPage("agents:advanced_setup") }]
         : [
-            { label: "Advanced setup", href: advancedTabHref("paste-config") },
-            { label: tabLabel ?? "Developer tools" },
+            { label: translateAgentPage("agents:advanced_setup"), href: advancedTabHref("paste-config") },
+            { label: tabLabel ?? translateAgentPage("agents:developer_tools") },
           ]),
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel]);
+  }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel, translateAgentPage]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to open advanced setup.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{translateAgentPage("agents:select_an_organization_to_open_advanced_setup")}</div>;
   }
 
   if (params.tab === "run-your-own") {
@@ -86,17 +88,11 @@ export function ToolsAccess() {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-bold text-foreground">Advanced setup</h1>
-            <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-(length:--text-micro) font-bold text-background">
-              Advanced
-            </span>
+            <h1 className="text-xl font-bold text-foreground">{translateAgentPage("agents:advanced_setup")}</h1>
+            <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-(length:--text-micro) font-bold text-background">{translateAgentPage("agents:advanced")}</span>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            For tools that aren't in the gallery. You'll need details from the tool's documentation.
-            Most people never need this — if the app you want is in the gallery,{" "}
-            <Link to="/apps" className="font-medium text-primary hover:underline">
-              connect it there instead
-            </Link>
+          <p className="mt-1 text-sm text-muted-foreground">{translateAgentPage("agents:for_tools_that_aren_t_in_the_gallery")}{" "}
+            <Link to="/apps" className="font-medium text-primary hover:underline">{translateAgentPage("agents:connect_it_there_instead")}</Link>
             .
           </p>
         </header>
@@ -121,11 +117,8 @@ export function ToolsAccess() {
         <div className="min-h-(--sz-300px)">{renderTab(activeTab, selectedCompanyId)}</div>
 
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Wrench className="h-3.5 w-3.5" />
-          Looking for the developer surface?{" "}
-          <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">
-            Open developer tools
-          </Link>
+          <Wrench className="h-3.5 w-3.5" />{translateAgentPage("agents:looking_for_the_developer_surface")}{" "}
+          <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">{translateAgentPage("agents:open_developer_tools")}</Link>
         </p>
       </div>
     );

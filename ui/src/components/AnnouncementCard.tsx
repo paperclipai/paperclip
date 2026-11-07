@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useId, useState, type MouseEvent } from "react";
 import { ArrowUpRight, X } from "lucide-react";
 import type { Announcement, AnnouncementAction } from "@paperclipai/shared";
@@ -16,6 +17,7 @@ export interface AnnouncementCardProps {
 }
 
 function Action({ action, primary, onClick }: { action: AnnouncementAction; primary?: boolean; onClick: () => void }) {
+  useTranslation("task-components");
   const content = <>{action.label}{!primary && action.kind === "external" && <ArrowUpRight className="size-3.5 shrink-0" aria-hidden="true" />}</>;
   const onAuxClick = (event: MouseEvent<HTMLAnchorElement>) => { if (event.button === 1) onClick(); };
   return (
@@ -28,6 +30,7 @@ function Action({ action, primary, onClick }: { action: AnnouncementAction; prim
 }
 
 export function AnnouncementCard({ announcement, onDismiss, imageSrc, animationSrc, className }: AnnouncementCardProps) {
+  useTranslation("task-components");
   const titleId = useId();
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const src = imageSrc ?? `/api/announcements/${encodeURIComponent(announcement.id)}/image`;
@@ -49,7 +52,7 @@ export function AnnouncementCard({ announcement, onDismiss, imageSrc, animationS
           <iframe title={announcement.animation!.alt} aria-hidden="true" tabIndex={-1} sandbox="" referrerPolicy="no-referrer" srcDoc={animationDocument!} className="h-full w-full border-0" />
         </div>}
       </div>}
-      <Button variant="secondary" size="icon" aria-label="Dismiss announcement" onClick={onDismiss} className="absolute right-2 top-2 z-10 size-8 rounded-full shadow-sm">
+      <Button variant="secondary" size="icon" aria-label={t("task-components:dismissAnnouncement_a206fa8e")} onClick={onDismiss} className="absolute right-2 top-2 z-10 size-8 rounded-full shadow-sm">
         <X className="size-4" aria-hidden="true" />
       </Button>
       <div className={cn("flex flex-col gap-1 px-4 py-4", !showImage && !animationDocument && "pr-12")}>

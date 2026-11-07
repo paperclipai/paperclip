@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Prosumer copy for the Apps surface (PAP-10856).
  *
@@ -51,110 +52,110 @@ export interface AppCopy {
  */
 const APP_COPY: Record<string, AppCopy> = {
   zapier: {
-    tagline: "Reach 9,000+ apps your team already uses.",
-    short: "Reach 9,000+ apps from your agents.",
+    get "tagline"() { return t("display:copy_cc64c518fef9"); },
+    get "short"() { return t("display:copy_cf2be4a98927"); },
   },
   github: {
-    tagline: "Read code and pull requests, comment on issues.",
-    short: "Read code and pull requests, comment on issues.",
+    get "tagline"() { return t("display:copy_979a9e719d38"); },
+    get "short"() { return t("display:copy_979a9e719d38"); },
   },
   slack: {
-    tagline: "Send and read messages in your team's channels.",
-    short: "Send and read messages in your channels.",
+    get "tagline"() { return t("display:copy_8758484a12b4"); },
+    get "short"() { return t("display:copy_2b5693410709"); },
   },
   notion: {
-    tagline: "Read and update pages in your workspace.",
-    short: "Read and update pages in your workspace.",
+    get "tagline"() { return t("display:copy_7f333cb1fb57"); },
+    get "short"() { return t("display:copy_7f333cb1fb57"); },
   },
   railway: {
-    tagline: "Inspect services, read logs, and manage deployments.",
-    short: "Connect Railway for deployments, logs, and container access.",
+    get "tagline"() { return t("display:copy_db0542d56287"); },
+    get "short"() { return t("display:copy_f17a79ff312e"); },
   },
   posthog: {
-    tagline: "Explore product usage, errors, flags, and experiments.",
-    short: "Sign in with PostHog. Project pinning and access controls are optional.",
+    get "tagline"() { return t("display:copy_69c922e975ba"); },
+    get "short"() { return t("display:copy_674a020b231f"); },
   },
   ditto: {
-    tagline: "Reuse approved product copy and follow your style guide.",
-    short: "Sign in with Ditto. API keys are optional.",
+    get "tagline"() { return t("display:copy_941b6f8d1a95"); },
+    get "short"() { return t("display:copy_9ffff57931f1"); },
   },
   gauge: {
-    tagline: "Track your brand in AI answers and run content workflows.",
-    short: "Sign in with Gauge and pick an organization. API keys are optional.",
+    get "tagline"() { return t("display:copy_8230d41403ae"); },
+    get "short"() { return t("display:copy_e764817147f2"); },
   },
   neon: {
-    tagline: "Manage Postgres projects, branches, and queries.",
-    short: "Sign in with Neon. Project pinning and read-only mode are optional.",
+    get "tagline"() { return t("display:copy_a319eaa49272"); },
+    get "short"() { return t("display:copy_4bc9e84f7560"); },
   },
   superagent: {
-    tagline: "Review security findings and run red-team checks.",
-    short: "Connect with a Superagent API key. Billable and destructive tools stay under action policies.",
+    get "tagline"() { return t("display:copy_21d98fa1f1e4"); },
+    get "short"() { return t("display:copy_0adf89ee64cd"); },
   },
   linear: {
-    tagline: "Create, update and read tickets.",
-    short: "Create, update and read tickets.",
+    get "tagline"() { return t("display:copy_e559aa135706"); },
+    get "short"() { return t("display:copy_e559aa135706"); },
   },
   "google-sheets": {
-    tagline: "Read and update selected spreadsheets.",
-    short: "Read spreadsheets or update the files you choose.",
+    get "tagline"() { return t("display:copy_b9f5b7b6d660"); },
+    get "short"() { return t("display:copy_d2a7b671287a"); },
   },
   gmail: {
-    tagline: "Read mail and create drafts for your review.",
-    short: "Read mail and create drafts for your review.",
+    get "tagline"() { return t("display:copy_e97d99559666"); },
+    get "short"() { return t("display:copy_e97d99559666"); },
   },
   "google-drive": {
-    tagline: "Find, read, and create files in Drive.",
-    short: "Find, read, and create files in Drive.",
+    get "tagline"() { return t("display:copy_c54dd7004c1e"); },
+    get "short"() { return t("display:copy_c54dd7004c1e"); },
   },
   "google-docs": {
-    tagline: "Read and update documents.",
-    short: "Read and update documents.",
+    get "tagline"() { return t("display:copy_765ce0fe3419"); },
+    get "short"() { return t("display:copy_765ce0fe3419"); },
   },
   "google-slides": {
-    tagline: "Read and update presentations.",
-    short: "Read and update presentations.",
+    get "tagline"() { return t("display:copy_1c1325feba4c"); },
+    get "short"() { return t("display:copy_1c1325feba4c"); },
   },
   "google-calendar": {
-    tagline: "Review calendars and manage events.",
-    short: "Review calendars and manage events.",
+    get "tagline"() { return t("display:copy_9329f556a9dc"); },
+    get "short"() { return t("display:copy_9329f556a9dc"); },
   },
   "google-chat": {
-    tagline: "Read conversations and send messages.",
-    short: "Read conversations and send messages.",
+    get "tagline"() { return t("display:copy_c0e73ff5d407"); },
+    get "short"() { return t("display:copy_c0e73ff5d407"); },
   },
   "google-people": {
-    tagline: "Look up contacts and people in your directory.",
-    short: "Look up contacts and people in your directory.",
+    get "tagline"() { return t("display:copy_574ef8c1d649"); },
+    get "short"() { return t("display:copy_574ef8c1d649"); },
   },
   "google-workspace-search": {
-    tagline: "Search across your Google workspace.",
-    short: "Search across your Google workspace.",
+    get "tagline"() { return t("display:copy_d3a07e2d3d5d"); },
+    get "short"() { return t("display:copy_d3a07e2d3d5d"); },
   },
   hubspot: {
-    tagline: "Look up contacts and update deal stages.",
-    short: "Look up contacts and update deal stages.",
+    get "tagline"() { return t("display:copy_0b0377fd1d59"); },
+    get "short"() { return t("display:copy_0b0377fd1d59"); },
   },
   intercom: {
-    tagline: "Read and reply to customer conversations.",
-    short: "Read and reply to customer conversations.",
+    get "tagline"() { return t("display:copy_85a6866cc3a9"); },
+    get "short"() { return t("display:copy_85a6866cc3a9"); },
   },
   figma: {
-    tagline: "Read files and post comments on frames.",
-    short: "Read files and post comments on frames.",
+    get "tagline"() { return t("display:copy_0815830358de"); },
+    get "short"() { return t("display:copy_0815830358de"); },
   },
   stripe: {
-    tagline: "Read customers, invoices, and payouts.",
-    short: "Read customers, invoices, and payouts.",
+    get "tagline"() { return t("display:copy_d20ef7ebf8f1"); },
+    get "short"() { return t("display:copy_d20ef7ebf8f1"); },
   },
   context7: {
-    tagline: "Look up up-to-date docs for your libraries.",
-    short: "Look up up-to-date docs for your libraries.",
+    get "tagline"() { return t("display:copy_e6f8878f375b"); },
+    get "short"() { return t("display:copy_e6f8878f375b"); },
   },
 };
 
 const GENERIC: AppCopy = {
-  tagline: "Give your agents access to this app.",
-  short: "Give your agents access to this app.",
+  get "tagline"() { return t("display:copy_dd0d69a77bc4"); },
+  get "short"() { return t("display:copy_dd0d69a77bc4"); },
 };
 
 /** Curated, gate-safe copy for a gallery app. */
@@ -180,7 +181,7 @@ export function credentialFieldLabel(
   fieldCount: number,
 ): string {
   if (/^Paste your\b/.test(rawLabel)) return sanitizeProsumerCopy(rawLabel);
-  if (fieldCount <= 1) return `Your ${appName} key`;
+  if (fieldCount <= 1) return t("display:copy_038ce4f71c51", { value0: appName });
   const cleaned = sanitizeProsumerCopy(rawLabel);
-  return cleaned || `Your ${appName} key`;
+  return cleaned || t("display:copy_038ce4f71c51", { value0: appName });
 }

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 
 /**
@@ -148,11 +149,11 @@ export function folderBreadcrumbTrail(
 export function reservedRootLabel(folder: Pick<FolderListItem, "systemKey" | "name">): string {
   switch (folder.systemKey) {
     case "my":
-      return "My Skills";
+      return t("final-components-b:folders.skill-folder-tree.My_Skills_ea424d");
     case "projects":
-      return "Projects";
+      return t("final-components-b:folders.skill-folder-tree.Projects_04e2a9");
     case "bundled":
-      return "Bundled";
+      return t("final-components-b:folders.skill-folder-tree.Bundled_79d3a1");
     default:
       return folder.name;
   }
@@ -167,7 +168,7 @@ export function skillFolderDisplayPath(
   const trail = folderBreadcrumbTrail(model, folderId);
   if (trail.length === 0) return null;
   const labels = trail.map((folder) => reservedRootLabel(folder));
-  if (!trail[0]?.systemKey) labels.unshift("Organization");
+  if (!trail[0]?.systemKey) labels.unshift(t("final-components-b:folders.skill-folder-tree.Organization_d764d4"));
   return labels.join(" / ");
 }
 
@@ -186,10 +187,10 @@ export function skillFolderPathDisplayFallback(folderPath: string | null | undef
 
   const root = segments[0]?.toLowerCase();
   const labels = segments.map(humanizeFolderPathSegment);
-  if (root === "my") labels[0] = "My Skills";
-  else if (root === "projects") labels[0] = "Projects";
-  else if (root === "bundled") labels[0] = "Bundled";
-  else labels.unshift("Organization");
+  if (root === "my") labels[0] = t("final-components-b:folders.skill-folder-tree.My_Skills_ea424d");
+  else if (root === "projects") labels[0] = t("final-components-b:folders.skill-folder-tree.Projects_04e2a9");
+  else if (root === "bundled") labels[0] = t("final-components-b:folders.skill-folder-tree.Bundled_79d3a1");
+  else labels.unshift(t("final-components-b:folders.skill-folder-tree.Organization_d764d4"));
   return labels.join(" / ");
 }
 

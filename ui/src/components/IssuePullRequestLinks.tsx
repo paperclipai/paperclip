@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { pullRequestHref, pullRequestIdentity, pullRequestLabel, pullRequestNeedsReview, pullRequestState } from "@/lib/issue-pull-requests";
@@ -10,6 +11,7 @@ export function IssuePullRequestLinks({ products, externalObjects = [] }: {
   products: IssueWorkProduct[];
   externalObjects?: ExternalObjectPillData[];
 }) {
+  useTranslation("task-components");
   return (
     <ul className="flex min-w-0 flex-col gap-2">
       {products.map((product) => {
@@ -28,7 +30,7 @@ export function IssuePullRequestLinks({ products, externalObjects = [] }: {
                 className="break-words text-sm text-primary underline-offset-2 hover:underline">
                 {label}
               </a>
-            ) : <span className="break-words text-sm">{label} · No PR link provided</span>}
+            ) : <span className="break-words text-sm"><Trans ns="task-components" i18nKey="sentence_367a697438ae" components={{ part1: <>{label}</> }} /></span>}
             {provider ? (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"
                 data-external-status={provider.statusCategory} data-external-liveness={provider.liveness}>
@@ -38,10 +40,10 @@ export function IssuePullRequestLinks({ products, externalObjects = [] }: {
               </span>
             ) : null}
             {pullRequestNeedsReview(product) && !providerTerminal ? (
-              <Badge variant="outline">Review requested</Badge>
+              <Badge variant="outline">{t("task-components:reviewRequested_744f7028")}</Badge>
             ) : ["merged", "closed", "archived", "draft", "changes_requested"].includes(state)
               && providerStatus?.toLowerCase() !== state ? (
-              <span className="text-xs text-muted-foreground">{provider ? "Saved: " : ""}{state.replaceAll("_", " ")}</span>
+              <span className="text-xs text-muted-foreground">{provider ? (t("task-components:saved_b6199040") + " ") : ""}{state.replaceAll("_", " ")}</span>
             ) : null}
           </li>
         );

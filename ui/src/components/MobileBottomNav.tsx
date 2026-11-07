@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useMemo } from "react";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
@@ -41,6 +42,7 @@ interface MobileNavActionItem {
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+  useTranslation("task-components");
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -57,41 +59,41 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   // tracks the live count, so the bar stays evenly divided in every mix.
   const items = useMemo<MobileNavItem[]>(
     () => coordinatorWorkspaceEnabled ? [
-      { type: "link", to: "/chats", label: "Chat", icon: MessageCircle },
-      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
-      { type: "link", to: "/decisions", label: "Inbox", icon: Inbox, badge: attentionCount },
-      { type: "action", label: "New task", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/chats", label: t("task-components:chat_460b3a7d"), icon: MessageCircle },
+      { type: "link", to: "/issues", label: t("task-components:tasks_b3a60e61"), icon: CircleCheck },
+      { type: "link", to: "/decisions", label: t("navigation:labels.inbox"), icon: Inbox, badge: attentionCount },
+      { type: "action", label: t("task-components:newTask_3e992276"), icon: SquarePen, onClick: () => openNewIssue() },
     ] : !agentChatEnabled && !combinedInboxTasksEnabled ? [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
-      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      { type: "link", to: "/dashboard", label: t("task-components:home_3a786953"), icon: House },
+      { type: "link", to: "/issues", label: t("task-components:tasks_b3a60e61"), icon: CircleCheck },
+      { type: "action", get label() { return t("final-components-b:MobileBottomNav.New_Task_718e58"); }, icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/agents/all", label: t("task-components:agents_279b44d2"), icon: Users },
       {
         type: "link",
         to: "/inbox",
-        label: "Inbox",
+        label: t("task-components:inbox_94835ea2"),
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
     ] : [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
+      { type: "link", to: "/dashboard", label: t("task-components:home_3a786953"), icon: House },
       ...(agentChatEnabled
-        ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
+        ? [{ type: "link", to: "/chats", label: t("task-components:chat_460b3a7d"), icon: MessageCircle } as MobileNavItem]
         : []),
-      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "action", get label() { return t("final-components-b:MobileBottomNav.New_Task_718e58"); }, icon: SquarePen, onClick: () => openNewIssue() },
       {
         type: "link",
         to: "/issues",
-        label: "Tasks",
+        label: t("task-components:tasks_b3a60e61"),
         icon: CircleCheck,
         badge: combinedInboxTasksEnabled ? inboxBadge.inbox : undefined,
       },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      { type: "link", to: "/agents/all", label: t("task-components:agents_279b44d2"), icon: Users },
       ...(!combinedInboxTasksEnabled
-        ? [{ type: "link", to: "/inbox", label: "Inbox", icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
+        ? [{ type: "link", to: "/inbox", label: t("task-components:inbox_94835ea2"), icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
         : []),
     ],
-    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount],
+    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount, i18n.language],
   );
 
   return (
@@ -101,7 +103,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
       )}
       data-visible={visible}
       inert={!visible}
-      aria-label="Mobile navigation"
+      aria-label={t("task-components:mobileNavigation_806f228f")}
     >
       <div
         className="grid h-16 px-1"

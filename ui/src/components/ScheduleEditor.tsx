@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -7,13 +8,13 @@ import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
 const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
+  { value: "every_minute", get label() { return t("task-components:everyMinute_3c14fb8a"); } },
+  { value: "every_hour", get label() { return t("task-components:everyHour_a4bac465"); } },
+  { value: "every_day", get label() { return t("task-components:everyDay_c4e42b97"); } },
+  { value: "weekdays", get label() { return t("task-components:weekdays_6f4b602b"); } },
+  { value: "weekly", get label() { return t("task-components:weekly_29751324"); } },
+  { value: "monthly", get label() { return t("task-components:monthly_9b11f6b7"); } },
+  { value: "custom", get label() { return t("task-components:customCron_6dc53fd8"); } },
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
@@ -27,13 +28,13 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => ({
 }));
 
 const DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
+  { value: "1", get label() { return t("task-components:mon_f40d7f51"); } },
+  { value: "2", get label() { return t("task-components:tue_d1eb39b0"); } },
+  { value: "3", get label() { return t("task-components:wed_58339f45"); } },
+  { value: "4", get label() { return t("task-components:thu_7da11212"); } },
+  { value: "5", get label() { return t("task-components:fri_66dab40c"); } },
+  { value: "6", get label() { return t("task-components:sat_fdeb71b5"); } },
+  { value: "0", get label() { return t("task-components:sun_db18f17f"); } },
 ];
 
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
@@ -122,25 +123,25 @@ export function buildCron(preset: SchedulePreset, hour: string, minute: string, 
 function describeSchedule(cron: string): string {
   const { preset, hour, minute, dayOfWeek, dayOfMonth } = parseCronToPreset(cron);
   const hourLabel = HOURS.find((h) => h.value === hour)?.label ?? `${hour}`;
-  const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
+  const timeStr = i18n.resolvedLanguage === "zh-CN" ? `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}` : `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return t("task-components:everyMinute_3c14fb8a");
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return t("final-components-b:Every_hour_at_minute_fca1df", { minute: minute.padStart(2, "0") });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return t("final-components-b:Every_day_at_time_25949e", { time: timeStr });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return t("final-components-b:Weekdays_at_time_67a5b3", { time: timeStr });
     case "weekly": {
       const day = DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      return t("final-components-b:Every_day_at_time_030597", { day, time: timeStr });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return t("final-components-b:Monthly_on_the_day_ordinal_at_time_239d4a", { day: dayOfMonth, ordinalSuffix: i18n.resolvedLanguage === "zh-CN" ? "" : ordinalSuffix(Number(dayOfMonth)), time: timeStr });
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("final-components-b:No_schedule_set_92a6e8");
   }
 }
 
@@ -161,7 +162,7 @@ export function getScheduleCronValidation(cron: string): {
   if (!trimmed) {
     return {
       valid: false,
-      message: "Enter a 5-field cron expression.",
+      message: t("task-components:enterA5FieldCronExpression_317636a7"),
       nextFires: [],
     };
   }
@@ -170,7 +171,7 @@ export function getScheduleCronValidation(cron: string): {
   if (fields.length !== 5) {
     return {
       valid: false,
-      message: `Use exactly 5 fields; this has ${fields.length}.`,
+      message: t("task-components:useExactly5FieldsThisHas_ff57299e", { value1: fields.length }),
       nextFires: [],
     };
   }
@@ -178,7 +179,7 @@ export function getScheduleCronValidation(cron: string): {
   if (!parseCronExpression(trimmed)) {
     return {
       valid: false,
-      message: "Cron fields must use valid numbers, ranges, lists, wildcards, or steps.",
+      message: t("task-components:cronFieldsMustUseValidNumbersRanges_a9b7c68b"),
       nextFires: [],
     };
   }
@@ -186,7 +187,7 @@ export function getScheduleCronValidation(cron: string): {
   const nextFires = nextCronFires(trimmed, 3, { timeZone: "UTC" });
   return {
     valid: true,
-    message: nextFires.length > 0 ? "Valid cron." : "Valid cron, but no upcoming fires were found.",
+    message: nextFires.length > 0 ? t("final-components-b:Valid_cron_5cc676") : t("final-components-b:Valid_cron_but_no_upcoming_fires_were_found_0b9b5c"),
     nextFires,
   };
 }
@@ -200,6 +201,7 @@ export function ScheduleEditor({
   onChange: (cron: string) => void;
   onValidityChange?: (valid: boolean) => void;
 }) {
+  useTranslation("task-components");
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -207,7 +209,7 @@ export function ScheduleEditor({
   const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
-  const customValidation = useMemo(() => getScheduleCronValidation(customCron), [customCron]);
+  const customValidation = useMemo(() => getScheduleCronValidation(customCron), [customCron, i18n.resolvedLanguage]);
 
   useEffect(() => {
     onValidityChange?.(preset !== "custom" || customValidation.valid);
@@ -247,8 +249,8 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
-          <SelectValue placeholder="Choose frequency..." />
+        <SelectTrigger className="w-full" aria-label={t("task-components:scheduleFrequency_feed2d11")}>
+          <SelectValue placeholder={t("task-components:chooseFrequency_55479844")} />
         </SelectTrigger>
         <SelectContent>
           {PRESETS.map((p) => (
@@ -277,20 +279,18 @@ export function ScheduleEditor({
               }
             }}
             placeholder="0 10 * * *"
-            aria-label="Cron expression"
+            aria-label={t("task-components:cronExpression_9e6e7de6")}
             aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />
-          <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
-          </p>
+          <p className="text-xs text-muted-foreground">{t("task-components:fiveFieldsMinuteHourDayOfMonth_7abb912a")}</p>
           <p
             className={customValidation.valid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
             aria-live="polite"
           >
             {customValidation.message}
             {customValidation.valid && customValidation.nextFires.length > 0
-              ? ` Next: ${customValidation.nextFires.map((fire) => fire.toLocaleString()).join(", ")}.`
+              ? t("final-components-b:Next_times_4dfc20", { times: customValidation.nextFires.map((fire) => fire.toLocaleString(i18n.resolvedLanguage)).join(", ") })
               : null}
           </p>
         </div>
@@ -298,7 +298,7 @@ export function ScheduleEditor({
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{t("task-components:at_b1d6b91b")}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -312,7 +312,7 @@ export function ScheduleEditor({
                 <SelectContent>
                   {HOURS.map((h) => (
                     <SelectItem key={h.value} value={h.value}>
-                      {h.label}
+                      {i18n.resolvedLanguage === "zh-CN" ? t("final-components-b:hour_00_478925", { hour: h.value.padStart(2, "0") }) : h.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -341,7 +341,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("task-components:atMinute_5f2ed72d")}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -365,7 +365,7 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{t("task-components:on_b8d31e85")}</span>
               <div className="flex gap-1">
                 {DAYS_OF_WEEK.map((d) => (
                   <Button
@@ -389,7 +389,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("task-components:onDay_ada1fca3")}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

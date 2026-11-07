@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { UserCheck, UserMinus, type LucideIcon } from "lucide-react";
 import { ISSUE_REVIEW_POLICIES, type IssueReviewPolicy } from "@paperclipai/shared";
 
@@ -32,23 +33,23 @@ export interface IssueReviewPolicyBadge {
 const BADGES: Partial<Record<IssueReviewPolicy, IssueReviewPolicyBadge>> = {
   not_creator: {
     value: "not_creator",
-    label: "Anyone else",
-    description: "Anyone except whoever asked for the review can approve it.",
+    get "label"() { return t("display:meta_ae8dafd2acfc"); },
+    get "description"() { return t("display:meta_e1ca21c92def"); },
     Icon: UserMinus,
   },
   human_only: {
     value: "human_only",
-    label: "Human only",
-    description: "Only a person can approve this review. Agents cannot give the verdict.",
+    get "label"() { return t("display:meta_c522706c0bc4"); },
+    get "description"() { return t("display:meta_604b6857631e"); },
     Icon: UserCheck,
   },
 };
 
 /** Mid-sentence wording for activity lines and field-change receipts. */
 const VALUE_LABELS: Record<IssueReviewPolicy, string> = {
-  anyone: "anyone",
-  not_creator: "anyone else",
-  human_only: "human only",
+  get "anyone"() { return t("display:meta_631841a10e22"); },
+  get "not_creator"() { return t("display:meta_ffdae67f2895"); },
+  get "human_only"() { return t("display:meta_aa7fb8edca08"); },
 };
 
 /**

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import type { AnchorHTMLAttributes, ComponentProps, ReactNode } from "react";
+import { act as reactAct, type AnchorHTMLAttributes, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
 let currentSearch = "";
@@ -407,6 +408,42 @@ describe("Routines page", () => {
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("updates composer copy in place and preserves the routine draft across locale switches", async () => {
+    await i18n.changeLanguage("en");
+    routinesListMock.mockResolvedValue([]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await reactAct(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
+        await flush();
+      });
+      await vi.waitFor(() => expect(Array.from(container.querySelectorAll("button")).some(button => button.textContent === "Create routine")).toBe(true));
+      await reactAct(async () => {
+        Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Create routine")!.click();
+        await flush();
+      });
+      const input = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="Routine title"]')!;
+      expect(input).not.toBeNull();
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      await reactAct(async () => {
+        setter.call(input, "User draft — do not translate");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await reactAct(async () => { await i18n.changeLanguage("zh-CN"); await flush(); });
+      expect(document.querySelector('textarea[placeholder="例行任务标题"]')).toBe(input);
+      expect(input.value).toBe("User draft — do not translate");
+      expect(document.body.textContent).toContain("新建例行任务");
+      await reactAct(async () => { await i18n.changeLanguage("en"); await flush(); });
+      expect(document.querySelector('textarea[placeholder="Routine title"]')).toBe(input);
+      expect(input.value).toBe("User draft — do not translate");
+    } finally {
+      await reactAct(() => root.unmount());
+      queryClient.clear();
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("groups routines by project using project names for the section labels", () => {

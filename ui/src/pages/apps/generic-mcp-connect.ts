@@ -1,4 +1,5 @@
-import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
+import { t as translate } from "@/i18n";
+import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage, MCP_REMOTE_HEADER_LIMITS, type McpRemoteHeaderRejection } from "@paperclipai/shared";
 import type { GenericMcpAuthMode } from "@paperclipai/shared";
 
 /**
@@ -101,68 +102,68 @@ export function genericConnectGuidance(
   code: string | null | undefined,
   message: string | null | undefined,
 ): GenericConnectGuidance {
-  const fallback = message?.trim() || "Paperclip couldn't connect to that address. Check it and try again.";
+  const fallback = message?.trim() || translate("connections:paperclip_couldn_t_connect_to_that_address_e2ddaef");
   switch (code) {
     case "mcp_remote_url_missing":
     case "mcp_remote_url_invalid":
       return {
-        title: "That doesn't look like a server address",
-        body: "Paste the full address, starting with https:// — for example https://mcp.example.com/mcp.",
+        title: translate("connections:that_doesn_t_look_like_a_server_bb44722"),
+        body: translate("connections:paste_the_full_address_starting_with_https_a93b04a"),
         focus: "url",
       };
     case "remote_http_private_endpoint":
       return {
-        title: "That address is inside a private network",
-        body: "This Paperclip is reachable from the internet, so it won't call addresses on your local network. Use the server's public address instead.",
+        title: translate("connections:that_address_is_inside_a_private_network_eadb64f"),
+        body: translate("connections:this_paperclip_is_reachable_from_the_internet_6568a16"),
         focus: "url",
       };
     case "remote_http_dns_failed":
       return {
-        title: "We couldn't find that host",
-        body: "The address didn't resolve. Check the spelling, or confirm the server is published on the internet.",
+        title: translate("connections:we_couldn_t_find_that_host_82fd928"),
+        body: translate("connections:the_address_didn_t_resolve_check_the_49e8166"),
         focus: "url",
       };
     case "mcp_header_rejected":
       return {
-        title: "Paperclip can't send that header",
+        title: translate("connections:paperclip_can_t_send_that_header_90644df"),
         body: fallback,
         focus: "credentials",
       };
     case "tool_access_name_conflict":
       return {
-        title: "Paperclip couldn’t name this connection",
-        body: "Try connecting again.",
+        title: translate("connections:paperclip_couldn_t_name_this_connection_075a616"),
+        body: translate("connections:try_connecting_again_5b377ae"),
         focus: "none",
       };
     case "oauth_challenge":
       return {
-        title: "This server wants a credential",
-        body: "It asked us to authenticate but didn't offer a sign-in Paperclip can complete on its own. Add the key or headers its docs list under Advanced authentication.",
+        title: translate("connections:this_server_wants_a_credential_e6ac341"),
+        body: translate("connections:it_asked_us_to_authenticate_but_didn_4095568"),
         focus: "credentials",
       };
     case "oauth_manual_client_required":
     case "oauth_manual_client_rebinding_required":
       return {
-        title: "This server needs sign-in details you create yourself",
-        body: "Register Paperclip in the provider's settings, then add the client ID and secret it gives you under Advanced authentication.",
+        title: translate("connections:this_server_needs_sign_in_details_you_f6653ad"),
+        body: translate("connections:register_paperclip_in_the_provider_s_settings_fe16193"),
         focus: "credentials",
       };
     case "oauth_redirect_origin_unsupported":
     case "oauth_redirect_uri_invalid":
       return {
-        title: "This Paperclip needs a public HTTPS address first",
-        body: "Sign-in sends the operator back to Paperclip, so this instance has to be reachable over HTTPS. Ask your Paperclip admin to configure it.",
+        title: translate("connections:this_paperclip_needs_a_public_https_address_db6c2dd"),
+        body: translate("connections:sign_in_sends_the_operator_back_to_1699da1"),
         focus: "deployment",
       };
     case "runtime_error":
       return {
-        title: "We couldn't reach that server",
-        body: "Nothing answered at that address. Confirm the server is running and the address is right, then try again.",
+        title: translate("connections:we_couldn_t_reach_that_server_577095a"),
+        body: translate("connections:nothing_answered_at_that_address_confirm_the_f9fb6f5"),
         focus: "url",
       };
     default:
       return {
-        title: "Paperclip couldn't connect",
+        title: translate("connections:paperclip_couldn_t_connect_2690bb9"),
         body: fallback,
         focus: "none",
       };
@@ -174,18 +175,23 @@ export function genericConnectGuidance(
  * The API validates these too; checking here means the operator finds out before a
  * round trip rather than after one.
  */
+function localizedHeaderError(headerName: string, reason: McpRemoteHeaderRejection): string {
+  const name = reason === "too_long" || reason === "invalid_characters" ? headerName.slice(0, MCP_REMOTE_HEADER_LIMITS.maxNameLength) : headerName;
+  return translate(`connections:headerValidation.${reason}`, { name, defaultValue: mcpRemoteHeaderRejectionMessage(headerName, reason) });
+}
+
 export function customHeaderError(rows: CustomHeaderRow[]): string | null {
   const seen = new Set<string>();
   for (const row of rows) {
     const name = row.name.trim();
     if (!name && !row.value.trim()) continue;
     const nameCheck = checkMcpRemoteHeaderName(name);
-    if (!nameCheck.ok) return mcpRemoteHeaderRejectionMessage(name, nameCheck.reason!);
+    if (!nameCheck.ok) return localizedHeaderError(name, nameCheck.reason!);
     const valueCheck = checkMcpRemoteHeaderValue(row.value);
-    if (!valueCheck.ok) return mcpRemoteHeaderRejectionMessage(name, valueCheck.reason!);
-    if (!row.value.trim()) return `Add a value for "${name}", or remove the row.`;
+    if (!valueCheck.ok) return localizedHeaderError(name, valueCheck.reason!);
+    if (!row.value.trim()) return translate("connections:add_a_value_for_or_remove_the_ee0921e", { name: name });
     const lower = name.toLowerCase();
-    if (seen.has(lower)) return `"${name}" is listed twice.`;
+    if (seen.has(lower)) return translate("connections:is_listed_twice_4aae50f", { name: name });
     seen.add(lower);
   }
   return null;

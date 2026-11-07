@@ -3,6 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarRecentTasks } from "./SidebarRecentTasks";
@@ -124,6 +125,25 @@ describe("SidebarRecentTasks", () => {
     setter?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
+
+  it("localizes recent task menus without translating user titles", async () => {
+    const task = { id: "issue-1", companyId: "company-1", title: "User title", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1) };
+    recordRecentTask(task, "user-1");
+    mockIssuesApi.get.mockResolvedValue(task);
+    await render();
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain("最近任务");
+      const actions = container.querySelector<HTMLButtonElement>('button[aria-label="User title 的更多操作"]');
+      expect(actions).not.toBeNull();
+      await act(async () => { actions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+      expect(menuItem("重命名")).toBeTruthy();
+      expect(menuItem("暂停/重新启动")).toBeTruthy();
+      expect(container.querySelector('a[href="/issues/issue-1"]')?.textContent).toContain("User title");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("hides the section when there are no recent tasks", async () => {
     await render();

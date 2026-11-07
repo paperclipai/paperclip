@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { useTranslation } from "react-i18next";
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
@@ -24,6 +26,7 @@ function deriveInitials(name: string) {
 }
 
 export function ProfileSettings() {
+  const { t } = useTranslation("settings");
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -40,10 +43,10 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Profile" },
+      { label: t("profileSettings.settings"), href: "/company/settings" },
+      { label: t("profileSettings.profile") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [t, setBreadcrumbs]);
 
   useEffect(() => {
     const session = sessionQuery.data;
@@ -95,7 +98,7 @@ export function ProfileSettings() {
   const uploadAvatarMutation = useAccountBoundMutation({
     mutationFn: async (file: File, { assertCurrentAccount }) => {
       if (!selectedCompanyId) {
-        throw new Error("Select an organization before uploading a profile avatar.");
+        throw new Error(finalPagesT("final-pages:Select_an_organization_before_uploading_a_profile_avatar_d73a44"));
       }
 
       const asset = await assetsApi.uploadImage(
@@ -128,7 +131,7 @@ export function ProfileSettings() {
   });
 
   if (sessionQuery.isLoading || sessionView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{t("profileSettings.loading_profile")}</div>;
   }
 
   if (sessionView.kind === "error") {
@@ -136,7 +139,7 @@ export function ProfileSettings() {
       <QueryErrorState
         size="page"
         error={sessionQuery.error}
-        action="load your profile"
+        action={t("profileSettings.load_your_profile")}
         onRetry={sessionView.retry}
         retrying={sessionView.isFetching}
       />
@@ -144,32 +147,30 @@ export function ProfileSettings() {
   }
 
   if (!sessionQuery.data) {
-    return <div className="text-sm text-destructive">Failed to load profile.</div>;
+    return <div className="text-sm text-destructive">{t("profileSettings.failed_to_load_profile")}</div>;
   }
 
-  const currentName = name.trim() || sessionQuery.data.user.name || "Board";
+  const currentName = name.trim() || sessionQuery.data.user.name || t("profileSettings.board");
   const currentImage = image.trim() || null;
   const initials = deriveInitials(currentName);
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
-    ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
-    : "Select an organization to upload an avatar into Paperclip storage.";
+    ? t("profileSettings.storageHint", { company: selectedCompany.name })
+    : t("profileSettings.select_an_organization_to_upload_an_avatar_into_paperclip");
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="text-lg font-semibold">{t("profileSettings.profile")}</h1>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Control how your account appears in the sidebar and other board surfaces.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("profileSettings.control_how_your_account_appears_in_the_sidebar_and")}</p>
       </div>
 
       {actionError ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError}
+          {t(actionError, { defaultValue: actionError })}
         </div>
       ) : null}
 
@@ -215,7 +216,7 @@ export function ProfileSettings() {
                     disabled={!selectedCompanyId || isSavingProfile}
                   >
                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
-                    {currentImage ? "Change photo" : "Upload photo"}
+                    {currentImage ? t("profileSettings.change_photo") : t("profileSettings.upload_photo")}
                   </Button>
                   {currentImage ? (
                     <Button
@@ -224,9 +225,7 @@ export function ProfileSettings() {
                       onClick={() => removeAvatarMutation.mutate()}
                       disabled={isSavingProfile}
                     >
-                      {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                      Remove
-                    </Button>
+                      {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}{t("profileSettings.remove")}</Button>
                   ) : null}
                 </div>
               </div>
@@ -234,10 +233,9 @@ export function ProfileSettings() {
               <div className="min-w-0 flex-1 space-y-2 pb-1">
                 <div>
                   <h2 className="truncate text-2xl font-semibold text-foreground">{currentName}</h2>
-                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
+                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? t("profileSettings.no_email")}</p>
                 </div>
-                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Click the avatar to upload a new image. {uploadHint}
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{t("profileSettings.click_the_avatar_to_upload_a_new_image")} {uploadHint}
                 </p>
               </div>
             </div>
@@ -252,36 +250,32 @@ export function ProfileSettings() {
           }}
         >
           <div className="space-y-2">
-            <Label htmlFor="profile-name">Display name</Label>
+            <Label htmlFor="profile-name">{t("profileSettings.display_name")}</Label>
             <Input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder="Board"
+              placeholder={t("profileSettings.board")}
             />
-            <p className="text-xs text-muted-foreground">
-              Shown in the sidebar account footer and comment author surfaces.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("profileSettings.shown_in_the_sidebar_account_footer_and_comment_author")}</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="profile-email">Email</Label>
+            <Label htmlFor="profile-email">{t("profileSettings.email")}</Label>
             <Input
               id="profile-email"
               value={sessionQuery.data.user.email ?? ""}
               readOnly
               disabled
             />
-            <p className="text-xs text-muted-foreground">
-              Email is managed by your auth session and is read-only here.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("profileSettings.email_is_managed_by_your_auth_session_and_is")}</p>
           </div>
 
           <div className="md:col-span-2 flex justify-end">
             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {updateMutation.isPending ? "Saving..." : "Save profile"}
+              {updateMutation.isPending ? t("profileSettings.saving") : t("profileSettings.save_profile")}
             </Button>
           </div>
         </form>

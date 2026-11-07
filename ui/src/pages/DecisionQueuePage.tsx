@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Settings2, X } from "lucide-react";
@@ -61,6 +62,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
  * is surfaced.
  */
 export function DecisionQueuePage() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -85,7 +87,7 @@ export function DecisionQueuePage() {
 
   const activityBounds = useMemo(
     () => resolveAttentionDateRange(dateRange, Date.now(), customRange),
-    [dateRange, customRange],
+    [dateRange, customRange, t],
   );
 
   const { data: queues } = useQuery({
@@ -93,7 +95,7 @@ export function DecisionQueuePage() {
     queryFn: () => decisionQueuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const queue = useMemo(() => queues?.find((q) => q.key === queueKey) ?? null, [queues, queueKey]);
+  const queue = useMemo(() => queues?.find((q) => q.key === queueKey) ?? null, [queues, queueKey, t]);
 
   const feedQuery = useQuery({
     queryKey: [
@@ -125,11 +127,11 @@ export function DecisionQueuePage() {
     const map = new Map<string, Agent>();
     for (const agent of agents ?? []) map.set(agent.id, agent);
     return map;
-  }, [agents]);
+  }, [agents, t]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: queue?.title ?? queueKey }]);
-  }, [setBreadcrumbs, queue?.title, queueKey]);
+    setBreadcrumbs([{ label: t("work:copy.decisions_cfa6a0"), href: "/decisions" }, { label: queue?.title ?? queueKey }]);
+  }, [setBreadcrumbs, queue?.title, queueKey, t]);
 
   // Re-hydrate per-company preferences when the company changes.
   useEffect(() => {
@@ -141,20 +143,20 @@ export function DecisionQueuePage() {
   // the aging idle labels so they match the desk exactly.
   const now = useMemo(
     () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
-    [feed?.generatedAt],
+    [feed?.generatedAt, t],
   );
 
   const activeItems = useMemo(
     () => (feed?.items ?? []).filter((item) => !(item.dismissal?.isActive ?? false)),
-    [feed],
+    [feed, t],
   );
 
   // Aging shelf (§4.4): items the server flags as idle past retention leave the
   // live list for their own curtain, mirroring the desk.
-  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const listItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
+  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems, t]);
+  const listItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems, t]);
 
-  const filterOptions = useMemo(() => buildAttentionFilterOptions(listItems), [listItems]);
+  const filterOptions = useMemo(() => buildAttentionFilterOptions(listItems), [listItems, t]);
 
   // Filter → sort → group, matching the desk. In the default (ungrouped) view the
   // list groups by arrival ("New today" / "Earlier", plus a "Decide now" shelf
@@ -167,9 +169,9 @@ export function DecisionQueuePage() {
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [listItems, filters, searchQuery, sortOrder, groupBy, now]);
+  }, [listItems, filters, searchQuery, sortOrder, groupBy, now, t]);
 
-  const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
+  const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups, t]);
 
   const updateGroupBy = (next: AttentionGroupBy) => {
     setGroupBy(next);
@@ -195,7 +197,7 @@ export function DecisionQueuePage() {
 
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setExpandedId((prev) => (prev === item.id ? null : item.id));
-  }, []);
+  }, [t]);
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) });
@@ -207,14 +209,14 @@ export function DecisionQueuePage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) }),
     onError: (err) =>
       pushToast({
-        title: "Could not update seeding",
+        title: t("work:copy.couldNotUpdateSeeding_24e5e1"),
         body: describeError(err).body,
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("work:copy.selectAnOrganizationFirst_0d7c81")}</p>;
   }
   // Keep a loaded queue on screen through a failed refetch; only a real
   // failure, or an outage before the first load, replaces the page.
@@ -226,7 +228,7 @@ export function DecisionQueuePage() {
       <QueryErrorState
         size="page"
         error={feedView.error}
-        action="load this queue"
+        action={t("work:copy.loadThisQueue_ba1ce9")}
         onRetry={feedView.retry}
         retrying={feedView.isFetching}
       />
@@ -279,17 +281,15 @@ export function DecisionQueuePage() {
 
       {isEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
-          <p className="text-sm font-medium text-foreground">This queue is empty.</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Decisions land here when they match the queue's rules or an agent adds them.
-          </p>
+          <p className="text-sm font-medium text-foreground">{t("work:copy.thisQueueIsEmpty_1c3c77")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("work:copy.decisionsLandHereWhenTheyMatchTheQueueS_b06534")}</p>
         </div>
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
             <div className="rounded-xl border border-dashed border-border py-10 text-center">
-              <p className="text-sm font-medium text-foreground">No decisions match your search or filters.</p>
-              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
+              <p className="text-sm font-medium text-foreground">{t("work:copy.noDecisionsMatchYourSearchOrFilters_3fc01f")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("work:copy.adjustOrClearYourSearchAndFiltersToSee_5040e9")}</p>
             </div>
           ) : (
             groups.map((group) => {
@@ -335,14 +335,12 @@ export function DecisionQueuePage() {
 
           {agingItems.length > 0 && (
             <Curtain
-              label="Aging"
+              label={t("work:copy.aging_90dd09")}
               count={agingItems.length}
               open={agingOpen}
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
-              <p className="text-xs text-muted-foreground">
-                Idle past {ATTENTION_AGING_DAYS} days — kept off the queue. Keep any you still want surfaced.
-              </p>
+              <p className="text-xs text-muted-foreground">{t("work:messages.agingQueue", { days: ATTENTION_AGING_DAYS })}</p>
               {agingItems.map((item) => (
                 <AgingItemRow
                   key={item.id}
@@ -383,17 +381,18 @@ function SeedRulesCard({
   pending: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation("work");
   return (
     <div className="rounded-xl border border-border bg-muted/20 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
           <Settings2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 space-y-1">
-            <p className="text-sm font-medium text-foreground">Auto-seeding is {enabled ? "on" : "off"}</p>
+            <p className="text-sm font-medium text-foreground">{t(enabled ? "work:messages.seedingOn" : "work:messages.seedingOff")}</p>
             <p className="text-xs text-muted-foreground">
               {enabled
-                ? "This queue fills itself automatically. Decisions are added the moment they match any of its rules:"
-                : "Automatic adds are paused. These rules would add decisions to the queue when on:"}
+                ? t("work:copy.thisQueueFillsItselfAutomaticallyDecisionsAreAddedThe_da434a")
+                : t("work:copy.automaticAddsArePausedTheseRulesWouldAddDecisions_e92e24")}
             </p>
             <ul className="mt-0.5 space-y-0.5">
               {rules.map((rule) => (
@@ -405,14 +404,14 @@ function SeedRulesCard({
             </ul>
             <p className="text-(length:--text-nano) text-muted-foreground">
               {enabled
-                ? "Turning it off stops new automatic adds only — decisions already here stay, and you can still add or remove decisions by hand."
-                : "Adding or removing decisions by hand still works while automatic seeding is off."}
+                ? t("work:copy.turningItOffStopsNewAutomaticAddsOnlyDecisions_661f61")
+                : t("work:copy.addingOrRemovingDecisionsByHandStillWorksWhile_ba43f0")}
             </p>
           </div>
         </div>
         <Button type="button" variant="outline" size="xs" className="h-7 shrink-0" disabled={pending} onClick={onToggle}>
           {pending && <Loader2 className="h-3 w-3 animate-spin" />}
-          {enabled ? "Disable" : "Enable"}
+          {enabled ? t("work:copy.disable_b7e3e4") : t("work:copy.enable_5342e0")}
         </Button>
       </div>
     </div>
@@ -444,6 +443,7 @@ function QueueItemRow({
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
   onExcluded: () => void;
 }) {
+  const { t } = useTranslation("work");
   const { pushToast } = useToastActions();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -460,12 +460,12 @@ function QueueItemRow({
     onSuccess: () => {
       setOpen(false);
       setReason("");
-      pushToast({ title: "Removed from queue", body: item.subject.title ?? undefined, tone: "info" });
+      pushToast({ title: t("work:copy.removedFromQueue_6a332f"), body: item.subject.title ?? undefined, tone: "info" });
       onExcluded();
     },
     onError: (err) =>
       pushToast({
-        title: "Could not exclude",
+        title: t("work:copy.couldNotExclude_ce5519"),
         body: describeError(err).body,
         tone: "error",
       }),
@@ -477,22 +477,18 @@ function QueueItemRow({
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <Button type="button" variant="ghost" size="xs" className="h-7 gap-1 text-muted-foreground">
-              <X className="h-3.5 w-3.5" />
-              Exclude
-            </Button>
+              <X className="h-3.5 w-3.5" />{t("work:copy.exclude_5b76f6")}</Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-64 space-y-2 p-3">
-            <p className="text-xs font-medium text-foreground">Remove from this queue</p>
+            <p className="text-xs font-medium text-foreground">{t("work:copy.removeFromThisQueue_e8cd13")}</p>
             <textarea
               value={reason}
               onChange={(event) => setReason(event.target.value)}
-              placeholder="Reason (optional)…"
+              placeholder={t("work:copy.reasonOptional_395a19")}
               className="min-h-16 w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
             />
             <div className="flex justify-end gap-1">
-              <Button type="button" variant="ghost" size="xs" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
+              <Button type="button" variant="ghost" size="xs" onClick={() => setOpen(false)}>{t("work:copy.cancel_19766e")}</Button>
               <Button
                 type="button"
                 size="xs"
@@ -500,9 +496,7 @@ function QueueItemRow({
                 disabled={exclude.isPending}
                 onClick={() => exclude.mutate()}
               >
-                {exclude.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                Exclude
-              </Button>
+                {exclude.isPending && <Loader2 className="h-3 w-3 animate-spin" />}{t("work:copy.exclude_5b76f6")}</Button>
             </div>
           </PopoverContent>
         </Popover>

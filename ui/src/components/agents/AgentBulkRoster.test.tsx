@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { AgentBulkRoster } from "./AgentBulkRoster";
 
 const api = vi.hoisted(() => ({ get: vi.fn() }));
@@ -56,6 +57,20 @@ describe("pending agent roster display", () => {
   }
 
   const editButton = () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Bulk actions"] button')].find(b => b.textContent?.includes("Edit connection & model"))!;
+
+  it("keeps the selected-row styling token across a locale round trip", async () => {
+    renderEditable();
+    const row = container.querySelector("tbody tr")!;
+    try {
+      for (const locale of ["en", "zh-CN", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.querySelector("tbody tr")).toBe(row);
+        expect(row.getAttribute("data-state")).toBe("selected");
+        expect(row.querySelector('[role="checkbox"]')?.getAttribute("aria-checked")).toBe("true");
+        expect(row.className).toContain("data-[state=selected]:bg-accent/30");
+      }
+    } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+  });
 
   it("loads complete current agents before opening bulk edits from a restored roster", async () => {
     const display = renderEditable();

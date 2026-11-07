@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -388,6 +389,7 @@ const FieldWrapper = React.memo(({
   disabled,
   children,
 }: FieldWrapperProps) => {
+  useTranslation("task-components");
   return (
     <div className={cn("space-y-2", disabled && "opacity-60")}>
       <div className="flex items-center justify-between">
@@ -446,7 +448,7 @@ const BooleanField = React.memo(({
   isRequired?: boolean;
   description?: string;
   error?: string;
-}) => (
+}) => { useTranslation("task-components"); return ((
   <div className="flex items-start space-x-3 space-y-0">
     <Checkbox
       id={id}
@@ -472,7 +474,7 @@ const BooleanField = React.memo(({
       )}
     </div>
   </div>
-));
+)); });
 
 BooleanField.displayName = "BooleanField";
 
@@ -515,6 +517,7 @@ const EnumField = React.memo(({
   error?: string;
   options: unknown[];
 }) => {
+  useTranslation("task-components");
   // Optional enums get a leading blank row so the user can express "not
   // configured"; it is also the selected row when no value is set.
   const showUnsetOption = !isRequired;
@@ -553,12 +556,12 @@ const EnumField = React.memo(({
         disabled={disabled}
       >
         <SelectTrigger className="w-full" aria-label={label} aria-required={isRequired}>
-          <SelectValue placeholder="Select an option" />
+          <SelectValue placeholder={t("task-components:selectAnOption_fb1cbc38")} />
         </SelectTrigger>
         <SelectContent>
           {showUnsetOption && (
-            <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
-              <span className="text-muted-foreground">None</span>
+            <SelectItem value={ENUM_UNSET_VALUE} textValue={t("final-components-b:JsonSchemaForm.None_dc937b")}>
+              <span className="text-muted-foreground">{t("task-components:none_dc937b59")}</span>
             </SelectItem>
           )}
           {options.map((option) => (
@@ -601,6 +604,7 @@ const SecretField = React.memo(({
   defaultValue?: unknown;
   maxLength?: number;
 }) => {
+  useTranslation("task-components");
   const [isVisible, setIsVisible] = useState(false);
   const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
 
@@ -691,7 +695,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("task-components:hideSecret_3e674e08") : t("task-components:showSecret_c18cc133")}
         </span>
       </Button>
     </div>
@@ -722,7 +726,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("task-components:hideSecret_3e674e08") : t("task-components:showSecret_c18cc133")}
         </span>
       </Button>
     </div>
@@ -733,7 +737,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "Pick an existing organization secret, or paste a raw value (Paperclip will store it as a secret on save)."
+        t("task-components:pickAnExistingOrganizationSecretOrPaste_2f7b8c63")
       }
       required={isRequired}
       error={error}
@@ -744,9 +748,9 @@ const SecretField = React.memo(({
           value={bindingValue}
           onChange={handlePickerChange}
           label=""
-          placeholder="Select an existing secret"
+          placeholder={t("task-components:selectAnExistingSecret_485e4866")}
           allowVersionSelector={false}
-          emptyHint="No active secrets yet. Create one or paste a raw value below."
+          emptyHint={t("final-components-b:JsonSchemaForm.No_active_secrets_yet_Create_one_or_paste_a_raw_value_below_196de5")}
           disabled={disabled}
         />
         {!isBoundToSecret ? (
@@ -762,9 +766,7 @@ const SecretField = React.memo(({
                     setIsVisible(false);
                   }}
                   disabled={disabled}
-                >
-                  Hide raw value input
-                </button>
+                >{t("task-components:hideRawValueInput_7886a2cd")}</button>
               ) : null}
             </div>
           ) : (
@@ -773,9 +775,7 @@ const SecretField = React.memo(({
               className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
-            >
-              Or paste a raw value
-            </button>
+            >{t("task-components:orPasteARawValue_e04884c8")}</button>
           )
         ) : null}
       </div>
@@ -817,6 +817,7 @@ const NumberField = React.memo(({
   maximum?: number;
   suggestions?: unknown[];
 }) => {
+  useTranslation("task-components");
   const hasSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
   // Sanitize the path-based id so it is a valid CSS/HTML identifier (paths can contain "/").
   const listId = hasSuggestions ? `${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-suggestions` : undefined;
@@ -885,6 +886,7 @@ const StringField = React.memo(({
   format?: string;
   maxLength?: number;
 }) => {
+  useTranslation("task-components");
   const isTextArea = format === "textarea" || (maxLength && maxLength > TEXTAREA_THRESHOLD);
   return (
     <FieldWrapper
@@ -945,6 +947,7 @@ const ArrayField = React.memo(({
   errors: Record<string, string>;
   path: string;
 }) => {
+  useTranslation("task-components");
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
@@ -975,7 +978,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? "Add item" : "Add"}
+          {isComplex ? t("task-components:addItem_d1a0b329") : t("task-components:add_9fd728c6")}
         </Button>
       </div>
 
@@ -986,9 +989,7 @@ const ArrayField = React.memo(({
             className="group relative flex items-start space-x-2 rounded-lg border p-3"
           >
             <div className="flex-1">
-              <div className="mb-2 text-xs font-medium text-muted-foreground">
-                Item {index + 1}
-              </div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.JsonSchemaForm.039412d57171_57e05" values={{ count: index + 1 }} /></div>
               <FormField
                 propSchema={itemSchema}
                 value={item}
@@ -1020,14 +1021,12 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{t("task-components:removeItem_5a89edf2")}</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
-          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
-          </div>
+          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">{t("task-components:noItemsAddedYet_48dcdce6")}</div>
         )}
       </div>
       {error && (
@@ -1043,6 +1042,7 @@ ArrayField.displayName = "ArrayField";
 function JsonObjectField({ value, onChange, disabled, label, error }: {
   value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string;
 }) {
+  useTranslation("task-components");
   const format = (next: unknown) => typeof next === "string" ? next : JSON.stringify(next ?? {}, null, 2);
   const [text, setText] = useState(() => format(value));
   const emitted = useRef(value);
@@ -1061,8 +1061,8 @@ function JsonObjectField({ value, onChange, disabled, label, error }: {
     onChange(next);
   };
   return <div className="space-y-2">
-    <Textarea aria-label={`${label} JSON`} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
-    <p className="text-xs text-muted-foreground">Enter a JSON object using the action's argument names.</p>
+    <Textarea aria-label={t("final-components-b:label_JSON_998580", { label })} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
+    <p className="text-xs text-muted-foreground">{t("task-components:enterAJsonObjectUsingTheAction_ab7f07a9")}</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
   </div>;
 }
@@ -1087,6 +1087,7 @@ const ObjectField = React.memo(({
   errors: Record<string, string>;
   path: string;
 }) => {
+  useTranslation("task-components");
   const [isCollapsed, setIsCollapsed] = useState(false);
   const handleObjectChange = (newVal: Record<string, unknown>) => {
     onChange(newVal);
@@ -1153,6 +1154,7 @@ const FormField = React.memo(({
   errors,
   path,
 }: FormFieldProps) => {
+  useTranslation("task-components");
   const type = resolveType(propSchema);
   const isReadOnly = disabled || propSchema.readOnly === true;
 
@@ -1283,8 +1285,9 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
-  advancedLabel = "Advanced options",
+  advancedLabel = t("final-components-b:JsonSchemaForm.Advanced_options_9443ff"),
 }: JsonSchemaFormProps) {
+  useTranslation("task-components");
   const type = resolveType(schema);
 
   const handleRootScalarChange = useCallback((newVal: unknown) => {
@@ -1388,9 +1391,7 @@ export function JsonSchemaForm({
           "py-4 text-center text-sm text-muted-foreground",
           className,
         )}
-      >
-        No configuration options available.
-      </div>
+      >{t("task-components:noConfigurationOptionsAvailable_7027931a")}</div>
     );
   }
 

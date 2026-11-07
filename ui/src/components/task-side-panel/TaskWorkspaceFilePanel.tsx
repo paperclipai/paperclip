@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { isCsvFile } from "@/lib/csv-preview";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -23,6 +24,7 @@ export function TaskWorkspaceFilePanel({
   payload: WorkspaceFilePayload;
   onFallbackToProject?: () => void;
 }) {
+  useTranslation("task-components");
   const [previewMode, setPreviewMode] = useState<"raw" | "rendered">("rendered");
   useEffect(() => setPreviewMode("rendered"), [payload.path, payload.workspace, payload.workspaceId, payload.projectId]);
   const [copied, setCopied] = useState(false);
@@ -65,8 +67,8 @@ export function TaskWorkspaceFilePanel({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Copy file contents"
-              title={copied ? "Copied" : "Copy file contents"}
+              aria-label={t("task-components:copyFileContents_b3278e5f")}
+              title={copied ? t("task-components:copied_8d525e5f") : t("task-components:copyFileContents_b3278e5f")}
               onClick={() => {
                 void copyTextToClipboard(contentQuery.data!.content.data).then(() => {
                   setCopied(true);
@@ -77,10 +79,10 @@ export function TaskWorkspaceFilePanel({
               {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
             </Button>
           ) : null}
-          {renderedPreview && contentQuery.data ? <FilePreviewModeToggle mode={previewMode} onChange={setPreviewMode} label="File preview mode" /> : null}
+          {renderedPreview && contentQuery.data ? <FilePreviewModeToggle mode={previewMode} onChange={setPreviewMode} label={t("task-components:filePreviewMode_ba7ca354")} /> : null}
           {downloadUrl ? (
             <Button asChild variant="ghost" size="icon-sm">
-              <a href={downloadUrl} download={resource?.title} aria-label="Download file" title="Download file">
+              <a href={downloadUrl} download={resource?.title} aria-label={t("task-components:downloadFile_9de4149f")} title={t("task-components:downloadFile_9de4149f")}>
                 <Download aria-hidden />
               </a>
             </Button>

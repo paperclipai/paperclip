@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateShell, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import { ISSUE_WRITE_DENIAL_CODES } from "@paperclipai/shared";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -30,6 +32,7 @@ function LabSection({
   children: ReactNode;
   columns?: 1 | 2;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <section className="rounded-2xl border border-border/70 bg-background/85 p-5 shadow-sm">
       <div className="mb-4">
@@ -45,6 +48,7 @@ function LabSection({
 }
 
 function Frame({ label, children }: { label: string; children: ReactNode }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="space-y-2">
       <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -65,6 +69,7 @@ function AgentCommentBubble({
   onBehalfOf?: string | null;
   body: string;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="flex flex-col items-start py-1.5">
       <div className="mb-1 flex items-center gap-1.5 px-1">
@@ -97,12 +102,13 @@ function ActivityRow({
   verb: string;
   children?: ReactNode;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
       <div className="flex items-center gap-1.5">
         <Identity name={actorName} size="sm" />
         <span>{verb}</span>
-        <span className="ml-auto shrink-0">2m ago</span>
+        <span className="ml-auto shrink-0">{translateShell("shell:2m_ago")}</span>
       </div>
       {children}
     </div>
@@ -115,6 +121,7 @@ const AGENT_NAMES = new Map([
 ]);
 
 export function CrossIssueCollaborationUxLab() {
+  const { t: translateShell } = useTranslation("shell");
   const resolveAgentLabel = (id: string) => AGENT_NAMES.get(id) ?? null;
   const resolveUserLabel = (id: string) => (id === "user-dotta" ? "Dotta" : null);
 
@@ -122,60 +129,52 @@ export function CrossIssueCollaborationUxLab() {
     <div className="min-h-screen bg-muted/20 p-6">
       <div className="mx-auto max-w-5xl space-y-6">
         <header>
-          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Open cross-task collaboration
-          </div>
-          <h1 className="mt-1 text-xl font-semibold text-foreground">
-            Open cross-task collaboration — attribution, audit, and denial copy
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Agents may now write to any task they can read. These are the three surfaces that keep
-            that legible: whose authority a comment rode, what an edit changed, and — when a write
-            is refused — which boundary fired and what to do instead.
-          </p>
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">{translateShell("shell:open_cross_task_collaboration")}</div>
+          <h1 className="mt-1 text-xl font-semibold text-foreground">{translateShell("shell:open_cross_task_collaboration_attribution_audit_and")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{translateShell("shell:agents_may_now_write_to_any_task")}</p>
         </header>
 
         <LabSection
-          index="1 · Attribution chip (plan §3a)"
-          title="“Fable · for Dotta” on a cross-task agent comment"
-          description="An agent commenting on a task it is not assigned to names the responsible user whose authority it rode. The assignee's own comments stay unchipped — that is the ordinary case, and chipping every bubble would be noise."
+          index={translateShell("shell:extra_11_1_attribution_chip_plan_3a_")}
+          title={translateShell("shell:fable_for_dotta_on_a_cross_task")}
+          description={translateShell("shell:an_agent_commenting_on_a_task_it")}
         >
-          <Frame label="Assignee's own comment — no chip">
+          <Frame label={translateShell("shell:assignee_s_own_comment_no_chip")}>
             <AgentCommentBubble
               authorName="CodexCoder"
               body="Rebased onto master and re-ran the containment suite; all green."
             />
           </Frame>
-          <Frame label="Cross-task comment — chipped">
+          <Frame label={translateShell("shell:cross_task_comment_chipped")}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Dotta"
               body="Dotta asked me to flag that the retry window here overlaps TASK-482. Worth a look before you close this."
             />
           </Frame>
-          <Frame label="Responsible user not in the loaded directory">
+          <Frame label={translateShell("shell:responsible_user_not_in_the_loaded_directory")}>
             <AgentCommentBubble
               authorName="Fable"
-              onBehalfOf="the responsible user"
-              body="Falls back to a generic label rather than printing a raw user id."
+              onBehalfOf={finalPagesT("final-pages:the_responsible_user_bed14d")}
+              body={finalPagesT("final-pages:Falls_back_to_a_generic_label_rather_than_printing_a_raw_user_id_c74ad2")}
             />
           </Frame>
-          <Frame label="Long user name truncates in the chip">
+          <Frame label={translateShell("shell:long_user_name_truncates_in_the_chip")}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Alexandra Konstantinopoulos-Whitfield"
-              body="The chip caps its width and truncates; the tooltip carries the full name."
+              body={finalPagesT("final-pages:The_chip_caps_its_width_and_truncates_the_tooltip_carries_the_ful_83b2dc")}
             />
           </Frame>
         </LabSection>
 
         <LabSection
-          index="2 · Field-edit audit receipt (plan §3b)"
-          title="Every PATCH says who changed what, and under which authorization"
-          description="Required for agent and board edits alike. Before/after per field, the responsible user behind the write, and the authorization reason that let it through."
+          index={translateShell("shell:extra_10_2_field_edit_audit_receipt_plan_3b_")}
+          title={translateShell("shell:every_patch_says_who_changed_what_and")}
+          description={translateShell("shell:required_for_agent_and_board_edits_alike")}
         >
-          <Frame label="Cross-task agent edit">
-            <ActivityRow actorName="Fable" verb="changed the status from todo to in progress">
+          <Frame label={translateShell("shell:cross_task_agent_edit")}>
+            <ActivityRow actorName="Fable" verb={finalPagesT("final-pages:changed_the_status_from_todo_to_in_progress_0fa623")}>
               <IssueFieldChangeReceipt
                 event={{
                   action: "issue.updated",
@@ -193,8 +192,8 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Board (human) edit — audited the same way">
-            <ActivityRow actorName="Dotta" verb="updated the issue">
+          <Frame label={translateShell("shell:board_human_edit_audited_the_same_way")}>
+            <ActivityRow actorName="Dotta" verb={finalPagesT("final-pages:updated_the_issue_ad4620")}>
               <IssueFieldChangeReceipt
                 event={{
                   action: "issue.updated",
@@ -215,8 +214,8 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Reassignment, blockers, and work mode in one write">
-            <ActivityRow actorName="CTO" verb="updated the issue">
+          <Frame label={translateShell("shell:reassignment_blockers_and_work_mode_in_one")}>
+            <ActivityRow actorName="CTO" verb={finalPagesT("final-pages:updated_the_issue_ad4620")}>
               <IssueFieldChangeReceipt
                 event={{
                   action: "issue.updated",
@@ -238,30 +237,27 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Older activity row — no receipt, renders unchanged">
-            <ActivityRow actorName="CodexCoder" verb="checked out the issue" />
+          <Frame label={translateShell("shell:older_activity_row_no_receipt_renders_unchanged")}>
+            <ActivityRow actorName="CodexCoder" verb={finalPagesT("final-pages:checked_out_the_issue_6716c0")} />
           </Frame>
         </LabSection>
 
         <LabSection
-          index="3 · Actionable denial copy (plan §6)"
-          title="Every wall names the boundary, who can act, and the sanctioned path"
-          description="A real incident burned a full detour discovering a workaround behind an opaque 403. These are all the ways an issue write can now be refused — the same copy the API error body carries."
+          index={translateShell("shell:extra_9_3_actionable_denial_copy_plan_6_")}
+          title={translateShell("shell:every_wall_names_the_boundary_who_can")}
+          description={translateShell("shell:a_real_incident_burned_a_full_detour")}
           columns={1}
         >
-          <Frame label="Before — what the incident actually saw">
+          <Frame label={translateShell("shell:before_what_the_incident_actually_saw")}>
             <div className="text-xs">
               <span className="text-red-600 dark:text-red-400">
                 403 Forbidden: Issue is outside this actor&apos;s authorization boundary
               </span>
-              <p className="mt-1 text-muted-foreground">
-                No boundary named, nobody named, no path forward. The workaround (create a child
-                issue) had to be discovered by trial and error.
-              </p>
+              <p className="mt-1 text-muted-foreground">{translateShell("shell:no_boundary_named_nobody_named_no_path")}</p>
             </div>
           </Frame>
           {ISSUE_WRITE_DENIAL_CODES.map((code) => (
-            <Frame key={code} label={`After — ${code}`}>
+            <Frame key={code} label={translateShell("shell:after", { value1: code })}>
               <IssueWriteDenialNotice
                 code={code}
                 context={{

@@ -1,3 +1,4 @@
+import { useTranslation, t, i18n } from "@/i18n";
 /**
  * Work Timeline page (PAP-12424 / Phase C of PAP-12405).
  *
@@ -80,11 +81,11 @@ export async function loadTimelineWindow(
 
     if (!page.pagination.hasMore) break;
     const nextOffset = page.pagination.offset + page.pagination.limit;
-    if (nextOffset <= offset) throw new Error("Timeline pagination did not advance");
+    if (nextOffset <= offset) throw new Error(t("work:copy.timelinePaginationDidNotAdvance_b10b95"));
     offset = nextOffset;
   }
 
-  if (!firstPage) throw new Error("Timeline response was empty");
+  if (!firstPage) throw new Error(t("work:copy.timelineResponseWasEmpty_224138"));
   return {
     actors: Array.from(actors.values()),
     spans: Array.from(spans.values()),
@@ -130,17 +131,17 @@ function rangeWindow(range: DateRangeState): Pick<WorkTimelineParams, "from" | "
 }
 
 function rangeError(range: DateRangeState): string | null {
-  if (!range.fromDate || !range.toDate) return "Choose a start and end date.";
-  if (!rangeWindow(range)) return "Start date must be before end date.";
+  if (!range.fromDate || !range.toDate) return t("work:copy.chooseAStartAndEndDate_f288de");
+  if (!rangeWindow(range)) return t("work:copy.startDateMustBeBeforeEndDate_cf85d5");
   return null;
 }
 
 function formatInteger(value: number): string {
-  return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat(i18n.resolvedLanguage).format(value);
 }
 
 function formatCompactInteger(value: number): string {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat(i18n.resolvedLanguage, {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
@@ -220,6 +221,7 @@ function Segmented<T extends string>({
   options: { value: T; label: string }[];
   onChange: (v: T) => void;
 }) {
+  const { t } = useTranslation("work");
   return (
     <div className="inline-flex overflow-hidden rounded-md border border-border">
       {options.map((opt, i) => (
@@ -245,27 +247,20 @@ function Segmented<T extends string>({
 
 /** Encoding key for the "Signal" timeline: colour = how each run started. */
 function TimelineLegend() {
+  const { t } = useTranslation("work");
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-3.5 py-2 text-xs text-muted-foreground">
       <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.delegated }} />
-        Delegated
-      </span>
+        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.delegated }} />{t("work:copy.delegated_dd341e")}</span>
       <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.automation }} />
-        Automation
-      </span>
+        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.automation }} />{t("work:copy.automation_d90975")}</span>
       <span className="flex items-center gap-1.5">
         <span
           className="h-2.5 w-4 rounded-sm border border-dashed bg-transparent"
           style={{ borderColor: TIMELINE_COLORS.cancelled }}
-        />
-        Cancelled
-      </span>
+        />{t("work:copy.cancelled_d353a9")}</span>
       <span className="flex items-center gap-1.5">
-        <span className="h-3.5 w-0.5" style={{ backgroundColor: TIMELINE_COLORS.now }} />
-        Now
-      </span>
+        <span className="h-3.5 w-0.5" style={{ backgroundColor: TIMELINE_COLORS.now }} />{t("work:copy.now_fe1801")}</span>
     </div>
   );
 }
@@ -275,13 +270,14 @@ function TimelineSummaryStats({
 }: {
   summary: ReturnType<typeof timelineSummary>;
 }) {
+  const { t } = useTranslation("work");
   const stats: { label: string; value: string; icon: LucideIcon }[] = [
-    { label: "Runs", value: formatInteger(summary.runs), icon: GanttChartSquare },
-    { label: "Agents", value: formatInteger(summary.agents), icon: Bot },
-    { label: "Run time", value: formatDuration(0, summary.activeMs), icon: Clock3 },
+    { label: t("work:copy.runs_848f54"), value: formatInteger(summary.runs), icon: GanttChartSquare },
+    { label: t("work:copy.agents_279b44"), value: formatInteger(summary.agents), icon: Bot },
+    { label: t("work:copy.runTime_40349a"), value: formatDuration(0, summary.activeMs), icon: Clock3 },
     {
-      label: "Tokens used",
-      value: summary.totalTokens > 0 ? formatCompactInteger(summary.totalTokens) : "Not tracked",
+      label: t("work:copy.tokensUsed_d2252f"),
+      value: summary.totalTokens > 0 ? formatCompactInteger(summary.totalTokens) : t("work:copy.notTracked_4367a6"),
       icon: Coins,
     },
   ];
@@ -305,13 +301,14 @@ function TimelineSummaryStats({
 }
 
 export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const scopedProjectId = useMemo(
     () => streamlinedUiEnabled ? new URLSearchParams(location.search).get("projectId") || undefined : undefined,
-    [location.search, streamlinedUiEnabled],
+    [location.search, streamlinedUiEnabled, t],
   );
   const [zoom, setZoom] = useState<ZoomLevel>("day");
   const [zoomScale, setZoomScale] = useState<number | undefined>(undefined);
@@ -322,16 +319,16 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     if (!embedded) {
-      setBreadcrumbs([{ label: scopedProjectId ? "Project Timeline" : "Timeline" }]);
+      setBreadcrumbs([{ label: scopedProjectId ? t("work:copy.projectTimeline_da2fd0") : t("work:copy.timeline_9dcff9") }]);
     }
-  }, [embedded, scopedProjectId, setBreadcrumbs]);
+  }, [embedded, scopedProjectId, setBreadcrumbs, t]);
 
   const dateRangeError = rangeError(dateRange);
   const params: WorkTimelineParams | null = useMemo(() => {
     const window = rangeWindow(dateRange);
     if (!window) return null;
     return scopedProjectId ? { ...window, projectId: scopedProjectId } : window;
-  }, [dateRange, scopedProjectId]);
+  }, [dateRange, scopedProjectId, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate, scopedProjectId ?? null],
@@ -356,13 +353,13 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
         ? current
         : nextWindow
     ));
-  }, []);
+  }, [t]);
 
   if (!selectedCompanyId) {
     return (
       <>
         {!embedded && <RequestCollapsedSidebar />}
-        <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
+        <EmptyState icon={GanttChartSquare} message={t("work:copy.selectAnOrganizationToViewItsWorkTimeline_fc69c7")} />
       </>
     );
   }
@@ -371,7 +368,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
     <div className="flex items-center gap-2">
       <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
       <h1 className="text-3xl font-semibold tracking-tight">
-        {scopedProjectId ? "Project Timeline" : "Work Timeline"}
+        {scopedProjectId ? t("work:copy.projectTimeline_da2fd0") : t("work:copy.workTimeline_38973f")}
       </h1>
     </div>
   );
@@ -397,7 +394,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
 
   const rangeControls = (
     <label data-canonical-toolbar="timeline-range" className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      Range
+      {t("work:copy.range_5de74a")}
       <Segmented
         value={rangePreset}
         onChange={(preset) => {
@@ -406,9 +403,9 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           setDateRange(presetRange(preset));
         }}
         options={[
-          { value: "today", label: "Today" },
-          { value: "7d", label: "7 days" },
-          { value: "30d", label: "30 days" },
+          { value: "today", label: t("work:copy.today_2b065c") },
+          { value: "7d", label: t("work:extra.message_7f920bb639") },
+          { value: "30d", label: t("work:extra.message_ffd7280513") },
         ]}
       />
       <Input
@@ -419,9 +416,9 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           setDateRange((prev) => ({ ...prev, fromDate: event.target.value }));
         }}
         className="h-8 w-(--sz-150px) text-xs"
-        aria-label="Timeline start date"
+        aria-label={t("work:copy.timelineStartDate_881e64")}
       />
-      <span>to</span>
+      <span>{t("work:copy.to_663ea1")}</span>
       <Input
         type="date"
         value={dateRange.toDate}
@@ -430,7 +427,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           setDateRange((prev) => ({ ...prev, toDate: event.target.value }));
         }}
         className="h-8 w-(--sz-150px) text-xs"
-        aria-label="Timeline end date"
+        aria-label={t("work:copy.timelineEndDate_0f6126")}
       />
     </label>
   );
@@ -438,14 +435,14 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const toolbar = (
     <div className="flex flex-wrap items-start gap-3">
       {summary && <TimelineSummaryStats summary={summary} />}
-      <div data-canonical-toolbar="timeline-zoom" role="toolbar" className="ml-auto flex items-center gap-1 pt-3" aria-label="Timeline zoom controls">
+      <div data-canonical-toolbar="timeline-zoom" role="toolbar" className="ml-auto flex items-center gap-1 pt-3" aria-label={t("work:copy.timelineZoomControls_4c7cc9")}>
         <Button
           type="button"
           variant="outline"
           size="icon-xs"
           onClick={() => adjustZoom(0.8)}
-          aria-label="Zoom out"
-          title="Zoom out"
+          aria-label={t("work:copy.zoomOut_bc7b63")}
+          title={t("work:copy.zoomOut_bc7b63")}
         >
           <Minus className="h-3 w-3" />
         </Button>
@@ -454,8 +451,8 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           variant="outline"
           size="icon-xs"
           onClick={() => adjustZoom(1.25)}
-          aria-label="Zoom in"
-          title="Zoom in"
+          aria-label={t("work:copy.zoomIn_0e47f0")}
+          title={t("work:copy.zoomIn_0e47f0")}
         >
           <Plus className="h-3 w-3" />
         </Button>
@@ -464,8 +461,8 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           variant="outline"
           size="icon-xs"
           onClick={resetZoom}
-          aria-label="Reset zoom"
-          title="Reset zoom"
+          aria-label={t("work:copy.resetZoom_91a661")}
+          title={t("work:copy.resetZoom_91a661")}
         >
           <RotateCcw className="h-3 w-3" />
         </Button>
@@ -496,7 +493,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
       {error && (
         <EmptyState
           icon={GanttChartSquare}
-          message="Couldn't load the timeline. The aggregation endpoint may be unavailable."
+          message={t("work:copy.couldnTLoadTheTimelineTheAggregationEndpointMay_fa6922")}
         />
       )}
 
@@ -505,7 +502,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           <div className="space-y-3">
             <EmptyState
               icon={GanttChartSquare}
-              message={scopedProjectId ? "No project activity in this window." : "No activity in this window."}
+              message={scopedProjectId ? t("work:copy.noProjectActivityInThisWindow_536e6b") : t("work:copy.noActivityInThisWindow_885e0c")}
             />
             <div className="flex flex-wrap items-center justify-end gap-3">
               {rangeControls}
@@ -529,9 +526,9 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
             </Card>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">
-                {data.spans.length} run{data.spans.length === 1 ? "" : "s"} ·{" "}
-                {new Date(data.window.from).toLocaleString()} to {new Date(data.window.to).toLocaleString()}
-                {data.window.capped ? " · window capped" : ""}
+                {t("work:counts.runs", { count: data.spans.length })} ·{" "}
+                {new Date(data.window.from).toLocaleString(i18n.resolvedLanguage)}{" "}{t("work:copy.to_663ea1")}{" "}{new Date(data.window.to).toLocaleString(i18n.resolvedLanguage)}
+                {data.window.capped ? t("work:copy.windowCapped_f20754") : ""}
               </p>
               {rangeControls}
             </div>

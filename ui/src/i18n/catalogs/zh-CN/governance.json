@@ -1,0 +1,20 @@
+{
+  "kindSuggestedTasks": "建议任务",
+  "kindAskUserQuestions": "向用户提问",
+  "kindConfirmations": "确认请求",
+  "kindCheckboxConfirmations": "勾选确认请求",
+  "kindItemVerdicts": "逐项判定",
+  "kindConnectionRequests": "连接请求",
+  "anyoneDefault": "任何人（默认）",
+  "noCap": "不设上限",
+  "defaultOpenEffect": "新卡片默认向所有人开放：管理者或任何智能体均可响应，包括发起请求的智能体。",
+  "uncappedEffect": "请求保留其指定的响应范围。",
+  "defaultNotCreatorEffect": "新卡片不允许创建它的智能体响应，确保由其他人或智能体作答。",
+  "defaultHumanOnlyEffect": "新卡片仅等待管理端的人员响应，智能体不能响应。",
+  "capNotCreatorEffect": "即使卡片指定任何人均可响应，也会收窄范围，排除创建者。",
+  "capHumanOnlyEffect": "此类卡片一律等待人员响应，不受其原先指定的响应范围影响。",
+  "defaultAudienceForKind": "{{kind}}的默认响应范围",
+  "capForKind": "{{kind}}的响应范围上限",
+  "defaultPolicy": "默认策略",
+  "cap": "范围上限"
+}

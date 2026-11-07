@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { MouseEvent, ReactNode } from "react";
 import { FileCode2, FolderOpen } from "lucide-react";
 import { useLocation } from "@/lib/router";
@@ -29,20 +30,21 @@ export function WorkspaceFileLink({
   showIcon = true,
   title,
 }: WorkspaceFileLinkProps) {
+  useTranslation("final-components-b");
   const viewer = useFileViewer();
   const location = useLocation();
   const display = typeof label !== "undefined" ? label : formatWorkspaceFileRefDisplay(workspaceFileRef);
   const canOpen = !!(onOpen || viewer);
   const isDirectory = workspaceFileRef.resourceKind === "directory" || workspaceFileRef.path.endsWith("/");
   const lineSuffix = workspaceFileRef.line
-    ? ` line ${workspaceFileRef.line}${workspaceFileRef.column ? ` column ${workspaceFileRef.column}` : ""}`
+    ? workspaceFileRef.column ? t("final-components-b:line_line_column_column_5907ea", { line: workspaceFileRef.line, column: workspaceFileRef.column }) : t("final-components-b:line_line_9345cf", { line: workspaceFileRef.line })
     : "";
   const ariaLabel = canOpen
-    ? `Open ${workspaceFileRef.path}${lineSuffix} in the ${isDirectory ? "workspace browser" : "file viewer"}`
-    : `Workspace ${isDirectory ? "folder" : "file"} ${workspaceFileRef.path}${lineSuffix}`;
+    ? isDirectory ? t("final-components-b:Open_path_location_in_the_workspace_browser_351679", { path: workspaceFileRef.path, location: lineSuffix }) : t("final-components-b:Open_path_location_in_the_file_viewer_fa9be2", { path: workspaceFileRef.path, location: lineSuffix })
+    : isDirectory ? t("final-components-b:Workspace_folder_path_location_76ddf0", { path: workspaceFileRef.path, location: lineSuffix }) : t("final-components-b:Workspace_file_path_location_588c2f", { path: workspaceFileRef.path, location: lineSuffix });
   const tooltip = title ?? (canOpen
-    ? `Open ${workspaceFileRef.path}${lineSuffix} in the ${isDirectory ? "workspace browser" : "file viewer"}`
-    : `Workspace ${isDirectory ? "folder" : "file"} ${workspaceFileRef.path}${lineSuffix}`);
+    ? isDirectory ? t("final-components-b:Open_path_location_in_the_workspace_browser_351679", { path: workspaceFileRef.path, location: lineSuffix }) : t("final-components-b:Open_path_location_in_the_file_viewer_fa9be2", { path: workspaceFileRef.path, location: lineSuffix })
+    : isDirectory ? t("final-components-b:Workspace_folder_path_location_76ddf0", { path: workspaceFileRef.path, location: lineSuffix }) : t("final-components-b:Workspace_file_path_location_588c2f", { path: workspaceFileRef.path, location: lineSuffix }));
 
   const deepLinkSearch = isDirectory
     ? writeFolderViewerStateToSearch(location.search, {

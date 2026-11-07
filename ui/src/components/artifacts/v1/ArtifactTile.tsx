@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
@@ -17,6 +18,7 @@ import { countLabel, updatedLabel } from "./when";
  * every cell. The pill is Paper Mono regular with 12px of side padding.
  */
 export function ArtifactCaption({ title, identifier, facts }: { title: string; identifier?: string | null; facts: string[] }) {
+  useTranslation("task-components");
   return (
     <div className="flex w-full flex-col items-center gap-3">
       <p className="line-clamp-2 w-full break-words text-center text-base font-medium leading-5 text-foreground" title={title}>
@@ -46,6 +48,7 @@ const TILE =
 
 /** The cell: a link when it has somewhere to go, a button otherwise. text-left keeps a sheet's title from centring. */
 export function ArtifactTile({ label, to, onClick, children, caption, testId }: { label: string; to?: To; onClick?: () => void; children: ReactNode; caption: ReactNode; testId?: string }) {
+  useTranslation("task-components");
   const body = (
     <>
       <div className="flex h-(--artifact-frame-h) w-full shrink-0 items-end justify-center">{children}</div>
@@ -82,8 +85,9 @@ export interface StackTileProps {
 
 /** A task with several artifacts: its newest one on top of a stack, the task's title underneath. */
 export function ArtifactStackTile({ identifier, title, count, updatedAt, front, to, onClick, now }: StackTileProps) {
+  useTranslation("task-components");
   return (
-    <ArtifactTile label={`Open ${identifier} ${title}, ${countLabel(count)}`} to={to} onClick={onClick} testId="artifact-v1-stack-tile" caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), `Updated ${updatedLabel(updatedAt, now)}`]} />}>
+    <ArtifactTile label={t("final-components-b:Open_identifier_title_artifacts_15983b", { identifier, title, artifacts: countLabel(count) })} to={to} onClick={onClick} testId="artifact-v1-stack-tile" caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), t("final-components-b:Updated_time_6379f4", { time: updatedLabel(updatedAt, now) })]} />}>
       <ArtifactStack front={front} />
     </ArtifactTile>
   );
@@ -91,9 +95,10 @@ export function ArtifactStackTile({ identifier, title, count, updatedAt, front, 
 
 /** One artifact on its own: its file name (or title) underneath. */
 export function ArtifactSingleTile({ subject, to, onClick, now }: { subject: ArtifactSubject; to?: To; onClick?: () => void; now?: Date }) {
+  useTranslation("task-components");
   const name = subject.filename ?? subject.title;
   return (
-    <ArtifactTile label={`Open ${name}`} to={to} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [`Updated ${updatedLabel(subject.updatedAt, now)}`] : []} />}>
+    <ArtifactTile label={t("task-components:open_839d6dee", { value1: name })} to={to} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [t("final-components-b:Updated_time_6379f4", { time: updatedLabel(subject.updatedAt, now) })] : []} />}>
       <ArtifactFront subject={subject} />
     </ArtifactTile>
   );
@@ -101,6 +106,7 @@ export function ArtifactSingleTile({ subject, to, onClick, now }: { subject: Art
 
 /** The grid: cells 28px apart in both directions, columns at least 330px wide. */
 export function ArtifactTileGrid({ children, testId = "artifact-v1-grid" }: { children: ReactNode; testId?: string }) {
+  useTranslation("task-components");
   return (
     <ul data-testid={testId} className="grid gap-7 grid-cols-(--artifact-grid)">
       {children}

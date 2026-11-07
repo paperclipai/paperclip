@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Plain-language copy for a *failed* issue-thread interaction resolution
  * (PAP-17287).
@@ -160,7 +161,7 @@ export function describeInteractionResolutionFailure(
   return {
     kind: "transient",
     code,
-    message: reason ? `${reason} Try again.` : errorCopy("interaction_submit_failed").body,
+    message: reason ? t("display:copy_cc67bd2635e7", { value0: reason }) : errorCopy("interaction_submit_failed").body,
   };
 }
 

@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { useTranslation } from "@/i18n";
 import { useEffect, useId, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
@@ -18,6 +20,7 @@ function CredentialSettings({
   companyId: string;
   grantId: string;
 }) {
+  const { t } = useTranslation("connections");
   const id = useId();
   const saved = useQuery({
     queryKey: ["browser-use-cloud-settings", grantId],
@@ -50,36 +53,27 @@ function CredentialSettings({
   return (
     <div className="space-y-3">
       <div className="space-y-2">
-        <Label htmlFor={`${id}-limit`}>
-          Maximum cost per browser run (USD)
-        </Label>
+        <Label htmlFor={`${id}-limit`}>{t("maximum_cost_per_browser_run_usd_d2d1188")}</Label>
         <Input
           id={`${id}-limit`}
           type="number"
           min="0"
           step="0.01"
           value={limit}
-          placeholder="Use the remaining Paperclip budget"
+          placeholder={t("use_the_remaining_paperclip_budget_eca499f")}
           onChange={(e) => setLimit(e.target.value)}
         />
-        <p className="text-sm text-muted-foreground">
-          The agent can choose a lower limit. Paperclip also applies any
-          remaining hard budget limit.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("the_agent_can_choose_a_lower_limit_c33d36b")}</p>
       </div>
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Allowed saved profiles</legend>
-        <p className="text-sm text-muted-foreground">
-          Fresh browsers are the default. Selected profiles let agents use their
-          saved website logins. Manage profiles in{" "}
+        <legend className="text-sm font-medium">{t("allowed_saved_profiles_5f73411")}</legend>
+        <p className="text-sm text-muted-foreground">{t("fresh_browsers_are_the_default_selected_profiles_66c575f")}{" "}
           <a
             href="https://cloud.browser-use.com"
             target="_blank"
             rel="noreferrer"
             className="underline"
-          >
-            Browser Use Cloud
-          </a>
+          >{t("browser_use_cloud_32c9e60")}</a>
           .
         </p>
         {profiles.data?.map((p) => (
@@ -98,10 +92,10 @@ function CredentialSettings({
           </Label>
         ))}
         {profiles.data?.length === 0 && (
-          <p className="text-sm text-muted-foreground">No saved profiles.</p>
+          <p className="text-sm text-muted-foreground">{t("no_saved_profiles_c56c16e")}</p>
         )}
         {(profiles.isLoading || profilesView.kind === "reconnecting") && (
-          <p className="text-sm text-muted-foreground">Loading profiles…</p>
+          <p className="text-sm text-muted-foreground">{t("loading_profiles_b8f34c5")}</p>
         )}
         {profilesView.kind === "error" && (
           <QueryErrorState
@@ -122,15 +116,10 @@ function CredentialSettings({
         />
       ) : null}
       {save.error ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not save browser settings. Check your credential access and try
-          again.
-        </p>
+        <p role="alert" className="text-sm text-destructive">{t("could_not_save_browser_settings_check_your_18139ad")}</p>
       ) : null}
       {save.isSuccess && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Browser settings saved.
-        </p>
+        <p role="status" className="text-sm text-muted-foreground">{t("browser_settings_saved_7ca2ebb")}</p>
       )}
       <div className="flex justify-end">
         <Button
@@ -143,9 +132,7 @@ function CredentialSettings({
             )
           }
           onClick={() => save.mutate()}
-        >
-          Save browser settings
-        </Button>
+        >{t("save_browser_settings_a42122b")}</Button>
       </div>
     </div>
   );
@@ -157,6 +144,7 @@ export function BrowserUseSettingsPanel({
   connection: ToolConnection;
   grants?: ConnectionGrantsResponse;
 }) {
+  const { t } = useTranslation("connections");
   const eligible =
     grants?.grants.filter(
       (g) =>
@@ -169,18 +157,16 @@ export function BrowserUseSettingsPanel({
   const grantId = selected || eligible[0]?.id;
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Browser settings</h2>
+      <h2 className="text-lg font-semibold">{t("browser_settings_27e3c51")}</h2>
       {eligible.length > 1 && (
-        <Label className="flex flex-col gap-2">
-          Credential
-          <select
+        <Label className="flex flex-col gap-2">{t("credential_bfab607")}<select
             value={grantId}
             onChange={(e) => setSelected(e.target.value)}
             className="rounded-md border bg-background p-2"
           >
             {eligible.map((g, i) => (
               <option key={g.id} value={g.id}>
-                {g.kind === "user" ? "Personal" : "Shared"} credential {i + 1}
+                {g.kind === "user" ? finalPagesT("final-pages:Personal_credential_number_17d8fe", { number: i + 1 }) : finalPagesT("final-pages:Shared_credential_number_cea3db", { number: i + 1 })}
               </option>
             ))}
           </select>
@@ -193,10 +179,7 @@ export function BrowserUseSettingsPanel({
           grantId={grantId}
         />
       ) : (
-        <p className="text-sm text-muted-foreground">
-          The credential owner or a shared connection manager can configure
-          saved profiles and cost limits.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("the_credential_owner_or_a_shared_connection_4ae6153")}</p>
       )}
     </section>
   );

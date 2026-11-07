@@ -1,3 +1,6 @@
+import { getPageValueLabel } from "@/pages/tools/shared";
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
@@ -63,6 +66,7 @@ import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/Qu
  * @see doc/plugins/PLUGIN_SPEC.md §19.8 — Plugin Settings UI.
  */
 export function PluginSettings() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
@@ -126,19 +130,19 @@ export function PluginSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
+      { label: selectedCompany?.name ?? translateAgentPage("agents:organization"), href: "/dashboard" },
+      { label: translateAgentPage("agents:settings"), href: "/company/settings" },
+      { label: translateAgentPage("agents:plugins"), href: "/company/settings/instance/plugins" },
+      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? translateAgentPage("agents:plugin_details") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
+  }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin, translateAgentPage]);
 
   useEffect(() => {
     setActiveTab("configuration");
   }, [pluginId]);
 
   if (pluginView.kind === "loading" || pluginView.kind === "reconnecting") {
-    return <QueryPlaceholder size="page" label="Loading plugin details" className="p-4" />;
+    return <QueryPlaceholder size="page" label={translateAgentPage("agents:loading_plugin_details")} className="p-4" />;
   }
 
   // A failed load must not bounce the operator back to the plugin list: a
@@ -150,7 +154,7 @@ export function PluginSettings() {
         size="page"
         className="p-4"
         error={pluginQuery.error}
-        action="load this plugin"
+        action={translateAgentPage("agents:load_this_plugin")}
         onRetry={pluginView.retry}
         retrying={pluginView.isFetching}
       />
@@ -168,7 +172,7 @@ export function PluginSettings() {
       : plugin.status === "error"
         ? "destructive"
         : "secondary";
-  const pluginDescription = plugin.manifestJson.description || "No description provided.";
+  const pluginDescription = plugin.manifestJson.description || translateAgentPage("agents:no_description_provided");
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
@@ -207,8 +211,8 @@ export function PluginSettings() {
         <PageTabBar
           align="start"
           items={[
-            { value: "configuration", label: "Configuration" },
-            { value: "status", label: "Status" },
+            { value: "configuration", label: translateAgentPage("agents:configuration") },
+            { value: "status", label: translateAgentPage("agents:status") },
           ]}
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as "configuration" | "status")}
@@ -217,19 +221,19 @@ export function PluginSettings() {
         <TabsContent value="configuration" className="space-y-6">
           <div className="space-y-8">
             <section className="space-y-5">
-              <h2 className="text-base font-semibold">About</h2>
+              <h2 className="text-base font-semibold">{translateAgentPage("agents:about")}</h2>
               <div className="grid gap-8 lg:grid-cols-(--gtc-52)">
                 <div className="space-y-2">
-                  <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
+                  <h3 className="text-sm font-medium text-muted-foreground">{translateAgentPage("agents:description")}</h3>
                   <p className="text-sm leading-6 text-foreground/90">{pluginDescription}</p>
                 </div>
                 <div className="space-y-4 text-sm">
                   <div className="space-y-1.5">
-                    <h3 className="font-medium text-muted-foreground">Author</h3>
+                    <h3 className="font-medium text-muted-foreground">{translateAgentPage("agents:author")}</h3>
                     <p className="text-foreground">{plugin.manifestJson.author}</p>
                   </div>
                   <div className="space-y-2">
-                    <h3 className="font-medium text-muted-foreground">Categories</h3>
+                    <h3 className="font-medium text-muted-foreground">{translateAgentPage("agents:categories_6ccb60")}</h3>
                     <div className="flex flex-wrap gap-2">
                       {plugin.categories.length > 0 ? (
                         plugin.categories.map((category) => (
@@ -238,7 +242,7 @@ export function PluginSettings() {
                           </Badge>
                         ))
                       ) : (
-                        <span className="text-foreground">None</span>
+                        <span className="text-foreground">{translateAgentPage("agents:none")}</span>
                       )}
                     </div>
                   </div>
@@ -250,7 +254,7 @@ export function PluginSettings() {
 
             <section className="space-y-4">
               <div className="space-y-1">
-                <h2 className="text-base font-semibold">Settings</h2>
+                <h2 className="text-base font-semibold">{translateAgentPage("agents:settings")}</h2>
               </div>
               {hasLocalFolders ? (
                 <PluginLocalFoldersSettings
@@ -285,21 +289,17 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Settings → Environments.</p>
+                  <p className="font-medium text-foreground">{translateAgentPage("agents:configure_this_plugin_from_settings_environments")}</p>
                   <p className="mt-1 text-muted-foreground">
-                    {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
-                    stays instance-scoped while secret bindings still resolve through the selected organization context.
-                  </p>
+                    {driverLabel || translateAgentPage("agents:this_plugin")}{" "}{translateAgentPage("agents:registers_environment_runtime_settings_there_so_the_execution")}</p>
                   <div className="mt-3">
                     <Link to="/company/settings/instance/environments">
-                      <Button variant="outline" size="sm">Open Environments</Button>
+                      <Button variant="outline" size="sm">{translateAgentPage("agents:open_environments")}</Button>
                     </Link>
                   </div>
                 </div>
               ) : !hasLocalFolders ? (
-                <p className="text-sm text-muted-foreground">
-                  This plugin does not require any settings.
-                </p>
+                <p className="text-sm text-muted-foreground">{translateAgentPage("agents:this_plugin_does_not_require_any_settings")}</p>
               ) : null}
             </section>
           </div>
@@ -311,27 +311,21 @@ export function PluginSettings() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-1.5">
-                    <Cpu className="h-4 w-4" />
-                    Runtime Dashboard
-                  </CardTitle>
-                  <CardDescription>
-                    Worker process, scheduled jobs, and webhook deliveries
-                  </CardDescription>
+                    <Cpu className="h-4 w-4" />{translateAgentPage("agents:runtime_dashboard")}</CardTitle>
+                  <CardDescription>{translateAgentPage("agents:worker_process_scheduled_jobs_and_webhook_deliveries")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {dashboardData ? (
                     <>
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
-                          <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
-                          Worker Process
-                        </h3>
+                          <Cpu className="h-3.5 w-3.5 text-muted-foreground" />{translateAgentPage("agents:worker_process")}</h3>
                         {dashboardData.worker ? (
                           <div className="grid grid-cols-2 gap-3 text-sm">
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Status</span>
+                              <span className="text-muted-foreground">{translateAgentPage("agents:status")}</span>
                               <Badge variant={dashboardData.worker.status === "running" ? "default" : "secondary"}>
-                                {dashboardData.worker.status}
+                                {getPageValueLabel(dashboardData.worker.status)}
                               </Badge>
                             </div>
                             <div className="flex justify-between">
@@ -339,27 +333,24 @@ export function PluginSettings() {
                               <span className="font-mono text-xs">{dashboardData.worker.pid ?? "—"}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Uptime</span>
+                              <span className="text-muted-foreground">{translateAgentPage("agents:uptime")}</span>
                               <span className="text-xs">{formatUptime(dashboardData.worker.uptime)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Pending RPCs</span>
+                              <span className="text-muted-foreground">{translateAgentPage("agents:pending_rpcs")}</span>
                               <span className="text-xs">{dashboardData.worker.pendingRequests}</span>
                             </div>
                             {dashboardData.worker.totalCrashes > 0 && (
                               <>
                                 <div className="flex justify-between col-span-2">
                                   <span className="text-muted-foreground flex items-center gap-1">
-                                    <AlertTriangle className="h-3 w-3 text-amber-500" />
-                                    Crashes
-                                  </span>
+                                    <AlertTriangle className="h-3 w-3 text-amber-500" />{translateAgentPage("agents:crashes")}</span>
                                   <span className="text-xs">
-                                    {dashboardData.worker.consecutiveCrashes} consecutive / {dashboardData.worker.totalCrashes} total
-                                  </span>
+                                    {dashboardData.worker.consecutiveCrashes}{" "}{translateAgentPage("agents:consecutive")}{" "}{dashboardData.worker.totalCrashes}{" "}{translateAgentPage("agents:total")}</span>
                                 </div>
                                 {dashboardData.worker.lastCrashAt && (
                                   <div className="flex justify-between col-span-2">
-                                    <span className="text-muted-foreground">Last Crash</span>
+                                    <span className="text-muted-foreground">{translateAgentPage("agents:last_crash")}</span>
                                     <span className="text-xs">{formatTimestamp(dashboardData.worker.lastCrashAt)}</span>
                                   </div>
                                 )}
@@ -367,7 +358,7 @@ export function PluginSettings() {
                             )}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No worker process registered.</p>
+                          <p className="text-sm text-muted-foreground italic">{translateAgentPage("agents:no_worker_process_registered")}</p>
                         )}
                       </div>
 
@@ -375,9 +366,7 @@ export function PluginSettings() {
 
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
-                          <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
-                          Recent Job Runs
-                        </h3>
+                          <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />{translateAgentPage("agents:recent_job_runs")}</h3>
                         {dashboardData.recentJobRuns.length > 0 ? (
                           <div className="space-y-2">
                             {dashboardData.recentJobRuns.map((run) => (
@@ -402,7 +391,7 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No job runs recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{translateAgentPage("agents:no_job_runs_recorded_yet")}</p>
                         )}
                       </div>
 
@@ -410,9 +399,7 @@ export function PluginSettings() {
 
                       <div>
                         <h3 className="text-sm font-medium mb-3 flex items-center gap-1.5">
-                          <Webhook className="h-3.5 w-3.5 text-muted-foreground" />
-                          Recent Webhook Deliveries
-                        </h3>
+                          <Webhook className="h-3.5 w-3.5 text-muted-foreground" />{translateAgentPage("agents:recent_webhook_deliveries")}</h3>
                         {dashboardData.recentWebhookDeliveries.length > 0 ? (
                           <div className="space-y-2">
                             {dashboardData.recentWebhookDeliveries.map((delivery) => (
@@ -434,19 +421,16 @@ export function PluginSettings() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground italic">No webhook deliveries recorded yet.</p>
+                          <p className="text-sm text-muted-foreground italic">{translateAgentPage("agents:no_webhook_deliveries_recorded_yet")}</p>
                         )}
                       </div>
 
                       <div className="flex items-center gap-1.5 border-t border-border/50 pt-2 text-xs text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        Last checked: {new Date(dashboardData.checkedAt).toLocaleTimeString()}
+                        <Clock className="h-3 w-3" />{translateAgentPage("agents:last_checked")}{" "}{new Date(dashboardData.checkedAt).toLocaleTimeString()}
                       </div>
                     </>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Runtime diagnostics are unavailable right now.
-                    </p>
+                    <p className="text-sm text-muted-foreground">{translateAgentPage("agents:runtime_diagnostics_are_unavailable_right_now")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -455,10 +439,8 @@ export function PluginSettings() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base flex items-center gap-1.5">
-                      <ActivitySquare className="h-4 w-4" />
-                      Recent Logs
-                    </CardTitle>
-                    <CardDescription>Last {recentLogs.length} log entries</CardDescription>
+                      <ActivitySquare className="h-4 w-4" />{translateAgentPage("agents:recent_logs")}</CardTitle>
+                    <CardDescription>{translateAgentPage("agents:last")}{" "}{recentLogs.length}{" "}{translateAgentPage("agents:log_entries")}</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
@@ -490,19 +472,17 @@ export function PluginSettings() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-1.5">
-                    <ActivitySquare className="h-4 w-4" />
-                    Health Status
-                  </CardTitle>
+                    <ActivitySquare className="h-4 w-4" />{translateAgentPage("agents:health_status")}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {healthLoading ? (
-                    <p className="text-sm text-muted-foreground">Checking health...</p>
+                    <p className="text-sm text-muted-foreground">{translateAgentPage("agents:checking_health")}</p>
                   ) : healthData ? (
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Overall</span>
+                        <span className="text-muted-foreground">{translateAgentPage("agents:overall")}</span>
                         <Badge variant={healthData.healthy ? "default" : "destructive"}>
-                          {healthData.status}
+                          {getPageValueLabel(healthData.status)}
                         </Badge>
                       </div>
 
@@ -532,10 +512,10 @@ export function PluginSettings() {
                   ) : (
                     <div className="space-y-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
-                        <span>Lifecycle</span>
+                        <span>{translateAgentPage("agents:lifecycle")}</span>
                         <Badge variant={statusVariant}>{displayStatus}</Badge>
                       </div>
-                      <p>Health checks run once the plugin is ready.</p>
+                      <p>{translateAgentPage("agents:health_checks_run_once_the_plugin_is_ready")}</p>
                       {plugin.lastError ? (
                         <div className="break-words rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
                           {plugin.lastError}
@@ -548,25 +528,25 @@ export function PluginSettings() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Details</CardTitle>
+                  <CardTitle className="text-base">{translateAgentPage("agents:details")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
-                    <span>Plugin ID</span>
+                    <span>{translateAgentPage("agents:plugin_id")}</span>
                     <span className="font-mono text-xs text-right">{plugin.id}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Plugin Key</span>
+                    <span>{translateAgentPage("agents:plugin_key")}</span>
                     <span className="font-mono text-xs text-right">{plugin.pluginKey}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>NPM Package</span>
+                    <span>{translateAgentPage("agents:npm_package")}</span>
                     <span className="max-w-(--sz-170px) truncate text-right text-xs" title={plugin.packageName}>
                       {plugin.packageName}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Version</span>
+                    <span>{translateAgentPage("agents:version")}</span>
                     <span className="text-right text-foreground">v{plugin.manifestJson.version ?? plugin.version}</span>
                   </div>
                 </CardContent>
@@ -575,9 +555,7 @@ export function PluginSettings() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-1.5">
-                    <ShieldAlert className="h-4 w-4" />
-                    Permissions
-                  </CardTitle>
+                    <ShieldAlert className="h-4 w-4" />{translateAgentPage("agents:permissions")}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {pluginCapabilities.length > 0 ? (
@@ -589,7 +567,7 @@ export function PluginSettings() {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                    <p className="text-sm text-muted-foreground italic">{translateAgentPage("agents:no_special_permissions_requested")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -612,6 +590,7 @@ interface PluginLocalFoldersSettingsProps {
 }
 
 function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: PluginLocalFoldersSettingsProps) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const foldersQuery = useQuery({
     queryKey: companyId
       ? queryKeys.plugins.localFolders(pluginId, companyId)
@@ -626,9 +605,7 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
 
   if (!companyId) {
     return (
-      <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-        Select an organization to configure this plugin's local folders.
-      </div>
+      <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">{translateAgentPage("agents:select_an_organization_to_configure_this_plugin_s")}</div>
     );
   }
 
@@ -636,19 +613,19 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <FolderOpen className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Local folders</h3>
+        <h3 className="text-sm font-medium">{translateAgentPage("agents:local_folders")}</h3>
       </div>
       {foldersView.kind === "error" ? (
         <QueryErrorState
           size="panel"
           error={foldersQuery.error}
-          action="load local folder settings"
+          action={translateAgentPage("agents:load_local_folder_settings")}
           onRetry={foldersView.retry}
           retrying={foldersView.isFetching}
         />
       ) : null}
       {foldersView.kind === "loading" || foldersView.kind === "reconnecting" ? (
-        <QueryPlaceholder size="panel" label="Loading local folders" className="py-3" />
+        <QueryPlaceholder size="panel" label={translateAgentPage("agents:loading_local_folders")} className="py-3" />
       ) : (
         <div className="space-y-3">
           {declarations.map((declaration) => (
@@ -674,6 +651,7 @@ interface PluginLocalFolderRowProps {
 }
 
 function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: PluginLocalFolderRowProps) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const serverPath = status?.path ?? "";
   const [pathValue, setPathValue] = useState(serverPath);
@@ -696,8 +674,8 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       setMessage({
         type: nextStatus.healthy ? "success" : "error",
         text: nextStatus.healthy
-          ? "Local folder saved."
-          : "Local folder saved, but validation still needs attention.",
+          ? translateAgentPage("agents:local_folder_saved")
+          : translateAgentPage("agents:local_folder_saved_but_validation_still_needs_attention"),
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders(pluginId, companyId) });
     },
@@ -712,16 +690,16 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
   const handleSave = useCallback(() => {
     if (!trimmedPath) {
-      setMessage({ type: "error", text: "Local folder path is required." });
+      setMessage({ type: "error", text: translateAgentPage("agents:local_folder_path_is_required") });
       return;
     }
     if (!isLikelyAbsolutePath(trimmedPath)) {
-      setMessage({ type: "error", text: "Local folder must be a full absolute path." });
+      setMessage({ type: "error", text: translateAgentPage("agents:local_folder_must_be_a_full_absolute_path") });
       return;
     }
     setMessage(null);
     saveMutation.mutate(trimmedPath);
-  }, [saveMutation, trimmedPath]);
+  }, [saveMutation, trimmedPath, translateAgentPage]);
 
   return (
     <div className="space-y-4 rounded-md border border-border/70 bg-background px-4 py-4">
@@ -733,7 +711,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
               {declaration.folderKey}
             </Badge>
             <Badge variant={status?.healthy ? "default" : "secondary"}>
-              {status?.healthy ? "Healthy" : "Needs attention"}
+              {status?.healthy ? translateAgentPage("agents:healthy") : translateAgentPage("agents:needs_attention")}
             </Badge>
           </div>
           {declaration.description ? (
@@ -743,15 +721,15 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
           ) : null}
         </div>
         <Badge variant={access === "readWrite" ? "default" : "outline"}>
-          {access === "readWrite" ? "Read/write" : "Read only"}
+          {access === "readWrite" ? translateAgentPage("agents:read_write") : translateAgentPage("agents:read_only_601dcc")}
         </Badge>
       </div>
 
       <div className="grid gap-3 text-sm sm:grid-cols-3">
-        <FolderStatusMetric label="Configured" value={status?.configured ? "Yes" : "No"} ok={!!status?.configured} />
-        <FolderStatusMetric label="Readable" value={status?.readable ? "Yes" : "No"} ok={!!status?.readable} />
+        <FolderStatusMetric label={translateAgentPage("agents:configured")} value={status?.configured ? "Yes" : "No"} ok={!!status?.configured} />
+        <FolderStatusMetric label={translateAgentPage("agents:readable")} value={status?.readable ? "Yes" : "No"} ok={!!status?.readable} />
         <FolderStatusMetric
-          label="Writable"
+          label={translateAgentPage("agents:writable")}
           value={access === "read" ? "Not requested" : status?.writable ? "Yes" : "No"}
           ok={access === "read" || !!status?.writable}
         />
@@ -759,7 +737,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       {status?.path ? (
         <div className="space-y-1 text-sm">
-          <div className="text-xs font-medium text-muted-foreground">Configured path</div>
+          <div className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:configured_path")}</div>
           <div className="break-all rounded-md bg-muted/60 px-2 py-1.5 font-mono text-xs text-foreground">
             {status.path}
           </div>
@@ -767,9 +745,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>
-          Local folder path
-        </label>
+        <label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>{translateAgentPage("agents:local_folder_path")}</label>
         <div className="flex items-center gap-2">
           <input
             id={`local-folder-${declaration.folderKey}`}
@@ -791,9 +767,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Save className="h-3.5 w-3.5" />
-            )}
-            Save
-          </Button>
+            )}{translateAgentPage("agents:save")}</Button>
         </div>
       </div>
 
@@ -801,7 +775,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       {status?.problems?.length ? (
         <div className="space-y-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <div className="font-medium">Validation problems</div>
+          <div className="font-medium">{translateAgentPage("agents:validation_problems")}</div>
           <ul className="space-y-1">
             {status.problems.map((problem, index) => (
               <li key={`${problem.code}:${problem.path ?? ""}:${index}`}>
@@ -844,6 +818,7 @@ function FolderRequirements({
   status?: PluginLocalFolderStatus;
   declaration: PluginLocalFolderDeclaration;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const requiredDirectories = status?.requiredDirectories ?? declaration.requiredDirectories ?? [];
   const requiredFiles = status?.requiredFiles ?? declaration.requiredFiles ?? [];
   const missingDirectories = status?.missingDirectories ?? requiredDirectories;
@@ -855,17 +830,17 @@ function FolderRequirements({
   return (
     <div className="grid gap-3 text-sm md:grid-cols-2">
       <RequirementList
-        title="Required directories"
+        title={translateAgentPage("agents:required_directories")}
         items={requiredDirectories}
         missingItems={missingDirectories}
-        missingLabel="Missing directories"
+        missingLabel={translateAgentPage("agents:missing_directories")}
         inspectionUnavailable={rootNotInspected}
       />
       <RequirementList
-        title="Required files"
+        title={translateAgentPage("agents:required_files")}
         items={requiredFiles}
         missingItems={missingFiles}
-        missingLabel="Missing files"
+        missingLabel={translateAgentPage("agents:missing_files")}
         inspectionUnavailable={rootNotInspected}
       />
     </div>
@@ -892,20 +867,18 @@ function RequirementList({
   missingLabel: string;
   inspectionUnavailable?: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <div className="space-y-2 rounded-md border border-border/60 px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
         {inspectionUnavailable ? (
-          <Badge variant="secondary" className="text-(length:--text-nano)">
-            Not inspected
-          </Badge>
+          <Badge variant="secondary" className="text-(length:--text-nano)">{translateAgentPage("agents:not_inspected")}</Badge>
         ) : missingItems.length > 0 ? (
           <Badge variant="destructive" className="text-(length:--text-nano)">
-            {missingItems.length} missing
-          </Badge>
+            {missingItems.length}{" "}{translateAgentPage("agents:missing_5a013c")}</Badge>
         ) : (
-          <Badge variant="outline" className="text-(length:--text-nano)">Present</Badge>
+          <Badge variant="outline" className="text-(length:--text-nano)">{translateAgentPage("agents:present")}</Badge>
         )}
       </div>
       {items.length > 0 ? (
@@ -929,10 +902,10 @@ function RequirementList({
           })}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">None declared.</p>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:none_declared")}</p>
       )}
       {inspectionUnavailable ? (
-        <p className="text-xs text-amber-700 dark:text-amber-300">Configured root was not inspected.</p>
+        <p className="text-xs text-amber-700 dark:text-amber-300">{translateAgentPage("agents:configured_root_was_not_inspected")}</p>
       ) : missingItems.length > 0 ? (
         <p className="text-xs text-destructive">{missingLabel}: {missingItems.join(", ")}</p>
       ) : null}
@@ -972,6 +945,7 @@ interface PluginConfigFormProps {
  * re-renders on field changes, not the entire page.
  */
 function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -1012,11 +986,11 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: (configJson: Record<string, unknown>) => {
-      if (!companyId) throw new Error("Select an organization before saving plugin configuration.");
+      if (!companyId) throw new Error(translateAgentPage("agents:select_an_organization_before_saving_plugin_configuration"));
       return pluginsApi.saveConfig(pluginId, companyId, configJson);
     },
     onSuccess: () => {
-      setSaveMessage({ type: "success", text: "Configuration saved." });
+      setSaveMessage({ type: "success", text: translateAgentPage("agents:configuration_saved") });
       setTestResult(null);
       if (companyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
@@ -1032,14 +1006,14 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
   // Test configuration mutation
   const testMutation = useMutation({
     mutationFn: (configJson: Record<string, unknown>) => {
-      if (!companyId) throw new Error("Select an organization before testing plugin configuration.");
+      if (!companyId) throw new Error(translateAgentPage("agents:select_an_organization_before_testing_plugin_configuration"));
       return pluginsApi.testConfig(pluginId, companyId, configJson);
     },
     onSuccess: (result) => {
       if (result.valid) {
-        setTestResult({ type: "success", text: "Configuration test passed." });
+        setTestResult({ type: "success", text: translateAgentPage("agents:configuration_test_passed") });
       } else {
-        setTestResult({ type: "error", text: result.message || "Configuration test failed." });
+        setTestResult({ type: "error", text: result.message || translateAgentPage("agents:configuration_test_failed") });
       }
     },
     onError: (err: Error) => {
@@ -1080,9 +1054,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading configuration...
-      </div>
+        <Loader2 className="h-4 w-4 animate-spin" />{translateAgentPage("agents:loading_configuration_16a13f")}</div>
     );
   }
 
@@ -1130,11 +1102,9 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
         >
           {saveMutation.isPending ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Saving...
-            </>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />{translateAgentPage("agents:saving_ae7e88")}</>
           ) : (
-            "Save Configuration"
+            translateAgentPage("agents:save_configuration")
           )}
         </Button>
         {pluginStatus === "ready" && supportsConfigTest && (
@@ -1146,11 +1116,9 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
           >
             {testMutation.isPending ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Testing...
-              </>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />{translateAgentPage("agents:testing")}</>
             ) : (
-              "Test Configuration"
+              translateAgentPage("agents:test_configuration")
             )}
           </Button>
         )}
@@ -1169,22 +1137,22 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
 function formatUptime(uptimeMs: number | null): string {
   if (uptimeMs == null) return "—";
   const totalSeconds = Math.floor(uptimeMs / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return finalPagesT("final-pages:value_s_47c4d1", { value: totalSeconds });
   const minutes = Math.floor(totalSeconds / 60);
-  if (minutes < 60) return `${minutes}m ${totalSeconds % 60}s`;
+  if (minutes < 60) return finalPagesT("final-pages:first_m_second_s_b97502", { first: minutes, second: totalSeconds % 60 });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  if (hours < 24) return finalPagesT("final-pages:first_h_second_m_b508b6", { first: hours, second: minutes % 60 });
   const days = Math.floor(hours / 24);
-  return `${days}d ${hours % 24}h`;
+  return finalPagesT("final-pages:first_d_second_h_2f5174", { first: days, second: hours % 24 });
 }
 
 /**
  * Format a duration in milliseconds to a compact display string.
  */
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
+  if (ms < 1000) return translateAgentPage("agents:ms", { value1: ms });
+  if (ms < 60000) return finalPagesT("final-pages:value_s_47c4d1", { value: (ms / 1000).toFixed(1) });
+  return finalPagesT("final-pages:value_m_99b6e8", { value: (ms / 60000).toFixed(1) });
 }
 
 /**
@@ -1195,15 +1163,15 @@ function formatRelativeTime(isoString: string): string {
   const then = new Date(isoString).getTime();
   const diffMs = now - then;
 
-  if (diffMs < 0) return "just now";
+  if (diffMs < 0) return translateAgentPage("agents:just_now");
   const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return finalPagesT("final-pages:value_s_ago_6fe089", { value: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return translateAgentPage("agents:m_ago", { value1: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return translateAgentPage("agents:h_ago", { value1: hours });
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return translateAgentPage("agents:d_ago", { value1: days });
 }
 
 /**
@@ -1230,7 +1198,7 @@ function JobStatusDot({ status }: { status: string }) {
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
+      title={getPageValueLabel(status)}
     />
   );
 }
@@ -1250,7 +1218,7 @@ function DeliveryStatusDot({ status }: { status: string }) {
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
+      title={getPageValueLabel(status)}
     />
   );
 }

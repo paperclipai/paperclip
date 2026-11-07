@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useId, useState, type ReactNode } from "react";
 import { completedActivitySummary } from "./completed-activity-summary";
 import {
@@ -159,7 +160,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     const running = active && Boolean(item.streaming);
     return {
       icon: Brain,
-      label: running ? "Thinking" : "Thought",
+      label: running ? t("task-components:thinking_a20d12c5") : t("task-chat-ui:thought"),
       target:
         latestReasoningHeadline(item.lines.join("\n")) ??
         item.lines
@@ -195,7 +196,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
   const { used, size, inputTokens, outputTokens, costUsd } = item.usage;
   const usage = [
     size > 0
-      ? `${used.toLocaleString()}/${size.toLocaleString()} ctx`
+      ? t("task-chat-ui:contextTokens", { used: used.toLocaleString(), size: size.toLocaleString() })
       : undefined,
     inputTokens != null || outputTokens != null
       ? `↑${(inputTokens ?? 0).toLocaleString()} ↓${(outputTokens ?? 0).toLocaleString()}`
@@ -206,7 +207,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     .join(" · ");
   return {
     icon: Gauge,
-    label: item.label ?? "Token usage",
+    label: item.label ?? t("task-chat-ui:tokenUsage"),
     target: usage || item.detail,
     mono: false,
     running: false,
@@ -249,6 +250,7 @@ function ActivityRowContent({
   active: boolean;
   taskLabel?: string;
 }) {
+  useTranslation("task-components");
   const row = presentation(item, active, taskLabel);
   const shimmer = useTaskChatShimmer(item.id);
   if (!row) return null;
@@ -345,6 +347,7 @@ function RollingActivity({
   item: Activity;
   active: boolean;
 }) {
+  useTranslation("task-components");
   const reducedMotion = useReducedMotion();
   const [frame, setFrame] = useState({
     current: item,
@@ -396,6 +399,7 @@ function itemAutoReview(item: Activity): TaskChatAutoReview | undefined {
 }
 
 function ActivityDetails({ item }: { item: Activity }) {
+  useTranslation("task-components");
   // Protocol rows render their review inside TaskChatProtocolActivityDetails.
   const autoReview = item.kind === "tool" ? item.autoReview : undefined;
   return (
@@ -407,6 +411,7 @@ function ActivityDetails({ item }: { item: Activity }) {
 }
 
 function ActivityDetailsBody({ item }: { item: Activity }) {
+  useTranslation("task-components");
   if (item.kind === "thinking")
     return <TaskChatReasoningSummary text={item.lines.join("\n")} streaming={Boolean(item.streaming)} />;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
@@ -434,7 +439,7 @@ function ActivityDetailsBody({ item }: { item: Activity }) {
           {item.detail}
         </pre>
       ) : null}
-      {item.decision ? <p>Permission {item.decision}</p> : null}
+      {item.decision ? <p><Trans ns="task-components" i18nKey="sentence_278b2fa839b2" components={{ part1: <>{item.decision}</> }} /></p> : null}
       {item.diff ? (
         <p className="break-all font-mono">
           {item.diff.path} · +{item.diff.added} −{item.diff.removed}
@@ -469,6 +474,7 @@ function ExpandedActivity({
   item: Activity;
   active: boolean;
 }) {
+  useTranslation("task-components");
   const [open, setOpen] = useTaskChatExpansion(
     `runner-detail:${item.id}`,
     false,
@@ -590,6 +596,7 @@ export function TaskChatRunnerActivityGroup({
   item: TaskChatActivityPhaseItem;
   defaultExpanded?: boolean;
 }) {
+  useTranslation("task-components");
   const [expanded, setExpanded] = useTaskChatExpansion(
     item.id,
     defaultExpanded,
@@ -601,7 +608,7 @@ export function TaskChatRunnerActivityGroup({
   const latest = activities.at(-1);
   const summary = completedActivitySummary(activities);
   const SummaryIcon = summary.icon;
-  const countLabel = `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`;
+  const countLabel = activities.length === 1 ? t("task-chat-ui:activityCount", { count: activities.length }) : t("task-chat-ui:activitiesCount", { count: activities.length });
   const editTotals = activities.reduce(
     (sum, activity) =>
       activity.kind === "tool" && activity.diff
@@ -636,7 +643,9 @@ export function TaskChatRunnerActivityGroup({
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
             aria-controls={expanded ? historyId : undefined}
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})`}`}
+            aria-label={expanded
+              ? t("task-chat-ui:collapseActivities", { summary: item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})` })
+              : t("task-chat-ui:expandActivities", { summary: item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})` })}
           >
             {!item.active ? (
               <span
@@ -679,7 +688,7 @@ export function TaskChatRunnerActivityGroup({
             <ol
               id={historyId}
               className="flex min-w-0 flex-col gap-1"
-              aria-label="Activity history"
+              aria-label={t("task-components:activityHistory_e4687518")}
               data-testid="task-chat-runner-activity-list"
             >
               {foldReadRuns(activities).map((row) =>

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 interface OutputVideoPlayerProps {
@@ -17,6 +18,7 @@ interface OutputVideoPlayerProps {
  * A fixed 16:9 box reserves height before metadata loads to avoid layout jump.
  */
 export function OutputVideoPlayer({ src, poster, className, title }: OutputVideoPlayerProps) {
+  useTranslation("task-components");
   return (
     <div className={cn("relative w-full overflow-hidden rounded-md bg-black aspect-video", className)}>
       <video
@@ -25,7 +27,7 @@ export function OutputVideoPlayer({ src, poster, className, title }: OutputVideo
         controls
         preload="metadata"
         playsInline
-        aria-label={title ? `Video output: ${title}` : "Video output"}
+        aria-label={title ? t("task-components:videoOutput_1fd3abb1", { value1: title }) : t("task-components:videoOutput_4dc9f1d0")}
         className="absolute inset-0 h-full w-full"
       />
     </div>

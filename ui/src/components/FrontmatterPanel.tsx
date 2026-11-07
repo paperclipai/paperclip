@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import {
   analyzeFrontmatterBlock,
@@ -199,15 +200,15 @@ function collectValidation(form: FormModel, isSkillFile: boolean): ValidationIss
   const issues: ValidationIssue[] = [];
   const name = form.name.trim();
   const description = form.description.trim();
-  if (isSkillFile && !name) issues.push({ field: "name", message: "SKILL.md needs a name." });
+  if (isSkillFile && !name) issues.push({ field: "name", message: t("task-components:skillMdNeedsAName_a7328230") });
   if (name && !SLUG_RE.test(name)) {
-    issues.push({ field: "name", message: "Use lowercase letters, numbers and hyphens." });
+    issues.push({ field: "name", message: t("task-components:useLowercaseLettersNumbersAndHyphens_b42ce9e4") });
   }
   if (isSkillFile && !description) {
-    issues.push({ field: "description", message: "SKILL.md needs a description." });
+    issues.push({ field: "description", message: t("task-components:skillMdNeedsADescription_2b9040c7") });
   }
   if (form.allowedToolsPresent && form.allowedTools === null) {
-    issues.push({ field: "allowed-tools", message: "Expected a list — edit in YAML." });
+    issues.push({ field: "allowed-tools", message: t("task-components:expectedAListEditInYaml_9a18330d") });
   }
   return issues;
 }
@@ -225,6 +226,7 @@ export function FrontmatterPanel({
   onChange,
   className,
 }: FrontmatterPanelProps) {
+  useTranslation("task-components");
   const isSkillFile = isSkillMarkdown(fileName);
 
   // `yamlText` is the canonical raw block — always equal to whatever we've last
@@ -339,12 +341,12 @@ export function FrontmatterPanel({
             aria-controls="frontmatter-panel-body"
           >
             {chevron}
-            <span className="text-sm font-medium">Frontmatter</span>
+            <span className="text-sm font-medium">{t("task-components:frontmatter_323d638f")}</span>
             {!open && present ? (
               <span className="truncate text-xs text-muted-foreground">{summary}</span>
             ) : null}
             {!open && !present ? (
-              <span className="text-xs text-muted-foreground">None</span>
+              <span className="text-xs text-muted-foreground">{t("task-components:none_dc937b59")}</span>
             ) : null}
           </button>
 
@@ -355,9 +357,7 @@ export function FrontmatterPanel({
             >
               <TabsList variant="line" className="h-7">
                 {canUseFields ? (
-                  <TabsTrigger value="fields" className="px-2 py-0.5 text-xs">
-                    Fields
-                  </TabsTrigger>
+                  <TabsTrigger value="fields" className="px-2 py-0.5 text-xs">{t("task-components:fields_616f48c1")}</TabsTrigger>
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -367,16 +367,10 @@ export function FrontmatterPanel({
                           disabled
                           aria-disabled="true"
                           className="px-2 py-0.5 text-xs opacity-50"
-                        >
-                          Fields
-                        </TabsTrigger>
+                        >{t("task-components:fields_616f48c1")}</TabsTrigger>
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent className="max-w-60">
-                      Switch to YAML to edit. This frontmatter uses YAML features the form can't safely
-                      round-trip (e.g. comments, anchors, or custom ordering). Editing here keeps it
-                      byte-for-byte.
-                    </TooltipContent>
+                    <TooltipContent className="max-w-60">{t("task-components:switchToYamlToEditThisFrontmatter_6a7af0aa")}</TooltipContent>
                   </Tooltip>
                 )}
                 <TabsTrigger value="yaml" className="px-2 py-0.5 text-xs">
@@ -386,15 +380,13 @@ export function FrontmatterPanel({
             </Tabs>
           ) : !readOnly ? (
             <Button variant="ghost" size="sm" onClick={addFrontmatter} data-testid="add-frontmatter">
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Add frontmatter
-            </Button>
+              <Plus className="mr-1 h-3.5 w-3.5" />{t("task-components:addFrontmatter_d3629db0")}</Button>
           ) : null}
 
           {present && effectiveMode === "fields" && warningCount > 0 ? (
             <Badge variant="outline" className="gap-1 text-amber-500" data-testid="frontmatter-warning-chip">
               <AlertTriangle className="h-3.5 w-3.5" />
-              {warningCount} {warningCount === 1 ? "issue" : "issues"}
+              {warningCount} {warningCount === 1 ? t("task-components:issue_4a502846") : t("task-components:issues_02e3fe5a")}
             </Badge>
           ) : null}
         </div>
@@ -420,9 +412,7 @@ export function FrontmatterPanel({
               )}
             </div>
           ) : (
-            <div className="px-3 pb-2 text-xs text-muted-foreground">
-              This file has no frontmatter.
-            </div>
+            <div className="px-3 pb-2 text-xs text-muted-foreground">{t("task-components:thisFileHasNoFrontmatter_e9f9a856")}</div>
           )}
         </CollapsibleContent>
       </Collapsible>
@@ -447,6 +437,7 @@ function fieldWarning(validation: ValidationIssue[], field: string): string | nu
 }
 
 function FieldWarning({ message }: { message: string }) {
+  useTranslation("task-components");
   return (
     <p className="mt-1 flex items-center gap-1 text-xs text-amber-500">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -466,6 +457,7 @@ function FieldsForm({
   readOnly: boolean;
   onCommit: (form: FormModel) => void;
 }) {
+  useTranslation("task-components");
   const nameWarning = fieldWarning(validation, "name");
   const descriptionWarning = fieldWarning(validation, "description");
   const toolsWarning = fieldWarning(validation, "allowed-tools");
@@ -474,9 +466,7 @@ function FieldsForm({
     <div className="space-y-3 pt-1">
       {form.hasName ? (
         <div>
-          <Label htmlFor="fm-name" className="text-xs text-muted-foreground">
-            name
-          </Label>
+          <Label htmlFor="fm-name" className="text-xs text-muted-foreground">{t("task-components:name_82a3537f")}</Label>
           <Input
             id="fm-name"
             value={form.name}
@@ -491,9 +481,7 @@ function FieldsForm({
 
       {form.hasDescription ? (
         <div>
-          <Label htmlFor="fm-description" className="text-xs text-muted-foreground">
-            description
-          </Label>
+          <Label htmlFor="fm-description" className="text-xs text-muted-foreground">{t("task-components:description_c9046f7a")}</Label>
           <Textarea
             id="fm-description"
             value={form.description}
@@ -511,13 +499,13 @@ function FieldsForm({
           <Label className="text-xs text-muted-foreground">allowed-tools</Label>
           {form.allowedTools === null ? (
             <p className="mt-1 text-xs text-amber-500">
-              {toolsWarning ?? "Expected a list — edit in YAML."}
+              {toolsWarning ?? t("task-components:expectedAListEditInYaml_9a18330d")}
             </p>
           ) : (
             <ChipInput
               values={form.allowedTools}
               readOnly={readOnly}
-              placeholder="Add a tool…"
+              placeholder={t("task-components:addATool_b048875c")}
               onChange={(next) => onCommit({ ...form, allowedTools: next })}
             />
           )}
@@ -526,9 +514,9 @@ function FieldsForm({
 
       {form.metadataPresent ? (
         <div>
-          <Label className="text-xs text-muted-foreground">metadata</Label>
+          <Label className="text-xs text-muted-foreground">{t("task-components:metadata_45447b7a")}</Label>
           {form.metadataComplex !== null ? (
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("task-components:complexValueEditInYaml_122b742a")}</p>
           ) : (
             <MetadataRows
               rows={form.metaRows}
@@ -560,7 +548,7 @@ function FieldsForm({
         ) : (
           <div key={row.id}>
             <Label className="text-xs text-muted-foreground">{row.key}</Label>
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("task-components:complexValueEditInYaml_122b742a")}</p>
           </div>
         ),
       )}
@@ -577,6 +565,7 @@ function MetadataRows({
   readOnly: boolean;
   onChange: (rows: ScalarRow[]) => void;
 }) {
+  useTranslation("task-components");
   const update = (index: number, patch: Partial<ScalarRow>) => {
     const next = rows.slice();
     next[index] = { ...next[index]!, ...patch, edited: true };
@@ -597,18 +586,18 @@ function MetadataRows({
       {rows.map((row, index) => (
         <div key={row.id} className="flex items-center gap-1.5">
           <Input
-            aria-label={`Metadata key ${index + 1}`}
+            aria-label={t("task-components:metadataKey_62df6a6d", { value1: index + 1 })}
             value={row.key}
             readOnly={readOnly}
-            placeholder="key"
+            placeholder={t("task-components:key_2c70e12b")}
             onChange={(event) => update(index, { key: event.target.value })}
             className="h-8 flex-1 font-mono text-xs"
           />
           <Input
-            aria-label={`Value for ${row.key || `field ${index + 1}`}`}
+            aria-label={t("task-components:valueFor_3c97e189", { value1: row.key || `field ${index + 1}` })}
             value={row.text}
             readOnly={readOnly}
-            placeholder="value"
+            placeholder={t("task-components:value_cd42404d")}
             onChange={(event) => update(index, { text: event.target.value })}
             className="h-8 flex-1 text-xs"
           />
@@ -617,7 +606,7 @@ function MetadataRows({
               variant="ghost"
               size="icon"
               className="h-8 w-8 shrink-0"
-              aria-label={`Remove ${row.key || `field ${index + 1}`}`}
+              aria-label={t("task-components:remove_d2f6b9b7", { value1: row.key || `field ${index + 1}` })}
               onClick={() => remove(index)}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -627,9 +616,7 @@ function MetadataRows({
       ))}
       {!readOnly ? (
         <Button variant="ghost" size="sm" onClick={add} className="text-xs">
-          <Plus className="mr-1 h-3.5 w-3.5" />
-          add field
-        </Button>
+          <Plus className="mr-1 h-3.5 w-3.5" />{t("task-components:addField_2af202cc")}</Button>
       ) : null}
     </div>
   );
@@ -646,6 +633,7 @@ function ChipInput({
   placeholder?: string;
   onChange: (values: string[]) => void;
 }) {
+  useTranslation("task-components");
   const [draft, setDraft] = useState("");
 
   const commit = () => {
@@ -663,7 +651,7 @@ function ChipInput({
           {!readOnly ? (
             <button
               type="button"
-              aria-label={`Remove ${value}`}
+              aria-label={t("task-components:remove_d2f6b9b7", { value1: value })}
               onClick={() => onChange(values.filter((_, i) => i !== index))}
               className="hover:text-foreground"
             >
@@ -686,7 +674,7 @@ function ChipInput({
             }
           }}
           onBlur={commit}
-          aria-label="Add tool"
+          aria-label={t("task-components:addTool_3076805f")}
           className="min-w-24 flex-1 bg-transparent text-xs outline-none"
         />
       ) : null}
@@ -707,12 +695,13 @@ function YamlEditor({
   parseError: boolean;
   onChange: (value: string) => void;
 }) {
+  useTranslation("task-components");
   return (
     <div className="pt-1">
       {!canReturnToFields && !parseError ? (
         <div className="mb-1.5 flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>Editing raw YAML to preserve formatting the form can't reconstruct.</span>
+          <span>{t("task-components:editingRawYamlToPreserveFormattingThe_995aee50")}</span>
         </div>
       ) : null}
       <Textarea
@@ -722,11 +711,9 @@ function YamlEditor({
         rows={Math.min(12, Math.max(3, value.split("\n").length))}
         onChange={(event) => onChange(event.target.value)}
         className="font-mono text-xs"
-        aria-label="Frontmatter YAML"
+        aria-label={t("task-components:frontmatterYaml_ed16c742")}
       />
-      <p className="mt-1 text-xs text-muted-foreground">
-        Raw YAML is the source of truth in this mode.
-      </p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("task-components:rawYamlIsTheSourceOfTruth_2b3b3fb2")}</p>
     </div>
   );
 }

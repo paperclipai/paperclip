@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useMemo, type CSSProperties } from "react";
 import { Folder, GitBranch, GitBranchPlus, Monitor } from "lucide-react";
 import type { ExecutionWorkspaceSummary } from "@paperclipai/shared";
@@ -25,11 +26,11 @@ interface ComposerWorktreePickerProps {
 }
 
 const MODE_OPTIONS: WorktreeOption[] = [
-  { key: "isolated_workspace", value: "isolated_workspace", mode: "isolated_workspace", label: "New worktree", description: "Start in an isolated checkout." },
-  { key: "shared_workspace", value: "shared_workspace", mode: "shared_workspace", label: "Project workspace", description: "Use the project's shared checkout." },
-  { key: "operator_branch", value: "operator_branch", mode: "operator_branch", label: "New branch", description: "Create a branch in the project workspace." },
-  { key: "agent_default", value: "agent_default", mode: "agent_default", label: "Agent default", description: "Let the agent choose its workspace." },
-  { key: "inherit", value: "inherit", mode: "inherit", label: "Project default", description: "Use the project's worktree settings." },
+  { key: "isolated_workspace", value: "isolated_workspace", mode: "isolated_workspace", get label() { return t("task-components:newWorktree_4f210afe"); }, get description() { return t("task-components:startInAnIsolatedCheckout_3bbfcd45"); } },
+  { key: "shared_workspace", value: "shared_workspace", mode: "shared_workspace", get label() { return t("task-components:projectWorkspace_ce016e7f"); }, get description() { return t("task-components:useTheProjectSSharedCheckout_87c10cff"); } },
+  { key: "operator_branch", value: "operator_branch", mode: "operator_branch", get label() { return t("task-components:newBranch_7f445154"); }, get description() { return t("task-components:createABranchInTheProjectWorkspace_a18ecefd"); } },
+  { key: "agent_default", value: "agent_default", mode: "agent_default", get label() { return t("task-components:agentDefault_90340504"); }, get description() { return t("task-components:letTheAgentChooseItsWorkspace_b2670138"); } },
+  { key: "inherit", value: "inherit", mode: "inherit", get label() { return t("task-components:projectDefault_e8cb80e5"); }, get description() { return t("task-components:useTheProjectSWorktreeSettings_6ae5d813"); } },
 ];
 
 /** Reuses the searchable selector and the existing workspace recency ordering. */
@@ -37,23 +38,24 @@ export function ComposerWorktreePicker({
   mode, workspaceId, workspaces, onChange, loading, error, onRetry,
   disabled, mobile, contentStyle, selectedWorkspaceLabel,
 }: ComposerWorktreePickerProps) {
+  useTranslation("task-components");
   const groups = useMemo(() => [
     { id: "new", options: [MODE_OPTIONS[0]!] },
     {
-      id: "reuse", label: "Reuse a worktree",
+      id: "reuse", label: t("task-components:reuseAWorktree_b15c650e"),
       options: orderReusableExecutionWorkspaces(workspaces).map((workspace): WorktreeOption => ({
         key: `reuse:${workspace.id}`, value: `reuse:${workspace.id}`,
         workspaceId: workspace.id, mode: "reuse_existing", label: workspace.name,
-        description: workspace.branchName ?? "Existing workspace",
+        description: workspace.branchName ?? t("task-chat-ui:existingWorkspace"),
         searchText: `${workspace.branchName ?? ""} ${workspace.id}`,
       })),
     },
     {
-      id: "other", label: "Other options",
+      id: "other", label: t("task-components:otherOptions_2cbe8465"),
       options: MODE_OPTIONS.filter((option) => option.mode === "shared_workspace"
         || (option.mode !== "isolated_workspace" && option.mode === mode)),
     },
-  ], [mode, workspaces]);
+  ], [mode, workspaces, i18n.language]);
 
   const value = mode === "reuse_existing" ? `reuse:${workspaceId}` : mode;
   return (
@@ -61,11 +63,11 @@ export function ComposerWorktreePicker({
       value={value}
       groups={groups}
       onValueChange={(_, option) => onChange(option.mode, option.workspaceId ?? "")}
-      placeholder="Worktrees"
-      triggerAriaLabel="Worktrees"
-      mobileTitle="Worktrees"
-      searchPlaceholder="Search worktrees..."
-      emptyMessage="No matching worktrees."
+      placeholder={t("task-components:worktrees_aec2f93d")}
+      triggerAriaLabel={t("task-chat-ui:worktrees")}
+      mobileTitle={t("task-chat-ui:worktrees")}
+      searchPlaceholder={t("task-chat-ui:searchWorktrees")}
+      emptyMessage={t("task-components:noMatchingWorktrees_220f5956")}
       disabled={disabled}
       modal={mobile}
       contentStyle={contentStyle}
@@ -76,8 +78,8 @@ export function ComposerWorktreePicker({
         <span className="flex min-w-0 items-center gap-1.5">
           <GitBranch className="size-3.5 shrink-0" aria-hidden />
           <span className="truncate">
-            <span className="hidden text-muted-foreground sm:inline">Worktrees · </span>
-            {option?.label ?? selectedWorkspaceLabel ?? "Select worktree"}
+            <span className="hidden text-muted-foreground sm:inline">{t("task-components:worktrees_0b4b48f7")}{" "}</span>
+            {option?.label ?? selectedWorkspaceLabel ?? t("task-components:selectWorktree_0b86e7de")}
           </span>
         </span>
       )}
@@ -96,12 +98,10 @@ export function ComposerWorktreePicker({
       }}
       listFooter={loading || error || workspaces.length === 0 ? (
         <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground" role="status">
-          {loading ? "Loading existing worktrees…" : error ? (
-            <span className="flex items-center justify-between gap-2">
-              Couldn't load worktrees.
-              <button type="button" className="rounded px-2 py-1 text-foreground hover:bg-accent" onClick={onRetry}>Retry</button>
+          {loading ? t("task-components:loadingExistingWorktrees_d52f3d5a") : error ? (
+            <span className="flex items-center justify-between gap-2">{t("task-components:couldnTLoadWorktrees_33ebd590")}<button type="button" className="rounded px-2 py-1 text-foreground hover:bg-accent" onClick={onRetry}>{t("task-components:retry_942087cc")}</button>
             </span>
-          ) : "No existing worktrees yet. Choose New worktree to start one."}
+          ) : t("task-components:noExistingWorktreesYetChooseNewWorktree_3024c664")}
         </div>
       ) : undefined}
     />

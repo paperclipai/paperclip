@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   forwardRef,
   useImperativeHandle,
@@ -113,7 +114,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     value,
     onChange,
     onSubmit,
-    placeholder = "Message…",
+    placeholder = t("final-components-a:message_fc71507e"),
     disabled = false,
     submitting = false,
     submitKey = "mod-enter",
@@ -121,7 +122,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     tone = "standard",
     surface = "card",
     autoFocus = false,
-    sendLabel = "Send message",
+    sendLabel = t("final-components-a:sendMessage_93a26b1e"),
     onAttachFiles,
     attachments = [],
     attaching = false,
@@ -135,6 +136,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   },
   forwardedRef,
 ) {
+  useTranslation("task-components");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -253,9 +255,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-(--blur-1px)"
         >
           <span className="inline-flex items-center gap-2">
-            <Paperclip className="h-3.5 w-3.5" />
-            Drop to attach
-          </span>
+            <Paperclip className="h-3.5 w-3.5" />{t("task-components:dropToAttach_34a7a637")}</span>
         </div>
       ) : null}
 
@@ -288,12 +288,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading…"
+                ? t("task-components:uploading_5ce44dd7")
                 : attachment.status === "error"
-                  ? attachment.error ?? "Upload failed"
+                  ? attachment.error ?? t("task-components:uploadFailed_6efc5d27")
                   : attachment.inline
-                    ? "Inserted inline"
-                    : "Attached";
+                    ? t("task-components:insertedInline_096fb2cc")
+                    : t("task-components:attached_ac6d9b76");
             return (
               <div
                 key={attachment.id}
@@ -342,8 +342,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               type="button"
               onClick={triggerFilePicker}
               disabled={disabled || attaching}
-              aria-label="Attach files"
-              title="Attach files"
+              aria-label={t("task-components:attachFiles_e697cc1e")}
+              title={t("task-components:attachFiles_e697cc1e")}
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}

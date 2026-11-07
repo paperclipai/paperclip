@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation, Trans } from "@/i18n";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
@@ -131,30 +132,23 @@ export interface IssueRecoveryActionCardProps {
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "Missing Disposition",
-  deliberate_wait_without_target: "Wait Without A Target",
-  stranded_assigned_issue: "Stranded Task",
-  workspace_validation: "Workspace Validation",
-  configuration_validation: "Configuration Validation",
-  active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Task Needs Next Step",
+  get missing_disposition() { return t("deep-ui:missing_disposition_5a6469"); },
+  get deliberate_wait_without_target() { return t("deep-ui:wait_without_a_target_e42d92"); },
+  get stranded_assigned_issue() { return t("deep-ui:stranded_task_cd5de6"); },
+  get workspace_validation() { return t("deep-ui:workspace_validation_83db42"); },
+  get configuration_validation() { return t("deep-ui:configuration_validation_2b595e"); },
+  get active_run_watchdog() { return t("deep-ui:active_watchdog_c4490d"); },
+  get issue_graph_liveness() { return t("deep-ui:task_needs_next_step_e8bed1"); },
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition:
-    "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
-  deliberate_wait_without_target:
-    "This task's last run stopped to wait, but there is no reviewer, blocker, monitor, or approval to wait for. Paperclip is repairing the next step; the task stays with its owner.",
-  stranded_assigned_issue:
-    "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
-  workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
-  configuration_validation:
-    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
-  active_run_watchdog:
-    "The active run has been silent. Recovery is observing without interrupting it.",
-  issue_graph_liveness:
-    "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
+  get missing_disposition() { return t("deep-ui:this_task_s_run_finished_but_no_next_step_was_chosen_choose__5c7640"); },
+  get deliberate_wait_without_target() { return t("deep-ui:this_task_s_last_run_stopped_to_wait_but_there_is_no_reviewe_0af056"); },
+  get stranded_assigned_issue() { return t("deep-ui:paperclip_retried_this_task_s_last_run_but_there_is_still_no_a42569"); },
+  get workspace_validation() { return t("deep-ui:paperclip_stopped_this_run_because_the_task_s_git_workspace__d3dc99"); },
+  get configuration_validation() { return t("deep-ui:paperclip_stopped_before_dispatching_this_run_because_requir_e2ceb9"); },
+  get active_run_watchdog() { return t("deep-ui:the_active_run_has_been_silent_recovery_is_observing_without_ffa7d0"); },
+  get issue_graph_liveness() { return t("deep-ui:paperclip_could_not_find_a_clear_next_step_for_this_open_tas_ae6d3d"); },
 };
 
 /** Shared shell for the retry-timing pill so every timing state reads as the same control. */
@@ -171,7 +165,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   divider: string;
 }> = {
   needed: {
-    label: "RECOVERY NEEDED",
+    get label() { return t("task-components:recoveryNeeded_85e5d2f1"); },
     containerClass:
       "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
     iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
@@ -181,7 +175,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
   in_progress: {
-    label: "RECOVERY IN PROGRESS",
+    get label() { return t("task-components:recoveryInProgress_477f0e94"); },
     containerClass:
       "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
     iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
@@ -191,7 +185,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-sky-300/60 dark:border-sky-500/30",
   },
   observe_only: {
-    label: "OBSERVING ACTIVE RUN",
+    get label() { return t("task-components:observingActiveRun_a43568b4"); },
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
@@ -201,7 +195,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-border/70",
   },
   escalated: {
-    label: "RECOVERY ESCALATED",
+    get label() { return t("task-components:recoveryEscalated_f577dda4"); },
     containerClass:
       "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
     iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
@@ -211,7 +205,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-red-400/50 dark:border-red-500/30",
   },
   resolved: {
-    label: "RECOVERY RESOLVED",
+    get label() { return t("task-components:recoveryResolved_ed726d68"); },
     containerClass:
       "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
     iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
@@ -224,10 +218,10 @@ const STATE_TONE: Record<RecoveryCardCardState, {
 
 const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   restored: "restored",
-  handed_back: "handed back to original owner",
-  owner_completed: "completed by recovery owner",
-  delegated: "delegated to follow-up",
-  false_positive: "false positive",
+  get handed_back() { return t("deep-ui:handed_back_to_original_owner_78f657"); },
+  get owner_completed() { return t("deep-ui:completed_by_recovery_owner_2eb97a"); },
+  get delegated() { return t("deep-ui:delegated_to_follow_up_4337e2"); },
+  get false_positive() { return t("deep-ui:false_positive_594d50"); },
   blocked: "blocked",
   escalated: "escalated",
   cancelled: "cancelled",
@@ -397,15 +391,15 @@ const ANCESTRY_BADGE: Record<
   { label: string; className: string }
 > = {
   ancestor: {
-    label: "Forward-only",
+    get label() { return t("task-components:forwardOnly_8ab1faed"); },
     className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   diverged: {
-    label: "Diverged",
+    get label() { return t("task-components:diverged_ec67106c"); },
     className: "border-red-400/50 bg-red-500/10 text-red-700 dark:text-red-300",
   },
   unknown: {
-    label: "Ancestry unknown",
+    get label() { return t("task-components:ancestryUnknown_83119bdb"); },
     className: "border-border bg-muted/60 text-muted-foreground",
   },
 };
@@ -419,6 +413,7 @@ function BranchFacet({
   branch: string | null;
   sha: string | null;
 }) {
+  useTranslation("task-components");
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
@@ -430,7 +425,7 @@ function BranchFacet({
         {branch ? (
           <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-muted-foreground">{t("task-components:detachedUnknown_05fae70b")}</span>
         )}
       </div>
       <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
@@ -447,6 +442,7 @@ function DivergenceDiagnosis({
   divergence: WorkspaceDivergence;
   dividerClass: string;
 }) {
+  useTranslation("task-components");
   const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
   return (
     <div
@@ -457,9 +453,7 @@ function DivergenceDiagnosis({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Divergence diagnosis
-        </span>
+        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:divergenceDiagnosis_02f094ee")}</span>
         <Badge variant="outline"
           data-testid="recovery-ancestry-verdict"
           className={cn(
@@ -472,12 +466,12 @@ function DivergenceDiagnosis({
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <BranchFacet
-          label="Expected · recorded"
+          label={t("task-components:expectedRecorded_42e4fef0")}
           branch={divergence.expectedBranch}
           sha={divergence.expectedHeadSha}
         />
         <BranchFacet
-          label="Live · checked out"
+          label={t("task-components:liveCheckedOut_842e7ba2")}
           branch={divergence.liveBranch}
           sha={divergence.liveHeadSha}
         />
@@ -491,12 +485,7 @@ function DivergenceDiagnosis({
           className="flex items-start gap-1.5 rounded-md border border-amber-400/40 bg-amber-500/5 px-2.5 py-1.5 text-xs leading-5 text-amber-900 dark:text-amber-200"
         >
           <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>
-            Worktree claimed by{" "}
-            <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
-            {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
-            can&apos;t run while another workspace holds the live branch.
-          </span>
+          <span><Trans ns="task-components" i18nKey="sentence_b036568ba00e" components={{ part1: <>{<code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>}</>, part2: <>{divergence.contention.hasActiveRun ? t("task-components:activeRun_66a9e1b6") : t("task-components:claimHeld_20b3f865")}</> }} /></span>
         </p>
       ) : null}
     </div>
@@ -506,7 +495,7 @@ function DivergenceDiagnosis({
 function contentionLabel(contention: WorkspaceContention): string {
   return (
     contention.claimedByIssueIdentifier ??
-    (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
+    (contention.claimedByIssueId ? t("deep-ui:recovery_claiming_issue", { id: contention.claimedByIssueId.slice(0, 8) }) : t("deep-ui:another_task_ffc544"))
   );
 }
 
@@ -526,6 +515,7 @@ function BreakGlassOverride({
   onConfirm: (reason: string) => void;
   pending: boolean;
 }) {
+  useTranslation("task-components");
   const [reason, setReason] = useState("");
   const trimmedReason = reason.trim();
   const canSubmit = trimmedReason.length > 0 && !pending;
@@ -543,9 +533,7 @@ function BreakGlassOverride({
           data-testid="recovery-action-breakglass-trigger"
           className="border-red-400/60 text-red-700 hover:bg-red-500/10 dark:border-red-500/40 dark:text-red-300"
         >
-          <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-          I&apos;ve verified this — reconcile anyway
-        </Button>
+          <OctagonAlert className="h-3.5 w-3.5" aria-hidden />{t("task-components:iVeVerifiedThisReconcileAnyway_d3c10467")}</Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
@@ -558,48 +546,40 @@ function BreakGlassOverride({
             id="recovery-breakglass-title"
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
           >
-            <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-            Break-glass reconciliation
-          </div>
-          <p className="text-xs leading-5 text-muted-foreground">
-            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
-            branch{" "}
-            <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
-            the divergence below and record why before continuing.
-          </p>
+            <OctagonAlert className="h-3.5 w-3.5" aria-hidden />{t("task-components:breakGlassReconciliation_73512366")}</div>
+          <p className="text-xs leading-5 text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_a2cac01eb39e" components={{ part1: <>{<span className="font-medium text-foreground/80">{t("task-components:withoutAnAncestryProof_d4c337c4")}</span>}</> }} /></p>
         </div>
         <dl
           data-testid="recovery-breakglass-restated-divergence"
           className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:recordedExpected_1869f1a4")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "detached"}
+              {divergence.expectedBranch ?? t("task-components:detached_88e34e4c")}
               {expectedSha ? ` @ ${expectedSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:liveCheckedOut_842e7ba2")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
+              {divergence.liveBranch ?? t("task-components:detached_88e34e4c")}
               {liveSha ? ` @ ${liveSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:ancestryVerdict_bee6031b")}</dt>
             <dd className="font-medium">{verdictBadge.label}</dd>
           </div>
         </dl>
         <div className="space-y-1">
-          <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">
-            Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+          <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">{t("task-components:reason_f81ab834")}{" "}<span className="text-red-600 dark:text-red-400">{t("task-components:requiredRecordedInTheAuditLog_b0e8acff")}</span>
           </Label>
           <Textarea
             id="recovery-breakglass-reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
+            placeholder={t("task-components:eGVerifiedTheLiveBranchCarries_df2b78ba")}
             className="min-h-20 text-xs"
             data-testid="recovery-breakglass-reason"
             aria-required="true"
@@ -617,7 +597,7 @@ function BreakGlassOverride({
             onConfirm(trimmedReason);
           }}
         >
-          {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+          {pending ? t("task-components:reconciling_8adbed64") : t("task-components:reconcileAnywayBreakGlass_b9913635")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -645,11 +625,12 @@ function RepairWorkspace({
   disabled: boolean;
   disabledReason: string | null;
 }) {
+  useTranslation("task-components");
   const dirtyCount = divergence.dirtyFileCount;
   const dirtyLabel =
     dirtyCount === null
-      ? "Uncommitted changes"
-      : `${dirtyCount} uncommitted ${dirtyCount === 1 ? "change" : "changes"}`;
+      ? t("deep-ui:uncommitted_changes_a388bd")
+      : t("deep-ui:recovery_dirty_count", { count: dirtyCount });
   const trigger = (
     <Button
       type="button"
@@ -663,9 +644,7 @@ function RepairWorkspace({
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
       ) : (
         <Wrench className="h-3.5 w-3.5" aria-hidden />
-      )}
-      Repair workspace — quarantine changes &amp; restore branch
-    </Button>
+      )}{t("task-components:repairWorkspaceQuarantineChangesRestoreBranch_e8da323d")}</Button>
   );
   if (disabled) {
     // Contended: the server refuses the repair, so render a plainly disabled control with the reason
@@ -695,34 +674,28 @@ function RepairWorkspace({
             id="recovery-repair-title"
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
           >
-            <Wrench className="h-3.5 w-3.5" aria-hidden />
-            Repair workspace
-          </div>
-          <p className="text-xs leading-5 text-muted-foreground">
-            This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
-            rescue branch, then the recorded branch is restored so the task can resume. The live branch
-            is left exactly as it is.
-          </p>
+            <Wrench className="h-3.5 w-3.5" aria-hidden />{t("task-components:repairWorkspace_152f148b")}</div>
+          <p className="text-xs leading-5 text-muted-foreground">{t("task-components:thisIsLosslessNoReasonRequiredYour_d38bf6fc")}</p>
         </div>
         <dl
           data-testid="recovery-repair-restated"
           className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:dirtyChanges_29f59cc3")}</dt>
             <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
               {dirtyLabel}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:liveBranch_b0d6b594")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
-              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+              {divergence.liveBranch ?? t("task-components:detached_88e34e4c")}
+              <span className="ml-1 font-sans text-muted-foreground">{t("task-components:leftUntouched_2500b7ae")}</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:rescueBranch_e1151230")}</dt>
             <dd
               data-testid="recovery-repair-rescue-branch"
               className="min-w-0 truncate font-mono text-foreground/90"
@@ -732,9 +705,9 @@ function RepairWorkspace({
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("task-components:restoreTo_9d1b6771")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "recorded branch"}
+              {divergence.expectedBranch ?? t("task-components:recordedBranch_9a6e1632")}
             </dd>
           </div>
         </dl>
@@ -749,7 +722,7 @@ function RepairWorkspace({
             onConfirm();
           }}
         >
-          {pending ? "Repairing…" : "Quarantine changes & restore branch"}
+          {pending ? t("task-components:repairing_fb4c616e") : t("task-components:quarantineChangesRestoreBranch_e648b8fc")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -761,17 +734,17 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "An agent will be asked to choose the next step";
+  if (type === "wake_owner") return t("deep-ui:an_agent_will_be_asked_to_choose_the_next_step_9beb9b");
   if (type === "bounded_owner_disposition_repair") {
-    return "Paperclip is retrying the original owner";
+    return t("deep-ui:paperclip_is_retrying_the_original_owner_833a8a");
   }
-  if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
-  if (type === "board_escalation") return "Board decision required";
-  if (type === "manual") return "Manual follow-up needed";
-  if (type === "manual_repair_required") return "Repair needed before retry";
+  if (type === "bounded_recovery_owner") return t("deep-ui:a_recovery_owner_is_repairing_the_next_step_f927e4");
+  if (type === "board_escalation") return t("deep-ui:board_decision_required_e69366");
+  if (type === "manual") return t("deep-ui:manual_follow_up_needed_9bd119");
+  if (type === "manual_repair_required") return t("deep-ui:repair_needed_before_retry_a014a1");
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Check scheduled · ${interval}` : "Check scheduled";
+    return interval ? t("deep-ui:recovery_check_scheduled", { interval }) : t("deep-ui:check_scheduled_c0f5c8");
   }
   return type.replaceAll("_", " ");
 }
@@ -785,9 +758,9 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0 ? t("deep-ui:recovery_in_minutes", { minutes: absMin }) : t("task-components:mAgo_28f5747c", { value1: absMin });
     }
-    return date.toLocaleString(undefined, {
+    return date.toLocaleString(i18n.language, {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -811,6 +784,7 @@ function MetadataRow({
   label: string;
   children: React.ReactNode;
 }) {
+  useTranslation("task-components");
   return (
     <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
       <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -822,6 +796,7 @@ function MetadataRow({
 }
 
 function MissingValue() {
+  useTranslation("task-components");
   return <span className="text-muted-foreground">—</span>;
 }
 
@@ -834,11 +809,12 @@ function AgentLink({
   agentMap?: ReadonlyMap<string, Agent>;
   fallback?: string | null;
 }) {
+  useTranslation("task-components");
   if (!agentId) {
     return fallback ? <span>{fallback}</span> : <MissingValue />;
   }
   const agent = agentMap?.get(agentId);
-  const label = agent?.name ?? `agent ${agentId.slice(0, 8)}`;
+  const label = agent?.name ?? t("deep-ui:recovery_agent_id", { id: agentId.slice(0, 8) });
   if (agent) {
     return (
       <Link
@@ -861,12 +837,13 @@ function RunChip({
   agentId: string | null | undefined;
   status?: string | null;
 }) {
+  useTranslation("task-components");
   if (!runId) return <MissingValue />;
   const short = shortenRunId(runId);
   const inner = (
     <>
       <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
-        run {short}
+        {t("final-boundary:runLabel", { id: short })}
       </code>
       {status ? (
         <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
@@ -890,7 +867,7 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(i18n.language, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -904,30 +881,31 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
   if (lineage.lane === "native_run") {
-    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
-    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
-    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
-    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
-    return "The existing run still needs recovery. Review the recorded failure before retrying.";
+    if (lineage.liveRunId) return t("deep-ui:paperclip_is_recovering_the_existing_run_e42d42");
+    if (lineage.exhausted) return t("deep-ui:paperclip_could_not_recover_the_existing_run_within_its_retr_f094d6");
+    if (lineage.retryExpired) return t("deep-ui:the_retry_for_the_existing_run_came_due_and_did_not_start_re_0d510e");
+    if (lineage.nextRetryAt) return t("deep-ui:paperclip_has_scheduled_another_attempt_to_resume_the_existi_57633e");
+    return t("deep-ui:the_existing_run_still_needs_recovery_review_the_recorded_fa_79370a");
   }
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
+    return t("deep-ui:this_task_s_automatic_retry_came_due_and_did_not_run_so_noth_5f7988");
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
-      ? "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner."
-      : "This task's last run stopped to wait, but nothing was waiting for it. Paperclip is retrying the original owner to record a real next step. The task stays with its owner, and no action is needed yet.";
+      ? t("deep-ui:this_task_s_last_run_stopped_to_wait_but_nothing_was_waiting_03ede3")
+      : t("deep-ui:this_task_s_last_run_stopped_to_wait_but_nothing_was_waiting_66f300");
   }
   if (lineage.lane === "recovery_owner") {
-    return "The original owner could not record a next step within its retry budget. A recovery owner is now repairing the path only — the task itself still belongs to its original owner.";
+    return t("deep-ui:the_original_owner_could_not_record_a_next_step_within_its_r_87adaa");
   }
-  return "Automatic recovery is exhausted, so the board must choose the next step. The task itself still belongs to its original owner.";
+  return t("deep-ui:automatic_recovery_is_exhausted_so_the_board_must_choose_the_efd50a");
 }
 
 /** Spent/remaining attempts as pips. The readable count lives beside it in text. */
 function AttemptMeter({ lineage }: { lineage: RecoveryRetryLineage }) {
+  useTranslation("task-components");
   if (lineage.maxAttempts === null || lineage.maxAttempts > 12) return null;
   const spent = Math.min(lineage.attempt, lineage.maxAttempts);
   return (
@@ -954,30 +932,30 @@ const RESOLVE_OPTIONS: Array<{
 }> = [
   {
     outcome: "todo",
-    label: "Try again",
-    description: "Dismiss recovery and return the source task to todo.",
+    get label() { return t("task-components:tryAgain_d8b8392e"); },
+    get description() { return t("task-components:dismissRecoveryAndReturnTheSourceTask_349c0362"); },
   },
   {
     outcome: "done",
-    label: "Mark task done",
-    description: "Restore by recording the requested work as complete.",
+    get label() { return t("task-components:markTaskDone_b33502ef"); },
+    get description() { return t("task-components:restoreByRecordingTheRequestedWorkAs_c6d92468"); },
   },
   {
     outcome: "in_review",
-    label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
+    get label() { return t("task-components:sendForReview_f7cb7531"); },
+    get description() { return t("task-components:handOffToAReviewerWithA_6c2fe06e"); },
   },
   {
     outcome: "false_positive_done",
-    label: "False positive, done",
-    description: "Dismiss recovery and mark the source task complete.",
+    get label() { return t("task-components:falsePositiveDone_d72c84ea"); },
+    get description() { return t("task-components:dismissRecoveryAndMarkTheSourceTask_887a2af6"); },
     destructive: true,
     boardOnly: true,
   },
   {
     outcome: "false_positive_in_review",
-    label: "False positive, review",
-    description: "Dismiss recovery and send the source task for review.",
+    get label() { return t("task-components:falsePositiveReview_26b07b9b"); },
+    get description() { return t("task-components:dismissRecoveryAndSendTheSourceTask_fecfa574"); },
     destructive: true,
     boardOnly: true,
   },
@@ -1001,6 +979,7 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
+  useTranslation("task-components");
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
@@ -1011,14 +990,14 @@ export function IssueRecoveryActionCard({
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
-      return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
+      return t("deep-ui:recovery_resolved_as", { outcome: OUTCOME_LABEL[action.outcome] ?? action.outcome });
     }
     if (
       (cardState === "needed" || cardState === "escalated") &&
       action.kind === "active_run_watchdog" &&
       action.ownerType === "board"
     ) {
-      return "This recovery needs a human decision. Review the recorded failure and choose the next step.";
+      return t("deep-ui:this_recovery_needs_a_human_decision_review_the_recorded_fai_bdc727");
     }
     if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
@@ -1027,9 +1006,9 @@ export function IssueRecoveryActionCard({
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.
   const wakeSummary = lineage?.retryExpired
-    ? "The scheduled retry did not run — a retry or a decision is needed"
+    ? t("deep-ui:the_scheduled_retry_did_not_run_a_retry_or_a_decision_is_nee_ed36a2")
     : lineage?.exhausted && !lineage.liveRunId && lineage.lane !== "board"
-    ? "Automatic retries are finished — a decision is needed"
+    ? t("deep-ui:automatic_retries_are_finished_a_decision_is_needed_82f7e2")
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
   const sourceRunId = readEvidenceRunId(action, "sourceRunId") ?? readEvidenceRunId(action, "latestRunId");
@@ -1060,8 +1039,8 @@ export function IssueRecoveryActionCard({
 
   const ariaState = ({
     needed: "needed",
-    in_progress: "in progress",
-    observe_only: "observing active run",
+    in_progress: t("deep-ui:in_progress_2b6b85"),
+    observe_only: t("deep-ui:observing_active_run_70a09b"),
     escalated: "escalated",
     resolved: "resolved",
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
@@ -1108,7 +1087,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)}${showReissueAction ? " — re-issue on an isolated workspace instead." : "."}`
+    ? showReissueAction ? t("deep-ui:recovery_held_reissue", { owner: contentionLabel(repairContention) }) : t("deep-ui:recovery_held", { owner: contentionLabel(repairContention) })
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1125,7 +1104,7 @@ export function IssueRecoveryActionCard({
   return (
     <section
       role="status"
-      aria-label={`Recovery action: ${ariaState}`}
+      aria-label={t("task-components:recoveryAction_68da7343", { value1: ariaState })}
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       data-recovery-lane={lineage?.lane}
@@ -1168,7 +1147,7 @@ export function IssueRecoveryActionCard({
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
         {lineage ? (
           <>
-            <MetadataRow label="Task owner">
+            <MetadataRow label={t("task-components:taskOwner_e600ccf8")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-source-owner"
@@ -1178,10 +1157,10 @@ export function IssueRecoveryActionCard({
                   agentMap={agentMap}
                   fallback="unassigned"
                 />
-                <span className="text-muted-foreground">keeps this task</span>
+                <span className="text-muted-foreground">{t("task-components:keepsThisTask_6fffd595")}</span>
               </span>
             </MetadataRow>
-            <MetadataRow label="Recovery owner">
+            <MetadataRow label={t("task-components:recoveryOwner_27c6c04c")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-recovery-owner"
@@ -1189,28 +1168,28 @@ export function IssueRecoveryActionCard({
                 {lineage.lane === "native_run" && (action.ownerType !== "board" || Boolean(lineage.liveRunId)) ? (
                   <>
                     <span className="font-medium">Paperclip</span>
-                    <span className="text-muted-foreground">recovers the existing run</span>
+                    <span className="text-muted-foreground">{t("task-components:recoversTheExistingRun_12f7f1d3")}</span>
                   </>
                 ) : recoveryOwnerIsSourceOwner ? (
-                  <span className="font-medium">Original owner — retrying itself</span>
+                  <span className="font-medium">{t("task-components:originalOwnerRetryingItself_21196882")}</span>
                 ) : action.ownerType === "agent" && action.ownerAgentId ? (
                   <>
                     <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
-                    <span className="text-muted-foreground">repairs the next step only</span>
+                    <span className="text-muted-foreground">{t("task-components:repairsTheNextStepOnly_907769bc")}</span>
                   </>
                 ) : action.ownerType === "board" ? (
                   <>
-                    <span className="font-medium">Board</span>
-                    <span className="text-muted-foreground">decides the next step only</span>
+                    <span className="font-medium">{t("task-components:board_4816cbfd")}</span>
+                    <span className="text-muted-foreground">{t("task-components:decidesTheNextStepOnly_425ea666")}</span>
                   </>
                 ) : action.ownerType === "user" && action.ownerUserId ? (
-                  <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+                  <span className="font-medium"><Trans ns="task-components" i18nKey="sentence_0629bedc93f7" components={{ part1: <>{action.ownerUserId.slice(0, 6)}</> }} /></span>
                 ) : (
-                  <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+                  <span className="text-muted-foreground">{t("task-components:unassignedPickOneToWakeThem_68903e71")}</span>
                 )}
               </span>
             </MetadataRow>
-            <MetadataRow label="Retry progress">
+            <MetadataRow label={t("task-components:retryProgress_edb85d9f")}>
               <span
                 className="inline-flex flex-wrap items-center gap-x-2 gap-y-1"
                 data-testid="recovery-retry-progress"
@@ -1219,15 +1198,13 @@ export function IssueRecoveryActionCard({
                 data-recovery-max-attempts={lineage.maxAttempts ?? undefined}
               >
                 <AttemptMeter lineage={lineage} />
-                <span>{attemptLabel ?? "Attempts not bounded"}</span>
+                <span>{attemptLabel ?? t("task-components:attemptsNotBounded_3ccd1bed")}</span>
                 {lineage.liveRunId ? (
                   <span
                     className={RETRY_PILL_CLASS}
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
-                  >
-                    Attempt running now
-                  </span>
+                  >{t("task-components:attemptRunningNow_5ff77617")}</span>
                 ) : lineage.retryExpired ? (
                   // The due time is stated plainly as missed. Rendering it as "Next try 5m
                   // ago" is what made an abandoned lane read as healthy recovery.
@@ -1237,7 +1214,7 @@ export function IssueRecoveryActionCard({
                     data-testid="recovery-next-retry"
                     data-recovery-retry-expired="true"
                   >
-                    {retryOffset ? `Retry missed ${retryOffset}` : "Retry missed"}
+                    {retryOffset ? t("task-components:retryMissed_80eb02e6", { value1: retryOffset }) : t("task-components:retryMissed_a3e392ad")}
                   </span>
                 ) : retryOffset ? (
                   <span
@@ -1245,59 +1222,54 @@ export function IssueRecoveryActionCard({
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
-                    {retryOffset === "now" ? "Next try now" : `Next try ${retryOffset}`}
+                    {retryOffset === "now" ? t("task-components:nextTryNow_3101ffa0") : t("task-components:nextTry_c3c3652c", { value1: retryOffset })}
                   </span>
                 ) : lineage.exhausted ? (
-                  <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">
-                    Automatic retries used up
-                  </span>
+                  <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">{t("task-components:automaticRetriesUsedUp_d074fd7d")}</span>
                 ) : null}
               </span>
             </MetadataRow>
             {lineage.lane !== "source_owner" && lineage.sourceMaxAttempts !== null ? (
-              <MetadataRow label="Owner retries">
-                <span data-testid="recovery-source-attempts">
-                  The original owner used {lineage.sourceAttempt ?? lineage.sourceMaxAttempts} of{" "}
-                  {lineage.sourceMaxAttempts} automatic attempts.
-                </span>
+              <MetadataRow label={t("task-components:ownerRetries_1db44f58")}>
+                <span data-testid="recovery-source-attempts">{t("deep-ui:recovery_source_attempts", { attempts: lineage.sourceAttempt ?? lineage.sourceMaxAttempts, max: lineage.sourceMaxAttempts })}</span>
               </MetadataRow>
             ) : null}
           </>
         ) : (
-        <MetadataRow label="Owner">
+        <MetadataRow label={t("task-components:owner_4b1b8aa3")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">{t("task-components:recovery_a812f4b2")}</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
-              <span className="font-medium">Board</span>
+              <span className="font-medium">{t("task-components:board_4816cbfd")}</span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
-              <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+              <span className="font-medium"><Trans ns="task-components" i18nKey="sentence_0629bedc93f7" components={{ part1: <>{action.ownerUserId.slice(0, 6)}</> }} /></span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">{t("task-components:system_6725e7bb")}</span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-muted-foreground">{t("task-components:unassignedPickOneToWakeThem_68903e71")}</span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-muted-foreground">{t("task-components:returnsTo_1e820759")}</span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
           </span>
         </MetadataRow>
         )}
-        <MetadataRow label="Source run">
+        <MetadataRow label={t("task-components:sourceRun_bb84312e")}>
           <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
         </MetadataRow>
         {correctiveRunId ? (
-          <MetadataRow label="Corrective run">
+          <MetadataRow label={t("task-components:correctiveRun_87e1de42")}>
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
           </MetadataRow>
         ) : null}
-        <MetadataRow label="Evidence">
+        <MetadataRow label={t("task-components:evidence_03867aea")}>
           {evidenceSummary ? (
             evidenceSummary.isCode ? (
               <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
@@ -1310,30 +1282,23 @@ export function IssueRecoveryActionCard({
             <MissingValue />
           )}
         </MetadataRow>
-        <MetadataRow label="Next action">
+        <MetadataRow label={t("task-components:nextAction_365987d0")}>
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Follow-up">
+        <MetadataRow label={t("task-components:followUp_09b2d9cd")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                attempt {action.attemptCount} of {action.maxAttempts}
-              </span>
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">{t("final-boundary:attemptBudget", { attempt: action.attemptCount, max: action.maxAttempts })}</span>
             ) : null}
             {showTimeoutInline ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
-              </span>
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_da7a86f25072" components={{ part1: <>{formatTimeShort(action.timeoutAt) ?? t("task-components:soon_4a754148")}</> }} /></span>
             ) : null}
           </span>
         </MetadataRow>
         {cardState === "resolved" && action.outcome ? (
-          <MetadataRow label="Resolution">
-            <span className={cn("font-medium", tone.labelClass)}>
-              Resolved as {OUTCOME_LABEL[action.outcome]}
-              {action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}
-            </span>
+          <MetadataRow label={t("task-components:resolution_d4055faf")}>
+            <span className={cn("font-medium", tone.labelClass)}><Trans ns="task-components" i18nKey="sentence_127fda420ae8" components={{ part1: <>{OUTCOME_LABEL[action.outcome]}</>, part2: <>{action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}</> }} /></span>
           </MetadataRow>
         ) : null}
       </dl>
@@ -1349,19 +1314,15 @@ export function IssueRecoveryActionCard({
                   size="sm"
                   variant="default"
                   data-testid="recovery-action-resolve-trigger"
-                  aria-label="Resolve recovery"
-                >
-                  Resolve…
-                </Button>
+                  aria-label={t("task-components:resolveRecovery_0e77e521")}
+                >{t("task-components:resolve_a55fea56")}</Button>
               </PopoverTrigger>
               <PopoverContent
                 align="start"
                 sideOffset={6}
                 className="w-72 p-1.5"
               >
-                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                  Resolve recovery
-                </div>
+                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:resolveRecovery_0e77e521")}</div>
                 <div className="flex flex-col">
                   {visibleResolveOptions.map((option) => (
                     <button
@@ -1395,9 +1356,7 @@ export function IssueRecoveryActionCard({
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
               ) : (
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-              )}
-              Reconcile forward &amp; continue
-            </Button>
+              )}{t("task-components:reconcileForwardContinue_b2b80494")}</Button>
           ) : null}
           {showRepairAction && divergence ? (
             <RepairWorkspace
@@ -1423,42 +1382,33 @@ export function IssueRecoveryActionCard({
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                   ) : (
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
-                  )}
-                  Re-issue on isolated workspace
-                  {reissueRecommended ? (
+                  )}{t("task-components:reIssueOnIsolatedWorkspace_21625ad5")}{reissueRecommended ? (
                     <span
                       data-testid="recovery-reissue-recommended"
                       className="ml-1 rounded-sm bg-background/25 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)"
-                    >
-                      Recommended
-                    </span>
+                    >{t("task-components:recommended_d70604e8")}</span>
                   ) : null}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
-                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Re-issue on isolated workspace
-                  </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    Creates a fresh copy of this task on an isolated git worktree based on the live
-                    branch. Your current workspace and its commits are left untouched.
-                  </p>
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:reIssueOnIsolatedWorkspace_21625ad5")}</div>
+                  <p className="text-xs leading-5 text-muted-foreground">{t("task-components:createsAFreshCopyOfThisTask_251d91cd")}</p>
                 </div>
                 <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Base ref</dt>
+                    <dt className="text-muted-foreground">{t("task-components:baseRef_9c6c10f9")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Recorded</dt>
+                    <dt className="text-muted-foreground">{t("task-components:recorded_c7175fa7")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/80">
                       {divergence.expectedBranch ?? "—"}
                     </dd>
                   </div>
                   {reissueVerdictBadge ? (
                     <div className="flex items-center justify-between gap-2">
-                      <dt className="text-muted-foreground">Ancestry</dt>
+                      <dt className="text-muted-foreground">{t("task-components:ancestry_65a04682")}</dt>
                       <dd className="font-medium">{reissueVerdictBadge.label}</dd>
                     </div>
                   ) : null}
@@ -1478,7 +1428,7 @@ export function IssueRecoveryActionCard({
                     })
                   }
                 >
-                  {reissuePending ? "Creating…" : "Create isolated re-issue"}
+                  {reissuePending ? t("task-components:creating_c79ed949") : t("task-components:createIsolatedReIssue_3d7a1128")}
                 </Button>
               </PopoverContent>
             </Popover>
@@ -1492,13 +1442,9 @@ export function IssueRecoveryActionCard({
           ) : null}
           {showResolveActions ? (
             cardState === "observe_only" ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                Recovery is observing without interrupting the live run.
-              </span>
+              <span className="text-(length:--text-micro) text-muted-foreground">{t("task-components:recoveryIsObservingWithoutInterruptingTheLive_b2a50809")}</span>
             ) : (
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                The card stays open until an explicit decision is recorded.
-              </span>
+              <span className="text-(length:--text-micro) text-muted-foreground">{t("task-components:theCardStaysOpenUntilAnExplicit_84526fce")}</span>
             )
           ) : null}
         </div>

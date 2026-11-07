@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { createContext, useContext, type ReactNode } from "react";
 import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
@@ -88,6 +89,7 @@ export function SidebarNavItem({
   trailingLabel,
   liveAccessory,
 }: SidebarNavItemProps) {
+  const { t } = useTranslation("navigation");
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
   // sidebar preference is collapsed.
@@ -104,15 +106,15 @@ export function SidebarNavItem({
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
   const railStatusText = hasLive
-    ? `${liveCount} live`
+    ? t("indicators.live", { count: liveCount })
     : hasBadge
-      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
+      ? badgeLabel ? t("indicators.badge", { count: badge, badgeLabel }) : String(badge)
       : alert
-        ? "attention needed"
+        ? t("indicators.attention")
         : undefined;
   const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
     ? undefined
-    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
+    : [railStatusText, trailingLabel].filter(Boolean).reduce<string>((text, status) => t("indicators.withStatus", { label: text, status }), label);
 
   const link = (
     <NavLink
@@ -191,14 +193,14 @@ export function SidebarNavItem({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{t("indicators.live", { count: liveCount })}</span>
             </>
           )}
         </span>
       )}
       {!rail && hasBadge && (
         <Badge variant="ghost"
-          aria-label={badgeLabel ? `${badge} ${badgeLabel}` : undefined}
+          aria-label={badgeLabel ? t("indicators.badge", { count: badge, badgeLabel }) : undefined}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"

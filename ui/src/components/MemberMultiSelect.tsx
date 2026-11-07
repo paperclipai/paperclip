@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { Identity } from "@/components/Identity";
@@ -44,9 +45,9 @@ export function MemberMultiSelect({
   triggerFullWidth = true,
   triggerClassName,
   contentAlign = "start",
-  emptyMessage = "No members yet.",
+  emptyMessage = t("final-components-a:noMembersYet_12dc83c5"),
   showSelectionPreview = true,
-  filterPlaceholder = "Filter people",
+  filterPlaceholder = t("final-components-a:filterPeople_a0005572"),
   onOpenChange,
 }: {
   members: MemberMultiSelectOption[];
@@ -68,6 +69,7 @@ export function MemberMultiSelect({
   filterPlaceholder?: string;
   onOpenChange?: (open: boolean) => void;
 }): ReactNode {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const [draftUserIds, setDraftUserIds] = useState<Set<string>>(new Set(selectedUserIds));
@@ -123,8 +125,8 @@ export function MemberMultiSelect({
             <span className="flex min-w-0 items-center">
               <span className="truncate">
                 {triggerLabel ?? (selectedCount === 0
-                  ? "Select people"
-                  : `${selectedCount} ${selectedCount === 1 ? "person" : "people"} selected`)}
+                  ? t("task-components:selectPeople_45008c0d")
+                  : t("task-components:selected_c735a2f0", { value1: selectedCount, value2: selectedCount === 1 ? "person" : "people" }))}
               </span>
             </span>
             <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -160,7 +162,7 @@ export function MemberMultiSelect({
                   >
                     <Checkbox
                       checked={workingUserIds.has(member.userId)}
-                      aria-label={`Allow ${label}`}
+                      aria-label={t("task-components:allow_791559eb", { value1: label })}
                       onCheckedChange={(checked) => {
                         const next = new Set(workingUserIds);
                         if (checked) next.add(member.userId);
@@ -178,19 +180,17 @@ export function MemberMultiSelect({
                 );
               })}
               {filteredMembers.length === 0 ? (
-                <div className="px-3 py-4 text-sm text-muted-foreground">No matches.</div>
+                <div className="px-3 py-4 text-sm text-muted-foreground">{t("task-components:noMatches_d6572bd2")}</div>
               ) : null}
             </div>
           )}
           <div className="flex items-center justify-between border-t border-border px-3 py-2">
             <span className="text-xs text-muted-foreground" aria-live="polite">
-              {workingUserIds.size === 0 ? "No people selected" : `${workingUserIds.size} selected`}
+              {workingUserIds.size === 0 ? t("task-components:noPeopleSelected_24d7ce45") : t("task-components:selected_601c71c8", { value1: workingUserIds.size })}
             </span>
             <div className="flex items-center gap-2">
               {staged ? (
-                <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>
-                  Cancel
-                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>{t("task-components:cancel_19766ed6")}</Button>
               ) : null}
               <Button
                 type="button"
@@ -201,7 +201,7 @@ export function MemberMultiSelect({
                 }}
                 disabled={pending}
               >
-                {staged ? (pending ? "Saving…" : "Save") : "Done"}
+                {staged ? (pending ? t("task-components:saving_23e39291") : t("task-components:save_1509f561")) : t("task-components:done_11a6767d")}
               </Button>
             </div>
           </div>
@@ -215,9 +215,7 @@ export function MemberMultiSelect({
             </div>
           ))}
           {selectedMembers.length > 3 ? (
-            <p className="px-1.5 pt-0.5 text-xs text-muted-foreground">
-              and {selectedMembers.length - 3} more
-            </p>
+            <p className="px-1.5 pt-0.5 text-xs text-muted-foreground"><Trans ns="final-components-a" i18nKey="numeric_9f007ca7827d" values={{ length3: selectedMembers.length - 3 }} /></p>
           ) : null}
         </div>
       ) : null}

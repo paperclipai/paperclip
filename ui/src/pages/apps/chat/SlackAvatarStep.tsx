@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useId, useState } from "react";
 import {
   Download,
@@ -19,6 +20,7 @@ export function SlackAvatarContent({
   avatarUrl,
   compact = false,
 }: SlackAvatarProps & { compact?: boolean }) {
+  const { t } = useTranslation("connections");
   const id = useId();
   const filename = `${appName.replace(/[^a-zA-Z0-9_-]+/g, "-") || "agent"}-avatar.png`;
   const [downloading, setDownloading] = useState(false);
@@ -33,7 +35,7 @@ export function SlackAvatarContent({
         !response.ok ||
         !response.headers.get("content-type")?.startsWith("image/png")
       )
-        throw new Error("Avatar unavailable");
+        throw new Error(t("avatar_unavailable_af3ddab"));
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -59,19 +61,17 @@ export function SlackAvatarContent({
           src={avatarUrl}
           width={512}
           height={512}
-          alt={`${agentName}’s Cliptoon avatar`}
+          alt={t("s_cliptoon_avatar_6018d4a", { agentName: agentName })}
           className="size-40 shrink-0 rounded-lg bg-muted object-contain"
         />
         <div className="space-y-3">
           <div className="space-y-1">
             <h2 id={`${id}-download`} className="text-sm font-semibold">
               {compact
-                ? "Download your agent’s avatar"
-                : "1. Download your agent’s avatar"}
+                ? t("download_your_agent_s_avatar_5748647")
+                : t("1_download_your_agent_s_avatar_af2561f")}
             </h2>
-            <p className="text-xs text-muted-foreground">
-              PNG · 512 × 512 · Ready for Slack
-            </p>
+            <p className="text-xs text-muted-foreground">{t("png_512_512_ready_for_slack_8b54fc8")}</p>
           </div>
           <Button variant="outline" asChild>
             <a
@@ -87,14 +87,10 @@ export function SlackAvatarContent({
                 <Loader2 className="size-4 animate-spin" />
               ) : (
                 <Download className="size-4" />
-              )}
-              Download avatar
-            </a>
+              )}{t("download_avatar_42c81f6")}</a>
           </Button>
           {downloadError && (
-            <p role="alert" className="text-sm text-destructive">
-              Couldn’t download the avatar. Try downloading it again.
-            </p>
+            <p role="alert" className="text-sm text-destructive">{t("couldn_t_download_the_avatar_try_downloading_a950e06")}</p>
           )}
         </div>
       </section>
@@ -106,18 +102,13 @@ export function SlackAvatarContent({
               ? "cursor-pointer text-sm underline underline-offset-4"
               : "hidden"
           }
-        >
-          How to upload in Slack
-        </summary>
+        >{t("how_to_upload_in_slack_d1220e6")}</summary>
         <section aria-labelledby={`${id}-upload`} className="space-y-4">
           <div className="space-y-1">
             <h2 id={`${id}-upload`} className="text-sm font-semibold">
-              {compact ? "Upload it in Slack" : "2. Upload it in Slack"}
+              {compact ? t("upload_it_in_slack_9d128e2") : t("2_upload_it_in_slack_b98f46c")}
             </h2>
-            <p className="text-sm text-muted-foreground">
-              You’ll upload the downloaded image directly in Slack’s app
-              settings.
-            </p>
+            <p className="text-sm text-muted-foreground">{t("you_ll_upload_the_downloaded_image_directly_aecf9ab")}</p>
           </div>
           <ol className="list-decimal space-y-3 pl-5 text-sm">
             <li>
@@ -126,25 +117,17 @@ export function SlackAvatarContent({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline underline-offset-4"
-              >
-                Open Slack app Settings{" "}
+              >{t("open_slack_app_settings_33e0795")}{" "}
                 <ExternalLink className="inline size-3" />
-              </a>{" "}
-              and choose <strong>{appName}</strong>.
+              </a>{" "}{t("and_choose_39fb1fa")}<strong>{appName}</strong>.
             </li>
-            <li>
-              Choose <strong>Basic Information</strong>, then scroll to{" "}
-              <strong>Display Information</strong>.
+            <li>{t("choose_bcf399c")}<strong>{t("basic_information_b0d5be3")}</strong>{t("then_scroll_to_0041027")}{" "}
+              <strong>{t("display_information_ca0b29b")}</strong>.
             </li>
-            <li>
-              Under <strong>App icon &amp; Preview</strong>, click the app icon
-              and upload{" "}
+            <li>{t("under_d0654cb")}<strong>{t("app_icon_preview_ff1cc7e")}</strong>{t("click_the_app_icon_and_upload_b805fec")}{" "}
               <span className="break-all font-mono text-xs">{filename}</span>.
             </li>
-            <li>
-              Confirm the crop, then click <strong>Save Changes</strong> in
-              Slack.
-            </li>
+            <li>{t("confirm_the_crop_then_click_dc1343f")}<strong>{t("save_changes_fa2984b")}</strong>{t("in_slack_adcd64b")}</li>
           </ol>
         </section>
       </details>
@@ -154,13 +137,12 @@ export function SlackAvatarContent({
 
 
 export function SlackAvatarSettings(props: SlackAvatarProps) {
+  const { t } = useTranslation("connections");
   return (
-    <section className="space-y-4" aria-label="Slack avatar">
+    <section className="space-y-4" aria-label={t("slack_avatar_b0c9b74")}>
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Agent avatar</h2>
-        <p className="text-sm text-muted-foreground">
-          Use {props.agentName}’s avatar so your team recognizes the agent
-        </p>
+        <h2 className="text-lg font-semibold">{t("agent_avatar_a3fe01c")}</h2>
+        <p className="text-sm text-muted-foreground">{t("use_s_avatar_so_your_team_recognizes_e887bb7", { agentName: props.agentName })}</p>
       </div>
       <SlackAvatarContent {...props} compact />
     </section>

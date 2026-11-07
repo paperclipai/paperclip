@@ -13,6 +13,7 @@ import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { githubChatApi } from "@/api/githubChat";
 import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
+import { i18n } from "@/i18n";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 const fixture = vi.hoisted(() => ({
@@ -548,6 +549,44 @@ describe("GitHub App wizard", () => {
     await act(async () => button!.click());
     await settle();
   }
+  for (const locale of ["en", "zh-CN"]) {
+    it(`bounded stabilization keeps deferred-agent preselected-id default payload locale independent (${locale})`, async () => {
+      let resolveAgents!: (agents: any[]) => void;
+      vi.mocked(agentsApi.list).mockReturnValue(new Promise(resolve => { resolveAgents = resolve; }));
+      try {
+        await i18n.changeLanguage(locale);
+        await render("agentId=reviewer");
+        await click(i18n.t("connections:continue_2e02623"));
+        expect(chatEndpointsApi.create).toHaveBeenCalledWith("company-1", { provider: "github", assignedAgentId: "reviewer" });
+        await act(async () => resolveAgents(fixture.agents));
+        await settle();
+        for (const nextLocale of ["en", "zh-CN", "en"]) {
+          await act(async () => { await i18n.changeLanguage(nextLocale); });
+        }
+        await click("Save & exit");
+        expect(githubChatApi.saveDraft).toHaveBeenCalledWith("draft-1", { name: "GitHub Reviewer", ownerType: "personal" });
+      } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    });
+    it(`bounded stabilization preserves the exact empty appInput default (${locale})`, async () => {
+      vi.mocked(agentsApi.list).mockReturnValue(new Promise(() => {}));
+      fixture.endpoint.assignedAgentName = undefined;
+      try {
+        await i18n.changeLanguage(locale);
+        await render("resume=draft-1&agentId=reviewer");
+        await click("Save & exit");
+        expect(githubChatApi.saveDraft).toHaveBeenCalledWith("draft-1", { name: "GitHub Reviewer", ownerType: "personal" });
+      } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    });
+  }
+  it("bounded stabilization preserves user app names through locale roundtrip", async () => {
+    fixture.endpoint.setup.github.appName = "用户 App Δ";
+    await render("resume=draft-1");
+    for (const locale of ["zh-CN", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+    }
+    await click("Save & exit");
+    expect(githubChatApi.saveDraft).toHaveBeenCalledWith("draft-1", { name: "用户 App Δ", ownerType: "personal" });
+  });
   it("binds Cloud enrollment return to the same draft without a duplicated company prefix", async () => {
     vi.mocked(githubChatApi.advance).mockResolvedValue({ endpointId: "draft-1", state: "enrollment" });
     vi.mocked(toolsApi.startCloudConnectorEnrollment).mockResolvedValue({ configured: false, status: "pending", brokerBaseUrl: "https://gateway.example", instanceId: "instance-1", environment: "staging", origins: [] });

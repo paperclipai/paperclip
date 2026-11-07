@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { defaultStatusCardRefreshPolicy } from "@paperclipai/shared";
@@ -19,11 +20,11 @@ import { InlineBanner } from "@/components/InlineBanner";
 import { queryKeys } from "@/lib/queryKeys";
 import { SummarizerAgentSelect } from "./SummarizerAgentSelect";
 
-const EXAMPLES = [
-  "issues about evals",
-  "everything blocked this week",
-  "is feature X live? if not, the exact next actions to ship it",
-];
+const EXAMPLES = () => ([
+  translateShell("shell:issues_about_evals"),
+  translateShell("shell:everything_blocked_this_week"),
+  translateShell("shell:is_feature_x_live_if_not_the"),
+]);
 
 export function CreateStatusCardDialog({
   companyId,
@@ -34,6 +35,7 @@ export function CreateStatusCardDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const queryClient = useQueryClient();
   const [prompt, setPrompt] = useState("");
   // "" → the built-in Summarizer; otherwise the id of the override agent.
@@ -68,38 +70,33 @@ export function CreateStatusCardDialog({
       ]);
       close();
     },
-    onError: (err) => setError(describeError(err, { action: "create the card" }).body),
+    onError: (err) => setError(describeError(err, { action: translateShell("shell:create_the_card") }).body),
   });
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>New card</DialogTitle>
-          <DialogDescription>
-            One message sets up the whole card: say what you want to watch and what each update
-            should tell you. The agent builds the query from it and writes every update against it.
-          </DialogDescription>
+          <DialogTitle>{translateShell("shell:new_card")}</DialogTitle>
+          <DialogDescription>{translateShell("shell:one_message_sets_up_the_whole_card")}</DialogDescription>
         </DialogHeader>
 
-        {error ? <InlineBanner tone="danger" title="Create failed">{error}</InlineBanner> : null}
+        {error ? <InlineBanner tone="danger" title={translateShell("shell:create_failed")}>{error}</InlineBanner> : null}
 
         <div className="space-y-3">
-          <label htmlFor="status-card-prompt" className="block pb-1 text-sm font-semibold">
-            What do you want to keep an eye on?
-          </label>
+          <label htmlFor="status-card-prompt" className="block pb-1 text-sm font-semibold">{translateShell("shell:what_do_you_want_to_keep_an")}</label>
           <Textarea
             id="status-card-prompt"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             rows={5}
             autoFocus
-            placeholder="Keep an eye on the ID and Cloud projects. Tell me whether the service is live, and if not, the exact three actions needed to get it to production."
+            placeholder={translateShell("shell:keep_an_eye_on_the_id_and")}
             className="text-sm"
           />
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Examples</span>
-            {EXAMPLES.map((example) => (
+            <span className="text-xs font-medium text-muted-foreground">{translateShell("shell:examples")}</span>
+            {EXAMPLES().map((example) => (
               <button
                 key={example}
                 type="button"
@@ -113,25 +110,19 @@ export function CreateStatusCardDialog({
         </div>
 
         <div className="space-y-2">
-          <label className="block text-sm font-semibold">Agent</label>
+          <label className="block text-sm font-semibold">{translateShell("shell:agent_11b39c")}</label>
           <SummarizerAgentSelect companyId={companyId} value={agentId} onChange={setAgentId} enabled={open} />
-          <p className="text-xs text-muted-foreground">
-            Runs this card's setup and updates. Leave on the default unless another agent should own it.
-          </p>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:runs_this_card_s_setup_and_updates")}</p>
         </div>
 
         <DialogFooter>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={close} disabled={createMutation.isPending}>
-              Cancel
-            </Button>
+            <Button variant="outline" onClick={close} disabled={createMutation.isPending}>{translateShell("shell:cancel")}</Button>
             <Button
               onClick={() => createMutation.mutate()}
               disabled={prompt.trim().length === 0 || createMutation.isPending}
             >
-              {createMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-              Create card
-            </Button>
+              {createMutation.isPending ? <Loader2 className="animate-spin" /> : null}{translateShell("shell:create_card")}</Button>
           </div>
         </DialogFooter>
       </DialogContent>

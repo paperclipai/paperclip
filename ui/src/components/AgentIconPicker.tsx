@@ -1,3 +1,4 @@
+import { useTranslation, i18n } from "@/i18n";
 import { useState, useMemo } from "react";
 import {
   type LucideIcon,
@@ -20,6 +21,7 @@ interface AgentIconProps {
 }
 
 export function AgentIcon({ icon, className }: AgentIconProps) {
+  useTranslation("agent-config");
   const Icon = getAgentIcon(icon);
   return <Icon className={className} />;
 }
@@ -31,6 +33,7 @@ interface AgentIconPickerProps {
 }
 
 export function AgentIconPicker({ value, onChange, children }: AgentIconPickerProps) {
+  const { t } = useTranslation("agent-config");
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -39,14 +42,14 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
     if (!search) return entries;
     const q = search.toLowerCase();
     return entries.filter(([name]) => name.includes(q));
-  }, [search]);
+  }, [search, i18n.resolvedLanguage]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         <Input
-          placeholder="Search icons..."
+          placeholder={t("agent-config:searchIcons_2f149aa")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"
@@ -71,7 +74,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
             </button>
           ))}
           {filtered.length === 0 && (
-            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">{t("agent-config:noIconsMatch_1f50695")}</p>
           )}
         </div>
       </PopoverContent>

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
 
 export type IssueFilterWorkspaceLookup = {
@@ -66,14 +67,14 @@ export const externalObjectFilterOrder = [
 ];
 
 const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
-  failed: "Any failed",
-  waiting: "Any waiting",
-  running: "Any running",
-  auth_required: "Auth required",
-  rate_limited: "Rate limited",
-  unreachable: "Unreachable",
-  stale: "Stale",
-  none: "No external objects",
+  get "failed"() { return t("display:copy_a91f32206e83"); },
+  get "waiting"() { return t("display:copy_ba9fbffdfc5f"); },
+  get "running"() { return t("display:copy_adbfd252265f"); },
+  get "auth_required"() { return t("display:copy_df5dcf501a3f"); },
+  get "rate_limited"() { return t("display:copy_439cdd2d073f"); },
+  get "unreachable"() { return t("display:copy_4a02a622073f"); },
+  get "stale"() { return t("display:copy_820e40990d1c"); },
+  get "none"() { return t("display:copy_5048b349a136"); },
 };
 
 export function externalObjectFilterLabel(value: string): string {
@@ -84,14 +85,14 @@ export const issueStatusOrder = ["in_progress", "monitoring", "todo", "backlog",
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
+  { get "label"() { return t("display:copy_7ae8c4101fd9"); }, statuses: [] as string[] },
+  { get "label"() { return t("display:copy_457c66708cfa"); }, statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"] },
+  { get "label"() { return t("display:copy_0afc0ec087a5"); }, statuses: ["backlog"] },
+  { get "label"() { return t("display:copy_8b0fa6201825"); }, statuses: ["done", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return t(`display:filter_value_${value}`, { defaultValue: value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) });
 }
 
 export function issueFilterArraysEqual(a: string[], b: string[]): boolean {

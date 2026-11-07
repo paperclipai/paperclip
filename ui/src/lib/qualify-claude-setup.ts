@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { AgentRunner, AgentRunnerChoice, Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { AdapterInfo } from "../api/adapters";
 
@@ -38,7 +39,7 @@ export async function qualifyRunnerEnvironment(input: {
     const harness = adapters.find(adapter => adapter.type === input.adapterType);
     const runner = harness?.defaultRunner;
     if (!harness || (runner !== "paperclip" && runner !== "legacy") || !harness.supportedRunners?.includes(runner)) {
-      throw new Error("Could not confirm runner availability for this environment. Retry setup.");
+      throw localizeUiError(new Error("Could not confirm runner availability for this environment. Retry setup."), { key: "integration-errors:runnerUnavailable" });
     }
     return { runner, harness };
   };
@@ -52,9 +53,12 @@ export async function qualifyRunnerEnvironment(input: {
   if (!input.isCurrent()) return undefined;
   if (probe.ok !== true || probe.details?.platformQualificationRecorded !== true
     || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
-    throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
-      ? probe.details.platformQualificationDiagnostic
-      : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
+    // Provider diagnostics remain raw even when they exactly equal our fallback.
+    if (typeof probe.details?.platformQualificationDiagnostic === "string") {
+      throw new Error(probe.details.platformQualificationDiagnostic);
+    }
+    if (probe.summary) throw new Error(probe.summary);
+    throw localizeUiError(new Error("The environment's platform qualification could not be confirmed. Retry the connection probe."), { key: "integration-errors:qualificationUnconfirmed" });
   }
   adapters = await input.readAdapters();
   if (!input.isCurrent()) return undefined;

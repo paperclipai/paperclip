@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
@@ -30,6 +31,7 @@ export function ImageGalleryModal({
   onIndexChange,
   returnFocusRef,
 }: ImageGalleryModalProps) {
+  useTranslation("task-components");
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
   const setMediaRef = useCallback((node: HTMLImageElement | HTMLVideoElement | null) => {
@@ -105,7 +107,7 @@ export function ImageGalleryModal({
             returnFocusRef.current?.focus({ preventScroll: true });
           } : undefined}
         >
-          <DialogPrimitive.Title className="sr-only">Image gallery</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="sr-only">{t("task-components:imageGallery_a2f13f5d")}</DialogPrimitive.Title>
           {/* Top bar */}
           <div className="flex items-center justify-between px-5 py-3 text-white/80 text-sm shrink-0">
             <span className="truncate max-w-(--pct-50) font-medium" title={filename}>
@@ -130,8 +132,8 @@ export function ImageGalleryModal({
                 href={attachmentDownloadPath(current)}
                 download={filename}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Download"
-                aria-label={`Download ${filename}`}
+                title={t("task-components:download_d6eafe82")}
+                aria-label={t("task-components:download_8fe1a08e", { value1: filename })}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Download className="h-4.5 w-4.5" />
@@ -140,7 +142,7 @@ export function ImageGalleryModal({
                 type="button"
                 onClick={() => onOpenChange(false)}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Close"
+                title={t("task-components:close_7d9eb7ac")}
               >
                 <X className="h-5 w-5" />
               </button>
@@ -156,7 +158,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goPrev}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Previous"
+                  title={t("task-components:previous_a57b08a4")}
                 >
                   <ChevronLeft className="h-7 w-7" />
                 </button>
@@ -191,7 +193,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goNext}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Next"
+                  title={t("task-components:next_1ff57a29")}
                 >
                   <ChevronRight className="h-7 w-7" />
                 </button>

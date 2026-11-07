@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -20,11 +21,13 @@ type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | 
 
 /** Task identifier rendered in gray monospace between the glyph and the title. */
 function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  const { t: translateShell } = useTranslation("shell");
   if (!identifier) return null;
   return <span className="shrink-0 font-mono text-muted-foreground">{identifier}</span>;
 }
 
 function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
+  const { t: translateShell } = useTranslation("shell");
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
   return (
@@ -40,6 +43,7 @@ function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
 }
 
 export function BreadcrumbBar() {
+  const { t: translateShell } = useTranslation("shell");
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -49,7 +53,7 @@ export function BreadcrumbBar() {
       companyId: selectedCompanyId ?? null,
       companyPrefix: selectedCompany?.issuePrefix ?? null,
     }),
-    [selectedCompanyId, selectedCompany?.issuePrefix],
+    [selectedCompanyId, selectedCompany?.issuePrefix, translateShell],
   );
 
   const globalToolbarSlots = <GlobalToolbar context={globalToolbarSlotContext} />;
@@ -76,7 +80,7 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={translateShell("shell:open_sidebar")}
     >
       <Menu className="h-5 w-5" />
     </Button>

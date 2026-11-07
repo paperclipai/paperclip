@@ -1,3 +1,5 @@
+import { resolveUiMessage, type UiMessageDescriptor } from "@/lib/localized-ui-error";
+import { t, useTranslation } from "@/i18n";
 import {
   useEffect,
   useLayoutEffect,
@@ -164,11 +166,12 @@ export function SidePanelTabs({
   onReorderTabs,
   onAddTab,
   addControl,
-  addLabel = "Open a new tab",
+  addLabel = t("final-components-a:openANewTab_2b75279f"),
   appearance = "default",
   className,
 }: SidePanelTabsProps) {
-  const [announcement, setAnnouncement] = useState("");
+  useTranslation("final-components-a");
+  const [announcement, setAnnouncement] = useState<UiMessageDescriptor | null>(null);
   const [showEndFade, setShowEndFade] = useState(false);
   const [useWideTabs, setUseWideTabs] = useState(false);
   const [draggedTab, setDraggedTab] = useState<{ id: string; width: number; labelIsTruncated: boolean } | null>(null);
@@ -260,7 +263,7 @@ export function SidePanelTabs({
     const index = tabIds.indexOf(tabId);
     const nextFocus = tabIds[index + 1] ?? tabIds[index - 1] ?? null;
     onCloseTab(tabId);
-    setAnnouncement(nextFocus ? "Tab closed." : "Last tab closed. Choose something to open.");
+    setAnnouncement({ key: nextFocus ? "final-components-a:tabClosed_00f9380d" : "final-components-a:lastTabClosedChooseSomething_a3077faf" });
     focusTab(nextFocus);
   }
 
@@ -276,7 +279,7 @@ export function SidePanelTabs({
       const [moved] = ordered.splice(index, 1);
       ordered.splice(target, 0, moved!);
       onReorderTabs(ordered);
-      setAnnouncement(`Moved ${tabs[index]?.label ?? "tab"} to position ${target + 1} of ${tabs.length}.`);
+      setAnnouncement({ key: "final-components-a:movedTab", values: { name: tabs[index]?.label ?? t("final-components-a:tab"), position: target + 1, total: tabs.length } });
       focusTab(tabId);
       return;
     }
@@ -305,7 +308,7 @@ export function SidePanelTabs({
     const [moved] = ordered.splice(from, 1);
     ordered.splice(to, 0, moved!);
     onReorderTabs(ordered);
-    setAnnouncement(`Moved ${tabs[from]?.label ?? "tab"} to position ${to + 1} of ${tabs.length}.`);
+    setAnnouncement({ key: "final-components-a:movedTab", values: { name: tabs[from]?.label ?? t("final-components-a:tab"), position: to + 1, total: tabs.length } });
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -417,7 +420,7 @@ export function SidePanelTabs({
           <Plus aria-hidden />
         </Button>
       ) : null)}
-      <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement ? resolveUiMessage(announcement) : ""}</div>
     </div>
   );
 }

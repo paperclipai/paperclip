@@ -1,3 +1,5 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation, Trans } from "@/i18n";
 import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -71,10 +73,10 @@ function tomorrowMorningIso(): string {
 
 /** Snooze presets, resolved to a future ISO timestamp at click time. */
 const SNOOZE_PRESETS: ReadonlyArray<{ label: string; resolve: () => string }> = [
-  { label: "1 hour", resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
-  { label: "4 hours", resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
-  { label: "Tomorrow morning", resolve: tomorrowMorningIso },
-  { label: "Next week", resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
+  { get label() { return t("task-components:1Hour_f8b8883f"); }, resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
+  { get label() { return t("task-components:4Hours_e5bc9927"); }, resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
+  { get label() { return t("task-components:tomorrowMorning_ea64c9f1"); }, resolve: tomorrowMorningIso },
+  { get label() { return t("task-components:nextWeek_21fbde19"); }, resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
 ];
 
 interface AttentionQueueRowProps {
@@ -122,6 +124,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   userLabelMap,
   selected = false,
 }: AttentionQueueRowProps) {
+  useTranslation("task-components");
   const meta = sourceMeta(item.sourceKind);
   // Colour + glyph are borrowed wholesale from the task status system, so a
   // blocking decision reads exactly like a blocked task (DESIGN.md principle 5).
@@ -179,12 +182,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
     <button
       type="button"
       className="inline-flex shrink-0 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
-      aria-label={expanded ? "Collapse decision" : "Expand decision"}
+      aria-label={expanded ? t("task-components:collapseDecision_efeaeeda") : t("task-components:expandDecision_81b1c87f")}
       aria-expanded={expanded}
       onClick={activate}
     >
       {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-      {expanded ? "See less" : "See more"}
+      {expanded ? t("task-components:seeLess_d1cee48d") : t("task-components:seeMore_bab37d62")}
     </button>
   ) : null;
 
@@ -214,18 +217,14 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
           {showOpen && (
             <Button asChild variant="default" size="xs" className={ACTION_BTN}>
-              <Link to={href!}>
-                Open
-                <ExternalLink className="h-3 w-3" />
+              <Link to={href!}>{t("task-components:open_ed077f3d")}<ExternalLink className="h-3 w-3" />
               </Link>
             </Button>
           )}
 
           {showRestore && (
             <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
-              <RotateCcw className="h-3 w-3" />
-              Restore
-            </Button>
+              <RotateCcw className="h-3 w-3" />{t("task-components:restore_a76e13b9")}</Button>
           )}
         </div>
       </div>
@@ -277,12 +276,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               <span
                 className="inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
                 data-attention-decide-by={item.decideBy}
-                title={decideByProvenance(item) ? `Set by ${decideByProvenance(item)}` : undefined}
+                title={decideByProvenance(item) ? t("task-components:setBy_8b7e9d1d", { value1: decideByProvenance(item) }) : undefined}
               >
                 <CalendarClock className="h-3 w-3" />
                 {decideByLabel(item.decideBy)}
                 {decideByProvenance(item) && (
-                  <span className="text-muted-foreground/80">· set by {decideByProvenance(item)}</span>
+                  <span className="text-muted-foreground/80"><Trans ns="task-components" i18nKey="sentence_f80e06433386" components={{ part1: <>{decideByProvenance(item)}</> }} /></span>
                 )}
               </span>
             </>
@@ -293,10 +292,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           {isHidden && snoozedUntil ? (
             <span
               className="text-(length:--text-nano) text-muted-foreground"
-              title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
-            >
-              Reappears {reappearLabel(snoozedUntil)}
-            </span>
+              title={t("task-components:reappears_31157f2a", { value1: new Date(snoozedUntil).toLocaleString() })}
+            ><Trans ns="task-components" i18nKey="sentence_32aa7cc1d610" components={{ part1: <>{reappearLabel(snoozedUntil)}</> }} /></span>
           ) : (
             <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
           )}
@@ -307,7 +304,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                   variant="ghost"
                   size="icon-xs"
                   className="text-muted-foreground"
-                  aria-label="Row actions"
+                  aria-label={t("task-components:rowActions_67a1892f")}
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
@@ -315,14 +312,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               <DropdownMenuContent align="end">
                 {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                 <DropdownMenuItem onClick={() => onDismiss(item)}>
-                  <X className="h-4 w-4" />
-                  Dismiss
-                </DropdownMenuItem>
+                  <X className="h-4 w-4" />{t("task-components:dismiss_48845bff")}</DropdownMenuItem>
                 {href && (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
-                      <Link to={href}>Open source</Link>
+                      <Link to={href}>{t("task-components:openSource_67a0d2e0")}</Link>
                     </DropdownMenuItem>
                   </>
                 )}
@@ -344,7 +339,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               role: "button",
               tabIndex: 0,
               "aria-expanded": expanded,
-              "aria-label": expanded ? "Collapse decision" : "Expand decision",
+              "aria-label": expanded ? t("final-components-a:collapseDecision_efeaeeda") : t("final-components-a:expandDecision_81b1c87f"),
               onClick: activate,
               onKeyDown: onHeaderKeyDown,
             }
@@ -417,6 +412,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
  * a slash implies containment that the two segments do not have.
  */
 function EyebrowSeparator() {
+  useTranslation("task-components");
   return (
     <span className="text-xs text-muted-foreground" aria-hidden>
       ·
@@ -484,6 +480,7 @@ function CompactDecisionActions({
   audience: InteractionAudienceDescription | null;
   onOpen: () => void;
 }) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const actions = collectCompactActions(item);
@@ -502,11 +499,11 @@ function CompactDecisionActions({
       }
       if (item.sourceKind === "issue_thread_interaction") {
         const issueId = item.subject.metadata?.issueId;
-        if (typeof issueId !== "string") throw new Error("Missing issue reference for this decision.");
+        if (typeof issueId !== "string") throw new Error(t("task-components:missingIssueReferenceForThisDecision_1f2b96d3"));
         if (action === "accept") return issuesApi.acceptInteraction(issueId, item.subject.id);
         return issuesApi.rejectInteraction(issueId, item.subject.id);
       }
-      throw new Error("This decision must be completed from its detail view.");
+      throw localizeUiError(new Error("This decision must be completed from its detail view."), { key: "final-components-a:thisDecisionMustBeCompleted_a1f1ce4c" });
     },
     onSuccess: (_result, action) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -523,8 +520,8 @@ function CompactDecisionActions({
     onError: (error, action) => {
       // A policy denial is permanent, so it keeps the server's reason and names
       // the real responder instead of asking for a retry that will fail again.
-      pushToast({
-        title: `Could not ${decisionLabel(action)}`,
+      pushToast({ presentation: { title: { key: "task-components:couldNot_b927d296", values: { value1: decisionLabel(action) } } }, 
+        title: t("task-components:couldNot_b927d296", { value1: decisionLabel(action) }),
         body: interactionResolutionErrorMessage(error, audience),
         tone: "error",
       });
@@ -534,7 +531,7 @@ function CompactDecisionActions({
   if (actions.length === 0) return null;
 
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label="Decision actions">
+    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label={t("task-components:decisionActions_645f4249")}>
       {actions.map(({ action, id, label, description }) => (
         <Button
           key={id}
@@ -561,15 +558,15 @@ function CompactDecisionActions({
 }
 
 function decisionLabel(action: CompactDecisionAction): string {
-  if (action === "request_revision") return "sent for revision";
-  if (action === "accept" || action === "approve") return "approved";
-  return "rejected";
+  if (action === "request_revision") return t("final-components-a:sentForRevision_5b8236bd");
+  if (action === "accept" || action === "approve") return t("task-components:approved_2687f86e");
+  return t("task-components:rejected_20cd938a");
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
-  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
-  if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
-  return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
+  if (sourceKind === "approval") return t("final-components-a:approvalDecision_f58ddd55", { decision: decisionLabel(action) });
+  if (sourceKind === "join_request") return t("final-components-a:joinRequestDecision_58b9ffd2", { decision: decisionLabel(action) });
+  return action === "accept" ? t("final-components-a:confirmationAccepted_94f8dc4f") : t("final-components-a:confirmationDeclined_e9ec5e2d");
 }
 
 function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {
@@ -581,6 +578,7 @@ function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "def
 
 /** Square screenshot thumbnails at the right of the description (plan §10). */
 function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
+  useTranslation("task-components");
   const visible = images.slice(0, 3);
   const extra = images.length - visible.length;
   return (
@@ -612,6 +610,7 @@ function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
  * links through to the issue where the full set lives.
  */
 function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[]; issueHref: string | null }) {
+  useTranslation("task-components");
   const visible = images.slice(0, 3);
   const extra = images.length - visible.length;
   return (
@@ -656,16 +655,12 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
           onClick={(e) => e.stopPropagation()}
           className="flex h-32 w-24 flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
         >
-          <span className="text-base font-semibold">{extra} more</span>
-          <span className="mt-0.5 inline-flex items-center gap-1 text-(length:--text-nano)">
-            View issue
-            <ExternalLink className="h-3 w-3" />
+          <span className="text-base font-semibold"><Trans ns="final-components-a" i18nKey="numeric_c9c4c64c029e" values={{ extra: extra }} /></span>
+          <span className="mt-0.5 inline-flex items-center gap-1 text-(length:--text-nano)">{t("task-components:viewIssue_87017357")}<ExternalLink className="h-3 w-3" />
           </span>
         </Link>
       ) : (
-        <span className="flex h-32 w-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-semibold text-muted-foreground">
-          {extra} more
-        </span>
+        <span className="flex h-32 w-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-semibold text-muted-foreground"><Trans ns="final-components-a" i18nKey="numeric_c9c4c64c029e" values={{ extra: extra }} /></span>
       ))}
     </div>
   );
@@ -673,6 +668,7 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
 
 /** Snooze submenu: presets + a custom date-time (plan §6). */
 function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void }) {
+  useTranslation("task-components");
   const [customValue, setCustomValue] = useState("");
   const applyCustom = () => {
     if (!customValue) return;
@@ -683,9 +679,7 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <AlarmClock className="h-4 w-4" />
-        Snooze
-      </DropdownMenuSubTrigger>
+        <AlarmClock className="h-4 w-4" />{t("task-components:snooze_52102940")}</DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
         {SNOOZE_PRESETS.map((preset) => (
           <DropdownMenuItem key={preset.label} onClick={() => onSnooze(preset.resolve())}>
@@ -700,18 +694,14 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
           onKeyDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-            Custom
-          </span>
+          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:custom_494ca78f")}</span>
           <input
             type="datetime-local"
             value={customValue}
             onChange={(e) => setCustomValue(e.target.value)}
             className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
           />
-          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>
-            Snooze until…
-          </Button>
+          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>{t("task-components:snoozeUntil_2462850b")}</Button>
         </div>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -726,20 +716,20 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
 function decideByProvenance(item: AttentionItem): string | null {
   const attribution = item.decideByAttribution;
   if (!attribution) return null;
-  if (attribution.type === "agent") return attribution.agentName ?? "an agent";
-  return "you";
+  if (attribution.type === "agent") return attribution.agentName ?? t("final-components-a:anAgent_647936ec");
+  return t("final-components-a:you_bb0347a4");
 }
 
 /** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */
 function reappearLabel(snoozedUntil: string): string {
   const diffMs = new Date(snoozedUntil).getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "soon";
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return t("task-components:soon_4a754148");
   const diffMin = Math.round(diffMs / 60000);
-  if (diffMin < 60) return `in ${diffMin}m`;
+  if (diffMin < 60) return t("final-components-a:inCountM_b1bd2173", { count: diffMin });
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `in ${diffHr}h`;
+  if (diffHr < 24) return t("final-components-a:inCountH_5b65b797", { count: diffHr });
   const diffDay = Math.round(diffHr / 24);
-  return `in ${diffDay}d`;
+  return t("final-components-a:inCountD_e9001868", { count: diffDay });
 }
 
 /**
@@ -763,6 +753,7 @@ function InlineResolver({
   userLabelMap?: ReadonlyMap<string, string> | null;
   toggle: ReactNode;
 }) {
+  useTranslation("task-components");
   if (item.sourceKind === "decision") {
     return (
       <DecisionResolver
@@ -777,7 +768,7 @@ function InlineResolver({
   if (item.sourceKind === "issue_thread_interaction") {
     const issueId = (item.subject.metadata?.issueId as string | undefined) ?? item.relatedIssue?.id;
     if (!issueId) {
-      return <p className="text-xs text-muted-foreground">Missing issue reference for this decision.</p>;
+      return <p className="text-xs text-muted-foreground">{t("task-components:missingIssueReferenceForThisDecision_1f2b96d3")}</p>;
     }
     return (
       <>
@@ -820,6 +811,7 @@ function InlineResolver({
 
 /** Footer shared by the resolvers that own their verbs: toggle left, verbs right. */
 function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: ReactNode }) {
+  useTranslation("task-components");
   return (
     <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
       {toggle ?? <span />}
@@ -829,6 +821,7 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
 }
 
 function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const invalidate = () => {
@@ -856,28 +849,23 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional decision note…"
+        placeholder={t("task-components:optionalDecisionNote_17872ddb")}
         className="min-h-16 text-sm"
       />
       <ResolverFooter toggle={toggle}>
         <Button size="sm" variant="outline" onClick={() => revise.mutate()} disabled={pending}>
-          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Request revision
-        </Button>
+          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("task-components:requestRevision_0bf92c49")}</Button>
         <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Reject
-        </Button>
+          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("task-components:reject_ab604a36")}</Button>
         <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Approve
-        </Button>
+          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("task-components:approve_6007acbe")}</Button>
       </ResolverFooter>
     </>
   );
 }
 
 function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -896,13 +884,9 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
   return (
     <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-        {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Reject
-      </Button>
+        {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("task-components:reject_ab604a36")}</Button>
       <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Approve
-      </Button>
+        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("task-components:approve_6007acbe")}</Button>
     </ResolverFooter>
   );
 }

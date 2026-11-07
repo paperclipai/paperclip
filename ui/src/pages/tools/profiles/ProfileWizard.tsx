@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
@@ -38,9 +39,9 @@ function slugifyProfileKey(name: string): string {
 }
 
 const STEP_LABELS: Array<{ step: WizardStep; label: string }> = [
-  { step: 1, label: "Name" },
-  { step: 2, label: "Choose tools" },
-  { step: 3, label: "Assign" },
+  { step: 1, get label() { return translateAgentPage("agents:name"); } },
+  { step: 2, get label() { return translateAgentPage("agents:choose_tools"); } },
+  { step: 3, get label() { return translateAgentPage("agents:assign"); } },
 ];
 
 export function ProfileWizard({
@@ -54,6 +55,7 @@ export function ProfileWizard({
   initialTemplate?: TemplateKey;
   initialStep?: WizardStep;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -179,12 +181,12 @@ export function ProfileWizard({
       invalidate();
     },
     onError: (error: unknown) =>
-      pushToast({ title: "Could not save", body: String((error as Error)?.message ?? error), tone: "error" }),
+      pushToast({ title: translateAgentPage("agents:could_not_save"), body: String((error as Error)?.message ?? error), tone: "error" }),
   });
 
   const finish = useMutation({
     mutationFn: async () => {
-      if (!draftId) throw new Error("No draft to finish");
+      if (!draftId) throw new Error(translateAgentPage("agents:no_draft_to_finish"));
       const entries = buildEntries(appGroups, selections, advancedRules, newToolsAction);
       const profile = await toolsApi.updateProfile(draftId, {
         defaultAction: newToolsAction,
@@ -200,12 +202,12 @@ export function ProfileWizard({
       return toolsApi.updateProfile(draftId, { status: "active" });
     },
     onSuccess: (profile) => {
-      pushToast({ title: "Profile saved", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_saved"), tone: "success" });
       invalidate();
       navigate(`/apps/advanced/profiles/${profile.id}${selectedAgentIds.size === 0 && !companyDefault ? "?created=1" : ""}`);
     },
     onError: (error: unknown) =>
-      pushToast({ title: "Could not save profile", body: String((error as Error)?.message ?? error), tone: "error" }),
+      pushToast({ title: translateAgentPage("agents:could_not_save_profile"), body: String((error as Error)?.message ?? error), tone: "error" }),
   });
 
   const saveAndExit = () => {
@@ -214,7 +216,7 @@ export function ProfileWizard({
       { goToStep: step, completedStep: completed },
       {
         onSuccess: () => {
-          pushToast({ title: "Draft saved", body: "Pick it back up from the profiles list.", tone: "success" });
+          pushToast({ title: translateAgentPage("agents:draft_saved"), body: translateAgentPage("agents:pick_it_back_up_from_the_profiles_list"), tone: "success" });
           navigate("/apps/advanced/profiles");
         },
       },
@@ -224,7 +226,7 @@ export function ProfileWizard({
   const busy = saveDraft.isPending || finish.isPending;
   const step1Valid = name.trim().length > 0 && (template !== "copy" || Boolean(copyFromId));
 
-  if (profileId && profiles.isLoading) return <LoadingState label="Loading draft…" />;
+  if (profileId && profiles.isLoading) return <LoadingState label={translateAgentPage("agents:loading_draft")} />;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-24">
@@ -286,10 +288,7 @@ export function ProfileWizard({
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             {step >= 2 ? (
-              <span>
-                Allows <span className="font-medium text-foreground">{live.allowed}</span> of {live.total}{" "}
-                tools
-              </span>
+              <span>{translateAgentPage("agents:allows")}{" "}<span className="font-medium text-foreground">{live.allowed}</span>{" "}{translateAgentPage("agents:of")}{" "}{live.total}{" "}{translateAgentPage("agents:tools_0284c6")}</span>
             ) : null}
             {draftId ? (
               <button
@@ -297,21 +296,15 @@ export function ProfileWizard({
                 onClick={saveAndExit}
                 disabled={busy}
                 className="font-medium text-primary hover:underline disabled:opacity-50"
-              >
-                Save &amp; finish later
-              </button>
+              >{translateAgentPage("agents:save_finish_later")}</button>
             ) : null}
           </div>
 
           <div className="flex items-center gap-2">
             {step > 1 ? (
-              <Button variant="outline" disabled={busy} onClick={() => setStep((s) => (s - 1) as WizardStep)}>
-                Back
-              </Button>
+              <Button variant="outline" disabled={busy} onClick={() => setStep((s) => (s - 1) as WizardStep)}>{translateAgentPage("agents:back")}</Button>
             ) : (
-              <Button variant="ghost" disabled={busy} onClick={() => navigate("/apps/advanced/profiles")}>
-                Cancel
-              </Button>
+              <Button variant="ghost" disabled={busy} onClick={() => navigate("/apps/advanced/profiles")}>{translateAgentPage("agents:cancel")}</Button>
             )}
 
             {step === 1 ? (
@@ -321,9 +314,7 @@ export function ProfileWizard({
                   saveDraft.mutate({ goToStep: 2, completedStep: 1, seed: seedSelections() })
                 }
               >
-                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Continue
-              </Button>
+                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}{translateAgentPage("agents:continue")}</Button>
             ) : null}
 
             {step === 2 ? (
@@ -331,16 +322,12 @@ export function ProfileWizard({
                 disabled={busy}
                 onClick={() => saveDraft.mutate({ goToStep: 3, completedStep: 2 })}
               >
-                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Continue
-              </Button>
+                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}{translateAgentPage("agents:continue")}</Button>
             ) : null}
 
             {step === 3 ? (
               <Button disabled={busy} onClick={() => finish.mutate()}>
-                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                Save profile
-              </Button>
+                {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}{translateAgentPage("agents:save_profile")}</Button>
             ) : null}
           </div>
         </div>
@@ -393,8 +380,8 @@ async function reconcileBindings(
     } catch (error) {
       const rollbacks = await Promise.allSettled(completed.reverse().map((done) => done.rollback()));
       const rollbackFailures = rollbacks.filter((result) => result.status === "rejected").length;
-      const suffix = rollbackFailures > 0 ? `; ${rollbackFailures} rollback operation(s) also failed` : "";
-      throw new Error(`Could not update assignment ${operation.key}${suffix}`, { cause: error });
+      const suffix = rollbackFailures > 0 ? translateAgentPage("agents:rollback_operation_s_also_failed", { value1: rollbackFailures }) : "";
+      throw new Error(translateAgentPage("agents:could_not_update_assignment", { value1: operation.key, value2: suffix }), { cause: error });
     }
   }
 }
@@ -453,11 +440,12 @@ export function StepName({
   profileKey: string;
   onProfileKey: (v: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground">Start from</h3>
+        <h3 className="text-sm font-medium text-foreground">{translateAgentPage("agents:start_from")}</h3>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {TEMPLATES.map((t) => (
             <button
@@ -480,9 +468,9 @@ export function StepName({
 
       {template === "copy" ? (
         <div className="space-y-2">
-          <h3 className="text-sm font-medium text-foreground">Which profile?</h3>
+          <h3 className="text-sm font-medium text-foreground">{translateAgentPage("agents:which_profile")}</h3>
           {copyOptions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">You don't have another profile to copy yet.</p>
+            <p className="text-sm text-muted-foreground">{translateAgentPage("agents:you_don_t_have_another_profile_to_copy")}</p>
           ) : (
             <div className="space-y-1.5">
               {copyOptions.map((p) => (
@@ -506,21 +494,21 @@ export function StepName({
 
       <div className="space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="profile-name">Name</Label>
+          <Label htmlFor="profile-name">{translateAgentPage("agents:name")}</Label>
           <Input
             id="profile-name"
             value={name}
             onChange={(e) => onName(e.target.value)}
-            placeholder="e.g. Everyday work"
+            placeholder={translateAgentPage("agents:e_g_everyday_work")}
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="profile-description">Description (optional)</Label>
+          <Label htmlFor="profile-description">{translateAgentPage("agents:description_optional")}</Label>
           <Textarea
             id="profile-description"
             value={description}
             onChange={(e) => onDescription(e.target.value)}
-            placeholder="What is this profile for?"
+            placeholder={translateAgentPage("agents:what_is_this_profile_for")}
             rows={2}
           />
         </div>
@@ -528,21 +516,17 @@ export function StepName({
 
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
         <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-          <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
-          Advanced
-        </CollapsibleTrigger>
+          <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />{translateAgentPage("agents:advanced")}</CollapsibleTrigger>
         <CollapsibleContent className="pt-2">
           <div className="space-y-1.5">
-            <Label htmlFor="profile-key">Identifier</Label>
+            <Label htmlFor="profile-key">{translateAgentPage("agents:identifier")}</Label>
             <Input
               id="profile-key"
               value={profileKey}
               onChange={(e) => onProfileKey(e.target.value)}
               className="font-mono text-xs"
             />
-            <p className="text-xs text-muted-foreground">
-              Used in exports and the API. Auto-filled from the name.
-            </p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:used_in_exports_and_the_api_auto_filled")}</p>
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -582,6 +566,7 @@ export function StepAssign({
   companyDefault: boolean;
   onCompanyDefault: (v: boolean) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [moreOpen, setMoreOpen] = useState(false);
   // Per-agent overlap context from already-loaded bindings — no extra fetch.
   const contextByAgent = useMemo(() => {
@@ -610,16 +595,14 @@ export function StepAssign({
           onChange={(e) => onCompanyDefault(e.target.checked)}
         />
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-foreground">Make this the organization default</span>
-          <span className="text-xs text-muted-foreground">
-            Every agent without its own profile uses this one.
-            {defaultProfileName ? ` Replaces “${defaultProfileName}”.` : ""}
+          <span className="text-sm font-medium text-foreground">{translateAgentPage("agents:make_this_the_organization_default")}</span>
+          <span className="text-xs text-muted-foreground">{translateAgentPage("agents:every_agent_without_its_own_profile_uses_this")}{defaultProfileName ? translateAgentPage("agents:replaces", { value1: defaultProfileName }) : ""}
           </span>
         </span>
       </label>
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground">Assign to agents</h3>
+        <h3 className="text-sm font-medium text-foreground">{translateAgentPage("agents:assign_to_agents")}</h3>
         <AgentMultiSelect
           agents={agents}
           selectedAgentIds={selectedAgentIds}
@@ -631,34 +614,29 @@ export function StepAssign({
           getDescription={(agent) => {
             const context = contextByAgent.get(agent.id) ?? [];
             const bits = [...context];
-            if (defaultProfileName) bits.push("organization default");
-            return bits.length > 0 ? `already has: ${bits.join(" · ")}` : "no profiles yet";
+            if (defaultProfileName) bits.push(translateAgentPage("agents:organization_default_666332"));
+            return bits.length > 0 ? translateAgentPage("agents:already_has", { value1: bits.join(" · ") }) : translateAgentPage("agents:no_profiles_yet");
           }}
         />
-        <p className="text-xs text-muted-foreground">
-          If an agent has several profiles, it can use anything any of them allows.
-        </p>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:if_an_agent_has_several_profiles_it_can")}</p>
       </div>
 
       {(projects.length > 0 || routines.length > 0) && onToggleProject && onToggleRoutine ? (
         <Collapsible open={moreOpen} onOpenChange={setMoreOpen} className="rounded-lg border border-border">
           <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left">
-            <span className="text-sm font-medium text-foreground">More targets</span>
+            <span className="text-sm font-medium text-foreground">{translateAgentPage("agents:more_targets")}</span>
             <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", moreOpen && "rotate-180")} />
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-4 border-t border-border px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              Assign this profile to a whole project or a scheduled routine instead of (or as well as)
-              individual agents.
-            </p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:assign_this_profile_to_a_whole_project_or")}</p>
             <TargetChecklist
-              label="Projects"
+              label={translateAgentPage("agents:projects")}
               options={projects}
               selected={selectedProjectIds ?? new Set()}
               onToggle={onToggleProject}
             />
             <TargetChecklist
-              label="Routines"
+              label={translateAgentPage("agents:routines")}
               options={routines}
               selected={selectedRoutineIds ?? new Set()}
               onToggle={onToggleRoutine}

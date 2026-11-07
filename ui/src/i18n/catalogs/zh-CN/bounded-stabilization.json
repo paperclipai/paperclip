@@ -1,0 +1,8 @@
+{
+  "timeline": "时间线（{{count}}）",
+  "deleteFolderItems": "此文件夹中的 {{count}} 个{{itemLabel}}不会被删除，而会移至“未归类”。",
+  "skills": "技能",
+  "routines": "例行任务",
+  "Skills": "技能",
+  "Routines": "例行任务"
+}

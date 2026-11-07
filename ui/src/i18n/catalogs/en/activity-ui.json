@@ -1,0 +1,1009 @@
+{
+  "artifact": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "daysAgo_one": "{{count}}D ago",
+    "daysAgo_other": "{{count}}D ago",
+    "count_one": "{{count}} Artifact",
+    "count_other": "{{count}} Artifacts"
+  },
+  "tool": {
+    "unnamed": "Unnamed tool",
+    "exact": {
+      "apply_patch": {
+        "running": "Applying a patch",
+        "completed": "Applied a patch",
+        "failed": "Applied a patch · failed",
+        "interrupted": "Applying a patch · stopped"
+      },
+      "read": {
+        "running": "Reading a file",
+        "completed": "Read a file",
+        "failed": "Read a file · failed",
+        "interrupted": "Reading a file · stopped"
+      },
+      "write": {
+        "running": "Writing a file",
+        "completed": "Wrote a file",
+        "failed": "Wrote a file · failed",
+        "interrupted": "Writing a file · stopped"
+      },
+      "edit": {
+        "running": "Editing a file",
+        "completed": "Edited a file",
+        "failed": "Edited a file · failed",
+        "interrupted": "Editing a file · stopped"
+      },
+      "notebook_read": {
+        "running": "Reading a notebook",
+        "completed": "Read a notebook",
+        "failed": "Read a notebook · failed",
+        "interrupted": "Reading a notebook · stopped"
+      },
+      "notebook_edit": {
+        "running": "Editing a notebook",
+        "completed": "Edited a notebook",
+        "failed": "Edited a notebook · failed",
+        "interrupted": "Editing a notebook · stopped"
+      },
+      "glob": {
+        "running": "Searching files",
+        "completed": "Searched files",
+        "failed": "Searched files · failed",
+        "interrupted": "Searching files · stopped"
+      },
+      "grep": {
+        "running": "Searching file contents",
+        "completed": "Searched file contents",
+        "failed": "Searched file contents · failed",
+        "interrupted": "Searching file contents · stopped"
+      },
+      "tool_search": {
+        "running": "Searching available tools",
+        "completed": "Searched available tools",
+        "failed": "Searched available tools · failed",
+        "interrupted": "Searching available tools · stopped"
+      },
+      "web_search": {
+        "running": "Searching the web",
+        "completed": "Searched the web",
+        "failed": "Searched the web · failed",
+        "interrupted": "Searching the web · stopped"
+      },
+      "web_fetch": {
+        "running": "Fetching a web page",
+        "completed": "Fetched a web page",
+        "failed": "Fetched a web page · failed",
+        "interrupted": "Fetching a web page · stopped"
+      },
+      "todo_write": {
+        "running": "Updating the task list",
+        "completed": "Updated the task list",
+        "failed": "Updated the task list · failed",
+        "interrupted": "Updating the task list · stopped"
+      },
+      "task_create": {
+        "running": "Creating a task",
+        "completed": "Created a task",
+        "failed": "Created a task · failed",
+        "interrupted": "Creating a task · stopped"
+      },
+      "task_update": {
+        "running": "Updating a task",
+        "completed": "Updated a task",
+        "failed": "Updated a task · failed",
+        "interrupted": "Updating a task · stopped"
+      },
+      "task_list": {
+        "running": "Listing tasks",
+        "completed": "Listed tasks",
+        "failed": "Listed tasks · failed",
+        "interrupted": "Listing tasks · stopped"
+      },
+      "task_get": {
+        "running": "Reading a task",
+        "completed": "Read a task",
+        "failed": "Read a task · failed",
+        "interrupted": "Reading a task · stopped"
+      },
+      "enter_plan_mode": {
+        "running": "Entering plan mode",
+        "completed": "Entered plan mode",
+        "failed": "Entered plan mode · failed",
+        "interrupted": "Entering plan mode · stopped"
+      },
+      "exit_plan_mode": {
+        "running": "Leaving plan mode",
+        "completed": "Left plan mode",
+        "failed": "Left plan mode · failed",
+        "interrupted": "Leaving plan mode · stopped"
+      },
+      "skill": {
+        "running": "Loading a skill",
+        "completed": "Loaded a skill",
+        "failed": "Loaded a skill · failed",
+        "interrupted": "Loading a skill · stopped"
+      },
+      "ask_user_question": {
+        "running": "Requesting input",
+        "completed": "Requested input",
+        "failed": "Requested input · failed",
+        "interrupted": "Requesting input · stopped"
+      },
+      "request_human_input": {
+        "running": "Requesting input",
+        "completed": "Requested input",
+        "failed": "Requested input · failed",
+        "interrupted": "Requesting input · stopped"
+      },
+      "agent": {
+        "running": "Starting a subagent",
+        "completed": "Started a subagent",
+        "failed": "Started a subagent · failed",
+        "interrupted": "Starting a subagent · stopped"
+      },
+      "task": {
+        "running": "Starting a subagent",
+        "completed": "Started a subagent",
+        "failed": "Started a subagent · failed",
+        "interrupted": "Starting a subagent · stopped"
+      },
+      "task_output": {
+        "running": "Checking subagent progress",
+        "completed": "Checked subagent progress",
+        "failed": "Checked subagent progress · failed",
+        "interrupted": "Checking subagent progress · stopped"
+      },
+      "task_stop": {
+        "running": "Stopping a subagent",
+        "completed": "Stopped a subagent",
+        "failed": "Stopped a subagent · failed",
+        "interrupted": "Stopping a subagent · stopped"
+      },
+      "send_message": {
+        "running": "Messaging a subagent",
+        "completed": "Messaged a subagent",
+        "failed": "Messaged a subagent · failed",
+        "interrupted": "Messaging a subagent · stopped"
+      },
+      "spawn_agent": {
+        "running": "Starting a subagent",
+        "completed": "Started a subagent",
+        "failed": "Started a subagent · failed",
+        "interrupted": "Starting a subagent · stopped"
+      },
+      "wait_agent": {
+        "running": "Checking subagent progress",
+        "completed": "Checked subagent progress",
+        "failed": "Checked subagent progress · failed",
+        "interrupted": "Checking subagent progress · stopped"
+      },
+      "wait_threads": {
+        "running": "Checking task progress",
+        "completed": "Checked task progress",
+        "failed": "Checked task progress · failed",
+        "interrupted": "Checking task progress · stopped"
+      },
+      "interrupt_agent": {
+        "running": "Interrupting a subagent",
+        "completed": "Interrupted a subagent",
+        "failed": "Interrupted a subagent · failed",
+        "interrupted": "Interrupting a subagent · stopped"
+      },
+      "report_findings": {
+        "running": "Reporting findings",
+        "completed": "Reported findings",
+        "failed": "Reported findings · failed",
+        "interrupted": "Reporting findings · stopped"
+      },
+      "guardian_review": {
+        "running": "Reviewing safety",
+        "completed": "Reviewed safety",
+        "failed": "Reviewed safety · failed",
+        "interrupted": "Reviewing safety · stopped"
+      },
+      "lsp": {
+        "running": "Inspecting code intelligence",
+        "completed": "Inspected code intelligence",
+        "failed": "Inspected code intelligence · failed",
+        "interrupted": "Inspecting code intelligence · stopped"
+      },
+      "compact_conversation": {
+        "running": "Compacting context",
+        "completed": "Compacted context",
+        "failed": "Compacted context · failed",
+        "interrupted": "Compacting context · stopped"
+      },
+      "image_generation": {
+        "running": "Generating an image",
+        "completed": "Generated an image",
+        "failed": "Generated an image · failed",
+        "interrupted": "Generating an image · stopped"
+      },
+      "view_image": {
+        "running": "Viewing an image",
+        "completed": "Viewed an image",
+        "failed": "Viewed an image · failed",
+        "interrupted": "Viewing an image · stopped"
+      },
+      "multi_tool_use_parallel": {
+        "running": "Running tools in parallel",
+        "completed": "Ran tools in parallel",
+        "failed": "Ran tools in parallel · failed",
+        "interrupted": "Running tools in parallel · stopped"
+      },
+      "get_task_context": {
+        "running": "Reading task context",
+        "completed": "Read task context",
+        "failed": "Read task context · failed",
+        "interrupted": "Reading task context · stopped"
+      },
+      "get_task_history": {
+        "running": "Reading task history",
+        "completed": "Read task history",
+        "failed": "Read task history · failed",
+        "interrupted": "Reading task history · stopped"
+      },
+      "list_documents": {
+        "running": "Listing documents",
+        "completed": "Listed documents",
+        "failed": "Listed documents · failed",
+        "interrupted": "Listing documents · stopped"
+      },
+      "read_document": {
+        "running": "Reading a document",
+        "completed": "Read a document",
+        "failed": "Read a document · failed",
+        "interrupted": "Reading a document · stopped"
+      },
+      "list_document_revisions": {
+        "running": "Listing document revisions",
+        "completed": "Listed document revisions",
+        "failed": "Listed document revisions · failed",
+        "interrupted": "Listing document revisions · stopped"
+      },
+      "report_progress": {
+        "running": "Reporting progress",
+        "completed": "Reported progress",
+        "failed": "Reported progress · failed",
+        "interrupted": "Reporting progress · stopped"
+      },
+      "answer_status_question": {
+        "running": "Answering a status question",
+        "completed": "Answered a status question",
+        "failed": "Answered a status question · failed",
+        "interrupted": "Answering a status question · stopped"
+      },
+      "write_document": {
+        "running": "Writing a document",
+        "completed": "Wrote a document",
+        "failed": "Wrote a document · failed",
+        "interrupted": "Writing a document · stopped"
+      },
+      "register_deliverable": {
+        "running": "Registering a deliverable",
+        "completed": "Registered a deliverable",
+        "failed": "Registered a deliverable · failed",
+        "interrupted": "Registering a deliverable · stopped"
+      },
+      "finish_task": {
+        "running": "Reporting completion",
+        "completed": "Reported completion",
+        "failed": "Reported completion · failed",
+        "interrupted": "Reporting completion · stopped"
+      },
+      "paperclip_finish": {
+        "running": "Reporting completion",
+        "completed": "Reported completion",
+        "failed": "Reported completion · failed",
+        "interrupted": "Reporting completion · stopped"
+      },
+      "block_task": {
+        "running": "Reporting a blocker",
+        "completed": "Reported a blocker",
+        "failed": "Reported a blocker · failed",
+        "interrupted": "Reporting a blocker · stopped"
+      },
+      "paperclip_block": {
+        "running": "Reporting a blocker",
+        "completed": "Reported a blocker",
+        "failed": "Reported a blocker · failed",
+        "interrupted": "Reporting a blocker · stopped"
+      },
+      "request_review": {
+        "running": "Requesting review",
+        "completed": "Requested review",
+        "failed": "Requested review · failed",
+        "interrupted": "Requesting review · stopped"
+      },
+      "list_agents": {
+        "running": "Listing agents",
+        "completed": "Listed agents",
+        "failed": "Listed agents · failed",
+        "interrupted": "Listing agents · stopped"
+      },
+      "get_agent": {
+        "running": "Reading agent details",
+        "completed": "Read agent details",
+        "failed": "Read agent details · failed",
+        "interrupted": "Reading agent details · stopped"
+      },
+      "search_tasks": {
+        "running": "Searching tasks",
+        "completed": "Searched tasks",
+        "failed": "Searched tasks · failed",
+        "interrupted": "Searching tasks · stopped"
+      },
+      "list_approvals": {
+        "running": "Listing approvals",
+        "completed": "Listed approvals",
+        "failed": "Listed approvals · failed",
+        "interrupted": "Listing approvals · stopped"
+      },
+      "get_approval": {
+        "running": "Reading an approval",
+        "completed": "Read an approval",
+        "failed": "Read an approval · failed",
+        "interrupted": "Reading an approval · stopped"
+      },
+      "get_approval_context": {
+        "running": "Reading approval context",
+        "completed": "Read approval context",
+        "failed": "Read approval context · failed",
+        "interrupted": "Reading approval context · stopped"
+      },
+      "get_workspace_runtime": {
+        "running": "Reading workspace status",
+        "completed": "Read workspace status",
+        "failed": "Read workspace status · failed",
+        "interrupted": "Reading workspace status · stopped"
+      },
+      "control_workspace_service": {
+        "running": "Controlling a workspace service",
+        "completed": "Controlled a workspace service",
+        "failed": "Controlled a workspace service · failed",
+        "interrupted": "Controlling a workspace service · stopped"
+      },
+      "set_dependencies": {
+        "running": "Updating task dependencies",
+        "completed": "Updated task dependencies",
+        "failed": "Updated task dependencies · failed",
+        "interrupted": "Updating task dependencies · stopped"
+      },
+      "set_task_title": {
+        "running": "Naming the task",
+        "completed": "Named the task",
+        "failed": "Named the task · failed",
+        "interrupted": "Naming the task · stopped"
+      },
+      "create_task": {
+        "running": "Creating a task",
+        "completed": "Created a task",
+        "failed": "Created a task · failed",
+        "interrupted": "Creating a task · stopped"
+      },
+      "request_approval": {
+        "running": "Requesting approval",
+        "completed": "Requested approval",
+        "failed": "Requested approval · failed",
+        "interrupted": "Requesting approval · stopped"
+      },
+      "decide_approval": {
+        "running": "Deciding an approval",
+        "completed": "Decided an approval",
+        "failed": "Decided an approval · failed",
+        "interrupted": "Deciding an approval · stopped"
+      },
+      "comment_on_approval": {
+        "running": "Commenting on an approval",
+        "completed": "Commented on an approval",
+        "failed": "Commented on an approval · failed",
+        "interrupted": "Commenting on an approval · stopped"
+      },
+      "schedule_wake": {
+        "running": "Scheduling a wake-up",
+        "completed": "Scheduled a wake-up",
+        "failed": "Scheduled a wake-up · failed",
+        "interrupted": "Scheduling a wake-up · stopped"
+      },
+      "generic_api_request": {
+        "running": "Calling the Paperclip API",
+        "completed": "Called the Paperclip API",
+        "failed": "Called the Paperclip API · failed",
+        "interrupted": "Calling the Paperclip API · stopped"
+      }
+    },
+    "action": {
+      "read": {
+        "default": {
+          "running": "Reading data",
+          "completed": "Read data",
+          "failed": "Read data · failed",
+          "interrupted": "Reading data · stopped"
+        },
+        "object": {
+          "running": "Reading {{object}}",
+          "completed": "Read {{object}}",
+          "failed": "Read {{object}} · failed",
+          "interrupted": "Reading {{object}} · stopped"
+        }
+      },
+      "list": {
+        "default": {
+          "running": "Listing items",
+          "completed": "Listed items",
+          "failed": "Listed items · failed",
+          "interrupted": "Listing items · stopped"
+        },
+        "object": {
+          "running": "Listing {{object}}",
+          "completed": "Listed {{object}}",
+          "failed": "Listed {{object}} · failed",
+          "interrupted": "Listing {{object}} · stopped"
+        }
+      },
+      "search": {
+        "default": {
+          "running": "Searching",
+          "completed": "Searched",
+          "failed": "Searched · failed",
+          "interrupted": "Searching · stopped"
+        },
+        "object": {
+          "running": "Searching {{object}}",
+          "completed": "Searched {{object}}",
+          "failed": "Searched {{object}} · failed",
+          "interrupted": "Searching {{object}} · stopped"
+        }
+      },
+      "fetch": {
+        "default": {
+          "running": "Fetching data",
+          "completed": "Fetched data",
+          "failed": "Fetched data · failed",
+          "interrupted": "Fetching data · stopped"
+        },
+        "object": {
+          "running": "Fetching {{object}}",
+          "completed": "Fetched {{object}}",
+          "failed": "Fetched {{object}} · failed",
+          "interrupted": "Fetching {{object}} · stopped"
+        }
+      },
+      "open": {
+        "default": {
+          "running": "Opening an item",
+          "completed": "Opened an item",
+          "failed": "Opened an item · failed",
+          "interrupted": "Opening an item · stopped"
+        },
+        "object": {
+          "running": "Opening {{object}}",
+          "completed": "Opened {{object}}",
+          "failed": "Opened {{object}} · failed",
+          "interrupted": "Opening {{object}} · stopped"
+        }
+      },
+      "update": {
+        "default": {
+          "running": "Updating data",
+          "completed": "Updated data",
+          "failed": "Updated data · failed",
+          "interrupted": "Updating data · stopped"
+        },
+        "object": {
+          "running": "Updating {{object}}",
+          "completed": "Updated {{object}}",
+          "failed": "Updated {{object}} · failed",
+          "interrupted": "Updating {{object}} · stopped"
+        }
+      },
+      "create": {
+        "default": {
+          "running": "Creating an item",
+          "completed": "Created an item",
+          "failed": "Created an item · failed",
+          "interrupted": "Creating an item · stopped"
+        },
+        "object": {
+          "running": "Creating {{object}}",
+          "completed": "Created {{object}}",
+          "failed": "Created {{object}} · failed",
+          "interrupted": "Creating {{object}} · stopped"
+        }
+      },
+      "delete": {
+        "default": {
+          "running": "Deleting an item",
+          "completed": "Deleted an item",
+          "failed": "Deleted an item · failed",
+          "interrupted": "Deleting an item · stopped"
+        },
+        "object": {
+          "running": "Deleting {{object}}",
+          "completed": "Deleted {{object}}",
+          "failed": "Deleted {{object}} · failed",
+          "interrupted": "Deleting {{object}} · stopped"
+        }
+      },
+      "move": {
+        "default": {
+          "running": "Moving an item",
+          "completed": "Moved an item",
+          "failed": "Moved an item · failed",
+          "interrupted": "Moving an item · stopped"
+        },
+        "object": {
+          "running": "Moving {{object}}",
+          "completed": "Moved {{object}}",
+          "failed": "Moved {{object}} · failed",
+          "interrupted": "Moving {{object}} · stopped"
+        }
+      },
+      "run": {
+        "default": {
+          "running": "Running a command",
+          "completed": "Ran a command",
+          "failed": "Ran a command · failed",
+          "interrupted": "Running a command · stopped"
+        },
+        "object": {
+          "running": "Running a command",
+          "completed": "Ran a command",
+          "failed": "Ran a command · failed",
+          "interrupted": "Running a command · stopped"
+        }
+      },
+      "request": {
+        "default": {
+          "running": "Requesting input",
+          "completed": "Requested input",
+          "failed": "Requested input · failed",
+          "interrupted": "Requesting input · stopped"
+        },
+        "object": {
+          "running": "Requesting {{object}}",
+          "completed": "Requested {{object}}",
+          "failed": "Requested {{object}} · failed",
+          "interrupted": "Requesting {{object}} · stopped"
+        }
+      },
+      "post": {
+        "default": {
+          "running": "Posting an update",
+          "completed": "Posted an update",
+          "failed": "Posted an update · failed",
+          "interrupted": "Posting an update · stopped"
+        },
+        "object": {
+          "running": "Posting {{object}}",
+          "completed": "Posted {{object}}",
+          "failed": "Posted {{object}} · failed",
+          "interrupted": "Posting {{object}} · stopped"
+        }
+      },
+      "start": {
+        "default": {
+          "running": "Starting an operation",
+          "completed": "Started an operation",
+          "failed": "Started an operation · failed",
+          "interrupted": "Starting an operation · stopped"
+        },
+        "object": {
+          "running": "Starting {{object}}",
+          "completed": "Started {{object}}",
+          "failed": "Started {{object}} · failed",
+          "interrupted": "Starting {{object}} · stopped"
+        }
+      },
+      "stop": {
+        "default": {
+          "running": "Stopping an operation",
+          "completed": "Stopped an operation",
+          "failed": "Stopped an operation · failed",
+          "interrupted": "Stopping an operation · stopped"
+        },
+        "object": {
+          "running": "Stopping {{object}}",
+          "completed": "Stopped {{object}}",
+          "failed": "Stopped {{object}} · failed",
+          "interrupted": "Stopping {{object}} · stopped"
+        }
+      },
+      "wait": {
+        "default": {
+          "running": "Waiting",
+          "completed": "Finished waiting",
+          "failed": "Finished waiting · failed",
+          "interrupted": "Waiting · stopped"
+        },
+        "object": {
+          "running": "Waiting",
+          "completed": "Finished waiting",
+          "failed": "Finished waiting · failed",
+          "interrupted": "Waiting · stopped"
+        }
+      },
+      "finish": {
+        "default": {
+          "running": "Reporting completion",
+          "completed": "Reported completion",
+          "failed": "Reported completion · failed",
+          "interrupted": "Reporting completion · stopped"
+        },
+        "object": {
+          "running": "Reporting completion",
+          "completed": "Reported completion",
+          "failed": "Reported completion · failed",
+          "interrupted": "Reporting completion · stopped"
+        }
+      },
+      "block": {
+        "default": {
+          "running": "Reporting a blocker",
+          "completed": "Reported a blocker",
+          "failed": "Reported a blocker · failed",
+          "interrupted": "Reporting a blocker · stopped"
+        },
+        "object": {
+          "running": "Reporting a blocker",
+          "completed": "Reported a blocker",
+          "failed": "Reported a blocker · failed",
+          "interrupted": "Reporting a blocker · stopped"
+        }
+      },
+      "think": {
+        "default": {
+          "running": "Thinking",
+          "completed": "Finished thinking",
+          "failed": "Finished thinking · failed",
+          "interrupted": "Thinking · stopped"
+        },
+        "object": {
+          "running": "Thinking",
+          "completed": "Finished thinking",
+          "failed": "Finished thinking · failed",
+          "interrupted": "Thinking · stopped"
+        }
+      },
+      "switch": {
+        "default": {
+          "running": "Switching mode",
+          "completed": "Switched mode",
+          "failed": "Switched mode · failed",
+          "interrupted": "Switching mode · stopped"
+        },
+        "object": {
+          "running": "Switching {{object}}",
+          "completed": "Switched {{object}}",
+          "failed": "Switched {{object}} · failed",
+          "interrupted": "Switching {{object}} · stopped"
+        }
+      },
+      "other": {
+        "default": {
+          "running": "Running",
+          "completed": "Ran",
+          "failed": "Ran · failed",
+          "interrupted": "Running · stopped"
+        },
+        "object": {
+          "running": "Running",
+          "completed": "Ran",
+          "failed": "Ran · failed",
+          "interrupted": "Running · stopped"
+        }
+      }
+    },
+    "group": {
+      "command": {
+        "singular": "command",
+        "plural": "commands"
+      },
+      "read": {
+        "singular": "read",
+        "plural": "reads"
+      },
+      "search": {
+        "singular": "search",
+        "plural": "searches"
+      },
+      "file_change": {
+        "singular": "file change",
+        "plural": "file changes"
+      },
+      "delegation": {
+        "singular": "delegation",
+        "plural": "delegations"
+      },
+      "wait": {
+        "singular": "wait",
+        "plural": "waits"
+      },
+      "tool_action": {
+        "singular": "tool action",
+        "plural": "tool actions"
+      },
+      "paperclip_read": {
+        "singular": "Paperclip read",
+        "plural": "Paperclip reads"
+      },
+      "task_operation": {
+        "singular": "task operation",
+        "plural": "task operations"
+      },
+      "tool_search": {
+        "singular": "tool search",
+        "plural": "tool searches"
+      }
+    },
+    "unnamedAction": {
+      "running": "Running an unnamed tool",
+      "completed": "Ran an unnamed tool",
+      "failed": "Ran an unnamed tool · failed",
+      "interrupted": "Running an unnamed tool · stopped"
+    },
+    "namedAction": {
+      "running": "Running {{object}}",
+      "completed": "Ran {{object}}",
+      "failed": "Ran {{object}} · failed",
+      "interrupted": "Running {{object}} · stopped"
+    }
+  },
+  "provider": {
+    "researchOpen": {
+      "running": "Opening a web page",
+      "completed": "Opened a web page",
+      "failed": "Couldn’t open the web page",
+      "interrupted": "Stopped opening the web page"
+    },
+    "researchFind": {
+      "running": "Searching the page",
+      "completed": "Searched the page",
+      "failed": "Page search failed",
+      "interrupted": "Page search stopped"
+    },
+    "researchSearch": {
+      "running": "Searching the web",
+      "completed": "Searched the web",
+      "failed": "Web search failed",
+      "interrupted": "Web search stopped"
+    },
+    "plan": {
+      "running": "Updating the plan",
+      "completed": "Updated the plan",
+      "failed": "Plan update failed",
+      "interrupted": "Plan update stopped"
+    },
+    "delegationMessage": {
+      "running": "Messaging a subagent",
+      "completed": "Messaged a subagent",
+      "failed": "Subagent message failed",
+      "interrupted": "Subagent message stopped"
+    },
+    "delegationResume": {
+      "running": "Resuming a subagent",
+      "completed": "Resumed a subagent",
+      "failed": "Couldn’t resume the subagent",
+      "interrupted": "Subagent resume stopped"
+    },
+    "delegationClose": {
+      "running": "Closing a subagent",
+      "completed": "Closed a subagent",
+      "failed": "Couldn’t close the subagent",
+      "interrupted": "Subagent close stopped"
+    },
+    "delegationWait": {
+      "running": "Waiting for subagents",
+      "completed": "Finished waiting for subagents",
+      "failed": "Subagent wait failed",
+      "interrupted": "Stopped waiting for subagents"
+    },
+    "delegationStart": {
+      "running": "Starting a subagent",
+      "completed": "Started a subagent",
+      "failed": "Subagent start failed",
+      "interrupted": "Subagent start stopped"
+    },
+    "modelSwitch": {
+      "running": "Switching models",
+      "completed": "Switched models",
+      "failed": "Model switch failed",
+      "interrupted": "Model switch stopped"
+    },
+    "modelVerify": {
+      "running": "Verifying the model",
+      "completed": "Verified the model",
+      "failed": "Model verification failed",
+      "interrupted": "Model verification stopped"
+    },
+    "context": {
+      "running": "Compacting context",
+      "completed": "Compacted context",
+      "failed": "Context compaction failed",
+      "interrupted": "Context compaction stopped"
+    },
+    "artifactView": {
+      "running": "Viewing an artifact",
+      "completed": "Viewed an artifact",
+      "failed": "Couldn’t view the artifact",
+      "interrupted": "Artifact view stopped"
+    },
+    "artifactGenerate": {
+      "running": "Generating an artifact",
+      "completed": "Generated an artifact",
+      "failed": "Artifact generation failed",
+      "interrupted": "Artifact generation stopped"
+    },
+    "reviewLeave": {
+      "running": "Leaving review mode",
+      "completed": "Left review mode",
+      "failed": "Couldn’t leave review mode",
+      "interrupted": "Review-mode change stopped"
+    },
+    "reviewEnter": {
+      "running": "Entering review mode",
+      "completed": "Entered review mode",
+      "failed": "Couldn’t enter review mode",
+      "interrupted": "Review-mode change stopped"
+    },
+    "hook": {
+      "running": "Running a hook",
+      "completed": "Ran a hook",
+      "failed": "Hook failed",
+      "interrupted": "Hook stopped"
+    },
+    "memory": {
+      "running": "Checking memory",
+      "completed": "Referenced memory",
+      "failed": "Memory lookup failed",
+      "interrupted": "Memory lookup stopped"
+    },
+    "safety": {
+      "running": "Reviewing safety",
+      "completed": "Reviewed safety",
+      "failed": "Safety review failed",
+      "interrupted": "Safety review stopped"
+    },
+    "terminal": {
+      "running": "Sending terminal input",
+      "completed": "Sent terminal input",
+      "failed": "Terminal input failed",
+      "interrupted": "Terminal input stopped"
+    },
+    "wait": {
+      "running": "Waiting",
+      "completed": "Finished waiting",
+      "failed": "Wait failed",
+      "interrupted": "Wait stopped"
+    },
+    "notice": {
+      "running": "Provider notice",
+      "completed": "Provider notice",
+      "failed": "Provider error",
+      "interrupted": "Provider notice"
+    },
+    "fileCount_one": "{{count}} file",
+    "fileCount_other": "{{count}} files",
+    "editingFiles": "Editing files",
+    "editedFiles": "Edited files",
+    "referencingFile": "Referencing a file",
+    "referencedFile": "Referenced a file",
+    "savingResource": "Saving a resource",
+    "addedDocument": "Added a document",
+    "addedDeliverable": "Added a deliverable",
+    "failedFallback": "{{activity}} · failed",
+    "interruptedFallback": "{{activity}} · interrupted"
+  },
+  "summary": {
+    "ranCommands": "Ran commands",
+    "searchedFiles": "Searched files",
+    "readFiles": "Read files",
+    "editedFiles": "Edited files",
+    "searchedWeb": "Searched the web",
+    "workedPlan": "Worked on a plan",
+    "requestedInput": "Requested input",
+    "workedAgents": "Worked with agents",
+    "reviewedSafety": "Reviewed safety",
+    "workedImages": "Worked with images",
+    "waited": "Waited",
+    "connectedTools": "Used connected tools",
+    "usedTools": "Used tools",
+    "workedArtifacts": "Worked with artifacts",
+    "managedContext": "Managed context",
+    "checkedMemory": "Checked memory",
+    "checkedModels": "Checked model settings",
+    "workedReview": "Worked in review mode",
+    "ranHooks": "Ran hooks",
+    "workedFiles": "Worked on files",
+    "referencedFiles": "Referenced files",
+    "addedResources": "Added resources",
+    "receivedUpdate": "Received a provider update",
+    "providerError": "Provider error reported",
+    "providerWarning": "Provider warning reported",
+    "receivedUpdates": "Received provider updates",
+    "checkedFiles": "Checked files",
+    "thought": "Thought through the task",
+    "stopped": "Activity stopped",
+    "usage": "Recorded usage",
+    "join": "{{first}}, {{next}}",
+    "more": "{{summary}}, and more",
+    "ranChecks": "Ran checks",
+    "checkFailed": "Check failed",
+    "skippedChecks": "Skipped checks",
+    "switchedModels": "Switched models",
+    "autoReviewedActions": "Auto-reviewed actions"
+  },
+  "transcript": {
+    "thoughtSeconds_one": "Thought for {{count}}s",
+    "thoughtSeconds_other": "Thought for {{count}}s",
+    "thoughtMinutes": "Thought for {{minutes}}m {{seconds}}s",
+    "yes": "Yes",
+    "no": "No",
+    "planStep": "Plan step",
+    "subagent": "Subagent",
+    "sessionTotal": "Provider session total",
+    "sessionUsageDetail": "This cumulative usage can include earlier runs in the resumed provider session.",
+    "interruptedToolWithDetail": "{{detail}}\nInterrupted before the provider reported completion.",
+    "interruptedTool": "Interrupted before the provider reported completion.",
+    "interruptedProviderWithSummary": "{{summary}} · Interrupted before completion.",
+    "interruptedProvider": "Interrupted before completion.",
+    "durationSeconds_one": "{{count}}s",
+    "durationSeconds_other": "{{count}}s",
+    "durationMinutes_one": "{{count}}m",
+    "durationMinutes_other": "{{count}}m",
+    "durationMixed": "{{minutes}}m {{seconds}}s",
+    "tokens": "{{label}} tokens"
+  },
+  "phase": {
+    "read_one": "Read a file",
+    "read_other": "Read {{count}} files",
+    "edit_one": "Edited a file",
+    "edit_other": "Edited {{count}} files",
+    "terminal_one": "Ran a command",
+    "terminal_other": "Ran {{count}} commands",
+    "search_one": "Searched once",
+    "search_other": "Searched {{count}} times",
+    "other_one": "Used a tool",
+    "other_other": "Used {{count}} tools",
+    "plan_one": "Updated the plan",
+    "plan_other": "Updated {{count}} plans",
+    "delegation_one": "Used a subagent",
+    "delegation_other": "Used {{count}} subagents",
+    "model_identity_one": "Updated the model",
+    "model_identity_other": "Updated the model {{count}} times",
+    "context_one": "Compacted context",
+    "context_other": "Compacted context {{count}} times",
+    "artifact_one": "Handled an artifact",
+    "artifact_other": "Handled {{count}} artifacts",
+    "review_one": "Changed review mode",
+    "review_other": "Changed review mode {{count}} times",
+    "hook_one": "Ran a hook",
+    "hook_other": "Ran {{count}} hooks",
+    "memory_one": "Referenced memory",
+    "memory_other": "Referenced memory {{count}} times",
+    "safety_one": "Ran a safety review",
+    "safety_other": "Ran {{count}} safety reviews",
+    "providerTerminal_one": "Sent terminal input",
+    "providerTerminal_other": "Sent terminal input {{count}} times",
+    "wait_one": "Waited",
+    "wait_other": "Waited {{count}} times",
+    "provider_notice_one": "Received a provider notice",
+    "provider_notice_other": "Received {{count}} provider notices",
+    "workspace_one": "Changed a file",
+    "workspace_other": "Changed {{count}} files",
+    "tool_search_one": "Searched available tools",
+    "tool_search_other": "Searched available tools {{count}} times",
+    "paperclip_read_one": "Read from Paperclip",
+    "paperclip_read_other": "Read from Paperclip {{count}} times",
+    "task_operation_one": "Used Paperclip",
+    "task_operation_other": "Used Paperclip {{count}} times",
+    "runner_one": "Runner activity",
+    "runner_other": "{{count}} runner updates",
+    "join": "{{first}}, {{next}}",
+    "more_one": "{{summary}}, +{{count}} more",
+    "more_other": "{{summary}}, +{{count}} more",
+    "reasoning": "Reasoning",
+    "noTools": "No tool activity"
+  }
+}

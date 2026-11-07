@@ -1,0 +1,1009 @@
+{
+  "artifact": {
+    "today": "今天",
+    "yesterday": "昨天",
+    "daysAgo_one": "{{count}} 天前",
+    "count_one": "{{count}} 个产物",
+    "daysAgo_other": "{{count}} 天前",
+    "count_other": "{{count}} 个产物"
+  },
+  "tool": {
+    "unnamed": "未命名工具",
+    "exact": {
+      "apply_patch": {
+        "running": "正在应用补丁",
+        "completed": "已应用补丁",
+        "failed": "应用补丁失败",
+        "interrupted": "已停止应用补丁"
+      },
+      "read": {
+        "running": "正在读取文件",
+        "completed": "已读取文件",
+        "failed": "读取文件失败",
+        "interrupted": "已停止读取文件"
+      },
+      "write": {
+        "running": "正在写入文件",
+        "completed": "已写入文件",
+        "failed": "写入文件失败",
+        "interrupted": "已停止写入文件"
+      },
+      "edit": {
+        "running": "正在编辑文件",
+        "completed": "已编辑文件",
+        "failed": "编辑文件失败",
+        "interrupted": "已停止编辑文件"
+      },
+      "notebook_read": {
+        "running": "正在读取笔记本",
+        "completed": "已读取笔记本",
+        "failed": "读取笔记本失败",
+        "interrupted": "已停止读取笔记本"
+      },
+      "notebook_edit": {
+        "running": "正在编辑笔记本",
+        "completed": "已编辑笔记本",
+        "failed": "编辑笔记本失败",
+        "interrupted": "已停止编辑笔记本"
+      },
+      "glob": {
+        "running": "正在搜索文件",
+        "completed": "已搜索文件",
+        "failed": "搜索文件失败",
+        "interrupted": "已停止搜索文件"
+      },
+      "grep": {
+        "running": "正在搜索文件内容",
+        "completed": "已搜索文件内容",
+        "failed": "搜索文件内容失败",
+        "interrupted": "已停止搜索文件内容"
+      },
+      "tool_search": {
+        "running": "正在搜索可用工具",
+        "completed": "已搜索可用工具",
+        "failed": "搜索可用工具失败",
+        "interrupted": "已停止搜索可用工具"
+      },
+      "web_search": {
+        "running": "正在搜索网页",
+        "completed": "已搜索网页",
+        "failed": "搜索网页失败",
+        "interrupted": "已停止搜索网页"
+      },
+      "web_fetch": {
+        "running": "正在获取网页",
+        "completed": "已获取网页",
+        "failed": "获取网页失败",
+        "interrupted": "已停止获取网页"
+      },
+      "todo_write": {
+        "running": "正在更新任务列表",
+        "completed": "已更新任务列表",
+        "failed": "更新任务列表失败",
+        "interrupted": "已停止更新任务列表"
+      },
+      "task_create": {
+        "running": "正在创建任务",
+        "completed": "已创建任务",
+        "failed": "创建任务失败",
+        "interrupted": "已停止创建任务"
+      },
+      "task_update": {
+        "running": "正在更新任务",
+        "completed": "已更新任务",
+        "failed": "更新任务失败",
+        "interrupted": "已停止更新任务"
+      },
+      "task_list": {
+        "running": "正在列出任务",
+        "completed": "已列出任务",
+        "failed": "列出任务失败",
+        "interrupted": "已停止列出任务"
+      },
+      "task_get": {
+        "running": "正在读取任务",
+        "completed": "已读取任务",
+        "failed": "读取任务失败",
+        "interrupted": "已停止读取任务"
+      },
+      "enter_plan_mode": {
+        "running": "正在进入规划模式",
+        "completed": "已进入规划模式",
+        "failed": "进入规划模式失败",
+        "interrupted": "已停止进入规划模式"
+      },
+      "exit_plan_mode": {
+        "running": "正在退出规划模式",
+        "completed": "已退出规划模式",
+        "failed": "退出规划模式失败",
+        "interrupted": "已停止退出规划模式"
+      },
+      "skill": {
+        "running": "正在加载技能",
+        "completed": "已加载技能",
+        "failed": "加载技能失败",
+        "interrupted": "已停止加载技能"
+      },
+      "ask_user_question": {
+        "running": "正在请求输入",
+        "completed": "已请求输入",
+        "failed": "请求输入失败",
+        "interrupted": "已停止请求输入"
+      },
+      "request_human_input": {
+        "running": "正在请求输入",
+        "completed": "已请求输入",
+        "failed": "请求输入失败",
+        "interrupted": "已停止请求输入"
+      },
+      "agent": {
+        "running": "正在启动子智能体",
+        "completed": "已启动子智能体",
+        "failed": "启动子智能体失败",
+        "interrupted": "已停止启动子智能体"
+      },
+      "task": {
+        "running": "正在启动子智能体",
+        "completed": "已启动子智能体",
+        "failed": "启动子智能体失败",
+        "interrupted": "已停止启动子智能体"
+      },
+      "task_output": {
+        "running": "正在检查子智能体进度",
+        "completed": "已检查子智能体进度",
+        "failed": "检查子智能体进度失败",
+        "interrupted": "已停止检查子智能体进度"
+      },
+      "task_stop": {
+        "running": "正在停止子智能体",
+        "completed": "已停止子智能体",
+        "failed": "停止子智能体失败",
+        "interrupted": "已停止停止子智能体"
+      },
+      "send_message": {
+        "running": "正在向子智能体发送消息",
+        "completed": "已向子智能体发送消息",
+        "failed": "向子智能体发送消息失败",
+        "interrupted": "已停止向子智能体发送消息"
+      },
+      "spawn_agent": {
+        "running": "正在启动子智能体",
+        "completed": "已启动子智能体",
+        "failed": "启动子智能体失败",
+        "interrupted": "已停止启动子智能体"
+      },
+      "wait_agent": {
+        "running": "正在检查子智能体进度",
+        "completed": "已检查子智能体进度",
+        "failed": "检查子智能体进度失败",
+        "interrupted": "已停止检查子智能体进度"
+      },
+      "wait_threads": {
+        "running": "正在检查任务进度",
+        "completed": "已检查任务进度",
+        "failed": "检查任务进度失败",
+        "interrupted": "已停止检查任务进度"
+      },
+      "interrupt_agent": {
+        "running": "正在中断子智能体",
+        "completed": "已中断子智能体",
+        "failed": "中断子智能体失败",
+        "interrupted": "已停止中断子智能体"
+      },
+      "report_findings": {
+        "running": "正在报告发现",
+        "completed": "已报告发现",
+        "failed": "报告发现失败",
+        "interrupted": "已停止报告发现"
+      },
+      "guardian_review": {
+        "running": "正在进行安全审查",
+        "completed": "已进行安全审查",
+        "failed": "进行安全审查失败",
+        "interrupted": "已停止进行安全审查"
+      },
+      "lsp": {
+        "running": "正在检查代码智能信息",
+        "completed": "已检查代码智能信息",
+        "failed": "检查代码智能信息失败",
+        "interrupted": "已停止检查代码智能信息"
+      },
+      "compact_conversation": {
+        "running": "正在压缩上下文",
+        "completed": "已压缩上下文",
+        "failed": "压缩上下文失败",
+        "interrupted": "已停止压缩上下文"
+      },
+      "image_generation": {
+        "running": "正在生成图像",
+        "completed": "已生成图像",
+        "failed": "生成图像失败",
+        "interrupted": "已停止生成图像"
+      },
+      "view_image": {
+        "running": "正在查看图像",
+        "completed": "已查看图像",
+        "failed": "查看图像失败",
+        "interrupted": "已停止查看图像"
+      },
+      "multi_tool_use_parallel": {
+        "running": "正在并行运行工具",
+        "completed": "已并行运行工具",
+        "failed": "并行运行工具失败",
+        "interrupted": "已停止并行运行工具"
+      },
+      "get_task_context": {
+        "running": "正在读取任务上下文",
+        "completed": "已读取任务上下文",
+        "failed": "读取任务上下文失败",
+        "interrupted": "已停止读取任务上下文"
+      },
+      "get_task_history": {
+        "running": "正在读取任务历史",
+        "completed": "已读取任务历史",
+        "failed": "读取任务历史失败",
+        "interrupted": "已停止读取任务历史"
+      },
+      "list_documents": {
+        "running": "正在列出文档",
+        "completed": "已列出文档",
+        "failed": "列出文档失败",
+        "interrupted": "已停止列出文档"
+      },
+      "read_document": {
+        "running": "正在读取文档",
+        "completed": "已读取文档",
+        "failed": "读取文档失败",
+        "interrupted": "已停止读取文档"
+      },
+      "list_document_revisions": {
+        "running": "正在列出文档修订版本",
+        "completed": "已列出文档修订版本",
+        "failed": "列出文档修订版本失败",
+        "interrupted": "已停止列出文档修订版本"
+      },
+      "report_progress": {
+        "running": "正在报告进度",
+        "completed": "已报告进度",
+        "failed": "报告进度失败",
+        "interrupted": "已停止报告进度"
+      },
+      "answer_status_question": {
+        "running": "正在回答状态问题",
+        "completed": "已回答状态问题",
+        "failed": "回答状态问题失败",
+        "interrupted": "已停止回答状态问题"
+      },
+      "write_document": {
+        "running": "正在写入文档",
+        "completed": "已写入文档",
+        "failed": "写入文档失败",
+        "interrupted": "已停止写入文档"
+      },
+      "register_deliverable": {
+        "running": "正在登记交付物",
+        "completed": "已登记交付物",
+        "failed": "登记交付物失败",
+        "interrupted": "已停止登记交付物"
+      },
+      "finish_task": {
+        "running": "正在报告完成",
+        "completed": "已报告完成",
+        "failed": "报告完成失败",
+        "interrupted": "已停止报告完成"
+      },
+      "paperclip_finish": {
+        "running": "正在报告完成",
+        "completed": "已报告完成",
+        "failed": "报告完成失败",
+        "interrupted": "已停止报告完成"
+      },
+      "block_task": {
+        "running": "正在报告阻碍",
+        "completed": "已报告阻碍",
+        "failed": "报告阻碍失败",
+        "interrupted": "已停止报告阻碍"
+      },
+      "paperclip_block": {
+        "running": "正在报告阻碍",
+        "completed": "已报告阻碍",
+        "failed": "报告阻碍失败",
+        "interrupted": "已停止报告阻碍"
+      },
+      "request_review": {
+        "running": "正在请求审查",
+        "completed": "已请求审查",
+        "failed": "请求审查失败",
+        "interrupted": "已停止请求审查"
+      },
+      "list_agents": {
+        "running": "正在列出智能体",
+        "completed": "已列出智能体",
+        "failed": "列出智能体失败",
+        "interrupted": "已停止列出智能体"
+      },
+      "get_agent": {
+        "running": "正在读取智能体详情",
+        "completed": "已读取智能体详情",
+        "failed": "读取智能体详情失败",
+        "interrupted": "已停止读取智能体详情"
+      },
+      "search_tasks": {
+        "running": "正在搜索任务",
+        "completed": "已搜索任务",
+        "failed": "搜索任务失败",
+        "interrupted": "已停止搜索任务"
+      },
+      "list_approvals": {
+        "running": "正在列出审批",
+        "completed": "已列出审批",
+        "failed": "列出审批失败",
+        "interrupted": "已停止列出审批"
+      },
+      "get_approval": {
+        "running": "正在读取审批",
+        "completed": "已读取审批",
+        "failed": "读取审批失败",
+        "interrupted": "已停止读取审批"
+      },
+      "get_approval_context": {
+        "running": "正在读取审批上下文",
+        "completed": "已读取审批上下文",
+        "failed": "读取审批上下文失败",
+        "interrupted": "已停止读取审批上下文"
+      },
+      "get_workspace_runtime": {
+        "running": "正在读取工作区状态",
+        "completed": "已读取工作区状态",
+        "failed": "读取工作区状态失败",
+        "interrupted": "已停止读取工作区状态"
+      },
+      "control_workspace_service": {
+        "running": "正在控制工作区服务",
+        "completed": "已控制工作区服务",
+        "failed": "控制工作区服务失败",
+        "interrupted": "已停止控制工作区服务"
+      },
+      "set_dependencies": {
+        "running": "正在更新任务依赖",
+        "completed": "已更新任务依赖",
+        "failed": "更新任务依赖失败",
+        "interrupted": "已停止更新任务依赖"
+      },
+      "set_task_title": {
+        "running": "正在为任务命名",
+        "completed": "已为任务命名",
+        "failed": "为任务命名失败",
+        "interrupted": "已停止为任务命名"
+      },
+      "create_task": {
+        "running": "正在创建任务",
+        "completed": "已创建任务",
+        "failed": "创建任务失败",
+        "interrupted": "已停止创建任务"
+      },
+      "request_approval": {
+        "running": "正在请求审批",
+        "completed": "已请求审批",
+        "failed": "请求审批失败",
+        "interrupted": "已停止请求审批"
+      },
+      "decide_approval": {
+        "running": "正在作出审批决定",
+        "completed": "已作出审批决定",
+        "failed": "作出审批决定失败",
+        "interrupted": "已停止作出审批决定"
+      },
+      "comment_on_approval": {
+        "running": "正在为审批添加评论",
+        "completed": "已为审批添加评论",
+        "failed": "为审批添加评论失败",
+        "interrupted": "已停止为审批添加评论"
+      },
+      "schedule_wake": {
+        "running": "正在安排唤醒",
+        "completed": "已安排唤醒",
+        "failed": "安排唤醒失败",
+        "interrupted": "已停止安排唤醒"
+      },
+      "generic_api_request": {
+        "running": "正在调用 Paperclip API",
+        "completed": "已调用 Paperclip API",
+        "failed": "调用 Paperclip API失败",
+        "interrupted": "已停止调用 Paperclip API"
+      }
+    },
+    "action": {
+      "read": {
+        "default": {
+          "running": "正在读取数据",
+          "completed": "已读取数据",
+          "failed": "读取数据失败",
+          "interrupted": "已停止读取数据"
+        },
+        "object": {
+          "running": "正在读取 {{object}}",
+          "completed": "已读取 {{object}}",
+          "failed": "读取 {{object}}失败",
+          "interrupted": "已停止读取 {{object}}"
+        }
+      },
+      "list": {
+        "default": {
+          "running": "正在列出条目",
+          "completed": "已列出条目",
+          "failed": "列出条目失败",
+          "interrupted": "已停止列出条目"
+        },
+        "object": {
+          "running": "正在列出 {{object}}",
+          "completed": "已列出 {{object}}",
+          "failed": "列出 {{object}}失败",
+          "interrupted": "已停止列出 {{object}}"
+        }
+      },
+      "search": {
+        "default": {
+          "running": "正在搜索",
+          "completed": "已搜索",
+          "failed": "搜索失败",
+          "interrupted": "已停止搜索"
+        },
+        "object": {
+          "running": "正在搜索 {{object}}",
+          "completed": "已搜索 {{object}}",
+          "failed": "搜索 {{object}}失败",
+          "interrupted": "已停止搜索 {{object}}"
+        }
+      },
+      "fetch": {
+        "default": {
+          "running": "正在获取数据",
+          "completed": "已获取数据",
+          "failed": "获取数据失败",
+          "interrupted": "已停止获取数据"
+        },
+        "object": {
+          "running": "正在获取 {{object}}",
+          "completed": "已获取 {{object}}",
+          "failed": "获取 {{object}}失败",
+          "interrupted": "已停止获取 {{object}}"
+        }
+      },
+      "open": {
+        "default": {
+          "running": "正在打开条目",
+          "completed": "已打开条目",
+          "failed": "打开条目失败",
+          "interrupted": "已停止打开条目"
+        },
+        "object": {
+          "running": "正在打开 {{object}}",
+          "completed": "已打开 {{object}}",
+          "failed": "打开 {{object}}失败",
+          "interrupted": "已停止打开 {{object}}"
+        }
+      },
+      "update": {
+        "default": {
+          "running": "正在更新数据",
+          "completed": "已更新数据",
+          "failed": "更新数据失败",
+          "interrupted": "已停止更新数据"
+        },
+        "object": {
+          "running": "正在更新 {{object}}",
+          "completed": "已更新 {{object}}",
+          "failed": "更新 {{object}}失败",
+          "interrupted": "已停止更新 {{object}}"
+        }
+      },
+      "create": {
+        "default": {
+          "running": "正在创建条目",
+          "completed": "已创建条目",
+          "failed": "创建条目失败",
+          "interrupted": "已停止创建条目"
+        },
+        "object": {
+          "running": "正在创建 {{object}}",
+          "completed": "已创建 {{object}}",
+          "failed": "创建 {{object}}失败",
+          "interrupted": "已停止创建 {{object}}"
+        }
+      },
+      "delete": {
+        "default": {
+          "running": "正在删除条目",
+          "completed": "已删除条目",
+          "failed": "删除条目失败",
+          "interrupted": "已停止删除条目"
+        },
+        "object": {
+          "running": "正在删除 {{object}}",
+          "completed": "已删除 {{object}}",
+          "failed": "删除 {{object}}失败",
+          "interrupted": "已停止删除 {{object}}"
+        }
+      },
+      "move": {
+        "default": {
+          "running": "正在移动条目",
+          "completed": "已移动条目",
+          "failed": "移动条目失败",
+          "interrupted": "已停止移动条目"
+        },
+        "object": {
+          "running": "正在移动 {{object}}",
+          "completed": "已移动 {{object}}",
+          "failed": "移动 {{object}}失败",
+          "interrupted": "已停止移动 {{object}}"
+        }
+      },
+      "run": {
+        "default": {
+          "running": "正在运行命令",
+          "completed": "已运行命令",
+          "failed": "运行命令失败",
+          "interrupted": "已停止运行命令"
+        },
+        "object": {
+          "running": "正在运行命令",
+          "completed": "已运行命令",
+          "failed": "运行命令失败",
+          "interrupted": "已停止运行命令"
+        }
+      },
+      "request": {
+        "default": {
+          "running": "正在请求输入",
+          "completed": "已请求输入",
+          "failed": "请求输入失败",
+          "interrupted": "已停止请求输入"
+        },
+        "object": {
+          "running": "正在请求 {{object}}",
+          "completed": "已请求 {{object}}",
+          "failed": "请求 {{object}}失败",
+          "interrupted": "已停止请求 {{object}}"
+        }
+      },
+      "post": {
+        "default": {
+          "running": "正在发布更新",
+          "completed": "已发布更新",
+          "failed": "发布更新失败",
+          "interrupted": "已停止发布更新"
+        },
+        "object": {
+          "running": "正在发布 {{object}}",
+          "completed": "已发布 {{object}}",
+          "failed": "发布 {{object}}失败",
+          "interrupted": "已停止发布 {{object}}"
+        }
+      },
+      "start": {
+        "default": {
+          "running": "正在启动操作",
+          "completed": "已启动操作",
+          "failed": "启动操作失败",
+          "interrupted": "已停止启动操作"
+        },
+        "object": {
+          "running": "正在启动 {{object}}",
+          "completed": "已启动 {{object}}",
+          "failed": "启动 {{object}}失败",
+          "interrupted": "已停止启动 {{object}}"
+        }
+      },
+      "stop": {
+        "default": {
+          "running": "正在停止操作",
+          "completed": "已停止操作",
+          "failed": "停止操作失败",
+          "interrupted": "已停止停止操作"
+        },
+        "object": {
+          "running": "正在停止 {{object}}",
+          "completed": "已停止 {{object}}",
+          "failed": "停止 {{object}}失败",
+          "interrupted": "已停止停止 {{object}}"
+        }
+      },
+      "wait": {
+        "default": {
+          "running": "正在等待",
+          "completed": "已等待",
+          "failed": "等待失败",
+          "interrupted": "已停止等待"
+        },
+        "object": {
+          "running": "正在等待",
+          "completed": "已等待",
+          "failed": "等待失败",
+          "interrupted": "已停止等待"
+        }
+      },
+      "finish": {
+        "default": {
+          "running": "正在报告完成",
+          "completed": "已报告完成",
+          "failed": "报告完成失败",
+          "interrupted": "已停止报告完成"
+        },
+        "object": {
+          "running": "正在报告完成",
+          "completed": "已报告完成",
+          "failed": "报告完成失败",
+          "interrupted": "已停止报告完成"
+        }
+      },
+      "block": {
+        "default": {
+          "running": "正在报告阻碍",
+          "completed": "已报告阻碍",
+          "failed": "报告阻碍失败",
+          "interrupted": "已停止报告阻碍"
+        },
+        "object": {
+          "running": "正在报告阻碍",
+          "completed": "已报告阻碍",
+          "failed": "报告阻碍失败",
+          "interrupted": "已停止报告阻碍"
+        }
+      },
+      "think": {
+        "default": {
+          "running": "正在思考",
+          "completed": "已思考",
+          "failed": "思考失败",
+          "interrupted": "已停止思考"
+        },
+        "object": {
+          "running": "正在思考",
+          "completed": "已思考",
+          "failed": "思考失败",
+          "interrupted": "已停止思考"
+        }
+      },
+      "switch": {
+        "default": {
+          "running": "正在切换模式",
+          "completed": "已切换模式",
+          "failed": "切换模式失败",
+          "interrupted": "已停止切换模式"
+        },
+        "object": {
+          "running": "正在切换 {{object}}",
+          "completed": "已切换 {{object}}",
+          "failed": "切换 {{object}}失败",
+          "interrupted": "已停止切换 {{object}}"
+        }
+      },
+      "other": {
+        "default": {
+          "running": "正在运行",
+          "completed": "已运行",
+          "failed": "运行失败",
+          "interrupted": "已停止运行"
+        },
+        "object": {
+          "running": "正在运行",
+          "completed": "已运行",
+          "failed": "运行失败",
+          "interrupted": "已停止运行"
+        }
+      }
+    },
+    "group": {
+      "command": {
+        "singular": "命令",
+        "plural": "命令"
+      },
+      "read": {
+        "singular": "读取",
+        "plural": "读取"
+      },
+      "search": {
+        "singular": "搜索",
+        "plural": "搜索"
+      },
+      "file_change": {
+        "singular": "文件更改",
+        "plural": "文件更改"
+      },
+      "delegation": {
+        "singular": "委派",
+        "plural": "委派"
+      },
+      "wait": {
+        "singular": "等待",
+        "plural": "等待"
+      },
+      "tool_action": {
+        "singular": "工具操作",
+        "plural": "工具操作"
+      },
+      "paperclip_read": {
+        "singular": "Paperclip 读取",
+        "plural": "Paperclip 读取"
+      },
+      "task_operation": {
+        "singular": "任务操作",
+        "plural": "任务操作"
+      },
+      "tool_search": {
+        "singular": "工具搜索",
+        "plural": "工具搜索"
+      }
+    },
+    "unnamedAction": {
+      "running": "正在运行未命名工具",
+      "completed": "已运行未命名工具",
+      "failed": "运行未命名工具失败",
+      "interrupted": "已停止运行未命名工具"
+    },
+    "namedAction": {
+      "running": "正在运行 {{object}}",
+      "completed": "已运行 {{object}}",
+      "failed": "运行 {{object}}失败",
+      "interrupted": "已停止运行 {{object}}"
+    }
+  },
+  "provider": {
+    "researchOpen": {
+      "running": "正在打开网页",
+      "completed": "已打开网页",
+      "failed": "无法打开网页",
+      "interrupted": "已停止打开网页"
+    },
+    "researchFind": {
+      "running": "正在搜索页面",
+      "completed": "已搜索页面",
+      "failed": "页面搜索失败",
+      "interrupted": "已停止搜索页面"
+    },
+    "researchSearch": {
+      "running": "正在搜索网页",
+      "completed": "已搜索网页",
+      "failed": "网页搜索失败",
+      "interrupted": "已停止搜索网页"
+    },
+    "plan": {
+      "running": "正在更新计划",
+      "completed": "已更新计划",
+      "failed": "计划更新失败",
+      "interrupted": "已停止更新计划"
+    },
+    "delegationMessage": {
+      "running": "正在向子智能体发送消息",
+      "completed": "已向子智能体发送消息",
+      "failed": "向子智能体发送消息失败",
+      "interrupted": "已停止向子智能体发送消息"
+    },
+    "delegationResume": {
+      "running": "正在恢复子智能体",
+      "completed": "已恢复子智能体",
+      "failed": "无法恢复子智能体",
+      "interrupted": "已停止恢复子智能体"
+    },
+    "delegationClose": {
+      "running": "正在关闭子智能体",
+      "completed": "已关闭子智能体",
+      "failed": "无法关闭子智能体",
+      "interrupted": "已停止关闭子智能体"
+    },
+    "delegationWait": {
+      "running": "正在等待子智能体",
+      "completed": "已结束等待子智能体",
+      "failed": "等待子智能体失败",
+      "interrupted": "已停止等待子智能体"
+    },
+    "delegationStart": {
+      "running": "正在启动子智能体",
+      "completed": "已启动子智能体",
+      "failed": "子智能体启动失败",
+      "interrupted": "已停止启动子智能体"
+    },
+    "modelSwitch": {
+      "running": "正在切换模型",
+      "completed": "已切换模型",
+      "failed": "模型切换失败",
+      "interrupted": "已停止切换模型"
+    },
+    "modelVerify": {
+      "running": "正在验证模型",
+      "completed": "已验证模型",
+      "failed": "模型验证失败",
+      "interrupted": "已停止验证模型"
+    },
+    "context": {
+      "running": "正在压缩上下文",
+      "completed": "已压缩上下文",
+      "failed": "上下文压缩失败",
+      "interrupted": "已停止压缩上下文"
+    },
+    "artifactView": {
+      "running": "正在查看产物",
+      "completed": "已查看产物",
+      "failed": "无法查看产物",
+      "interrupted": "已停止查看产物"
+    },
+    "artifactGenerate": {
+      "running": "正在生成产物",
+      "completed": "已生成产物",
+      "failed": "产物生成失败",
+      "interrupted": "已停止生成产物"
+    },
+    "reviewLeave": {
+      "running": "正在退出审查模式",
+      "completed": "已退出审查模式",
+      "failed": "无法退出审查模式",
+      "interrupted": "已停止切换审查模式"
+    },
+    "reviewEnter": {
+      "running": "正在进入审查模式",
+      "completed": "已进入审查模式",
+      "failed": "无法进入审查模式",
+      "interrupted": "已停止切换审查模式"
+    },
+    "hook": {
+      "running": "正在运行钩子",
+      "completed": "已运行钩子",
+      "failed": "钩子运行失败",
+      "interrupted": "已停止运行钩子"
+    },
+    "memory": {
+      "running": "正在检查记忆",
+      "completed": "已引用记忆",
+      "failed": "记忆查找失败",
+      "interrupted": "已停止查找记忆"
+    },
+    "safety": {
+      "running": "正在进行安全审查",
+      "completed": "已进行安全审查",
+      "failed": "安全审查失败",
+      "interrupted": "已停止安全审查"
+    },
+    "terminal": {
+      "running": "正在发送终端输入",
+      "completed": "已发送终端输入",
+      "failed": "终端输入失败",
+      "interrupted": "已停止发送终端输入"
+    },
+    "wait": {
+      "running": "正在等待",
+      "completed": "已结束等待",
+      "failed": "等待失败",
+      "interrupted": "已停止等待"
+    },
+    "notice": {
+      "running": "提供商通知",
+      "completed": "提供商通知",
+      "failed": "提供商错误",
+      "interrupted": "提供商通知"
+    },
+    "fileCount_one": "{{count}} 个文件",
+    "fileCount_other": "{{count}} 个文件",
+    "editingFiles": "正在编辑文件",
+    "editedFiles": "已编辑文件",
+    "referencingFile": "正在引用文件",
+    "referencedFile": "已引用文件",
+    "savingResource": "正在保存资源",
+    "addedDocument": "已添加文档",
+    "addedDeliverable": "已添加交付物",
+    "failedFallback": "{{activity}}（失败）",
+    "interruptedFallback": "{{activity}}（已中断）"
+  },
+  "summary": {
+    "ranCommands": "已运行命令",
+    "searchedFiles": "已搜索文件",
+    "readFiles": "已读取文件",
+    "editedFiles": "已编辑文件",
+    "searchedWeb": "已搜索网页",
+    "workedPlan": "已处理计划相关工作",
+    "requestedInput": "已请求输入",
+    "workedAgents": "已与智能体协作",
+    "reviewedSafety": "已进行安全审查",
+    "workedImages": "已处理图像相关工作",
+    "waited": "已等待",
+    "connectedTools": "已使用已连接的工具",
+    "usedTools": "已使用工具",
+    "workedArtifacts": "已处理产物相关工作",
+    "managedContext": "已管理上下文",
+    "checkedMemory": "已检查记忆",
+    "checkedModels": "已检查模型设置",
+    "workedReview": "已在审查模式下工作",
+    "ranHooks": "已运行钩子",
+    "workedFiles": "已处理文件相关工作",
+    "referencedFiles": "已引用文件",
+    "addedResources": "已添加资源",
+    "receivedUpdate": "已收到提供商更新",
+    "providerError": "提供商已报告错误",
+    "providerWarning": "提供商已报告警告",
+    "receivedUpdates": "已收到提供商更新",
+    "checkedFiles": "已检查文件",
+    "thought": "已思考任务",
+    "stopped": "活动已停止",
+    "usage": "已记录用量",
+    "join": "{{first}}、{{next}}",
+    "more": "{{summary}}，以及其他活动",
+    "ranChecks": "运行了检查",
+    "checkFailed": "检查失败",
+    "skippedChecks": "已跳过检查",
+    "switchedModels": "已切换模型",
+    "autoReviewedActions": "已自动审查操作"
+  },
+  "transcript": {
+    "thoughtSeconds_one": "已思考 {{count}} 秒",
+    "thoughtSeconds_other": "已思考 {{count}} 秒",
+    "thoughtMinutes": "已思考 {{minutes}} 分 {{seconds}} 秒",
+    "yes": "是",
+    "no": "否",
+    "planStep": "计划步骤",
+    "subagent": "子智能体",
+    "sessionTotal": "提供商会话总用量",
+    "sessionUsageDetail": "此累计用量可能包含恢复的提供商会话中此前运行的用量。",
+    "interruptedToolWithDetail": "{{detail}}\n提供商报告完成前，操作已中断。",
+    "interruptedTool": "提供商报告完成前，操作已中断。",
+    "interruptedProviderWithSummary": "{{summary}} · 完成前已中断。",
+    "interruptedProvider": "完成前已中断。",
+    "durationSeconds_one": "{{count}} 秒",
+    "durationSeconds_other": "{{count}} 秒",
+    "durationMinutes_one": "{{count}} 分",
+    "durationMinutes_other": "{{count}} 分",
+    "durationMixed": "{{minutes}} 分 {{seconds}} 秒",
+    "tokens": "{{label}} Token"
+  },
+  "phase": {
+    "read_one": "已读取 1 个文件",
+    "read_other": "已读取 {{count}} 个文件",
+    "edit_one": "已编辑 1 个文件",
+    "edit_other": "已编辑 {{count}} 个文件",
+    "terminal_one": "已运行 1 个命令",
+    "terminal_other": "已运行 {{count}} 个命令",
+    "search_one": "已搜索 1 次",
+    "search_other": "已搜索 {{count}} 次",
+    "other_one": "已使用 1 个工具",
+    "other_other": "已使用 {{count}} 个工具",
+    "plan_one": "已更新 1 个计划",
+    "plan_other": "已更新 {{count}} 个计划",
+    "delegation_one": "已使用 1 个子智能体",
+    "delegation_other": "已使用 {{count}} 个子智能体",
+    "model_identity_one": "已更新模型 1 次",
+    "model_identity_other": "已更新模型 {{count}} 次",
+    "context_one": "已压缩上下文 1 次",
+    "context_other": "已压缩上下文 {{count}} 次",
+    "artifact_one": "已处理 1 个产物",
+    "artifact_other": "已处理 {{count}} 个产物",
+    "review_one": "已切换审查模式 1 次",
+    "review_other": "已切换审查模式 {{count}} 次",
+    "hook_one": "已运行 1 个钩子",
+    "hook_other": "已运行 {{count}} 个钩子",
+    "memory_one": "已引用记忆 1 次",
+    "memory_other": "已引用记忆 {{count}} 次",
+    "safety_one": "已进行 1 次安全审查",
+    "safety_other": "已进行 {{count}} 次安全审查",
+    "providerTerminal_one": "已发送终端输入 1 次",
+    "providerTerminal_other": "已发送终端输入 {{count}} 次",
+    "wait_one": "已等待 1 次",
+    "wait_other": "已等待 {{count}} 次",
+    "provider_notice_one": "已收到 1 条提供商通知",
+    "provider_notice_other": "已收到 {{count}} 条提供商通知",
+    "workspace_one": "已更改 1 个文件",
+    "workspace_other": "已更改 {{count}} 个文件",
+    "tool_search_one": "已搜索可用工具 1 次",
+    "tool_search_other": "已搜索可用工具 {{count}} 次",
+    "paperclip_read_one": "已从 Paperclip 读取 1 次",
+    "paperclip_read_other": "已从 Paperclip 读取 {{count}} 次",
+    "task_operation_one": "已使用 Paperclip 1 次",
+    "task_operation_other": "已使用 Paperclip {{count}} 次",
+    "runner_one": "1 条运行器更新",
+    "runner_other": "{{count}} 条运行器更新",
+    "join": "{{first}}、{{next}}",
+    "more_one": "{{summary}}，另有 {{count}} 项活动",
+    "more_other": "{{summary}}，另有 {{count}} 项活动",
+    "reasoning": "推理",
+    "noTools": "无工具活动"
+  }
+}

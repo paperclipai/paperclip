@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { isPatchFile } from "@/lib/patch";
 import { PatchLines } from "@/components/PatchLines";
 import { useState, type ReactNode } from "react";
@@ -46,6 +47,7 @@ function Identity({
   title,
   summary,
 }: Pick<ArtifactIdentity, "title" | "summary">) {
+  useTranslation("task-components");
   return (
     <div className="flex flex-col gap-2">
       <h2 className="break-words text-lg font-semibold leading-snug">
@@ -68,6 +70,7 @@ function Footer({
 }: Pick<ArtifactIdentity, "author" | "updatedAt" | "statusBadge"> & {
   action: ReactNode;
 }) {
+  useTranslation("task-components");
   return (
     <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3">
       <span className="text-xs text-muted-foreground">
@@ -80,6 +83,7 @@ function Footer({
 }
 
 function Card({ children }: { children: ReactNode }) {
+  useTranslation("task-components");
   return (
     <article className="w-full min-w-0 overflow-hidden rounded-lg border border-border bg-card text-card-foreground">
       {children}
@@ -88,6 +92,7 @@ function Card({ children }: { children: ReactNode }) {
 }
 
 function SourceLink({ url, children }: { url: string; children: ReactNode }) {
+  useTranslation("task-components");
   return url ? (
     <Button variant="outline" size="sm" asChild>
       <a href={url} target="_blank" rel="noreferrer">
@@ -113,6 +118,7 @@ function Viewer({
   action: string;
   children: ReactNode;
 }) {
+  useTranslation("task-components");
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -137,6 +143,7 @@ interface DiffProps {
   filesChanged?: number | null;
 }
 function Diff({ additions, deletions, filesChanged }: DiffProps) {
+  useTranslation("task-components");
   return (
     <div className="flex flex-wrap gap-2 font-mono text-xs">
       {additions != null && (
@@ -151,7 +158,7 @@ function Diff({ additions, deletions, filesChanged }: DiffProps) {
       )}
       {filesChanged != null && (
         <span className="text-muted-foreground">
-          {filesChanged} {filesChanged === 1 ? "file" : "files"}
+          {filesChanged} {filesChanged === 1 ? t("task-components:file_3b9c358f") : t("task-components:files_3d7db37d")}
         </span>
       )}
     </div>
@@ -171,20 +178,21 @@ export interface PullRequestCardProps extends ArtifactIdentity, DiffProps {
 }
 
 const checksLabel = {
-  passed: "Checks passed",
-  pending: "Checks pending",
-  failed: "Checks failed",
-  unknown: "Checks not available",
+  get passed() { return t("final-components-a:checksPassed_b63c39d9"); },
+  get pending() { return t("final-components-a:checksPending_88c45075"); },
+  get failed() { return t("final-components-a:checksFailed_69ea579f"); },
+  get unknown() { return t("final-components-a:checksNotAvailable_f335a89f"); },
 };
 const stateLabel = {
-  open: "Open",
-  draft: "Draft",
-  merged: "Merged",
-  closed: "Closed",
-  unknown: "State unknown",
+  get open() { return t("final-components-a:open_ed077f3d"); },
+  get draft() { return t("final-components-a:draft_ebf12ef4"); },
+  get merged() { return t("final-components-a:merged_bd0a0620"); },
+  get closed() { return t("final-components-a:closed_c21ead06"); },
+  get unknown() { return t("final-components-a:stateUnknown_5fcbf73a"); },
 };
 
 export function PullRequestCard(props: PullRequestCardProps) {
+  useTranslation("task-components");
   const {
     number,
     repository,
@@ -213,7 +221,7 @@ export function PullRequestCard(props: PullRequestCardProps) {
       <div className="flex flex-col gap-4 p-5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            <GitPullRequest className="size-4" /> Pull request{" "}
+            <GitPullRequest className="size-4" />{t("task-components:pullRequest_f3dba662")}{" "}
             {number != null && <span className="font-mono">#{number}</span>}
           </span>
           <Badge
@@ -257,14 +265,12 @@ export function PullRequestCard(props: PullRequestCardProps) {
           <p className="text-xs leading-relaxed">{reviewSummary}</p>
         )}
         {evidenceSource && (
-          <p className="text-xs text-muted-foreground">
-            Source: {evidenceSource}
-          </p>
+          <p className="text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_ec566e42334d" components={{ part1: <>{evidenceSource}</> }} /></p>
         )}
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={url}>Open pull request</SourceLink>}
+        action={<SourceLink url={url}>{t("task-components:openPullRequest_43999652")}</SourceLink>}
       />
     </Card>
   );
@@ -277,11 +283,12 @@ export interface CommitCardProps extends ArtifactIdentity, DiffProps {
   url: string;
 }
 export function CommitCard(props: CommitCardProps) {
+  useTranslation("task-components");
   return (
     <Card>
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <GitCommitHorizontal className="size-4" /> Commit{" "}
+          <GitCommitHorizontal className="size-4" />{" "}{t("task-components:commit_82a9c46f")}{" "}
           <code title={props.sha}>{props.sha.slice(0, 8)}</code>
         </span>
         <Identity {...props} />
@@ -298,13 +305,14 @@ export function CommitCard(props: CommitCardProps) {
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={props.url}>View commit</SourceLink>}
+        action={<SourceLink url={props.url}>{t("task-components:viewCommit_83b2eddb")}</SourceLink>}
       />
     </Card>
   );
 }
 
 function Markdown({ body, preview = false }: { body: string; preview?: boolean }) {
+  useTranslation("task-components");
   return (
     <div className="flex flex-col gap-3 text-sm leading-relaxed">
       <ReactMarkdown
@@ -350,7 +358,7 @@ function Markdown({ body, preview = false }: { body: string; preview?: boolean }
                 rel="noreferrer"
                 className="underline underline-offset-4"
               >
-                {alt || "Open image"}
+                {alt || t("task-components:openImage_1b5fe596")}
               </a>
             ) : (
               <span>{alt}</span>
@@ -384,6 +392,7 @@ export interface DocumentCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function DocumentCard(props: DocumentCardProps) {
+  useTranslation("task-components");
   const patch = props.patch ?? isPatchFile(props.filename);
   const content = (body: string, preview = false) => patch
     ? <pre className={preview
@@ -402,8 +411,8 @@ export function DocumentCard(props: DocumentCardProps) {
       )}
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <FileText className="size-4" /> {patch ? "Patch" : "Markdown"}
-          {props.revision != null && ` · revision ${props.revision}`}
+          <FileText className="size-4" /> {patch ? t("task-components:patchDocument") : "Markdown"}
+          {props.revision != null && t("final-components-a:revisionRevision_2e30c066", { revision: props.revision })}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -422,13 +431,13 @@ export function DocumentCard(props: DocumentCardProps) {
                 aria-expanded={props.expanded}
                 onClick={props.onOpen}
               >
-                {props.expanded ? "Close document" : "Read document"}
+                {props.expanded ? t("task-components:closeDocument_9e0dfdc1") : t("task-components:readDocument_a6be85ca")}
               </Button>
             ) : (
               <Viewer
                 title={props.title}
                 description={props.filename}
-                action="Read document"
+                action={t("final-components-a:readDocument_a6be85ca")}
               >
                 {content(props.body)}
               </Viewer>
@@ -449,6 +458,7 @@ export interface DataCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
+  useTranslation("task-components");
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-xs">
@@ -477,12 +487,13 @@ function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
         </tbody>
       </table>
       {rows.length === 0 && (
-        <p className="p-4 text-xs text-muted-foreground">No rows</p>
+        <p className="p-4 text-xs text-muted-foreground">{t("task-components:noRows_1a715b4b")}</p>
       )}
     </div>
   );
 }
 export function DataCard(props: DataCardProps) {
+  useTranslation("task-components");
   const csv = [props.columns, ...props.rows]
     .map((row) =>
       row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","),
@@ -495,10 +506,7 @@ export function DataCard(props: DataCardProps) {
       </div>
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Table2 className="size-4" /> CSV · {props.truncated ? "First " : ""}
-          {props.rows.length} {props.rows.length === 1 ? "row" : "rows"} ·{" "}
-          {props.columns.length}{" "}
-          {props.columns.length === 1 ? "column" : "columns"}
+          <Table2 className="size-4" /> {t(`final-components-a:csv_${props.truncated ? "first" : "all"}_${props.rows.length === 1 ? "row" : "rows"}_${props.columns.length === 1 ? "column" : "columns"}`, { rows: props.rows.length, columns: props.columns.length })}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -513,7 +521,7 @@ export function DataCard(props: DataCardProps) {
             <Viewer
               title={props.title}
               description={props.filename}
-              action="View data"
+              action={t("final-components-a:viewData_249495a1")}
             >
               <DataTable {...props} />
               <Button asChild variant="outline" size="sm" className="w-fit">
@@ -523,9 +531,7 @@ export function DataCard(props: DataCardProps) {
                     props.downloadUrl ||
                     `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
                   }
-                >
-                  Download CSV
-                </a>
+                >{t("task-components:downloadCsv_a4023b89")}</a>
               </Button>
             </Viewer>
           </div>
@@ -536,6 +542,7 @@ export function DataCard(props: DataCardProps) {
 }
 
 function ImageContent({ src, alt }: { src: string; alt: string }) {
+  useTranslation("task-components");
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   return src && failedUrl !== src ? (
     <img
@@ -548,7 +555,7 @@ function ImageContent({ src, alt }: { src: string; alt: string }) {
   ) : (
     <div className="flex aspect-video flex-col items-center justify-center gap-3 text-muted-foreground">
       <ImageIcon className="size-8" />
-      <span className="text-xs">No preview available</span>
+      <span className="text-xs">{t("task-components:noPreviewAvailable_e5c083cf")}</span>
     </div>
   );
 }
@@ -562,6 +569,7 @@ export interface ImageCardProps extends ArtifactIdentity {
   onOpen?: () => void;
 }
 export function ImageCard(props: ImageCardProps) {
+  useTranslation("task-components");
   return (
     <Card>
       <div className="border-b border-border bg-muted/20">
@@ -569,8 +577,7 @@ export function ImageCard(props: ImageCardProps) {
       </div>
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ImageIcon className="size-4" /> Image
-          {props.width && props.height
+          <ImageIcon className="size-4" />{t("final-components-a:image_1aa4cb0b")}{props.width && props.height
             ? ` · ${props.width} × ${props.height}`
             : ""}
         </span>
@@ -586,16 +593,14 @@ export function ImageCard(props: ImageCardProps) {
             <Button
               size="sm"
               variant="outline"
-              aria-label={`View image: ${props.title}`}
+              aria-label={t("task-components:viewImage_7eba81ff", { value1: props.title })}
               onClick={props.onOpen}
-            >
-              View image
-            </Button>
+            >{t("task-components:viewImage_5bb55a4b")}</Button>
           ) : (
             <Viewer
               title={props.title}
               description={props.filename}
-              action="View image"
+              action={t("final-components-a:viewImage_5bb55a4b")}
             >
               <ImageContent src={props.imageUrl} alt={props.alt} />
             </Viewer>
@@ -614,6 +619,7 @@ export interface VideoCardProps extends ArtifactIdentity {
   onOpen?: () => void;
 }
 export function VideoCard(props: VideoCardProps) {
+  useTranslation("task-components");
   return (
     <Card>
       <video
@@ -627,8 +633,7 @@ export function VideoCard(props: VideoCardProps) {
       />
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Film className="size-4" /> Video
-          {props.duration && ` · ${props.duration}`}
+          <Film className="size-4" />{t("final-components-a:video_d534be82")}{props.duration && ` · ${props.duration}`}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -642,13 +647,11 @@ export function VideoCard(props: VideoCardProps) {
             <Button
               size="sm"
               variant="outline"
-              aria-label={`Open video: ${props.title}`}
+              aria-label={t("task-components:openVideo_88d41f60", { value1: props.title })}
               onClick={props.onOpen}
-            >
-              Open video
-            </Button>
+            >{t("task-components:openVideo_6ac7b387")}</Button>
           ) : (
-            <SourceLink url={props.videoUrl}>Open video</SourceLink>
+            <SourceLink url={props.videoUrl}>{t("task-components:openVideo_6ac7b387")}</SourceLink>
           )
         }
       />
@@ -662,6 +665,7 @@ export interface LinkPreviewCardProps extends ArtifactIdentity {
   imageAlt: string;
 }
 export function LinkPreviewCard(props: LinkPreviewCardProps) {
+  useTranslation("task-components");
   return (
     <Card>
       {props.imageUrl && (
@@ -671,8 +675,7 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
       )}
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Globe className="size-4" /> Link preview
-        </span>
+          <Globe className="size-4" />{" "}{t("task-components:linkPreview_165e9250")}</span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
           {props.url}
@@ -680,7 +683,7 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={props.url}>Open link</SourceLink>}
+        action={<SourceLink url={props.url}>{t("task-components:openLink_aab63f85")}</SourceLink>}
       />
     </Card>
   );
@@ -696,12 +699,12 @@ export interface FileCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function FileCard(props: FileCardProps) {
+  useTranslation("task-components");
   return (
     <Card>
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <File className="size-4" /> File
-          {props.fileSize && ` · ${props.fileSize}`}
+          <File className="size-4" />{t("final-components-a:file_50009ce1")}{props.fileSize && ` · ${props.fileSize}`}
         </span>
         <Identity {...props} />
         <div className="flex flex-col gap-1">
@@ -730,18 +733,14 @@ export function FileCard(props: FileCardProps) {
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
             {props.openUrl && (
-              <SourceLink url={props.openUrl}>Open file</SourceLink>
+              <SourceLink url={props.openUrl}>{t("task-components:openFile_4190c0c7")}</SourceLink>
             )}
             {props.downloadUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={props.downloadUrl} download={props.filename}>
-                  Download file
-                </a>
+                <a href={props.downloadUrl} download={props.filename}>{t("task-components:downloadFile_9de4149f")}</a>
               </Button>
             ) : (
-              <Button size="sm" variant="outline" disabled>
-                Download unavailable
-              </Button>
+              <Button size="sm" variant="outline" disabled>{t("task-components:downloadUnavailable_2f180e49")}</Button>
             )}
           </div>
         }

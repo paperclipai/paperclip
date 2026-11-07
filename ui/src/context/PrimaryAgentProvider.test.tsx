@@ -8,6 +8,7 @@ import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryA
 import { queryKeys } from "@/lib/queryKeys";
 import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
 
 const state = vi.hoisted(() => ({
   companyId: "company-a", get: vi.fn(), set: vi.fn(), session: vi.fn(), toast: vi.fn(),
@@ -59,6 +60,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount()); cache?.dispose(); cache = undefined; client.clear(); container.remove(); localStorage.clear(); vi.unstubAllGlobals();
+  await i18n.changeLanguage("en");
 });
 
 function restorePreference() {
@@ -73,6 +75,19 @@ function restorePreference() {
 }
 
 describe("primary agent persistence provider", () => {
+  it("localizes failure and retry copy without changing the submitted agent", async () => {
+    await i18n.changeLanguage("zh-CN");
+    state.set.mockRejectedValue(new Error("Connection lost"));
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelector("button")!.click());
+    await vi.waitFor(() => expect(state.toast).toHaveBeenCalled());
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "无法更改你的主智能体。",
+      action: expect.objectContaining({ label: "重试" }),
+    }));
+    expect(state.set).toHaveBeenLastCalledWith("company-a", { primaryAgentId: "alex" });
+  });
+
   it.each(["user-a", "user-b", null])("waits for fresh identity before changing a restored primary agent (verified=%s)", async verified => {
     let finish!: (value: { user: { id: string } } | null) => void;
     state.session.mockReturnValue(new Promise(resolve => { finish = resolve; }));

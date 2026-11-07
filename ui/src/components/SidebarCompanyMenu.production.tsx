@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -58,6 +59,7 @@ const ORGANIZATION_ACTION_CLASS =
   "h-(--organization-popover-action-row-height) gap-(--organization-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--organization-popover-action-line-height) text-foreground focus:bg-accent/50 focus:text-foreground";
 
 function WorkspaceIcon({ company, inPopover = false }: { company: Company; inPopover?: boolean }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <CompanyPatternIcon
       companyName={company.name}
@@ -78,6 +80,7 @@ function SortableCompanyItem({
   isSelected: boolean;
   onSelect: (company: Company) => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const {
     attributes,
     listeners,
@@ -124,7 +127,7 @@ function SortableCompanyItem({
         <button
           type="button"
           ref={setActivatorNodeRef}
-          aria-label={`Reorder ${company.name}`}
+          aria-label={translateShell("shell:reorder", { value1: company.name })}
           className="inline-flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
@@ -145,6 +148,7 @@ function SortableCompanyItem({
 }
 
 export function SidebarCompanyMenu(props: SidebarCompanyMenuProps = {}) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <PluginOrganizationSwitcher {...props}>
       <BuiltinCompanyMenu {...props} />
@@ -153,6 +157,7 @@ export function SidebarCompanyMenu(props: SidebarCompanyMenuProps = {}) {
 }
 
 function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps) {
+  const { t: translateShell } = useTranslation("shell");
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
@@ -174,7 +179,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   );
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
-    [companies],
+    [companies, translateShell],
   );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -192,7 +197,6 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
     hiddenSettingsLoaded &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
-  const switcherNoun = "company";
   const currentName = selectedCompany?.name ?? null;
   // Managed hosts forbid local company creation. Their extension owns that action.
   const companyCreationManaged = Boolean(useCloudInstance());
@@ -267,8 +271,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
           className="h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-accent/50 hover:text-foreground has-[>svg]:px-4 dark:hover:bg-accent/50"
           aria-label={
             currentName
-              ? `Open ${currentName} ${switcherNoun} switcher`
-              : `Open ${switcherNoun} switcher`
+              ? translateShell("final-components-a:openCompanySwitcher", { name: currentName })
+              : translateShell("final-components-a:openCompanySwitcherEmpty")
           }
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -284,7 +288,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
               )}
               title={currentName ?? undefined}
             >
-              {currentName ?? `Select ${switcherNoun}`}
+              {currentName ?? translateShell("final-components-a:selectCompany")}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
@@ -296,9 +300,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
         className="ml-2 w-(--organization-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
       >
         <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
-          <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
-            Organizations
-          </DropdownMenuLabel>
+          <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">{translateShell("shell:organizations")}</DropdownMenuLabel>
           <button
             type="button"
             onClick={(event) => {
@@ -308,7 +310,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
             }}
             className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            {isEditingOrder ? "Done" : "Edit"}
+            {isEditingOrder ? translateShell("shell:done") : translateShell("shell:edit")}
           </button>
         </div>
         <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2 pt-1">
@@ -339,7 +341,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
             // offer the way back.
             companyListUnavailable ? (
               <>
-                <DropdownMenuItem disabled>Couldn&apos;t load companies</DropdownMenuItem>
+                <DropdownMenuItem disabled>{translateShell("shell:couldn_t_load_companies")}</DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={(event) => {
                     // Keep the menu open so the result of the retry is visible.
@@ -347,12 +349,10 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
                     void retryCompanies();
                   }}
                 >
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Try again
-                </DropdownMenuItem>
+                  <RefreshCw className="h-4 w-4 mr-2" />{translateShell("shell:try_again")}</DropdownMenuItem>
               </>
             ) : (
-              <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+              <DropdownMenuItem disabled>{translateShell("shell:no_companies")}</DropdownMenuItem>
             )
           ) : null}
         </div>
@@ -366,7 +366,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
                 <Plus className="size-4" />
               </span>
-              <span className="min-w-0 flex-1 truncate">Create organization</span>
+              <span className="min-w-0 flex-1 truncate">{translateShell("shell:create_organization")}</span>
             </DropdownMenuItem>
           )}
           {showInvitePeople ? (
@@ -390,8 +390,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
                 </span>
                 <span className="min-w-0 flex-1 truncate">
                   {currentName
-                    ? `Invite people to ${currentName}`
-                    : "Invite people"}
+                    ? translateShell("shell:invite_people_to", { value1: currentName })
+                    : translateShell("shell:invite_people")}
                 </span>
               </Link>
             </DropdownMenuItem>
@@ -406,7 +406,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
                 <LogOut className="size-4" />
               </span>
               <span className="min-w-0 flex-1 truncate">
-                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                {signOutMutation.isPending ? translateShell("shell:signing_out") : translateShell("shell:sign_out")}
               </span>
             </DropdownMenuItem>
           ) : null}

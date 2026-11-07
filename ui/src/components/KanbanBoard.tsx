@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
@@ -188,6 +189,7 @@ function KanbanColumn({
   revealIncrement: number;
   onShowMore: () => void;
 }) {
+  useTranslation("task-components");
   const { setNodeRef, isOver } = useDroppable({ id: status, disabled: status === "monitoring" });
 
   const isEmpty = issues.length === 0;
@@ -258,14 +260,10 @@ function KanbanColumn({
             type="button"
             className="mt-1 flex w-full items-center justify-center rounded-md border border-dashed border-border bg-background/70 px-2 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
             onClick={onShowMore}
-          >
-            Show {nextRevealCount} more
-          </button>
+          ><Trans ns="final-components-b" i18nKey="numeric.KanbanBoard.aaa45fcb038b_8b44a" values={{ nextRevealCount: nextRevealCount }} /></button>
         ) : null}
         {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
-          <p className="px-1 pt-1 text-(length:--text-micro) text-muted-foreground">
-            Showing {visibleIssues.length} of {issues.length}
-          </p>
+          <p className="px-1 pt-1 text-(length:--text-micro) text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.KanbanBoard.6c6c1366bae6_35a21" values={{ count: visibleIssues.length, totalCount: issues.length }} /></p>
         ) : null}
       </div>
     </div>
@@ -291,6 +289,7 @@ function KanbanCard({
   compact?: boolean;
   className?: string;
 }) {
+  useTranslation("task-components");
   const {
     attributes,
     listeners,
@@ -341,12 +340,10 @@ function KanbanCard({
           {isSuccessfulRunHandoffRequired(issue) ? (
             <Badge variant="outline"
               className="border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-              title="This task needs a next step"
-              aria-label="Needs next step"
+              title={t("task-components:thisTaskNeedsANextStep_aa4b5536")}
+              aria-label={t("task-components:needsNextStep_e45a2c0f")}
             >
-              <AlertTriangle className="h-3 w-3" />
-              Next step
-            </Badge>
+              <AlertTriangle className="h-3 w-3" />{t("task-components:nextStep_298a9207")}</Badge>
           ) : null}
           {isLive && (
             <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400">
@@ -354,17 +351,14 @@ function KanbanCard({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              {compact ? "Live" : null}
+              {compact ? t("task-components:live_b64ac05f") : null}
             </span>
           )}
           {!isLive && subtreeLiveCount > 0 && (
             <Badge variant="outline"
               className="border-border px-1.5 text-(length:--text-nano) text-muted-foreground"
-              title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
-            >
-              <span className="h-2 w-2 shrink-0 rounded-full border border-muted-foreground/60" aria-hidden="true" />
-              {subtreeLiveCount} live below
-            </Badge>
+              title={t("task-components:subTaskRunningBelow_e26bf8be", { value1: subtreeLiveCount, value2: t("task-components:pluralSuffix", { count: subtreeLiveCount }) })}
+            ><Trans ns="final-components-b" i18nKey="numeric.KanbanBoard.f3c1eea304da_7b705" values={{ subtreeLiveCount: subtreeLiveCount }} components={{ part1: <>{<span className="h-2 w-2 shrink-0 rounded-full border border-muted-foreground/60" aria-hidden="true" />}</> }} /></Badge>
           )}
         </div>
         <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
@@ -400,6 +394,7 @@ export function KanbanBoard({
   showOverflowFades = false,
   onUpdateIssue,
 }: KanbanBoardProps) {
+  useTranslation("task-components");
   const [activeId, setActiveId] = useState<string | null>(null);
   const paginationKey = `${initialVisibleCount}:${revealIncrement}`;
   const [visibleState, setVisibleState] = useState<{
@@ -493,7 +488,7 @@ export function KanbanBoard({
       onDragEnd={handleDragEnd}
     >
       {showOverflowFades
-        ? <HorizontalScrollViewport label="Task board columns" contentClassName="flex gap-3 pb-4 px-2">{columns}</HorizontalScrollViewport>
+        ? <HorizontalScrollViewport label={t("task-components:taskBoardColumns_b05d379a")} contentClassName="flex gap-3 pb-4 px-2">{columns}</HorizontalScrollViewport>
         : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (

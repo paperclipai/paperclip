@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation, Trans } from "@/i18n";
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { IssueComment } from "@paperclipai/shared";
@@ -33,26 +34,26 @@ function detectHiringPlan(body: string): boolean {
   return planPatterns.some((pattern) => pattern.test(body));
 }
 
-const QUEUED_MESSAGES = [
-  "Heartbeat triggered, waking up...",
-  "Initializing...",
-  "Getting ready...",
-];
+const QUEUED_MESSAGES = () => ([
+  translateShell("shell:heartbeat_triggered_waking_up"),
+  translateShell("shell:initializing"),
+  translateShell("shell:getting_ready"),
+]);
 
-const RUNNING_MESSAGES = [
-  "Working on a response...",
-  "Reading the conversation...",
-  "Thinking through the plan...",
-  "Drafting a response...",
-  "Still working...",
-  "Almost there...",
-];
+const RUNNING_MESSAGES = () => ([
+  translateShell("shell:working_on_a_response"),
+  translateShell("shell:reading_the_conversation"),
+  translateShell("shell:thinking_through_the_plan"),
+  translateShell("shell:drafting_a_response"),
+  translateShell("shell:still_working"),
+  translateShell("shell:almost_there"),
+]);
 
-const WAITING_MESSAGES = [
-  "Waiting to wake up...",
-  "Heartbeat pending...",
-  "Should wake up soon...",
-];
+const WAITING_MESSAGES = () => ([
+  translateShell("shell:waiting_to_wake_up"),
+  translateShell("shell:heartbeat_pending"),
+  translateShell("shell:should_wake_up_soon"),
+]);
 
 function getCyclingMessage(messages: string[], elapsed: number, agentName: string): string {
   // Cycle through messages every 5 seconds
@@ -63,19 +64,19 @@ function getCyclingMessage(messages: string[], elapsed: number, agentName: strin
 function getRunStatusMessage(status: string, agentName: string, elapsed: number): string {
   switch (status) {
     case "queued":
-      return getCyclingMessage(QUEUED_MESSAGES, elapsed, agentName);
+      return getCyclingMessage(QUEUED_MESSAGES(), elapsed, agentName);
     case "running":
-      return getCyclingMessage(RUNNING_MESSAGES, elapsed, agentName);
+      return getCyclingMessage(RUNNING_MESSAGES(), elapsed, agentName);
     case "succeeded":
-      return `${agentName} finished`;
+      return translateShell("shell:finished", { value1: agentName });
     case "failed":
-      return `${agentName} encountered an error`;
+      return translateShell("shell:encountered_an_error", { value1: agentName });
     case "cancelled":
-      return `${agentName}'s run was cancelled`;
+      return translateShell("shell:s_run_was_cancelled", { value1: agentName });
     case "timed_out":
-      return `${agentName}'s run timed out`;
+      return translateShell("shell:s_run_timed_out", { value1: agentName });
     default:
-      return `${agentName} is thinking...`;
+      return translateShell("shell:is_thinking", { value1: agentName });
   }
 }
 
@@ -88,6 +89,7 @@ export function OnboardingChat({
   onPlanDetected,
   onReviewPlan,
 }: OnboardingChatProps) {
+  const { t: translateShell } = useTranslation("shell");
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -127,7 +129,7 @@ export function OnboardingChat({
               new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
           )
         : undefined,
-    [rawComments],
+    [rawComments, translateShell],
   );
 
   // Auto-scroll to bottom when new comments arrive
@@ -230,7 +232,7 @@ export function OnboardingChat({
     // If an active run exists, use its creation time
     if (hasActiveRun && activeRun.createdAt) return new Date(activeRun.createdAt).getTime();
     return null;
-  }, [showStatus, lastComment, hasActiveRun, activeRun]);
+  }, [showStatus, lastComment, hasActiveRun, activeRun, translateShell]);
 
   useEffect(() => {
     if (!waitingSince) { setElapsed(0); return; }
@@ -248,9 +250,7 @@ export function OnboardingChat({
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
-        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-        Loading conversation...
-      </div>
+        <Loader2 className="h-4 w-4 mr-2 animate-spin" />{translateShell("shell:loading_conversation")}</div>
     );
   }
 
@@ -296,13 +296,11 @@ export function OnboardingChat({
                       : "text-foreground/70",
                   )}
                 >
-                  {isAgent ? agentName : "You"}
+                  {isAgent ? agentName : translateShell("shell:you")}
                 </span>
                 {isPlan && (
                   <span className="inline-flex items-center gap-0.5 text-(length:--text-nano) text-green-600 dark:text-green-400 font-medium">
-                    <CheckCircle2 className="h-3 w-3" />
-                    Hiring plan detected
-                  </span>
+                    <CheckCircle2 className="h-3 w-3" />{translateShell("shell:hiring_plan_detected")}</span>
                 )}
               </div>
               <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
@@ -331,7 +329,7 @@ export function OnboardingChat({
               ) : (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-                  {getCyclingMessage(WAITING_MESSAGES, elapsed, agentName)}
+                  {getCyclingMessage(WAITING_MESSAGES(), elapsed, agentName)}
                 </>
               )}
             </div>
@@ -349,17 +347,11 @@ export function OnboardingChat({
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
               <div>
-                <p className="text-sm font-medium">
-                  {agentName} has prepared a hiring plan
-                </p>
-                <p className="text-(length:--text-micro) text-muted-foreground">
-                  Review it, make edits, then approve.
-                </p>
+                <p className="text-sm font-medium">{translateShell("shell:has_prepared_a_hiring_plan", { value1: agentName })}</p>
+                <p className="text-(length:--text-micro) text-muted-foreground">{translateShell("shell:review_it_make_edits_then_approve")}</p>
               </div>
             </div>
-            <Button size="sm" onClick={onReviewPlan}>
-              Review plan
-              <ArrowRight className="h-3.5 w-3.5 ml-1" />
+            <Button size="sm" onClick={onReviewPlan}>{translateShell("shell:review_plan")}<ArrowRight className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
         </div>
@@ -371,7 +363,7 @@ export function OnboardingChat({
           ref={inputRef}
           type="text"
           className="flex-1 rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-          placeholder={detectedPlanCommentId ? `Ask ${agentName} to revise the plan...` : `Message ${agentName}...`}
+          placeholder={detectedPlanCommentId ? translateShell("shell:ask_to_revise_the_plan", { value1: agentName }) : translateShell("shell:message", { value1: agentName })}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -409,6 +401,7 @@ function WelcomeMessage({
   onDiscuss: () => void;
   onStart: () => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const [phase, setPhase] = useState<"waking" | "composing" | "message" | "chips">("waking");
 
   useEffect(() => {
@@ -431,15 +424,9 @@ function WelcomeMessage({
               {agentName}
             </span>
           </div>
-          <p>
-            Hi! Thanks for bringing me on to lead <strong>{companyName}</strong>.
-          </p>
-          <p className="mt-1">
-            Our mission is: <em>{companyGoal}</em>
-          </p>
-          <p className="mt-1">
-            I'm ready to put together a plan for who we should bring on. Want me to get started?
-          </p>
+          <p><Trans ns="shell" i18nKey="hi_thanks_for_bringing_me_on_to" components={{ part1: <>{<strong>{companyName}</strong>}</> }} /></p>
+          <p className="mt-1"><Trans ns="shell" i18nKey="our_mission_is" components={{ part1: <>{<em>{companyGoal}</em>}</> }} /></p>
+          <p className="mt-1">{translateShell("shell:i_m_ready_to_put_together_a")}</p>
         </div>
       )}
 
@@ -449,15 +436,11 @@ function WelcomeMessage({
           <button
             className="rounded-full border border-border px-3 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
             onClick={onDiscuss}
-          >
-            Let's discuss first
-          </button>
+          >{translateShell("shell:let_s_discuss_first")}</button>
           <button
             className="rounded-full border border-foreground bg-foreground text-background px-3 py-1 text-xs hover:opacity-90 transition-opacity"
             onClick={onStart}
-          >
-            Yes, get started!
-          </button>
+          >{translateShell("shell:yes_get_started")}</button>
         </div>
       )}
 
@@ -472,8 +455,8 @@ function WelcomeMessage({
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
           </span>
           {phase === "waking"
-            ? `${agentName} is waking up...`
-            : `${agentName} is composing a message...`}
+            ? translateShell("shell:is_waking_up", { value1: agentName })
+            : translateShell("shell:is_composing_a_message", { value1: agentName })}
         </div>
       )}
     </>

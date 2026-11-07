@@ -2698,6 +2698,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => dialogRoot.unmount());
   });
 
+  it.each([false, true])("continues the pending OAuth lookup across a locale round trip (existing=%s)", async existing => {
+    const { i18n } = await import("@/i18n");
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+    connectAppMock.mockResolvedValue({ connectionId: "conn-notion", application: { id: "app-notion", name: "Notion" }, connection: notionConnection("conn-notion", "per_user", "draft"), catalog: [], auth: { kind: "oauth" } });
+    let finishApplications!: (value: unknown) => void;
+    let finishConnections!: (value: unknown) => void;
+    listApplicationsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise(resolve => { finishApplications = resolve; }) : Promise.resolve({ applications: [] }));
+    listConnectionsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise(resolve => { finishConnections = resolve; }) : Promise.resolve({ connections: [] }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const popup = { closed: false, close: vi.fn(), location: { assign: vi.fn() }, focus: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="notion" />);
+    await passAccessStep();
+    try {
+      expect(finishApplications).toBeTypeOf("function");
+      for (const locale of ["zh-CN", "en", "zh-CN"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(popup.close).not.toHaveBeenCalled();
+        expect(startOAuthMock).not.toHaveBeenCalled();
+        expect(connectAppMock).not.toHaveBeenCalled();
+      }
+      await act(async () => {
+        finishApplications({ applications: existing ? [notionApplication("draft")] : [] });
+        finishConnections({ connections: existing ? [notionConnection("conn-existing", "per_user", "draft")] : [] });
+      });
+      await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledTimes(1));
+      expect(connectAppMock).toHaveBeenCalledTimes(existing ? 0 : 1);
+      expect(startOAuthMock).toHaveBeenCalledWith(existing ? "conn-existing" : "conn-notion", { asCurrentUser: true });
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(popup.location.assign).toHaveBeenCalledTimes(1);
+      expect(popup.close).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+      client.clear();
+    }
+  });
+
   it.each(["Back", "Cancel", "unmount"].flatMap(exit => [false, true].map(existing => ({ exit, existing }))))(
     "discards a fresh OAuth lookup after $exit (existing=$existing)", async ({ exit, existing }) => {
       listGalleryMock.mockResolvedValue({ apps: [NOTION] });

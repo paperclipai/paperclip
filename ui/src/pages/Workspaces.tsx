@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { useEffect, useMemo } from "react";
 import { Link, Navigate } from "@/lib/router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -61,8 +62,8 @@ function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWor
     }
     groups.set(item.projectId, {
       projectId: item.projectId,
-      projectName: item.projectName ?? "Task workspaces",
-      projectRef: item.projectId ? projectRouteRef({ id: item.projectId, name: item.projectName ?? "Project", urlKey: item.projectUrlKey }) : null,
+      projectName: item.projectName ?? t("work:copy.taskWorkspaces_86ae14"),
+      projectRef: item.projectId ? projectRouteRef({ id: item.projectId, name: item.projectName ?? t("work:copy.project_985959"), urlKey: item.projectUrlKey }) : null,
       summaries: [summary],
       lastUpdatedAt: summary.lastUpdatedAt,
       runningServiceCount: summary.runningServiceCount,
@@ -78,6 +79,7 @@ function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWor
 }
 
 export function Workspaces() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const experimentalSettingsQuery = useQuery({
@@ -99,15 +101,15 @@ export function Workspaces() {
   const overviewView = useQueryView(overviewQuery);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Workspaces" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("work:copy.workspaces_137726") }]);
+  }, [setBreadcrumbs, t]);
 
   const overviewPages = overviewQuery.data?.pages ?? [];
   const overviewItems = useMemo(
     () => overviewPages.flatMap((page) => page.items),
-    [overviewPages],
+    [overviewPages, t],
   );
-  const groups = useMemo(() => buildProjectWorkspaceGroups(overviewItems), [overviewItems]);
+  const groups = useMemo(() => buildProjectWorkspaceGroups(overviewItems), [overviewItems, t]);
   const firstPage = overviewPages[0] ?? null;
   const totalWorkspaceCount = firstPage?.total ?? overviewItems.length;
   const dataLoading = overviewQuery.isLoading || overviewView.kind === "reconnecting";
@@ -123,7 +125,7 @@ export function Workspaces() {
       <QueryErrorState
         size="page"
         error={experimentalSettingsQuery.error}
-        action="load workspaces"
+        action={t("work:copy.loadWorkspaces_71cd41")}
         onRetry={experimentalSettingsView.retry}
         retrying={experimentalSettingsView.isFetching}
       />
@@ -132,24 +134,24 @@ export function Workspaces() {
   if (!isolatedWorkspacesEnabled) return <Navigate to="/issues" replace />;
   if (dataLoading) return <PageSkeleton variant="list" />;
   if (overviewView.kind === "error") {
-    return <QueryErrorState size="page" error={error} action="load workspaces" onRetry={overviewView.retry} retrying={overviewView.isFetching} />;
+    return <QueryErrorState size="page" error={error} action={t("work:copy.loadWorkspaces_71cd41")} onRetry={overviewView.retry} retrying={overviewView.isFetching} />;
   }
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Workspaces</h2>
+        <h2 className="text-xl font-bold">{t("work:copy.workspaces_137726")}</h2>
       </div>
 
       <SummarySlotCard
         companyId={selectedCompanyId}
         scopeKind="workspaces_overview"
-        title="Workspace summary"
-        description="Summarizer tracks workspace activity, live services, and follow-up needs across projects."
+        title={t("work:copy.workspaceSummary_970a90")}
+        description={t("work:copy.summarizerTracksWorkspaceActivityLiveServicesAndFollowUp_e12879")}
       />
 
       {groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+        <p className="text-sm text-muted-foreground">{t("work:copy.noWorkspaceActivityYet_f7bf98")}</p>
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
@@ -164,7 +166,7 @@ export function Workspaces() {
                   </Link> : <h3 className="text-base font-semibold">{group.projectName}</h3>}
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}
+                  {t("work:counts.workspaces", { count: group.summaries.length })}
                 </span>
               </div>
               <ProjectWorkspacesContent
@@ -177,9 +179,7 @@ export function Workspaces() {
           ))}
           {overviewQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-              <p className="text-sm text-muted-foreground">
-                Showing {overviewItems.length} of {totalWorkspaceCount} workspaces.
-              </p>
+              <p className="text-sm text-muted-foreground">{t("work:messages.workspaceRange", { shown: overviewItems.length, total: totalWorkspaceCount })}</p>
               <Button
                 type="button"
                 variant="outline"
@@ -187,7 +187,7 @@ export function Workspaces() {
                 onClick={() => void overviewQuery.fetchNextPage()}
                 disabled={overviewQuery.isFetchingNextPage}
               >
-                {overviewQuery.isFetchingNextPage ? "Loading..." : "Load more"}
+                {overviewQuery.isFetchingNextPage ? t("work:copy.loading_47d2a5") : t("work:copy.loadMore_ac8991")}
               </Button>
             </div>
           ) : null}

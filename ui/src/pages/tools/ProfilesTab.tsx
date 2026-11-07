@@ -1,3 +1,6 @@
+import { getPageValueLabel } from "@/pages/tools/shared";
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Layers, Plus, Pencil, Trash2, Link2, ShieldCheck } from "lucide-react";
@@ -60,19 +63,19 @@ import {
 import { describeError } from "@/api/errors";
 
 const SELECTOR_TYPES: Array<{ value: ToolProfileEntrySelectorType; label: string }> = [
-  { value: "tool_name", label: "Tool name" },
-  { value: "risk_level", label: "Risk level" },
-  { value: "application", label: "Application" },
-  { value: "connection", label: "Connection" },
-  { value: "catalog_entry", label: "Catalog entry ID" },
+  { value: "tool_name", get label() { return translateAgentPage("agents:tool_name"); } },
+  { value: "risk_level", get label() { return translateAgentPage("agents:risk_level"); } },
+  { value: "application", get label() { return translateAgentPage("agents:application"); } },
+  { value: "connection", get label() { return translateAgentPage("agents:connection"); } },
+  { value: "catalog_entry", get label() { return translateAgentPage("agents:catalog_entry_id"); } },
 ];
 
 const TARGET_TYPES: Array<{ value: ToolProfileBindingTargetType; label: string }> = [
-  { value: "company", label: "Company" },
-  { value: "agent", label: "Agent" },
-  { value: "project", label: "Project" },
-  { value: "routine", label: "Routine" },
-  { value: "issue", label: "Issue ID" },
+  { value: "company", get label() { return translateAgentPage("agents:company_7a1994"); } },
+  { value: "agent", get label() { return translateAgentPage("agents:agent_5ce2e6"); } },
+  { value: "project", get label() { return translateAgentPage("agents:project_f6f4da"); } },
+  { value: "routine", get label() { return translateAgentPage("agents:routine_482273"); } },
+  { value: "issue", get label() { return translateAgentPage("agents:issue_id"); } },
 ];
 
 const RISK_LEVELS: ToolRiskLevel[] = ["read", "write", "destructive", "low", "medium", "high", "critical"];
@@ -139,11 +142,11 @@ function entryLabel(
   applicationsById: Map<string, string>,
   connectionsById: Map<string, string>,
 ) {
-  if (entry.selectorType === "application") return applicationsById.get(entry.applicationId ?? "") ?? entry.applicationId ?? "application";
-  if (entry.selectorType === "connection") return connectionsById.get(entry.connectionId ?? "") ?? entry.connectionId ?? "connection";
-  if (entry.selectorType === "catalog_entry") return entry.catalogEntryId ?? "catalog entry";
-  if (entry.selectorType === "risk_level") return entry.riskLevel ?? "risk level";
-  return entry.toolName ?? "tool";
+  if (entry.selectorType === "application") return applicationsById.get(entry.applicationId ?? "") ?? entry.applicationId ?? finalPagesT("final-pages:application_1fe289");
+  if (entry.selectorType === "connection") return connectionsById.get(entry.connectionId ?? "") ?? entry.connectionId ?? finalPagesT("final-pages:connection_b38d9d");
+  if (entry.selectorType === "catalog_entry") return entry.catalogEntryId ?? translateAgentPage("agents:catalog_entry");
+  if (entry.selectorType === "risk_level") return entry.riskLevel ? getPageValueLabel(entry.riskLevel) : translateAgentPage("agents:risk_level_73ded9");
+  return entry.toolName ?? finalPagesT("final-pages:tool_7c9bbe");
 }
 
 function bindingLabel(
@@ -156,7 +159,7 @@ function bindingLabel(
     routinesById: Map<string, string>;
   },
 ) {
-  if (targetType === "company") return targetId === labels.companyId ? "Company" : targetId;
+  if (targetType === "company") return targetId === labels.companyId ? translateAgentPage("agents:company_7a1994") : targetId;
   if (targetType === "agent") return labels.agentsById.get(targetId) ?? targetId;
   if (targetType === "project") return labels.projectsById.get(targetId) ?? targetId;
   if (targetType === "routine") return labels.routinesById.get(targetId) ?? targetId;
@@ -165,10 +168,10 @@ function bindingLabel(
 
 /** Short, human subtitle for the master rail: prefers the agent count the spec calls for. */
 function bindingsSubtitle(bindings: ToolProfileBinding[]): string {
-  if (bindings.length === 0) return "unbound";
+  if (bindings.length === 0) return finalPagesT("final-pages:unbound_0e2a58");
   const agents = bindings.filter((b) => b.targetType === "agent").length;
-  if (agents === bindings.length) return `bound to ${agents} agent${agents === 1 ? "" : "s"}`;
-  return `${bindings.length} binding${bindings.length === 1 ? "" : "s"}`;
+  if (agents === bindings.length) return translateAgentPage("agents:bound_to_agent_count", { value1: agents, count: agents });
+  return translateAgentPage("agents:binding_count", { value1: bindings.length, count: bindings.length });
 }
 
 // --- Allow-list resolution ------------------------------------------------
@@ -375,10 +378,11 @@ function EntryFields({
   applications: Array<{ id: string; name: string }>;
   connections: Array<{ id: string; name: string }>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <div className="grid gap-3 sm:grid-cols-(--gtc-60)">
       <div className="space-y-1.5">
-        <Label>Selector</Label>
+        <Label>{translateAgentPage("agents:selector")}</Label>
         <Select value={selectorType} onValueChange={(value) => setSelectorType(value as ToolProfileEntrySelectorType)}>
           <SelectTrigger>
             <SelectValue />
@@ -393,23 +397,23 @@ function EntryFields({
         </Select>
       </div>
       <div className="space-y-1.5">
-        <Label>Effect</Label>
+        <Label>{translateAgentPage("agents:effect")}</Label>
         <Select value={effect} onValueChange={(value) => setEffect(value as ToolProfileEntryEffect)}>
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="include">Include</SelectItem>
-            <SelectItem value="exclude">Exclude</SelectItem>
+            <SelectItem value="include">{translateAgentPage("agents:include")}</SelectItem>
+            <SelectItem value="exclude">{translateAgentPage("agents:exclude")}</SelectItem>
           </SelectContent>
         </Select>
       </div>
       {selectorType === "application" ? (
         <div className="space-y-1.5 sm:col-span-2">
-          <Label>Application</Label>
+          <Label>{translateAgentPage("agents:application")}</Label>
           <Select value={applicationId} onValueChange={setApplicationId}>
             <SelectTrigger>
-              <SelectValue placeholder="Select an application" />
+              <SelectValue placeholder={translateAgentPage("agents:select_an_application")} />
             </SelectTrigger>
             <SelectContent>
               {applications.map((app) => (
@@ -423,10 +427,10 @@ function EntryFields({
       ) : null}
       {selectorType === "connection" ? (
         <div className="space-y-1.5 sm:col-span-2">
-          <Label>Connection</Label>
+          <Label>{translateAgentPage("agents:connection")}</Label>
           <Select value={connectionId} onValueChange={setConnectionId}>
             <SelectTrigger>
-              <SelectValue placeholder="Select a connection" />
+              <SelectValue placeholder={translateAgentPage("agents:select_a_connection")} />
             </SelectTrigger>
             <SelectContent>
               {connections.map((conn) => (
@@ -440,19 +444,19 @@ function EntryFields({
       ) : null}
       {selectorType === "catalog_entry" ? (
         <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="catalog-entry-id">Catalog entry ID</Label>
+          <Label htmlFor="catalog-entry-id">{translateAgentPage("agents:catalog_entry_id")}</Label>
           <Input id="catalog-entry-id" value={catalogEntryId} onChange={(event) => setCatalogEntryId(event.target.value)} />
         </div>
       ) : null}
       {selectorType === "tool_name" ? (
         <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="tool-name">Tool name</Label>
-          <Input id="tool-name" value={toolName} onChange={(event) => setToolName(event.target.value)} placeholder="e.g. send_email or slack.list_*" />
+          <Label htmlFor="tool-name">{translateAgentPage("agents:tool_name")}</Label>
+          <Input id="tool-name" value={toolName} onChange={(event) => setToolName(event.target.value)} placeholder={translateAgentPage("agents:e_g_send_email_or_slack_list")} />
         </div>
       ) : null}
       {selectorType === "risk_level" ? (
         <div className="space-y-1.5 sm:col-span-2">
-          <Label>Risk level</Label>
+          <Label>{translateAgentPage("agents:risk_level")}</Label>
           <Select value={riskLevel} onValueChange={(value) => setRiskLevel(value as ToolRiskLevel)}>
             <SelectTrigger>
               <SelectValue />
@@ -472,6 +476,7 @@ function EntryFields({
 }
 
 export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: string; agentOptions: Array<{ id: string; name: string }> }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [agentId, setAgentId] = useState("");
   const effective = useQuery({
     queryKey: agentId
@@ -485,19 +490,17 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="space-y-1.5">
-        <Label>Agent</Label>
+        <Label>{translateAgentPage("agents:agent_5ce2e6")}</Label>
         <AgentSelect agents={agentOptions} value={agentId} onChange={setAgentId} />
       </div>
       {!agentId ? (
-        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
-          Pick an agent to see what it can use right now.
-        </div>
+        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">{translateAgentPage("agents:pick_an_agent_to_see_what_it_can")}</div>
       ) : effective.isLoading || effectiveView.kind === "reconnecting" ? (
-        <LoadingState label="Checking access..." />
+        <LoadingState label={translateAgentPage("agents:checking_access")} />
       ) : effectiveView.kind === "error" ? (
         <QueryErrorState
           error={effective.error}
-          action="check this agent's access"
+          action={translateAgentPage("agents:check_this_agent_s_access")}
           onRetry={effectiveView.retry}
           retrying={effectiveView.isFetching}
         />
@@ -505,15 +508,12 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
         <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-foreground">Can use</h3>
+              <h3 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:can_use")}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {(effective.data?.allowedToolNames ?? []).length} tools
-              </span>
+                {(effective.data?.allowedToolNames ?? []).length}{" "}{translateAgentPage("agents:tools_0284c6")}</span>
             </div>
             {(effective.data?.allowedToolNames ?? []).length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-                This agent cannot use any app tools right now.
-              </div>
+              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">{translateAgentPage("agents:this_agent_cannot_use_any_app_tools_right")}</div>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {(effective.data?.allowedToolNames ?? []).slice(0, 80).map((tool) => (
@@ -523,18 +523,16 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
             )}
           </div>
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-foreground">Access profiles</h3>
+            <h3 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:access_profiles")}</h3>
             {(effective.data?.profiles ?? []).length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-                No active profile applies to this agent.
-              </div>
+              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">{translateAgentPage("agents:no_active_profile_applies_to_this_agent")}</div>
             ) : (
               <div className="divide-y divide-border rounded-lg border border-border">
                 {(effective.data?.profiles ?? []).map((profile) => (
                   <div key={profile.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                     <span className="min-w-0 truncate text-sm font-medium text-foreground">{profile.name}</span>
                     {profile.summary.isCompanyDefault ? (
-                      <Badge variant="secondary">Organization default</Badge>
+                      <Badge variant="secondary">{translateAgentPage("agents:organization_default")}</Badge>
                     ) : null}
                   </div>
                 ))}
@@ -549,21 +547,23 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
 
 /** The Source column — the key v2 addition. Patterns are flagged as a foot-gun. */
 function SourceBadge({ source }: { source: AllowSource }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   if (source.kind === "explicit") {
-    return <Badge variant="secondary">explicit</Badge>;
+    return <Badge variant="secondary">{translateAgentPage("agents:explicit")}</Badge>;
   }
   if (source.kind === "default") {
-    return <Badge variant="outline">default allow</Badge>;
+    return <Badge variant="outline">{translateAgentPage("agents:default_allow")}</Badge>;
   }
   return (
     <Badge variant="outline" className="gap-1 border-amber-500/50 text-amber-700 dark:text-amber-400">
       <AlertTriangle className="h-3 w-3" />
-      <span className="font-mono text-(length:--text-micro)">pattern {source.label}</span>
+      <span className="font-mono text-(length:--text-micro)">{translateAgentPage("agents:pattern")}{" "}{source.label}</span>
     </Badge>
   );
 }
 
 function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoading: boolean }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const patternCount = rows.filter((r) => r.source.kind === "pattern").length;
   const explicitCount = rows.filter((r) => r.source.kind === "explicit").length;
   const defaultCount = rows.filter((r) => r.source.kind === "default").length;
@@ -571,19 +571,19 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-foreground">Allow list</h4>
+        <h4 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:allow_list")}</h4>
         <p className="text-xs text-muted-foreground">
-          {rows.length} tool{rows.length === 1 ? "" : "s"}
-          {explicitCount > 0 ? ` · ${explicitCount} explicit` : ""}
-          {patternCount > 0 ? ` · ${patternCount} via pattern` : ""}
-          {defaultCount > 0 ? ` · ${defaultCount} via default` : ""}
+          {translateAgentPage("agents:count_tool", { count: rows.length })}
+          {explicitCount > 0 ? translateAgentPage("agents:explicit_30b8fb", { value1: explicitCount }) : ""}
+          {patternCount > 0 ? translateAgentPage("agents:via_pattern", { value1: patternCount }) : ""}
+          {defaultCount > 0 ? translateAgentPage("agents:via_default", { value1: defaultCount }) : ""}
         </p>
       </div>
       {rows.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
           {catalogLoading
-            ? "Resolving allowed tools…"
-            : "No tools resolved for this profile. Add an include selector or refresh the tool catalog."}
+            ? translateAgentPage("agents:resolving_allowed_tools")
+            : translateAgentPage("agents:no_tools_resolved_for_this_profile_add_an")}
         </div>
       ) : (
         <Card>
@@ -591,11 +591,11 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2.5 font-medium">Tool</th>
-                  <th className="px-3 py-2.5 font-medium">Application</th>
-                  <th className="px-3 py-2.5 font-medium">Capabilities</th>
-                  <th className="px-3 py-2.5 font-medium">Risk</th>
-                  <th className="px-3 py-2.5 font-medium">Source</th>
+                  <th className="px-3 py-2.5 font-medium">{translateAgentPage("agents:tool_9a830c")}</th>
+                  <th className="px-3 py-2.5 font-medium">{translateAgentPage("agents:application")}</th>
+                  <th className="px-3 py-2.5 font-medium">{translateAgentPage("agents:capabilities")}</th>
+                  <th className="px-3 py-2.5 font-medium">{translateAgentPage("agents:risk")}</th>
+                  <th className="px-3 py-2.5 font-medium">{translateAgentPage("agents:source")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -633,16 +633,14 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
       )}
       {patternCount > 0 ? (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />
-          Tools marked <span className="font-medium">pattern</span> were pulled in by a wildcard, application,
-          connection, or risk selector rather than named explicitly — review them when the catalog changes.
-        </p>
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />{translateAgentPage("agents:tools_marked")}{" "}<span className="font-medium">{translateAgentPage("agents:pattern")}</span>{" "}{translateAgentPage("agents:were_pulled_in_by_a_wildcard_application_connection")}</p>
       ) : null}
     </div>
   );
 }
 
 export function ProfilesTab({ companyId }: { companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const qc = useQueryClient();
   const { pushToast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
@@ -734,10 +732,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       setSelectedId(created.id);
       resetProfileForm();
       resetEntryForm();
-      pushToast({ title: "Profile created", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_created"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not create profile",
+      title: translateAgentPage("agents:could_not_create_profile"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -750,10 +748,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       invalidateProfiles();
       setEditProfile(null);
       resetProfileForm();
-      pushToast({ title: "Profile updated", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_updated"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not update profile",
+      title: translateAgentPage("agents:could_not_update_profile"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -766,10 +764,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       invalidateProfiles();
       setEntryProfile(null);
       resetEntryForm();
-      pushToast({ title: "Entry added", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:entry_added"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not add entry",
+      title: translateAgentPage("agents:could_not_add_entry"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -779,10 +777,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     mutationFn: (entryId: string) => toolsApi.deleteProfileEntry(entryId),
     onSuccess: () => {
       invalidateProfiles();
-      pushToast({ title: "Entry removed", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:entry_removed"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not remove entry",
+      title: translateAgentPage("agents:could_not_remove_entry"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -796,10 +794,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       setBindProfileFor(null);
       setTargetType("agent");
       setPriority("100");
-      pushToast({ title: "Profile bound", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_bound"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not bind profile",
+      title: translateAgentPage("agents:could_not_bind_profile"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -813,10 +811,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     }) => toolsApi.unbindProfile(companyId, profileId, { targetType, targetId }),
     onSuccess: () => {
       invalidateProfiles();
-      pushToast({ title: "Binding removed", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:binding_removed"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not remove binding",
+      title: translateAgentPage("agents:could_not_remove_binding"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -827,7 +825,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     return (
       <QueryErrorState
         error={profiles.error}
-        action="load profiles"
+        action={translateAgentPage("agents:load_profiles")}
         onRetry={profilesView.retry}
         retrying={profilesView.isFetching}
       />
@@ -893,7 +891,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       riskLevel,
     });
     if (!entry) {
-      pushToast({ title: "Entry target required", tone: "error" });
+      pushToast({ title: translateAgentPage("agents:entry_target_required"), tone: "error" });
       return;
     }
     addEntry.mutate({ profileId: entryProfile.id, input: entry });
@@ -910,7 +908,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       issueId: targetIssueId,
     });
     if (!targetId) {
-      pushToast({ title: "Binding target required", tone: "error" });
+      pushToast({ title: translateAgentPage("agents:binding_target_required"), tone: "error" });
       return;
     }
     bind.mutate({
@@ -926,13 +924,11 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-4">
       <ToolsPageHeader
-        title="Access profiles"
-        description="Reusable bundles of allowed applications, connections, and tools, assignable to agents, projects, routines, or issues."
+        title={translateAgentPage("agents:access_profiles")}
+        description={translateAgentPage("agents:reusable_bundles_of_allowed_applications_connections_and_tools")}
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1 h-4 w-4" />
-            New profile
-          </Button>
+            <Plus className="mr-1 h-4 w-4" />{translateAgentPage("agents:new_profile")}</Button>
         }
       />
 
@@ -941,9 +937,9 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       {list.length === 0 ? (
         <EmptyState
           icon={Layers}
-          message="No access profiles yet"
-          description="Create a profile to group tool selectors, then bind it to the organization or a specific agent."
-          action="New profile"
+          message={translateAgentPage("agents:no_access_profiles_yet")}
+          description={translateAgentPage("agents:create_a_profile_to_group_tool_selectors_then")}
+          action={translateAgentPage("agents:new_profile")}
           onAction={() => setCreateOpen(true)}
         />
       ) : (
@@ -974,12 +970,12 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
                           <span className="truncate font-medium text-foreground">{profile.name}</span>
                           {profile.status !== "active" ? (
                             <Badge variant={statusVariant(profile.status)} className="text-(length:--text-nano)">
-                              {profile.status}
+                              {getPageValueLabel(profile.status)}
                             </Badge>
                           ) : null}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {toolCount} tool{toolCount === 1 ? "" : "s"} · {bindingsSubtitle(profile.bindings)}
+                          {translateAgentPage("agents:count_tool", { count: toolCount })} · {bindingsSubtitle(profile.bindings)}
                         </span>
                       </button>
                     </li>
@@ -1026,15 +1022,13 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editProfile ? "Edit profile" : "New profile"}</DialogTitle>
-            <DialogDescription>
-              Profile rules are enforced by the tool gateway policy service.
-            </DialogDescription>
+            <DialogTitle>{editProfile ? translateAgentPage("agents:edit_profile") : translateAgentPage("agents:new_profile")}</DialogTitle>
+            <DialogDescription>{translateAgentPage("agents:profile_rules_are_enforced_by_the_tool_gateway")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label htmlFor="profile-name">Name</Label>
+                <Label htmlFor="profile-name">{translateAgentPage("agents:name")}</Label>
                 <Input
                   id="profile-name"
                   value={name}
@@ -1042,46 +1036,46 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
                     setName(event.target.value);
                     if (!editProfile && !profileKey.trim()) setProfileKey(slugifyProfileKey(event.target.value));
                   }}
-                  placeholder="Engineering write tools"
+                  placeholder={translateAgentPage("agents:engineering_write_tools")}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="profile-key">Key</Label>
+                <Label htmlFor="profile-key">{translateAgentPage("agents:key")}</Label>
                 <Input id="profile-key" value={profileKey} onChange={(event) => setProfileKey(event.target.value)} />
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="profile-description">Description</Label>
+              <Label htmlFor="profile-description">{translateAgentPage("agents:description")}</Label>
               <Textarea
                 id="profile-description"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder="Optional context for reviewers."
+                placeholder={translateAgentPage("agents:optional_context_for_reviewers")}
               />
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label>Default action</Label>
+                <Label>{translateAgentPage("agents:default_action")}</Label>
                 <Select value={defaultAction} onValueChange={(value) => setDefaultAction(value as ToolProfileDefaultAction)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="deny">Deny unless included</SelectItem>
-                    <SelectItem value="allow">Allow unless excluded</SelectItem>
+                    <SelectItem value="deny">{translateAgentPage("agents:deny_unless_included")}</SelectItem>
+                    <SelectItem value="allow">{translateAgentPage("agents:allow_unless_excluded")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Status</Label>
+                <Label>{translateAgentPage("agents:status")}</Label>
                 <Select value={status} onValueChange={(value) => setStatus(value as ToolProfileStatus)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="disabled">Disabled</SelectItem>
-                    <SelectItem value="archived">Archived</SelectItem>
+                    <SelectItem value="active">{translateAgentPage("agents:active")}</SelectItem>
+                    <SelectItem value="disabled">{translateAgentPage("agents:disabled")}</SelectItem>
+                    <SelectItem value="archived">{translateAgentPage("agents:archived")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1113,11 +1107,9 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
               setEditProfile(null);
               resetProfileForm();
               resetEntryForm();
-            }}>
-              Cancel
-            </Button>
+            }}>{translateAgentPage("agents:cancel")}</Button>
             <Button disabled={!name.trim() || createProfile.isPending || updateProfile.isPending} onClick={saveProfile}>
-              {editProfile ? "Save" : createProfile.isPending ? "Creating..." : "Create"}
+              {editProfile ? translateAgentPage("agents:save") : createProfile.isPending ? translateAgentPage("agents:creating") : translateAgentPage("agents:create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1131,7 +1123,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Add entry</DialogTitle>
+            <DialogTitle>{translateAgentPage("agents:add_entry")}</DialogTitle>
             <DialogDescription>{entryProfile?.name}</DialogDescription>
           </DialogHeader>
           <EntryFields
@@ -1153,10 +1145,8 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             connections={connectionOptions}
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEntryProfile(null)}>Cancel</Button>
-            <Button disabled={addEntry.isPending} onClick={saveEntry}>
-              Add entry
-            </Button>
+            <Button variant="outline" onClick={() => setEntryProfile(null)}>{translateAgentPage("agents:cancel")}</Button>
+            <Button disabled={addEntry.isPending} onClick={saveEntry}>{translateAgentPage("agents:add_entry")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1166,12 +1156,12 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Bind profile</DialogTitle>
+            <DialogTitle>{translateAgentPage("agents:bind_profile")}</DialogTitle>
             <DialogDescription>{bindProfileFor?.name}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label>Target type</Label>
+              <Label>{translateAgentPage("agents:target_type")}</Label>
               <Select value={targetType} onValueChange={(value) => setTargetType(value as ToolProfileBindingTargetType)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1187,15 +1177,15 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             </div>
             {targetType === "agent" ? (
               <div className="space-y-1.5">
-                <Label>Agent</Label>
+                <Label>{translateAgentPage("agents:agent_5ce2e6")}</Label>
                 <AgentSelect agents={agentOptions} value={targetAgentId} onChange={setTargetAgentId} />
               </div>
             ) : null}
             {targetType === "project" ? (
               <div className="space-y-1.5">
-                <Label>Project</Label>
+                <Label>{translateAgentPage("agents:project_f6f4da")}</Label>
                 <Select value={targetProjectId} onValueChange={setTargetProjectId}>
-                  <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={translateAgentPage("agents:select_a_project")} /></SelectTrigger>
                   <SelectContent>
                     {projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}
                   </SelectContent>
@@ -1204,9 +1194,9 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             ) : null}
             {targetType === "routine" ? (
               <div className="space-y-1.5">
-                <Label>Routine</Label>
+                <Label>{translateAgentPage("agents:routine_482273")}</Label>
                 <Select value={targetRoutineId} onValueChange={setTargetRoutineId}>
-                  <SelectTrigger><SelectValue placeholder="Select a routine" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={translateAgentPage("agents:select_a_routine")} /></SelectTrigger>
                   <SelectContent>
                     {routineOptions.map((routine) => <SelectItem key={routine.id} value={routine.id}>{routine.title}</SelectItem>)}
                   </SelectContent>
@@ -1215,20 +1205,18 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             ) : null}
             {targetType === "issue" ? (
               <div className="space-y-1.5">
-                <Label htmlFor="target-issue-id">Issue ID</Label>
+                <Label htmlFor="target-issue-id">{translateAgentPage("agents:issue_id")}</Label>
                 <Input id="target-issue-id" value={targetIssueId} onChange={(event) => setTargetIssueId(event.target.value)} />
               </div>
             ) : null}
             <div className="space-y-1.5">
-              <Label htmlFor="profile-priority">Priority</Label>
+              <Label htmlFor="profile-priority">{translateAgentPage("agents:priority")}</Label>
               <Input id="profile-priority" type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(event.target.value)} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setBindProfileFor(null)}>Cancel</Button>
-            <Button disabled={bind.isPending} onClick={saveBinding}>
-              Bind
-            </Button>
+            <Button variant="outline" onClick={() => setBindProfileFor(null)}>{translateAgentPage("agents:cancel")}</Button>
+            <Button disabled={bind.isPending} onClick={saveBinding}>{translateAgentPage("agents:bind")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1266,6 +1254,7 @@ function ProfileDetail({
   onDeleteEntry: (entryId: string) => void;
   onUnbind: (binding: ToolProfileBinding) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const rows = useMemo(
     () => resolveAllowList(profile, catalog, maps.applicationsById, maps.connectionsById),
     [profile, catalog, maps.applicationsById, maps.connectionsById],
@@ -1283,50 +1272,42 @@ function ProfileDetail({
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">{profile.name}</span>
               <Badge variant="outline">{profile.profileKey}</Badge>
-              <Badge variant={statusVariant(profile.status)}>{profile.status}</Badge>
-              <Badge variant={profile.defaultAction === "allow" ? "secondary" : "outline"}>
-                default {profile.defaultAction}
+              <Badge variant={statusVariant(profile.status)}>{getPageValueLabel(profile.status)}</Badge>
+              <Badge variant={profile.defaultAction === "allow" ? "secondary" : "outline"}>{translateAgentPage("agents:default_7505d6")}{" "}{profile.defaultAction}
               </Badge>
             </div>
             {profile.description ? (
               <p className="mt-1 text-sm text-muted-foreground">{profile.description}</p>
             ) : null}
-            <p className="mt-1 text-xs text-muted-foreground">
-              updated <RelativeTime value={profile.updatedAt} />
+            <p className="mt-1 text-xs text-muted-foreground">{translateAgentPage("agents:updated_13a189")}{" "}<RelativeTime value={profile.updatedAt} />
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-1.5">
             <Button size="sm" variant="outline" onClick={onEdit}>
-              <Pencil className="mr-1 h-3.5 w-3.5" />
-              Edit
-            </Button>
+              <Pencil className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:edit_530164")}</Button>
             <Button size="sm" variant="outline" onClick={onAddEntry}>
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Entry
-            </Button>
+              <Plus className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:entry")}</Button>
             <Button size="sm" variant="outline" onClick={onBind}>
-              <Link2 className="mr-1 h-3.5 w-3.5" />
-              Bind
-            </Button>
+              <Link2 className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:bind")}</Button>
           </div>
         </div>
 
         {/* Targets */}
         <div className="space-y-2">
-          <h4 className="text-sm font-semibold text-foreground">Targets</h4>
+          <h4 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:targets")}</h4>
           <div className="flex flex-wrap gap-2">
             {profile.bindings.length === 0 ? (
-              <span className="text-sm text-muted-foreground">No targets bound.</span>
+              <span className="text-sm text-muted-foreground">{translateAgentPage("agents:no_targets_bound")}</span>
             ) : profile.bindings.map((binding) => (
               <span key={binding.id} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
                 <Badge variant="outline">{binding.targetType}</Badge>
                 <span>{bindingLabel(binding.targetType, binding.targetId, { companyId, ...maps })}</span>
-                <span className="text-muted-foreground">p{binding.priority}</span>
+                <span className="text-muted-foreground">{finalPagesT("final-pages:p_priority_af7dc3", { priority: binding.priority })}</span>
                 <button
                   type="button"
                   className="rounded p-0.5 text-muted-foreground hover:text-destructive"
                   onClick={() => onUnbind(binding)}
-                  aria-label={`Remove ${binding.targetType} binding`}
+                  aria-label={translateAgentPage("agents:remove_binding", { value1: binding.targetType })}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -1337,27 +1318,24 @@ function ProfileDetail({
 
         {/* Effective scope summary */}
         <div className="space-y-2">
-          <h4 className="text-sm font-semibold text-foreground">Effective scope</h4>
+          <h4 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:effective_scope")}</h4>
           <div className="flex flex-wrap gap-2 text-xs">
-            <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
-              Default <span className="font-medium text-foreground">{profile.defaultAction}</span>
+            <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">{translateAgentPage("agents:default")}{" "}<span className="font-medium text-foreground">{profile.defaultAction}</span>
             </span>
             <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
-              <span className="font-medium text-foreground">{rows.length}</span> tools allowed
-            </span>
+              <span className="font-medium text-foreground">{rows.length}</span>{" "}{translateAgentPage("agents:tools_allowed")}</span>
             <span className="rounded-md border border-border px-2 py-1 text-muted-foreground">
-              <span className="font-medium text-foreground">{includeCount}</span> include /{" "}
-              <span className="font-medium text-foreground">{excludeCount}</span> exclude
-            </span>
+              <span className="font-medium text-foreground">{includeCount}</span>{" "}{translateAgentPage("agents:include_3782ee")}{" "}
+              <span className="font-medium text-foreground">{excludeCount}</span>{" "}{translateAgentPage("agents:exclude_f3acce")}</span>
           </div>
         </div>
 
         {/* Selectors (entry management) */}
         <div className="space-y-2">
-          <h4 className="text-sm font-semibold text-foreground">Selectors</h4>
+          <h4 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:selectors")}</h4>
           <div className="flex flex-wrap gap-2">
             {profile.entries.length === 0 ? (
-              <span className="text-sm text-muted-foreground">No selectors.</span>
+              <span className="text-sm text-muted-foreground">{translateAgentPage("agents:no_selectors")}</span>
             ) : profile.entries.map((entry) => (
               <span key={entry.id} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
                 <Badge variant={entry.effect === "include" ? "secondary" : "destructive"}>{entry.effect}</Badge>
@@ -1369,7 +1347,7 @@ function ProfileDetail({
                   type="button"
                   className="rounded p-0.5 text-muted-foreground hover:text-destructive"
                   onClick={() => onDeleteEntry(entry.id)}
-                  aria-label={`Delete ${entry.selectorType} entry`}
+                  aria-label={translateAgentPage("agents:delete_entry", { value1: entry.selectorType })}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>

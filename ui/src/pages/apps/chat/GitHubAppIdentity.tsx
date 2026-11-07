@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import type { ChatEndpoint } from "@/api/chatEndpoints";
 import { AgentAvatarDownload } from "@/components/AgentAvatarDownload";
@@ -24,12 +25,13 @@ export function gitHubAppSettingsUrl(endpoint: ChatEndpoint) {
 }
 
 export function GitHubBotMention({ endpoint }: { endpoint: ChatEndpoint }) {
+  const { t } = useTranslation("connections");
   const mention = gitHubBotMention(endpoint);
   return mention ? (
     <CopyText
       text={mention}
-      ariaLabel="Copy GitHub mention"
-      title="Copy GitHub mention"
+      ariaLabel={t("copy_github_mention_78ae532")}
+      title={t("copy_github_mention_78ae532")}
       className="break-all font-mono text-xs"
     >
       {mention}
@@ -45,19 +47,17 @@ export function GitHubAppBranding({
   endpoint: ChatEndpoint;
   avatarUrl?: string;
 }) {
+  const { t } = useTranslation("connections");
   return (
-    <GitHubSettingsDisclosure title="GitHub App name and logo">
+    <GitHubSettingsDisclosure title={t("github_app_name_and_logo_bf54a51")}>
       <div className="mt-4 space-y-4">
-        <p className="text-sm text-muted-foreground">
-          Change the name or upload a logo in the App’s Display information
-          settings on GitHub.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("change_the_name_or_upload_a_logo_494125a")}</p>
         <div className="flex flex-wrap items-center gap-3">
           {avatarUrl && (
             <>
               <img
                 src={avatarUrl}
-                alt={`${endpoint.assignedAgentName}’s avatar for download`}
+                alt={t("s_avatar_for_download_448824f", { assignedAgentName: endpoint.assignedAgentName })}
                 className="size-12 shrink-0 object-contain"
               />
               <AgentAvatarDownload
@@ -71,22 +71,16 @@ export function GitHubAppBranding({
               href={gitHubAppSettingsUrl(endpoint)}
               target="_blank"
               rel="noreferrer"
-              aria-label="Edit App name and logo on GitHub"
-            >
-              Edit on GitHub <ExternalLink className="size-4" />
+              aria-label={t("edit_app_name_and_logo_on_github_41cbbbc")}
+            >{t("edit_on_github_b0b8b88")}<ExternalLink className="size-4" />
             </a>
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Renaming also changes its @mention.{" "}
+        <p className="text-xs text-muted-foreground">{t("renaming_also_changes_its_mention_7c9401b")}{" "}
           <Link
             className="underline underline-offset-4"
             to={`/apps/chat/connect?provider=github&resume=${endpoint.id}&reconnect=1`}
-          >
-            Reconnect afterward
-          </Link>{" "}
-          to update it here.
-        </p>
+          >{t("reconnect_afterward_79a0387")}</Link>{" "}{t("to_update_it_here_c64df4e")}</p>
       </div>
     </GitHubSettingsDisclosure>
   );
@@ -100,6 +94,7 @@ export function GitHubAppIdentityActions({
   endpoint: ChatEndpoint;
   avatarUrl?: string;
 }) {
+  const { t } = useTranslation("connections");
   return (
     <div className="flex flex-wrap items-center gap-1">
       {avatarUrl && (
@@ -114,17 +109,16 @@ export function GitHubAppIdentityActions({
           href={gitHubAppSettingsUrl(endpoint)}
           target="_blank"
           rel="noreferrer"
-          aria-label="Edit App name and logo on GitHub"
-          title="Change the App name or upload its logo on GitHub"
-        >
-          Edit App <ExternalLink className="size-3.5" />
+          aria-label={t("edit_app_name_and_logo_on_github_41cbbbc")}
+          title={t("change_the_app_name_or_upload_its_dedbc33")}
+        >{t("edit_app_47b1534")}<ExternalLink className="size-3.5" />
         </a>
       </Button>
       <Button variant="ghost" size="icon" asChild>
         <Link
           to={`/apps/chat/connect?provider=github&resume=${endpoint.id}&reconnect=1`}
-          aria-label="Refresh GitHub App identity"
-          title="Reconnect after renaming the App to refresh its @mention"
+          aria-label={t("refresh_github_app_identity_48428a1")}
+          title={t("reconnect_after_renaming_the_app_to_refresh_6a3abdf")}
         >
           <RefreshCw className="size-3.5" />
         </Link>

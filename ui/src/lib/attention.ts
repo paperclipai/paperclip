@@ -1,3 +1,5 @@
+import { localizedOptions } from "./display-options";
+import { i18n, t } from "@/i18n";
 import type {
   AttentionDetailImage,
   AttentionFeed,
@@ -48,18 +50,18 @@ interface SourceMeta {
 }
 
 const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
-  approval: { label: "Approval" },
-  decision: { label: "Decision" },
-  issue_thread_interaction: { label: "Decision requested" },
-  join_request: { label: "Join request" },
-  recovery_action: { label: "Recovery" },
+  approval: { get "label"() { return t("display:meta_8cc047ac17d3"); } },
+  decision: { get "label"() { return t("display:meta_7f59a1f1d55a"); } },
+  issue_thread_interaction: { get "label"() { return t("display:meta_e9e70f452268"); } },
+  join_request: { get "label"() { return t("display:meta_83934b91f076"); } },
+  recovery_action: { get "label"() { return t("display:meta_ea924f72d31e"); } },
   // Read compatibility for persisted decisions from the retired feature.
-  productivity_review: { label: "Task" },
-  blocker_attention: { label: "Blocked dependency" },
-  review: { label: "Review" },
-  failed_run: { label: "Failed run" },
-  budget_alert: { label: "Budget" },
-  agent_error_alert: { label: "Agent error" },
+  productivity_review: { get "label"() { return t("display:meta_7bb0ddf9221c"); } },
+  blocker_attention: { get "label"() { return t("display:meta_390d89b2ad8b"); } },
+  review: { get "label"() { return t("display:meta_e29a79fe0c34"); } },
+  failed_run: { get "label"() { return t("display:meta_22e8b7d73446"); } },
+  budget_alert: { get "label"() { return t("display:meta_7aeba4cd15b1"); } },
+  agent_error_alert: { get "label"() { return t("display:meta_acb99cc2cb64"); } },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -74,10 +76,10 @@ interface SeverityStyle {
 }
 
 const SEVERITY_STYLE: Record<AttentionSeverity, SeverityStyle> = {
-  critical: { accent: "bg-red-500", dot: "bg-red-500", label: "Critical" },
-  high: { accent: "bg-orange-500", dot: "bg-orange-500", label: "High" },
-  medium: { accent: "bg-yellow-500", dot: "bg-yellow-500", label: "Medium" },
-  low: { accent: "bg-blue-500", dot: "bg-blue-500", label: "Low" },
+  critical: { accent: "bg-red-500", dot: "bg-red-500", get "label"() { return t("display:meta_04b7b26c8ca2"); } },
+  high: { accent: "bg-orange-500", dot: "bg-orange-500", get "label"() { return t("display:meta_b1a5954a483f"); } },
+  medium: { accent: "bg-yellow-500", dot: "bg-yellow-500", get "label"() { return t("display:meta_d404968ea90b"); } },
+  low: { accent: "bg-blue-500", dot: "bg-blue-500", get "label"() { return t("display:meta_a124947cbd2d"); } },
 };
 
 export function severityStyle(severity: AttentionSeverity): SeverityStyle {
@@ -188,7 +190,7 @@ function quote(text: string | null | undefined): string | null {
 }
 
 function countNoun(count: number, singular: string): string {
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+  return t(`display:attention_count_${singular.replace(/ /g, "_")}`, { count });
 }
 
 /**
@@ -224,7 +226,7 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "item_verdicts": {
       const q = quote(detail.promptExcerpt);
-      const label = `${countNoun(detail.itemCount, "item")} to verdict`;
+      const label = t("display:copy_a65485bc9fe0", { value0: countNoun(detail.itemCount, "item") });
       return q ? `${label} — ${q}` : label;
     }
     case "failed_run":
@@ -237,10 +239,10 @@ export function attentionDetailLine(item: AttentionItem): string | null {
       const b = detail.blockingIssue;
       if (!b) return null;
       const id = b.identifier ? `${b.identifier} ` : "";
-      return b.title ? `Blocked by ${id}${b.title}` : b.identifier ? `Blocked by ${b.identifier}` : null;
+      return b.title ? t("display:copy_a39cbc8b1e19", { value0: id, value1: b.title }) : b.identifier ? t("display:copy_1e6f5293d8d2", { value0: b.identifier }) : null;
     }
     case "budget":
-      return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
+      return t("display:copy_e0e8a0bb375a", { value0: Math.round(detail.observedPercent), value1: detail.amountObserved, value2: detail.amountLimit });
     case "generic":
       return quote(detail.summaryExcerpt);
     default:
@@ -371,9 +373,9 @@ export function buildDeskShelves(items: AttentionItem[], now: number): DeskShelf
   const earlier = rest.filter((item) => !attentionIsNewToday(item, now));
 
   const shelves: DeskShelf[] = [];
-  if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
-  if (newToday.length > 0) shelves.push({ key: "desk:new-today", label: "New today", items: newToday });
-  if (earlier.length > 0) shelves.push({ key: "desk:earlier", label: "Earlier", items: earlier });
+  if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", get "label"() { return t("display:meta_a8f7d3b650c9"); }, items: decideNow });
+  if (newToday.length > 0) shelves.push({ key: "desk:new-today", get "label"() { return t("display:meta_ffadd08d6aa6"); }, items: newToday });
+  if (earlier.length > 0) shelves.push({ key: "desk:earlier", get "label"() { return t("display:meta_13f7aee77892"); }, items: earlier });
   return shelves;
 }
 
@@ -412,22 +414,22 @@ export function attentionIdleDays(item: AttentionItem, now: number): number {
 
 export type DecideByPreset = "today" | "this_week" | "whenever";
 
-export const DECIDE_BY_OPTIONS: ReadonlyArray<[DecideByPreset, string]> = [
-  ["today", "Today"],
-  ["this_week", "This week"],
-  ["whenever", "Whenever"],
-];
+export const DECIDE_BY_OPTIONS: ReadonlyArray<[DecideByPreset, string]> = localizedOptions([
+  ["today", "option_24345a14377f"],
+  ["this_week", "option_7b72883e078a"],
+  ["whenever", "option_ac8772fd1ba3"],
+]);
 
 /** Human label for any stored `decideBy` value (preset or `YYYY-MM-DD`). */
 export function decideByLabel(decideBy: string | null): string {
-  if (!decideBy) return "Not set";
-  if (decideBy === "today") return "Today";
-  if (decideBy === "this_week") return "This week";
-  if (decideBy === "whenever") return "Whenever";
+  if (!decideBy) return t("display:copy_038d0f1bc462");
+  if (decideBy === "today") return t("display:copy_4b8ad94c78e8");
+  if (decideBy === "this_week") return t("display:copy_023d74fefeaa");
+  if (decideBy === "whenever") return t("display:copy_117754aa5a30");
   if (/^\d{4}-\d{2}-\d{2}$/.test(decideBy)) {
     const parsed = new Date(`${decideBy}T00:00:00.000Z`);
     return Number.isFinite(parsed.getTime())
-      ? parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+      ? parsed.toLocaleDateString(i18n.language, { month: "short", day: "numeric", timeZone: "UTC" })
       : decideBy;
   }
   return decideBy;
@@ -441,13 +443,13 @@ export function decideByLabel(decideBy: string | null): string {
 
 export type AttentionDateRangeId = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "custom";
 
-export const ATTENTION_DATE_RANGE_OPTIONS: ReadonlyArray<[AttentionDateRangeId, string]> = [
-  ["all", "All"],
-  ["today", "Today"],
-  ["yesterday", "Yesterday"],
-  ["last_7_days", "Last 7 days"],
-  ["this_month", "This month"],
-];
+export const ATTENTION_DATE_RANGE_OPTIONS: ReadonlyArray<[AttentionDateRangeId, string]> = localizedOptions([
+  ["all", "option_6a72085653e4"],
+  ["today", "option_24345a14377f"],
+  ["yesterday", "option_da24830f1f70"],
+  ["last_7_days", "option_df833fe88d38"],
+  ["this_month", "option_1b4785331db3"],
+]);
 
 export interface AttentionActivityBounds {
   activitySince?: string;
@@ -529,10 +531,10 @@ export const ATTENTION_GROUP_BY_OPTIONS: ReadonlyArray<[AttentionGroupBy, string
   ["severity", "Severity"],
 ];
 
-export const ATTENTION_SORT_OPTIONS: ReadonlyArray<[AttentionSortOrder, string]> = [
-  ["newest", "Newest first"],
-  ["oldest", "Oldest first"],
-];
+export const ATTENTION_SORT_OPTIONS: ReadonlyArray<[AttentionSortOrder, string]> = localizedOptions([
+  ["newest", "option_f5ec7772ca9b"],
+  ["oldest", "option_6a99c65c33fe"],
+]);
 
 /**
  * Filter selections. Empty arrays mean "no filter" (show everything). The
@@ -819,10 +821,10 @@ const DATE_BUCKET_ORDER = ["today", "yesterday", "this_week", "earlier"] as cons
 type DateBucket = (typeof DATE_BUCKET_ORDER)[number];
 
 const DATE_BUCKET_LABELS: Record<DateBucket, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  this_week: "This week",
-  earlier: "Earlier",
+  get "today"() { return t("display:meta_24345a14377f"); },
+  get "yesterday"() { return t("display:meta_da24830f1f70"); },
+  get "this_week"() { return t("display:meta_7b72883e078a"); },
+  get "earlier"() { return t("display:meta_13f7aee77892"); },
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -842,10 +844,10 @@ export function attentionDateBucket(activityAt: string, now: number): DateBucket
 }
 
 const SEVERITY_LABEL: Record<AttentionSeverity, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
+  get critical() { return t("final-configuration:criticalLabel"); },
+  get high() { return t("final-configuration:highLabel"); },
+  get medium() { return t("final-configuration:mediumLabel"); },
+  get low() { return t("final-configuration:lowLabel"); },
 };
 
 /**
@@ -904,7 +906,7 @@ export function groupAttentionItems(
         ? { key: `type:${item.sourceKind}`, label: sourceMeta(item.sourceKind).label }
         : item.project
           ? { key: `project:${item.project.id}`, label: item.project.name }
-          : { key: `project:${NO_GROUP_SENTINEL}`, label: "No project" };
+          : { key: `project:${NO_GROUP_SENTINEL}`, get "label"() { return t("display:meta_c326b75775bf"); } };
     const existing = groups.get(resolved.key);
     const ts = attentionActivityTimestamp(item);
     if (existing) {

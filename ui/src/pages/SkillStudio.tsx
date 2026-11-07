@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { SkillsPageNavigation } from "@/components/skill-studio/SkillsNavigationTabs";
 import { interactionReadinessRefetchInterval } from "@/lib/issue-thread-interactions";
 import { SkillBinaryFile } from "../components/SkillBinaryFile";
@@ -192,6 +194,7 @@ const EMPTY_RUN_TEMPLATES: CompanySkillTestRunTemplate[] = [];
  * read-only, …) never get silently swallowed (PAP-13001).
  */
 function useMutationErrorToast() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const toast = useOptionalToastActions();
   return useCallback(
     (title: string) => (error: unknown) => {
@@ -206,10 +209,10 @@ function useMutationErrorToast() {
         return;
       }
       const body =
-        error instanceof Error && error.message ? error.message : "Please try again.";
+        error instanceof Error && error.message ? error.message : translateAgentPage("agents:please_try_again");
       toast?.pushToast({ tone: "error", title, body });
     },
-    [toast],
+    [toast, translateAgentPage],
   );
 }
 
@@ -275,6 +278,7 @@ function useIsMobile() {
 // ---------------------------------------------------------------------------
 
 export function SkillStudio() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { skillId = "" } = useParams<{ skillId: string }>();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -312,22 +316,22 @@ export function SkillStudio() {
     setBreadcrumbs(
       isCreateMode
         ? [
-            { label: "Skills", href: "/skills" },
-            { label: "Studio", href: "/skills/studio" },
-            { label: "New skill" },
+            { label: translateAgentPage("agents:skills"), href: "/skills" },
+            { label: finalPagesT("final-pages:Studio_0aa91a"), href: "/skills/studio" },
+            { label: translateAgentPage("agents:new_skill_a7b490") },
           ]
         : skill
         ? [
-            { label: "Skills", href: "/skills" },
-            { label: "Studio", href: "/skills/studio" },
+            { label: translateAgentPage("agents:skills"), href: "/skills" },
+            { label: finalPagesT("final-pages:Studio_0aa91a"), href: "/skills/studio" },
             { label: skill.name },
           ]
         : [
-            { label: "Skills", href: "/skills" },
-            { label: "Studio" },
+            { label: translateAgentPage("agents:skills"), href: "/skills" },
+            { label: finalPagesT("final-pages:Studio_0aa91a") },
           ],
     );
-  }, [isCreateMode, setBreadcrumbs, skill]);
+  }, [isCreateMode, setBreadcrumbs, skill, translateAgentPage]);
 
   // Record a per-browser visit whenever a skill successfully opens, powering the
   // landing's "Recently visited" section (PAP-13150).
@@ -336,7 +340,7 @@ export function SkillStudio() {
   }, [skill?.id]);
 
   if (!companyId) {
-    return <StudioMessage message="Select an organization to open Skill Studio." />;
+    return <StudioMessage message={translateAgentPage("agents:select_an_organization_to_open_skill_studio")} />;
   }
   if (isCreateMode) {
     return (
@@ -365,7 +369,7 @@ export function SkillStudio() {
     );
   }
   if (detailQuery.isLoading || detailView.kind === "reconnecting") {
-    return <StudioMessage message="Loading skill…" />;
+    return <StudioMessage message={translateAgentPage("agents:loading_skill")} />;
   }
   // "Not found" only for a real 404; an outage never looks like a missing skill.
   if (detailView.kind === "error" && detailView.errorKind !== "not_found") {
@@ -373,14 +377,14 @@ export function SkillStudio() {
       <QueryErrorState
         size="page"
         error={detailQuery.error}
-        action="load this skill"
+        action={translateAgentPage("agents:load_this_skill")}
         onRetry={detailView.retry}
         retrying={detailView.isFetching}
       />
     );
   }
   if (detailView.kind === "error" || !detailQuery.data) {
-    return <StudioMessage message="Skill not found." />;
+    return <StudioMessage message={translateAgentPage("agents:skill_not_found")} />;
   }
 
   return (
@@ -414,6 +418,7 @@ function StudioCreateMode({
   forkError: boolean;
   onSelectSkill: (skillId: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-full min-h-0 flex-col">
@@ -423,7 +428,7 @@ function StudioCreateMode({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="New skill"
+            emptyLabel={translateAgentPage("agents:new_skill_a7b490")}
           />
         </header>
         <SkillsPageNavigation activeView="authored" />
@@ -457,6 +462,7 @@ function StudioNewSkillPanel({
   forkLoading: boolean;
   forkError: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useOptionalToastActions();
@@ -492,22 +498,22 @@ function StudioNewSkillPanel({
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
       toast?.pushToast({
         tone: "success",
-        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        title: skill.forkedFromSkillId ? translateAgentPage("agents:skill_fork_created") : translateAgentPage("agents:skill_created"),
+        body: translateAgentPage("agents:is_now_editable_in_the_paperclip_workspace", { value1: skill.name }),
       });
       navigate(skillStudioRoute(skill.id));
     },
     onError: (error) => {
       toast?.pushToast({
         tone: "error",
-        title: "Skill creation failed",
-        body: error instanceof Error ? error.message : "Failed to create skill.",
+        title: translateAgentPage("agents:skill_creation_failed"),
+        body: error instanceof Error ? error.message : translateAgentPage("agents:failed_to_create_skill"),
       });
     },
   });
 
   if (forkFromSkillId && forkLoading) {
-    return <StudioMessage message="Loading fork source..." />;
+    return <StudioMessage message={translateAgentPage("agents:loading_fork_source")} />;
   }
 
   const previewCard: DiscoveryCard = {
@@ -536,33 +542,28 @@ function StudioNewSkillPanel({
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-6">
       <div className="space-y-1">
         <h1 className="text-lg font-semibold text-foreground">
-          {draft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}
+          {draft.forkedFromSkillId ? translateAgentPage("agents:fork_skill") : translateAgentPage("agents:create_a_new_skill")}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Create an editable organization skill and open it directly in Studio.
-        </p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:create_an_editable_organization_skill_and_open_it")}</p>
       </div>
 
       {draft.forkedFromName ? (
         <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-          <GitFork className="h-4 w-4" />
-          Forking {draft.forkedFromName}
+          <GitFork className="h-4 w-4" />{translateAgentPage("agents:forking")}{" "}{draft.forkedFromName}
         </div>
       ) : forkError ? (
         <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertTriangle className="h-4 w-4" />
-          Fork source not found. You can still create a blank skill.
-        </div>
+          <AlertTriangle className="h-4 w-4" />{translateAgentPage("agents:fork_source_not_found_you_can_still_create")}</div>
       ) : null}
 
       <section className="space-y-3">
         <div>
-          <h2 className="text-sm font-medium text-foreground">Basics</h2>
-          <p className="text-xs text-muted-foreground">Name the skill and set the route-safe slug.</p>
+          <h2 className="text-sm font-medium text-foreground">{translateAgentPage("agents:basics")}</h2>
+          <p className="text-xs text-muted-foreground">{translateAgentPage("agents:name_the_skill_and_set_the_route_safe")}</p>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="skill-name">Name</Label>
+            <Label htmlFor="skill-name">{translateAgentPage("agents:name")}</Label>
             <Input
               id="skill-name"
               value={draft.name}
@@ -576,11 +577,11 @@ function StudioNewSkillPanel({
                     : draft.markdown,
                 });
               }}
-              placeholder="Code review"
+              placeholder={translateAgentPage("agents:code_review")}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="skill-slug">Slug</Label>
+            <Label htmlFor="skill-slug">{translateAgentPage("agents:slug")}</Label>
             <Input
               id="skill-slug"
               value={draft.slug}
@@ -595,7 +596,7 @@ function StudioNewSkillPanel({
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="skill-tagline">Tagline</Label>
+          <Label htmlFor="skill-tagline">{translateAgentPage("agents:tagline")}</Label>
           <Textarea
             id="skill-tagline"
             value={draft.tagline}
@@ -609,7 +610,7 @@ function StudioNewSkillPanel({
                   : draft.markdown,
               });
             }}
-            placeholder="Review repository changes for correctness, tests, and maintainability."
+            placeholder={translateAgentPage("agents:review_repository_changes_for_correctness_tests_and_maintainability")}
             className="min-h-20"
           />
         </div>
@@ -617,18 +618,18 @@ function StudioNewSkillPanel({
 
       <section className="space-y-3">
         <div>
-          <h2 className="text-sm font-medium text-foreground">Appearance</h2>
-          <p className="text-xs text-muted-foreground">Tune how the skill appears in the store and Studio switcher.</p>
+          <h2 className="text-sm font-medium text-foreground">{translateAgentPage("agents:appearance")}</h2>
+          <p className="text-xs text-muted-foreground">{translateAgentPage("agents:tune_how_the_skill_appears_in_the_store")}</p>
         </div>
         <div className="flex items-center gap-3">
           <SkillCardIcon card={previewCard} size={48} />
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">{previewCard.name}</div>
-            <div className="truncate text-xs text-muted-foreground">{draft.tagline || "No tagline yet."}</div>
+            <div className="truncate text-xs text-muted-foreground">{draft.tagline || translateAgentPage("agents:no_tagline_yet")}</div>
           </div>
         </div>
         <div className="space-y-2">
-          <Label>Color</Label>
+          <Label>{translateAgentPage("agents:color")}</Label>
           <div className="flex flex-wrap items-center gap-2">
             {SKILL_CREATE_ACCENTS.map((color) => (
               <button
@@ -640,11 +641,11 @@ function StudioNewSkillPanel({
                   draft.color === color ? "border-foreground" : "border-border",
                 )}
                 style={{ backgroundColor: color }}
-                aria-label={`Use ${color}`}
+                aria-label={translateAgentPage("agents:use", { value1: color })}
               />
             ))}
             <Input
-              aria-label="Hex color"
+              aria-label={translateAgentPage("agents:hex_color")}
               value={draft.color}
               onChange={(event) => patchDraft({ color: event.target.value })}
               className="h-7 w-28 font-mono text-xs"
@@ -652,20 +653,20 @@ function StudioNewSkillPanel({
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="skill-categories">Categories</Label>
+          <Label htmlFor="skill-categories">{translateAgentPage("agents:categories_6ccb60")}</Label>
           <Input
             id="skill-categories"
             value={categoryDraft}
             onChange={(event) => setCategoryDraft(event.target.value)}
-            placeholder="engineering, review, memory"
+            placeholder={translateAgentPage("agents:engineering_review_memory")}
           />
         </div>
       </section>
 
       <section className="space-y-3">
         <div>
-          <h2 className="text-sm font-medium text-foreground">Sharing</h2>
-          <p className="text-xs text-muted-foreground">Choose who can discover this skill inside Paperclip.</p>
+          <h2 className="text-sm font-medium text-foreground">{translateAgentPage("agents:sharing")}</h2>
+          <p className="text-xs text-muted-foreground">{translateAgentPage("agents:choose_who_can_discover_this_skill_inside_paperclip")}</p>
         </div>
         <div className="grid gap-2 sm:grid-cols-3">
           {(["company", "private"] as const).map((scope) => (
@@ -678,9 +679,9 @@ function StudioNewSkillPanel({
                 draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
               )}
             >
-              <span className="block font-medium">{scope === "company" ? "Organization" : "Private"}</span>
+              <span className="block font-medium">{scope === "company" ? translateAgentPage("agents:organization") : translateAgentPage("agents:private")}</span>
               <span className="mt-1 block text-xs text-muted-foreground">
-                {scope === "company" ? "Visible inside this organization." : "Only visible in your library."}
+                {scope === "company" ? translateAgentPage("agents:visible_inside_this_organization") : translateAgentPage("agents:only_visible_in_your_library")}
               </span>
             </button>
           ))}
@@ -689,14 +690,14 @@ function StudioNewSkillPanel({
             disabled
             className="rounded-md border border-dashed border-border px-3 py-2 text-left text-sm text-muted-foreground"
           >
-            <span className="block font-medium">Public</span>
-            <span className="mt-1 block text-xs">Coming later.</span>
+            <span className="block font-medium">{translateAgentPage("agents:public")}</span>
+            <span className="mt-1 block text-xs">{translateAgentPage("agents:coming_later")}</span>
           </button>
         </div>
       </section>
 
       <details className="rounded-md border border-border px-3 py-2">
-        <summary className="cursor-pointer text-sm font-medium text-foreground">Starter content</summary>
+        <summary className="cursor-pointer text-sm font-medium text-foreground">{translateAgentPage("agents:starter_content")}</summary>
         <Textarea
           value={draft.markdown}
           onChange={(event) => patchDraft({ markdown: event.target.value })}
@@ -705,12 +706,10 @@ function StudioNewSkillPanel({
       </details>
 
       <div className="flex items-center justify-end gap-2 border-t border-border pt-4">
-        <Button variant="ghost" onClick={() => navigate("/skills/studio")} disabled={createSkill.isPending}>
-          Cancel
-        </Button>
+        <Button variant="ghost" onClick={() => navigate("/skills/studio")} disabled={createSkill.isPending}>{translateAgentPage("agents:cancel")}</Button>
         <Button onClick={() => createSkill.mutate()} disabled={createSkill.isPending || !nameValid}>
           <FilePlus className="h-4 w-4" />
-          {createSkill.isPending ? "Creating..." : draft.forkedFromSkillId ? "Create fork" : "Create skill"}
+          {createSkill.isPending ? translateAgentPage("agents:creating") : draft.forkedFromSkillId ? translateAgentPage("agents:create_fork") : translateAgentPage("agents:create_skill")}
         </Button>
       </div>
     </div>
@@ -736,6 +735,7 @@ function StudioEmptyState({
   onSelectSkill: (skillId: string) => void;
   onCreateNew: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-full min-h-0 flex-col">
@@ -745,15 +745,15 @@ function StudioEmptyState({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="Select skill"
+            emptyLabel={translateAgentPage("agents:select_skill")}
           />
         </header>
         <SkillsPageNavigation activeView="authored" />
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
             icon={FileCode}
-            message={skillsLoading ? "Loading skills..." : "Select a skill to open Studio."}
-            action="Create a new skill"
+            message={skillsLoading ? translateAgentPage("agents:loading_skills") : translateAgentPage("agents:select_a_skill_to_open_studio")}
+            action={translateAgentPage("agents:create_a_new_skill")}
             onAction={onCreateNew}
           />
         </div>
@@ -779,6 +779,7 @@ function StudioLanding({
   onSelectSkill: (skillId: string) => void;
   onCreateNew: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   // Recency-sorted list, enriched with the last human editor (PAP-13149) — the
   // source for both landing sections. Kept separate from the alphabetical
   // switcher list so each cache stays sorted the way its consumer expects.
@@ -819,25 +820,23 @@ function StudioLanding({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="Select skill"
+            emptyLabel={translateAgentPage("agents:select_skill")}
           />
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onCreateNew}>
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New skill
-          </Button>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:new_skill_a7b490")}</Button>
         </header>
         <SkillsPageNavigation activeView="authored" />
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
             {visited.length > 0 ? (
               <StudioLandingSection
-                title="Recently visited"
+                title={translateAgentPage("agents:recently_visited")}
                 skills={visited}
                 onSelectSkill={onSelectSkill}
               />
             ) : null}
             <StudioLandingSection
-              title="Recently updated"
+              title={translateAgentPage("agents:recently_updated")}
               skills={updated}
               onSelectSkill={onSelectSkill}
             />
@@ -883,6 +882,7 @@ function StudioLandingRow({
   skill: CompanySkillListItem;
   onSelect: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const editor = skillEditorAvatar(skill.lastEditor);
   return (
     <button
@@ -897,8 +897,7 @@ function StudioLandingRow({
           <span className="truncate text-xs text-muted-foreground">{skill.tagline}</span>
         ) : null}
       </span>
-      <span className="shrink-0 text-xs text-muted-foreground">
-        updated {relativeTime(skill.updatedAt)}
+      <span className="shrink-0 text-xs text-muted-foreground">{translateAgentPage("agents:updated_13a189")}{" "}{relativeTime(skill.updatedAt)}
       </span>
       {editor ? (
         <Tooltip>
@@ -1153,18 +1152,19 @@ function StudioHeader({
   onSelectSkill: (skillId: string) => void;
   onOpenVersions: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const version = skill.currentVersion?.revisionNumber ?? null;
   const toast = useOptionalToastActions();
   const copyShareLink = useCallback(() => {
     const href = typeof window !== "undefined" ? window.location.href : "";
     void copyTextToClipboard(href)
-      .then(() => toast?.pushToast({ tone: "success", title: "Link copied", body: "Skill Studio link copied to clipboard." }))
+      .then(() => toast?.pushToast({ tone: "success", title: translateAgentPage("agents:link_copied"), body: translateAgentPage("agents:skill_studio_link_copied_to_clipboard") }))
       .catch((error) => toast?.pushToast({
         tone: "error",
-        title: "Copy failed",
-        body: error instanceof Error ? error.message : "Could not copy the link.",
+        title: translateAgentPage("agents:copy_failed"),
+        body: error instanceof Error ? error.message : translateAgentPage("agents:could_not_copy_the_link"),
       }));
-  }, [toast]);
+  }, [toast, translateAgentPage]);
 
   return (
     <header className="flex items-center gap-3 border-b border-border px-3 py-2">
@@ -1178,10 +1178,10 @@ function StudioHeader({
         <span className="font-mono text-xs text-muted-foreground">v{version}</span>
       )}
       {skillDirty ? (
-        <Badge variant="secondary">Unsaved edits</Badge>
+        <Badge variant="secondary">{translateAgentPage("agents:unsaved_edits")}</Badge>
       ) : null}
       {!skill.editable ? (
-        <Badge variant="secondary">Read-only</Badge>
+        <Badge variant="secondary">{translateAgentPage("agents:read_only_9b19a5")}</Badge>
       ) : null}
       {skill.forkedFromSkillId ? (
         <SkillLineageChip
@@ -1192,19 +1192,16 @@ function StudioHeader({
       <AgentsUsingSkillBadge companyId={companyId} skill={skill} />
       <div className="ml-auto flex items-center gap-1">
         <Button variant="ghost" size="sm" onClick={onOpenVersions}>
-          <History className="mr-1.5 h-3.5 w-3.5" />
-          Version history
-        </Button>
+          <History className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:version_history")}</Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="Studio menu">
+            <Button variant="ghost" size="icon-sm" aria-label={translateAgentPage("agents:studio_menu")}>
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onClick={copyShareLink}>
-              <Share2 className="mr-2 h-4 w-4" /> Share link
-            </DropdownMenuItem>
+              <Share2 className="mr-2 h-4 w-4" />{" "}{translateAgentPage("agents:share_link")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -1221,7 +1218,7 @@ function SkillSwitcher({
   skills,
   loading,
   onSelectSkill,
-  emptyLabel = "Select skill",
+  emptyLabel,
 }: {
   skill: CompanySkillDetail | null;
   skills: CompanySkillListItem[];
@@ -1229,6 +1226,7 @@ function SkillSwitcher({
   onSelectSkill: (skillId: string) => void;
   emptyLabel?: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const groups = useMemo<readonly SearchableSelectGroup<string, SkillSwitcherOption>[]>(() => {
     const options: SkillSwitcherOption[] = withCurrentSkill(skills, skill).map((item) => ({
       key: item.id,
@@ -1246,10 +1244,10 @@ function SkillSwitcher({
       value={skill?.id ?? ""}
       groups={groups}
       loading={loading}
-      loadingMessage="Loading skills..."
-      placeholder={emptyLabel}
-      searchPlaceholder="Search skills..."
-      emptyMessage="No matching skills."
+      loadingMessage={translateAgentPage("agents:loading_skills")}
+      placeholder={emptyLabel ?? translateAgentPage("agents:select_skill")}
+      searchPlaceholder={translateAgentPage("agents:search_skills")}
+      emptyMessage={translateAgentPage("agents:no_matching_skills")}
       onValueChange={(value) => {
         if (value !== skill?.id) onSelectSkill(value);
       }}
@@ -1292,6 +1290,7 @@ function SkillPane({
   onDirtyChange: (dirty: boolean) => void;
   onEditACopy: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
@@ -1356,12 +1355,12 @@ function SkillPane({
     if (
       dirty
       && typeof window !== "undefined"
-      && !window.confirm("Discard unsaved edits and switch files?")
+      && !window.confirm(translateAgentPage("agents:discard_unsaved_edits_and_switch_files"))
     ) {
       return;
     }
     setSelectedFile(path);
-  }, [dirty, selectedFile]);
+  }, [dirty, selectedFile, translateAgentPage]);
 
   const saveMutation = useMutation({
     mutationFn: ({ path, content, versionId }: { path: string; content: string; versionId: string | null | undefined }) =>
@@ -1385,14 +1384,14 @@ function SkillPane({
     },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) setVersionConflict(true);
-      onError("Couldn't save file")(error);
+      onError(translateAgentPage("agents:couldn_t_save_file"))(error);
     },
   });
 
   async function loadLatestSavedFile() {
-    if (dirty && !window.confirm("Discard unsaved edits and load the latest saved file?")) return;
+    if (dirty && !window.confirm(translateAgentPage("agents:discard_unsaved_edits_and_load_the_latest_saved"))) return;
     const result = await fileQuery.refetch();
-    if (result.error) { onError("Couldn't load latest file")(result.error); return; }
+    if (result.error) { onError(translateAgentPage("agents:couldn_t_load_latest_file"))(result.error); return; }
     if (!result.data) return;
     // Discard confirmation covers only the draft that started this request.
     const current = currentDraftRef.current;
@@ -1424,7 +1423,7 @@ function SkillPane({
         queryKey: queryKeys.companySkills.versions(companyId, skillId),
       });
     },
-    onError: onError("Couldn't create file"),
+    onError: onError(translateAgentPage("agents:couldn_t_create_file")),
   });
 
   const deleteMutation = useMutation({
@@ -1447,7 +1446,7 @@ function SkillPane({
         queryKey: queryKeys.companySkills.versions(companyId, skillId),
       });
     },
-    onError: onError("Couldn't delete file"),
+    onError: onError(translateAgentPage("agents:couldn_t_delete_file")),
   });
 
   // Read-only skills (bundled Paperclip, remote GitHub, URL, skills.sh) reject
@@ -1458,7 +1457,7 @@ function SkillPane({
   if (paths.length === 0) {
     return (
       <PaneScaffold
-        title={<SkillPaneTitle skillName={skill.name} folder="root" />}
+        title={<SkillPaneTitle skillName={skill.name} folder={finalPagesT("final-pages:root_481349")} />}
         action={
           <SkillFileActions
             readOnly={readOnly}
@@ -1473,7 +1472,7 @@ function SkillPane({
           />
         }
       >
-        <EmptyState icon={FileCode} message="This skill has no files yet." />
+        <EmptyState icon={FileCode} message={translateAgentPage("agents:this_skill_has_no_files_yet")} />
         <SkillPathDialog
           mode={createDialog}
           open={createDialog !== null}
@@ -1512,16 +1511,14 @@ function SkillPane({
       <div className="flex min-h-0 flex-1 flex-col">
         {versionConflict ? (
           <div role="alert" className="flex items-center gap-2 border-b border-border bg-muted px-3 py-2 text-xs">
-            <span>This skill changed since you opened it. Your unsaved edits are still here. Copy them before loading the latest file to reconcile the changes.</span>
-            <Button size="sm" variant="outline" disabled={fileQuery.isFetching} onClick={() => void loadLatestSavedFile()}>
-              Load latest saved file
-            </Button>
+            <span>{translateAgentPage("agents:this_skill_changed_since_you_opened_it_your")}</span>
+            <Button size="sm" variant="outline" disabled={fileQuery.isFetching} onClick={() => void loadLatestSavedFile()}>{translateAgentPage("agents:load_latest_saved_file")}</Button>
           </div>
         ) : null}
         {dirty && !readOnly ? (
           <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
-            <span>Unsaved edits live only in this Studio session. Save to create the next version before running tests or switching files.</span>
+            <span>{translateAgentPage("agents:unsaved_edits_live_only_in_this_studio_session")}</span>
           </div>
         ) : null}
         <div className="max-h-(--sz-11_75rem) overflow-auto border-b border-border p-1">
@@ -1539,7 +1536,7 @@ function SkillPane({
             }
             onSelectFile={selectFile}
             showCheckboxes={false}
-            ariaLabel="Skill files"
+            ariaLabel={translateAgentPage("agents:skill_files")}
           />
         </div>
         <SkillSourceProvenance skill={skill} />
@@ -1548,18 +1545,15 @@ function SkillPane({
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
             <div className="min-w-0 flex-1">
               <p>
-                {skill.metadata?.skillSourceId ? "This skill is synced from GitHub and is read-only." : skill.editableReason ?? "This skill is read-only because it comes from an external source."}
-                {" "}Make an editable copy to change it — the original stays untouched.
-              </p>
+                {skill.metadata?.skillSourceId ? translateAgentPage("agents:this_skill_is_synced_from_github_and_is") : skill.editableReason ?? translateAgentPage("agents:this_skill_is_read_only_because_it_comes")}
+                {" "}{translateAgentPage("agents:make_an_editable_copy_to_change_it_the")}</p>
               <Button
                 type="button"
                 size="sm"
                 className="mt-2"
                 onClick={onEditACopy}
               >
-                <GitFork className="mr-1.5 h-3.5 w-3.5" />
-                Make a copy
-              </Button>
+                <GitFork className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:make_a_copy")}</Button>
             </div>
           </div>
         )}
@@ -1570,16 +1564,16 @@ function SkillPane({
           </span>
           <div className="flex items-center gap-2">
             {readOnly ? (
-              <Badge variant="secondary">Read-only</Badge>
+              <Badge variant="secondary">{translateAgentPage("agents:read_only_9b19a5")}</Badge>
             ) : (
               <>
-                {dirty && <Badge variant="secondary">Unsaved</Badge>}
+                {dirty && <Badge variant="secondary">{translateAgentPage("agents:unsaved")}</Badge>}
                 <Button
                   size="sm"
                   disabled={!dirty || saveMutation.isPending}
                   onClick={() => saveMutation.mutate({ path: selectedFile, content: draft, versionId: baseVersionId })}
                 >
-                  {saveMutation.isPending ? "Saving…" : "Save"}
+                  {saveMutation.isPending ? translateAgentPage("agents:saving") : translateAgentPage("agents:save")}
                 </Button>
               </>
             )}
@@ -1684,7 +1678,7 @@ function folderSeedFile(folderPath: string) {
 }
 
 function folderSeedContent(folderPath: string) {
-  const label = folderPath.split("/").filter(Boolean).at(-1) ?? "Folder";
+  const label = folderPath.split("/").filter(Boolean).at(-1) ?? translateAgentPage("agents:folder");
   return `# ${label}\n`;
 }
 
@@ -1718,6 +1712,7 @@ function SkillFileActions({
   onDeleteFile: () => void;
   onDeleteFolder: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const disabled = readOnly || pending;
   const deleteDisabled = disabled || !canDeleteFile;
   return (
@@ -1725,22 +1720,22 @@ function SkillFileActions({
       <Tooltip>
         <TooltipTrigger asChild>
           <span>
-            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFile} aria-label="Add file">
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFile} aria-label={translateAgentPage("agents:add_file")}>
               <FilePlus className="h-4 w-4" />
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>Add file</TooltipContent>
+        <TooltipContent>{translateAgentPage("agents:add_file")}</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
           <span>
-            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFolder} aria-label="Add folder">
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onAddFolder} aria-label={translateAgentPage("agents:add_folder")}>
               <FolderPlus className="h-4 w-4" />
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>Add folder</TooltipContent>
+        <TooltipContent>{translateAgentPage("agents:add_folder")}</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -1750,27 +1745,27 @@ function SkillFileActions({
               size="icon-sm"
               disabled={deleteDisabled}
               onClick={() => {
-                if (typeof window === "undefined" || window.confirm(`Delete ${selectedFile}?`)) {
+                if (typeof window === "undefined" || window.confirm(translateAgentPage("agents:delete_c93ae0", { value1: selectedFile }))) {
                   onDeleteFile();
                 }
               }}
-              aria-label="Delete file"
+              aria-label={translateAgentPage("agents:delete_file")}
             >
               <Trash2 className="h-4 w-4" />
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>{canDeleteFile ? "Delete file" : "SKILL.md cannot be deleted"}</TooltipContent>
+        <TooltipContent>{canDeleteFile ? translateAgentPage("agents:delete_file") : translateAgentPage("agents:skill_md_cannot_be_deleted")}</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
           <span>
-            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onDeleteFolder} aria-label="Delete folder">
+            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={onDeleteFolder} aria-label={translateAgentPage("agents:delete_folder")}>
               <FolderMinus className="h-4 w-4" />
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>Delete folder</TooltipContent>
+        <TooltipContent>{translateAgentPage("agents:delete_folder")}</TooltipContent>
       </Tooltip>
     </div>
   );
@@ -1793,6 +1788,7 @@ function SkillPathDialog({
   pending: boolean;
   onSubmit: (path: string, content: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [pathValue, setPathValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -1804,19 +1800,19 @@ function SkillPathDialog({
     setError(null);
   }, [currentFolder, mode, open]);
 
-  const title = mode === "folder" ? "Add folder" : "Add file";
-  const label = mode === "folder" ? "Folder path" : "File path";
+  const title = mode === "folder" ? translateAgentPage("agents:add_folder") : translateAgentPage("agents:add_file");
+  const label = mode === "folder" ? translateAgentPage("agents:folder_path") : translateAgentPage("agents:file_path");
 
   function submit() {
     if (!mode) return;
     const normalized = normalizeStudioPath(pathValue);
     if (!normalized) {
-      setError(`${label} is required.`);
+      setError(translateAgentPage("agents:is_required", { value1: label }));
       return;
     }
     if (mode === "file") {
       if (existingPaths.has(normalized)) {
-        setError("A file already exists at that path.");
+        setError(translateAgentPage("agents:a_file_already_exists_at_that_path"));
         return;
       }
       onSubmit(normalized, "");
@@ -1825,7 +1821,7 @@ function SkillPathDialog({
 
     const folderPath = normalized.replace(/\/+$/, "");
     if ([...existingPaths].some((path) => path.startsWith(`${folderPath}/`))) {
-      setError("A folder already exists at that path.");
+      setError(translateAgentPage("agents:a_folder_already_exists_at_that_path"));
       return;
     }
     onSubmit(folderSeedFile(folderPath), folderSeedContent(folderPath));
@@ -1836,9 +1832,7 @@ function SkillPathDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            Saved changes create a new version immediately. External sources are not updated until you publish or install an update.
-          </DialogDescription>
+          <DialogDescription>{translateAgentPage("agents:saved_changes_create_a_new_version_immediately_external")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
           <Label htmlFor="skill-path-input">{label}</Label>
@@ -1852,17 +1846,13 @@ function SkillPathDialog({
             placeholder={mode === "folder" ? "references/examples" : "references/examples.md"}
           />
           {mode === "folder" ? (
-            <p className="text-xs text-muted-foreground">A README.md seed file is created so the folder appears in the file tree.</p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:a_readme_md_seed_file_is_created_so")}</p>
           ) : null}
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button disabled={pending} onClick={submit}>
-            Create
-          </Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{translateAgentPage("agents:cancel")}</Button>
+          <Button disabled={pending} onClick={submit}>{translateAgentPage("agents:create")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1884,6 +1874,7 @@ function DeleteFolderDialog({
   pending: boolean;
   onSubmit: (path: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [pathValue, setPathValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -1896,16 +1887,16 @@ function DeleteFolderDialog({
   function submit() {
     const normalized = normalizeStudioPath(pathValue).replace(/\/+$/, "");
     if (!normalized) {
-      setError("Folder path is required.");
+      setError(translateAgentPage("agents:folder_path_is_required"));
       return;
     }
     const matchingFiles = [...existingPaths].filter((path) => path.startsWith(`${normalized}/`));
     if (matchingFiles.length === 0) {
-      setError("No files exist under that folder.");
+      setError(translateAgentPage("agents:no_files_exist_under_that_folder"));
       return;
     }
     if (matchingFiles.includes("SKILL.md")) {
-      setError("SKILL.md cannot be deleted.");
+      setError(translateAgentPage("agents:skill_md_cannot_be_deleted_b34f98"));
       return;
     }
     onSubmit(normalized);
@@ -1915,13 +1906,11 @@ function DeleteFolderDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Delete folder</DialogTitle>
-          <DialogDescription>
-            This removes every skill file under the folder and saves the result as the next version.
-          </DialogDescription>
+          <DialogTitle>{translateAgentPage("agents:delete_folder")}</DialogTitle>
+          <DialogDescription>{translateAgentPage("agents:this_removes_every_skill_file_under_the_folder")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
-          <Label htmlFor="skill-folder-delete">Folder path</Label>
+          <Label htmlFor="skill-folder-delete">{translateAgentPage("agents:folder_path")}</Label>
           <Input
             id="skill-folder-delete"
             value={pathValue}
@@ -1934,12 +1923,8 @@ function DeleteFolderDialog({
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button variant="destructive" disabled={pending} onClick={submit}>
-            Delete
-          </Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{translateAgentPage("agents:cancel")}</Button>
+          <Button variant="destructive" disabled={pending} onClick={submit}>{translateAgentPage("agents:delete_f6fdbe")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1973,6 +1958,7 @@ function InputPane({
   onSelectInput: (id: string) => void;
   onSelectAdHoc: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
   // The row's menu closes on click, so its copy confirmation goes to a toast.
@@ -2027,9 +2013,9 @@ function InputPane({
     if (!dirty) return true;
     return (
       typeof window === "undefined"
-      || window.confirm("Discard unsaved changes to this input?")
+      || window.confirm(translateAgentPage("agents:discard_unsaved_changes_to_this_input"))
     );
-  }, [dirty]);
+  }, [dirty, translateAgentPage]);
 
   const selectSavedInput = useCallback((id: string) => {
     if (!adHocMode && id === selectedInputId) return;
@@ -2059,7 +2045,7 @@ function InputPane({
         queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
       });
     },
-    onError: onError("Couldn't save input"),
+    onError: onError(translateAgentPage("agents:couldn_t_save_input")),
   });
   const deleteMutation = useMutation({
     mutationFn: (inputId: string) => companySkillsApi.deleteTestInput(companyId, skillId, inputId),
@@ -2071,7 +2057,7 @@ function InputPane({
         queryKey: queryKeys.companySkills.testInputs(companyId, skillId),
       });
     },
-    onError: onError("Couldn't delete input"),
+    onError: onError(translateAgentPage("agents:couldn_t_delete_input")),
   });
 
   return (
@@ -2084,7 +2070,7 @@ function InputPane({
                 type="button"
                 variant="ghost"
                 size="icon-xs"
-                aria-label={collapsed ? "Expand input" : "Collapse input"}
+                aria-label={collapsed ? translateAgentPage("agents:expand_input") : translateAgentPage("agents:collapse_input")}
                 onClick={() => setCollapsed((current) => !current)}
               >
                 {collapsed ? (
@@ -2094,20 +2080,20 @@ function InputPane({
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{collapsed ? "Expand input" : "Collapse input"}</TooltipContent>
+            <TooltipContent>{collapsed ? translateAgentPage("agents:expand_input") : translateAgentPage("agents:collapse_input")}</TooltipContent>
           </Tooltip>
-          <span>Input</span>
+          <span>{translateAgentPage("agents:input")}</span>
         </span>
       }
       action={
         <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={selectAdHocInput} aria-label="New input">
+              <Button variant="ghost" size="icon-sm" onClick={selectAdHocInput} aria-label={translateAgentPage("agents:new_input")}>
                 <Plus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>New input</TooltipContent>
+            <TooltipContent>{translateAgentPage("agents:new_input")}</TooltipContent>
           </Tooltip>
         </div>
       }
@@ -2119,20 +2105,19 @@ function InputPane({
           onClick={() => setCollapsed(false)}
         >
           <ChevronRight className="h-3.5 w-3.5" />
-          <span>Input folded</span>
+          <span>{translateAgentPage("agents:input_folded")}</span>
         </button>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           {loading || inputs.length > 0 ? (
             <div className="max-h-(--sz-11_75rem) overflow-auto border-b border-border p-1">
               {loading ? (
-                <div className="p-3 text-xs text-muted-foreground">Loading inputs…</div>
+                <div className="p-3 text-xs text-muted-foreground">{translateAgentPage("agents:loading_inputs")}</div>
               ) : (
                 <>
                   {adHocMode && (
                     <div className="flex items-center gap-2 rounded px-2 py-1.5 text-sm italic text-muted-foreground">
-                      <FilePlus className="h-3.5 w-3.5" /> New input (not saved)
-                    </div>
+                      <FilePlus className="h-3.5 w-3.5" />{" "}{translateAgentPage("agents:new_input_not_saved")}</div>
                   )}
                   <FileTree
                     nodes={nodes}
@@ -2159,7 +2144,7 @@ function InputPane({
                           <DropdownMenuTrigger asChild>
                             <button
                               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                              aria-label={`Input actions for ${node.name}`}
+                              aria-label={translateAgentPage("agents:input_actions_for", { value1: node.name })}
                               onClick={(e) => e.stopPropagation()}
                             >
                               <MoreHorizontal className="h-3.5 w-3.5" />
@@ -2169,23 +2154,21 @@ function InputPane({
                             <DropdownMenuItem
                               onClick={() => {
                                 const input = inputs.find((i) => i.id === id);
-                                if (input) void copyWithToast(input.content, "Input content copied");
+                                if (input) void copyWithToast(input.content, translateAgentPage("agents:input_content_copied"));
                               }}
                             >
-                              <Copy className="mr-2 h-4 w-4" /> Copy content
-                            </DropdownMenuItem>
+                              <Copy className="mr-2 h-4 w-4" />{" "}{translateAgentPage("agents:copy_content")}</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() => deleteMutation.mutate(id)}
                             >
-                              <Trash2 className="mr-2 h-4 w-4" /> Delete
-                            </DropdownMenuItem>
+                              <Trash2 className="mr-2 h-4 w-4" />{" "}{translateAgentPage("agents:delete_f6fdbe")}</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       );
                     }}
-                    ariaLabel="Test inputs"
+                    ariaLabel={translateAgentPage("agents:test_inputs")}
                   />
                 </>
               )}
@@ -2195,17 +2178,17 @@ function InputPane({
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="Paste text - treated as a new issue description."
-              aria-label="Skill test input"
+              placeholder={translateAgentPage("agents:paste_text_treated_as_a_new_issue_description")}
+              aria-label={translateAgentPage("agents:skill_test_input")}
               className="min-h-0 flex-1 resize-none border-0 bg-transparent px-3 py-3 text-sm leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0"
             />
           </div>
           <div className="flex items-center gap-2 border-t border-border px-3 py-2">
             <div className="mr-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
               <span className="truncate">
-                {selectedInput ? selectedInput.name : adHocMode ? "New input" : "No input selected"}
+                {selectedInput ? selectedInput.name : adHocMode ? translateAgentPage("agents:new_input") : translateAgentPage("agents:no_input_selected")}
               </span>
-              {dirty ? <Badge variant="secondary">Unsaved</Badge> : null}
+              {dirty ? <Badge variant="secondary">{translateAgentPage("agents:unsaved")}</Badge> : null}
             </div>
             {selectedInput && dirty ? (
               <>
@@ -2218,16 +2201,14 @@ function InputPane({
                     draft: selectedInput.content,
                     baselineContent: selectedInput.content,
                   })}
-                >
-                  Revert
-                </Button>
+                >{translateAgentPage("agents:revert")}</Button>
                 <Button
                   variant="outline"
                   size="sm"
                   disabled={!canSaveSelectedInput || updateMutation.isPending}
                   onClick={() => updateMutation.mutate({ content: draft })}
                 >
-                  {updateMutation.isPending ? "Saving..." : "Save changes"}
+                  {updateMutation.isPending ? translateAgentPage("agents:saving_ae7e88") : translateAgentPage("agents:save_changes")}
                 </Button>
               </>
             ) : null}
@@ -2235,9 +2216,7 @@ function InputPane({
               size="sm"
               disabled={!draft.trim()}
               onClick={() => setSaveDialogOpen(true)}
-            >
-              Save as input
-            </Button>
+            >{translateAgentPage("agents:save_as_input")}</Button>
           </div>
         </div>
       )}
@@ -2271,6 +2250,7 @@ function SaveInputDialog({
   initialContent: string;
   onSaved: (input: CompanySkillTestInput) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [content, setContent] = useState(initialContent);
@@ -2305,24 +2285,22 @@ function SaveInputDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Save test input</DialogTitle>
-          <DialogDescription>
-            Runs snapshot input at run time — editing later won't change past runs.
-          </DialogDescription>
+          <DialogTitle>{translateAgentPage("agents:save_test_input")}</DialogTitle>
+          <DialogDescription>{translateAgentPage("agents:runs_snapshot_input_at_run_time_editing_later")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label htmlFor="input-name">Name</Label>
+            <Label htmlFor="input-name">{translateAgentPage("agents:name")}</Label>
             <Input
               id="input-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="onboarding/happy-path"
             />
-            <p className="text-xs text-muted-foreground">Use “/” for folders, e.g. onboarding/happy-path</p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:use_for_folders_e_g_onboarding_happy_path")}</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="input-content">Content</Label>
+            <Label htmlFor="input-content">{translateAgentPage("agents:content")}</Label>
             <Textarea
               id="input-content"
               value={content}
@@ -2332,15 +2310,11 @@ function SaveInputDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{translateAgentPage("agents:cancel")}</Button>
           <Button
             disabled={!name.trim() || !content.trim() || createMutation.isPending}
             onClick={() => createMutation.mutate()}
-          >
-            Save
-          </Button>
+          >{translateAgentPage("agents:save")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2385,6 +2359,7 @@ function RunsPane({
   filterInput: CompanySkillTestInput | null;
   onClearFilter: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
@@ -2427,8 +2402,8 @@ function RunsPane({
     updateTemplateSelection(resolution.selection);
     toast?.pushToast({
       tone: "warn",
-      title: "Run template reset",
-      body: "The saved run template is no longer available. Default test template is selected.",
+      title: translateAgentPage("agents:run_template_reset"),
+      body: translateAgentPage("agents:the_saved_run_template_is_no_longer_available"),
       dedupeKey: `skill-studio-template-reset:${companyId}`,
     });
   }, [
@@ -2438,7 +2413,7 @@ function RunsPane({
     templatesQuery.isSuccess,
     toast,
     updateTemplateSelection,
-  ]);
+  , translateAgentPage]);
 
   const filterInputId = filterInput?.id ?? null;
   const runsQuery = useQuery({
@@ -2461,9 +2436,9 @@ function RunsPane({
     hasUnsavedSkillEdits: skillDirty,
   });
   const templateGateReason = templatesQuery.isLoading
-    ? "Loading run templates"
+    ? translateAgentPage("agents:loading_run_templates")
     : (templatesQueryView.kind === "error")
-      ? "Run templates couldn't load"
+      ? translateAgentPage("agents:run_templates_couldn_t_load")
       : null;
 
   const createTemplateMutation = useMutation({
@@ -2477,11 +2452,11 @@ function RunsPane({
       });
       toast?.pushToast({
         tone: "success",
-        title: "Template saved",
-        body: `${template.name} is ready for Skills Studio runs.`,
+        title: translateAgentPage("agents:template_saved"),
+        body: translateAgentPage("agents:is_ready_for_skills_studio_runs", { value1: template.name }),
       });
     },
-    onError: onError("Couldn't save template"),
+    onError: onError(translateAgentPage("agents:couldn_t_save_template")),
   });
 
   const updateTemplateMutation = useMutation({
@@ -2497,11 +2472,11 @@ function RunsPane({
       });
       toast?.pushToast({
         tone: "success",
-        title: "Template updated",
-        body: `${template.name} is ready for Skills Studio runs.`,
+        title: translateAgentPage("agents:template_updated"),
+        body: translateAgentPage("agents:is_ready_for_skills_studio_runs", { value1: template.name }),
       });
     },
-    onError: onError("Couldn't update template"),
+    onError: onError(translateAgentPage("agents:couldn_t_update_template")),
   });
 
   const deleteTemplateMutation = useMutation({
@@ -2516,30 +2491,30 @@ function RunsPane({
       });
       toast?.pushToast({
         tone: "success",
-        title: "Template deleted",
-        body: `${template.name} was removed from Skills Studio runs.`,
+        title: translateAgentPage("agents:template_deleted"),
+        body: translateAgentPage("agents:was_removed_from_skills_studio_runs", { value1: template.name }),
       });
     },
-    onError: onError("Couldn't delete template"),
+    onError: onError(translateAgentPage("agents:couldn_t_delete_template")),
   });
 
   const selectedTemplate = selectedTemplateId === null
     ? null
     : templates.find((template) => template.id === selectedTemplateId) ?? null;
   const selectedTemplateName = selectedTemplateId === null
-    ? "No template"
-    : selectedTemplate?.name ?? "Default test template";
+    ? translateAgentPage("agents:no_template")
+    : selectedTemplate?.name ?? translateAgentPage("agents:default_test_template");
   const runDisabledReason = gate.reason ?? templateGateReason;
 
   const createRunMutation = useMutation({
     mutationFn: () => {
       if (!templatesQuery.isSuccess) {
-        throw new Error(templateGateReason ?? "Run templates are not ready.");
+        throw new Error(templateGateReason ?? translateAgentPage("agents:run_templates_are_not_ready"));
       }
       const resolution = resolveRunTemplateSelection(selectedTemplateId, templates);
       if (resolution.recovered) {
         updateTemplateSelection(resolution.selection);
-        throw new Error("Selected run template is no longer available. The selection was reset.");
+        throw new Error(translateAgentPage("agents:selected_run_template_is_no_longer_available_the"));
       }
       return companySkillsApi.createTestRun(companyId, skillId, buildCreateRunRequest({
         agentId: selectedAgentId!,
@@ -2554,7 +2529,7 @@ function RunsPane({
       });
       onSelectRun(run.id);
     },
-    onError: onError("Couldn't start run"),
+    onError: onError(translateAgentPage("agents:couldn_t_start_run")),
   });
 
   if (selectedRunId) {
@@ -2572,7 +2547,7 @@ function RunsPane({
 
   return (
     <PaneScaffold
-      title="Test runs"
+      title={translateAgentPage("agents:test_runs")}
       action={
         <div className="flex items-center gap-2">
           <AgentPicker
@@ -2589,8 +2564,7 @@ function RunsPane({
                   disabled={gate.disabled || Boolean(templateGateReason) || createRunMutation.isPending}
                   onClick={() => createRunMutation.mutate()}
                 >
-                  <Play className="mr-1.5 h-3.5 w-3.5" /> Run
-                </Button>
+                  <Play className="mr-1.5 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:run_b1b392")}</Button>
               </span>
             </TooltipTrigger>
             {runDisabledReason && <TooltipContent side="bottom">{runDisabledReason}</TooltipContent>}
@@ -2615,7 +2589,7 @@ function RunsPane({
           onDeleteTemplate={(template) => {
             if (
               typeof window !== "undefined"
-              && !window.confirm(`Delete run template "${template.name}"?`)
+              && !window.confirm(translateAgentPage("agents:delete_run_template", { value1: template.name }))
             ) {
               return;
             }
@@ -2631,7 +2605,7 @@ function RunsPane({
         {filterInput && (
           <div className="px-3 pt-2">
             <FilterBar
-              filters={[{ key: "input", label: "Input", value: filterInput.name }]}
+              filters={[{ key: "input", label: translateAgentPage("agents:input"), value: filterInput.name }]}
               onRemove={onClearFilter}
               onClear={onClearFilter}
             />
@@ -2639,9 +2613,9 @@ function RunsPane({
         )}
         <div className="min-h-0 flex-1 overflow-auto p-3">
           {runsQuery.isLoading ? (
-            <div className="text-xs text-muted-foreground">Loading runs…</div>
+            <div className="text-xs text-muted-foreground">{translateAgentPage("agents:loading_runs")}</div>
           ) : runs.length === 0 ? (
-            <EmptyState icon={FlaskConical} message="No test runs yet. Pick an agent and Run." />
+            <EmptyState icon={FlaskConical} message={translateAgentPage("agents:no_test_runs_yet_pick_an_agent_and")} />
           ) : (
             <div className="space-y-1 rounded-md border border-border p-1">
               {runs.map((run) => (
@@ -2720,13 +2694,14 @@ function RunTemplateAdvancedPanel({
   deletingTemplateId: string | null;
   actionPending: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const templateGroups = useMemo<readonly SearchableSelectGroup<string, RunTemplateOption>[]>(() => {
     const noTemplateOption: RunTemplateOption = {
       key: "no-template",
       value: NO_TEST_RUN_TEMPLATE_STORAGE_VALUE,
-      label: "No template",
-      title: "No template",
-      description: "Run only the input text.",
+      label: translateAgentPage("agents:no_template"),
+      title: translateAgentPage("agents:no_template"),
+      description: translateAgentPage("agents:run_only_the_input_text"),
       builtIn: true,
       searchText: "no template plain input",
     };
@@ -2737,15 +2712,15 @@ function RunTemplateAdvancedPanel({
       title: template.name,
       description: template.description,
       builtIn: template.builtIn,
-      searchText: [template.name, template.description ?? "", template.builtIn ? "built in" : "custom"].join(" "),
+      searchText: [template.name, template.description ?? "", template.builtIn ? translateAgentPage("agents:built_in") : "custom"].join(" "),
     });
     const builtIn = templates.filter((template) => template.builtIn).map(toOption);
     const custom = templates.filter((template) => !template.builtIn).map(toOption);
     return [
-      { id: "built-in", label: "Built in", options: [noTemplateOption, ...builtIn] },
-      ...(custom.length > 0 ? [{ id: "custom", label: "Custom", options: custom }] : []),
+      { id: "built-in", label: translateAgentPage("agents:built_in_6b0c36"), options: [noTemplateOption, ...builtIn] },
+      ...(custom.length > 0 ? [{ id: "custom", label: translateAgentPage("agents:custom"), options: custom }] : []),
     ];
-  }, [templates]);
+  }, [templates, translateAgentPage]);
 
   const selectedValue = runTemplateOptionValue(selectedTemplateId);
   const selectedMissing = selectedTemplateId !== null && !selectedTemplate && !templatesLoading;
@@ -2765,23 +2740,23 @@ function RunTemplateAdvancedPanel({
         ) : (
           <ChevronRight className="h-3.5 w-3.5" />
         )}
-        <span className="font-semibold uppercase tracking-wide">Advanced</span>
+        <span className="font-semibold uppercase tracking-wide">{translateAgentPage("agents:advanced")}</span>
         <span className="ml-auto truncate">{selectedTemplateName}</span>
       </button>
       {open ? (
         <div className="space-y-3 px-3 pb-3 pt-1">
           <div className="flex items-end gap-2">
             <div className="min-w-0 flex-1 space-y-1">
-              <Label>Run template</Label>
+              <Label>{translateAgentPage("agents:run_template")}</Label>
               <SearchableSelect<string, RunTemplateOption>
                 value={selectedValue}
                 groups={templateGroups}
                 loading={templatesLoading}
                 disabled={templatesLoading || templatesError}
-                loadingMessage="Loading templates..."
-                placeholder="Select template"
-                searchPlaceholder="Search templates..."
-                emptyMessage="No templates."
+                loadingMessage={translateAgentPage("agents:loading_templates")}
+                placeholder={translateAgentPage("agents:select_template")}
+                searchPlaceholder={translateAgentPage("agents:search_templates")}
+                emptyMessage={translateAgentPage("agents:no_templates")}
                 contentClassName="w-(--sz-320px)"
                 onValueChange={(value) => onSelectTemplate(runTemplateSelectionFromOption(value))}
                 renderValue={(option) => option?.label ?? selectedTemplateName}
@@ -2789,7 +2764,7 @@ function RunTemplateAdvancedPanel({
                   <span className="flex min-w-0 flex-col">
                     <span className={cn("truncate", selected && "font-medium")}>{option.label}</span>
                     <span className="truncate text-(length:--text-micro) text-muted-foreground">
-                      {option.description ?? (option.builtIn ? "Built in" : "Custom")}
+                      {option.description ?? (option.builtIn ? translateAgentPage("agents:built_in_6b0c36") : translateAgentPage("agents:custom"))}
                     </span>
                   </span>
                 )}
@@ -2801,14 +2776,14 @@ function RunTemplateAdvancedPanel({
                   type="button"
                   variant="outline"
                   size="icon-sm"
-                  aria-label="Create run template"
+                  aria-label={translateAgentPage("agents:create_run_template")}
                   disabled={actionPending}
                   onClick={onCreateTemplate}
                 >
                   <Plus />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Create run template</TooltipContent>
+              <TooltipContent>{translateAgentPage("agents:create_run_template")}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -2817,7 +2792,7 @@ function RunTemplateAdvancedPanel({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="Edit run template"
+                    aria-label={translateAgentPage("agents:edit_run_template")}
                     disabled={!canEdit || actionPending}
                     onClick={() => selectedTemplate && onEditTemplate(selectedTemplate)}
                   >
@@ -2825,7 +2800,7 @@ function RunTemplateAdvancedPanel({
                   </Button>
                 </span>
               </TooltipTrigger>
-              <TooltipContent>Edit custom template</TooltipContent>
+              <TooltipContent>{translateAgentPage("agents:edit_custom_template")}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -2834,7 +2809,7 @@ function RunTemplateAdvancedPanel({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="Duplicate run template"
+                    aria-label={translateAgentPage("agents:duplicate_run_template")}
                     disabled={!canDuplicate || actionPending}
                     onClick={() => selectedTemplate && onDuplicateTemplate(selectedTemplate)}
                   >
@@ -2843,7 +2818,7 @@ function RunTemplateAdvancedPanel({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                {selectedTemplate?.builtIn ? "Duplicate built-in template" : "Duplicate template"}
+                {selectedTemplate?.builtIn ? translateAgentPage("agents:duplicate_built_in_template") : translateAgentPage("agents:duplicate_template")}
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -2853,7 +2828,7 @@ function RunTemplateAdvancedPanel({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="Delete run template"
+                    aria-label={translateAgentPage("agents:delete_run_template_52d913")}
                     className="text-destructive hover:text-destructive"
                     disabled={!canDelete || actionPending || deletingTemplateId === selectedTemplate?.id}
                     onClick={() => selectedTemplate && onDeleteTemplate(selectedTemplate)}
@@ -2862,16 +2837,16 @@ function RunTemplateAdvancedPanel({
                   </Button>
                 </span>
               </TooltipTrigger>
-              <TooltipContent>Delete custom template</TooltipContent>
+              <TooltipContent>{translateAgentPage("agents:delete_custom_template")}</TooltipContent>
             </Tooltip>
           </div>
 
           {templatesError ? (
-            <p className="text-xs text-destructive">Run templates could not load.</p>
+            <p className="text-xs text-destructive">{translateAgentPage("agents:run_templates_could_not_load")}</p>
           ) : selectedTemplateId === null ? (
-            <p className="text-xs text-muted-foreground">Runs will use only the input text.</p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:runs_will_use_only_the_input_text")}</p>
           ) : selectedMissing ? (
-            <p className="text-xs text-destructive">Selected template is no longer available.</p>
+            <p className="text-xs text-destructive">{translateAgentPage("agents:selected_template_is_no_longer_available")}</p>
           ) : selectedTemplate ? (
             <div className="space-y-2">
               {selectedTemplate.description ? (
@@ -2882,7 +2857,7 @@ function RunTemplateAdvancedPanel({
               </pre>
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground">Loading template...</p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:loading_template")}</p>
           )}
         </div>
       ) : null}
@@ -2901,6 +2876,7 @@ function RunTemplateDialog({
   onOpenChange: (open: boolean) => void;
   onSubmit: (payload: CompanySkillTestRunTemplateCreateRequest) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const source = state?.source ?? null;
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -2908,19 +2884,19 @@ function RunTemplateDialog({
 
   useEffect(() => {
     if (!state) return;
-    setName(state.mode === "edit" ? source?.name ?? "" : source ? `${source.name} copy` : "");
+    setName(state.mode === "edit" ? source?.name ?? "" : source ? translateAgentPage("agents:copy_f666db", { value1: source.name }) : "");
     setDescription(source?.description ?? "");
     setBody(source?.body ?? "");
-  }, [source, state]);
+  }, [source, state, translateAgentPage]);
 
   const title = state?.mode === "edit"
-    ? "Edit run template"
+    ? translateAgentPage("agents:edit_run_template")
     : source?.builtIn
-      ? "Duplicate built-in template"
-      : "Create run template";
+      ? translateAgentPage("agents:duplicate_built_in_template")
+      : translateAgentPage("agents:create_run_template");
   const descriptionText = state?.mode === "edit"
-    ? "Update the custom run instructions used by Skills Studio."
-    : "Save reusable run instructions for Skills Studio.";
+    ? translateAgentPage("agents:update_the_custom_run_instructions_used_by_skills")
+    : translateAgentPage("agents:save_reusable_run_instructions_for_skills_studio");
 
   return (
     <Dialog open={Boolean(state)} onOpenChange={onOpenChange}>
@@ -2931,40 +2907,37 @@ function RunTemplateDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label htmlFor="run-template-name">Name</Label>
+            <Label htmlFor="run-template-name">{translateAgentPage("agents:name")}</Label>
             <Input
               id="run-template-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Focused smoke"
+              placeholder={translateAgentPage("agents:focused_smoke")}
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="run-template-description">Description</Label>
+            <Label htmlFor="run-template-description">{translateAgentPage("agents:description")}</Label>
             <Input
               id="run-template-description"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="Short instructions for common skill checks"
+              placeholder={translateAgentPage("agents:short_instructions_for_common_skill_checks")}
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="run-template-body">Body</Label>
+            <Label htmlFor="run-template-body">{translateAgentPage("agents:body")}</Label>
             <Textarea
               id="run-template-body"
               value={body}
               onChange={(event) => setBody(event.target.value)}
               className="min-h-(--sz-240px) font-mono text-xs leading-5"
             />
-            <p className="text-xs text-muted-foreground">
-              Placeholders: {"{{skillName}}"}, {"{{skillKey}}"}, {"{{skillInvocation}}"}, {"{{skillVersion}}"}, {"{{runId}}"}, {"{{issueId}}"}, {"{{outputDocumentKey}}"}.
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:placeholders")}{" "}{"{{skillName}}"}, {"{{skillKey}}"}, {"{{skillInvocation}}"}, {"{{skillVersion}}"}, {"{{runId}}"}, {"{{issueId}}"}, {"{{outputDocumentKey}}"}.
             </p>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{translateAgentPage("agents:cancel")}</Button>
           <Button
             disabled={!name.trim() || !body.trim() || pending}
             onClick={() =>
@@ -2975,7 +2948,7 @@ function RunTemplateDialog({
               })
             }
           >
-            {pending ? "Saving..." : "Save template"}
+            {pending ? translateAgentPage("agents:saving_ae7e88") : translateAgentPage("agents:save_template")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -2992,16 +2965,17 @@ function RunHistoryRow({
   agents: Agent[];
   onSelect: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const agent = agents.find((a) => a.id === run.agentId) ?? null;
   const removed = !agent;
   const snapshotName =
-    (run.agentConfigSnapshot?.name as string | undefined) ?? "Agent";
+    (run.agentConfigSnapshot?.name as string | undefined) ?? translateAgentPage("agents:agent_5ce2e6");
   const name = agent?.name ?? snapshotName;
   return (
     <EntityRow
       leading={<StatusBadge status={runBadgeStatus(run.status)} />}
       identifier={runShortId(run)}
-      title={removed ? `${name} (removed)` : name}
+      title={removed ? translateAgentPage("agents:removed", { value1: name }) : name}
       subtitle={relativeTime(run.createdAt)}
       trailing={
         <span className="font-mono text-xs text-muted-foreground">
@@ -3022,6 +2996,7 @@ function AgentPicker({
   selectedAgent: Agent | null;
   onSelect: (id: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -3030,15 +3005,15 @@ function AgentPicker({
           {selectedAgent ? (
             <AgentIdentity agent={selectedAgent} size="xs" />
           ) : (
-            <span className="text-muted-foreground">Pick an agent</span>
+            <span className="text-muted-foreground">{translateAgentPage("agents:pick_an_agent")}</span>
           )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-0">
         <Command>
-          <CommandInput placeholder="Search agents…" />
+          <CommandInput placeholder={translateAgentPage("agents:search_agents")} />
           <CommandList>
-            <CommandEmpty>No agents.</CommandEmpty>
+            <CommandEmpty>{translateAgentPage("agents:no_agents")}</CommandEmpty>
             <CommandGroup>
               {agents.map((agent) => {
                 const selectable = isAgentSelectable(agent);
@@ -3063,9 +3038,7 @@ function AgentPicker({
                     />
                     <AgentIdentity agent={agent} size="xs" />
                     {!selectable && (
-                      <Badge variant="secondary" className="ml-auto">
-                        Paused
-                      </Badge>
+                      <Badge variant="secondary" className="ml-auto">{translateAgentPage("agents:paused")}</Badge>
                     )}
                   </CommandItem>
                 );
@@ -3097,6 +3070,7 @@ function RunDetailView({
   onBack: () => void;
   onSelectRun: (id: string | null) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
@@ -3116,7 +3090,7 @@ function RunDetailView({
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.testRunDetail(companyId, skillId, runId),
       }),
-    onError: onError("Couldn't cancel run"),
+    onError: onError(translateAgentPage("agents:couldn_t_cancel_run")),
   });
 
   // Re-run reproduces the VIEWED run's snapshots — pinned skill version, saved
@@ -3126,7 +3100,7 @@ function RunDetailView({
   const reRunMutation = useMutation({
     mutationFn: () => {
       const d = detailQuery.data;
-      if (!d) throw new Error("Run details are still loading.");
+      if (!d) throw new Error(translateAgentPage("agents:run_details_are_still_loading"));
       return companySkillsApi.createTestRun(companyId, skillId, buildReRunRequest(d));
     },
     onSuccess: (run) => {
@@ -3135,7 +3109,7 @@ function RunDetailView({
       });
       onSelectRun(run.id);
     },
-    onError: onError("Couldn't re-run"),
+    onError: onError(translateAgentPage("agents:couldn_t_re_run")),
   });
 
   const deleteMutation = useMutation({
@@ -3146,7 +3120,7 @@ function RunDetailView({
       });
       onSelectRun(null);
     },
-    onError: onError("Couldn't delete run"),
+    onError: onError(translateAgentPage("agents:couldn_t_delete_run")),
   });
 
   const detail = detailQuery.data ?? null;
@@ -3162,34 +3136,34 @@ function RunDetailView({
 
   if (detailQuery.isLoading) {
     return (
-      <PaneScaffold title="Run" action={<BackButton onBack={onBack} />}>
-        <div className="p-3 text-xs text-muted-foreground">Loading run…</div>
+      <PaneScaffold title={translateAgentPage("agents:run_b1b392")} action={<BackButton onBack={onBack} />}>
+        <div className="p-3 text-xs text-muted-foreground">{translateAgentPage("agents:loading_run")}</div>
       </PaneScaffold>
     );
   }
   if (!detail) {
     return (
-      <PaneScaffold title="Run" action={<BackButton onBack={onBack} />}>
-        <div className="p-3 text-xs text-muted-foreground">Run not found.</div>
+      <PaneScaffold title={translateAgentPage("agents:run_b1b392")} action={<BackButton onBack={onBack} />}>
+        <div className="p-3 text-xs text-muted-foreground">{translateAgentPage("agents:run_not_found")}</div>
       </PaneScaffold>
     );
   }
 
   const agent = agents.find((a) => a.id === detail.agentId) ?? null;
   const agentName =
-    agent?.name ?? (detail.agentConfigSnapshot?.name as string | undefined) ?? "Agent";
+    agent?.name ?? (detail.agentConfigSnapshot?.name as string | undefined) ?? translateAgentPage("agents:agent_5ce2e6");
   const removed = !agent;
   const outputMode = runOutputMode(detail);
   const nonTerminal = !isTerminalRunStatus(detail.status);
   const taskLink = testTaskLinkState(detail);
 
   return (
-    <PaneScaffold title="Run" action={<BackButton onBack={onBack} />}>
+    <PaneScaffold title={translateAgentPage("agents:run_b1b392")} action={<BackButton onBack={onBack} />}>
       <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={runBadgeStatus(detail.status)} />
           <AgentIdentity agent={agent ?? { id: detail.agentId, name: agentName }} size="xs" />
-          {removed && <Badge variant="secondary">removed</Badge>}
+          {removed && <Badge variant="secondary">{translateAgentPage("agents:removed_69992f")}</Badge>}
           <span className="font-mono text-xs text-muted-foreground">
             v{detail.skillVersion.revisionNumber}
           </span>
@@ -3200,20 +3174,20 @@ function RunDetailView({
 
         {/* snapshot property block */}
         <div className="rounded-md border border-border text-xs">
-          <PropRow label="Input" value={detail.inputId ? "saved input" : "ad-hoc paste"} />
-          <PropRow label="Template" value={detail.templateName ?? "No template"} />
-          <PropRow label="Skill version" value={`v${detail.skillVersion.revisionNumber}`} />
-          <PropRow label="Created" value={relativeTime(detail.createdAt)} />
+          <PropRow label={translateAgentPage("agents:input")} value={detail.inputId ? "saved input" : "ad-hoc paste"} />
+          <PropRow label={translateAgentPage("agents:template")} value={detail.templateName ?? "No template"} />
+          <PropRow label={translateAgentPage("agents:skill_version")} value={`v${detail.skillVersion.revisionNumber}`} />
+          <PropRow label={translateAgentPage("agents:created")} value={relativeTime(detail.createdAt)} />
         </div>
 
         {showRunErrorCard(detail.status) && (
           <Card className="border-destructive/50">
             <CardHeader className="flex-row items-center gap-2 space-y-0 pb-2">
               <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
-              <span className="text-sm font-medium">Run failed</span>
+              <span className="text-sm font-medium">{translateAgentPage("agents:run_failed")}</span>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              {detail.error ?? "The test task ended with an error."}
+              {detail.error ?? translateAgentPage("agents:the_test_task_ended_with_an_error")}
             </CardContent>
           </Card>
         )}
@@ -3222,16 +3196,15 @@ function RunDetailView({
         {outputMode === "output" || outputMode === "draft" ? (
           <section className="space-y-2">
             <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {outputMode === "draft" ? "Draft at failure" : "Output snapshot"}
+              {outputMode === "draft" ? translateAgentPage("agents:draft_at_failure") : translateAgentPage("agents:output_snapshot")}
             </h3>
             <div className="rounded-md border border-border p-3">
-              <MarkdownBody>{detail.outputBody || "_No output_"}</MarkdownBody>
+              <MarkdownBody>{detail.outputBody || translateAgentPage("agents:no_output")}</MarkdownBody>
             </div>
           </section>
         ) : outputMode === "pending" ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" /> Working… output will appear here.
-          </div>
+            <Clock className="h-3.5 w-3.5" />{" "}{translateAgentPage("agents:working_output_will_appear_here")}</div>
         ) : null}
 
         {unavailableCopy ? (
@@ -3290,17 +3263,14 @@ function RunDetailView({
             disabled={reRunMutation.isPending}
             onClick={() => reRunMutation.mutate()}
           >
-            <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Re-run
-          </Button>
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:re_run")}</Button>
           {nonTerminal ? (
             <Button
               variant="ghost"
               size="sm"
               disabled={cancelMutation.isPending}
               onClick={() => cancelMutation.mutate()}
-            >
-              Cancel
-            </Button>
+            >{translateAgentPage("agents:cancel")}</Button>
           ) : (
             <Button
               variant="ghost"
@@ -3309,19 +3279,16 @@ function RunDetailView({
               disabled={deleteMutation.isPending}
               onClick={() => deleteMutation.mutate()}
             >
-              <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Delete
-            </Button>
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:delete_f6fdbe")}</Button>
           )}
           {taskLink.enabled && detail.harnessIssue ? (
             <Button variant="link" size="sm" asChild>
-              <Link to={`/issues/${detail.harnessIssue.id}`}>Open test task ↗</Link>
+              <Link to={`/issues/${detail.harnessIssue.id}`}>{translateAgentPage("agents:open_test_task")}</Link>
             </Button>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="cursor-not-allowed text-xs text-muted-foreground">
-                  Open test task ↗
-                </span>
+                <span className="cursor-not-allowed text-xs text-muted-foreground">{translateAgentPage("agents:open_test_task")}</span>
               </TooltipTrigger>
               <TooltipContent>{taskLink.reason}</TooltipContent>
             </Tooltip>
@@ -3356,11 +3323,12 @@ function RunHarnessUnavailableNotice({
 }
 
 function RunDocumentsSection({ documents }: { documents: IssueDocument[] }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <section className="space-y-2">
       <div className="flex items-center gap-2">
         <FileText className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-        <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{translateAgentPage("agents:documents")}</h3>
         <span className="text-xs text-muted-foreground">{documents.length}</span>
       </div>
       <div className="space-y-2">
@@ -3393,6 +3361,7 @@ function InteractionSection({
   agents: Agent[];
   onAnswered: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const harnessIssueId = detail.harnessIssue?.id ?? null;
   const hasInlineAnswerable = detail.interactions.some((i) => isInteractionAnswerable(i));
 
@@ -3432,9 +3401,7 @@ function InteractionSection({
 
   return (
     <section>
-      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        Interactions
-      </h3>
+      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{translateAgentPage("agents:interactions")}</h3>
       <div className="space-y-2">
         {detail.interactions.map((summary) => {
           const inline = routeInteraction(summary.kind) === "inline";
@@ -3466,7 +3433,7 @@ function InteractionSection({
               trailing={
                 harnessIssueId ? (
                   <Button variant="link" size="xs" asChild>
-                    <Link to={`/issues/${harnessIssueId}`}>Open test task ↗</Link>
+                    <Link to={`/issues/${harnessIssueId}`}>{translateAgentPage("agents:open_test_task")}</Link>
                   </Button>
                 ) : null
               }
@@ -3497,6 +3464,7 @@ function VersionHistorySheet({
   onRestored: () => void;
   onFilterRuns: (inputId: string) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const skillId = skill.id;
   const queryClient = useQueryClient();
   const versionsQuery = useQuery({
@@ -3520,12 +3488,12 @@ function VersionHistorySheet({
           expectedVersionId = saved.versionId ?? expectedVersionId;
         }
         return companySkillsApi.createVersion(companyId, skillId, {
-          label: `Restore of v${version.revisionNumber}`, expectedVersionId,
+          label: translateAgentPage("agents:restore_of_v", { value1: version.revisionNumber }), expectedVersionId,
         });
       }
       return companySkillsApi.createVersion(companyId, skillId, {
         sourceVersionId: selection.id, expectedVersionId: skill.currentVersionId,
-        label: "Restored saved version",
+        label: translateAgentPage("agents:restored_saved_version"),
       });
     },
     onSuccess: () => {
@@ -3547,28 +3515,28 @@ function VersionHistorySheet({
   const left = leftQuery.data ?? null;
   const right = rightQuery.data ?? null;
   const diff = left && right ? buildLineDiff(
-    left.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
-    right.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
+    left.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? translateAgentPage("agents:binary_asset") : f.content}`).join("\n\n"),
+    right.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? translateAgentPage("agents:binary_asset") : f.content}`).join("\n\n"),
   ) : null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-full sm:max-w-(--sz-560px)">
         <SheetHeader>
-          <SheetTitle>Version history</SheetTitle>
+          <SheetTitle>{translateAgentPage("agents:version_history")}</SheetTitle>
         </SheetHeader>
         <div className="mt-3 space-y-2 overflow-auto">
           {versionsQuery.isLoading ? (
-            <div className="text-xs text-muted-foreground">Loading versions…</div>
+            <div className="text-xs text-muted-foreground">{translateAgentPage("agents:loading_versions_b8043f")}</div>
           ) : versions.length === 0 ? (
-            <EmptyState icon={History} message="No versions yet. Save changes to create the first." />
+            <EmptyState icon={History} message={translateAgentPage("agents:no_versions_yet_save_changes_to_create_the")} />
           ) : (
             <div className="space-y-1 rounded-md border border-border p-1">
               {versions.map((v) => (
                 <EntityRow
                   key={v.id}
                   identifier={`v${v.revisionNumber}`}
-                  title={v.label ?? `Version ${v.revisionNumber}`}
+                  title={v.label ?? translateAgentPage("agents:version_d3cdd6", { value1: v.revisionNumber })}
                   subtitle={relativeTime(v.createdAt)}
                   selected={v.id === leftId || v.id === rightId}
                   onClick={() => {
@@ -3589,8 +3557,7 @@ function VersionHistorySheet({
                         e.stopPropagation();
                         restore.mutate(v);
                       }}
-                    >
-                      Restore as v{(skill.currentVersion?.revisionNumber ?? v.revisionNumber) + 1}
+                    >{translateAgentPage("agents:restore_as_v")}{(skill.currentVersion?.revisionNumber ?? v.revisionNumber) + 1}
                     </Button>
                   }
                 />
@@ -3603,12 +3570,11 @@ function VersionHistorySheet({
             </p>
           )}
           {leftId && rightId && (leftQuery.isLoading || rightQuery.isLoading) && (
-            <p className="text-sm text-muted-foreground">Loading selected versions…</p>
+            <p className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_selected_versions")}</p>
           )}
           {diff && (
             <div className="rounded-md border border-border">
-              <div className="border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-                Diff v{left?.revisionNumber} → v{right?.revisionNumber}
+              <div className="border-b border-border px-3 py-1.5 text-xs text-muted-foreground">{translateAgentPage("agents:diff_v")}{left?.revisionNumber} → v{right?.revisionNumber}
               </div>
               <pre className="max-h-64 overflow-auto p-2 text-xs">
                 {diff.map((row, i) => (
@@ -3669,10 +3635,10 @@ function PropRow({ label, value }: { label: string; value: string }) {
 }
 
 function BackButton({ onBack }: { onBack: () => void }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Button variant="ghost" size="sm" onClick={onBack}>
-      <ArrowLeft className="mr-1.5 h-3.5 w-3.5" /> Back
-    </Button>
+      <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:back")}</Button>
   );
 }
 
@@ -3685,12 +3651,13 @@ function MobileTabs({
   input: React.ReactNode;
   runs: React.ReactNode;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Tabs defaultValue="skill" className="flex flex-1 flex-col">
       <TabsList variant="line" className="px-3">
-        <TabsTrigger value="skill">Skill</TabsTrigger>
-        <TabsTrigger value="input">Input</TabsTrigger>
-        <TabsTrigger value="runs">Runs</TabsTrigger>
+        <TabsTrigger value="skill">{translateAgentPage("agents:skill_ec9f63")}</TabsTrigger>
+        <TabsTrigger value="input">{translateAgentPage("agents:input")}</TabsTrigger>
+        <TabsTrigger value="runs">{translateAgentPage("agents:runs")}</TabsTrigger>
       </TabsList>
       <TabsContent value="skill" className="min-h-0 flex-1">
         {skill}

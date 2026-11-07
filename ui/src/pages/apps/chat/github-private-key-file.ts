@@ -1,3 +1,4 @@
+import { t as translate } from "@/i18n";
 export const GITHUB_PRIVATE_KEY_FILE_MAX_BYTES = 64 * 1024;
 
 export function createGitHubPrivateKeyReadGuard() {
@@ -21,12 +22,12 @@ export async function readGitHubPrivateKeyFile(
 ): Promise<string> {
   if (file.size === 0) {
     throw new Error(
-      "That file is empty. Choose the private key downloaded from your GitHub App.",
+      translate("connections:that_file_is_empty_choose_the_private_ae4c7a1"),
     );
   }
   if (file.size > GITHUB_PRIVATE_KEY_FILE_MAX_BYTES) {
     throw new Error(
-      "That file is too large. Choose a GitHub App private key smaller than 64 KB.",
+      translate("connections:that_file_is_too_large_choose_a_3a16e5c"),
     );
   }
 
@@ -35,12 +36,12 @@ export async function readGitHubPrivateKeyFile(
     value = await file.text();
   } catch {
     throw new Error(
-      "Paperclip couldn't read that file. Choose the .pem file again or paste the private key.",
+      translate("connections:paperclip_couldn_t_read_that_file_choose_4787014"),
     );
   }
   if (!value.trim()) {
     throw new Error(
-      "That file is empty. Choose the private key downloaded from your GitHub App.",
+      translate("connections:that_file_is_empty_choose_the_private_ae4c7a1"),
     );
   }
   return value;

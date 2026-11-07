@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Provider-neutral tool vocabulary shared by live status, transcript rows,
  * and canonical provider activity. Exact semantic tools get purpose-specific
@@ -126,7 +127,7 @@ function sentenceCase(words: readonly string[]): string {
 
 export function humanizeToolName(name: string | undefined | null): string {
   const raw = (name ?? "").trim();
-  if (isGenericToolName(raw)) return "Unnamed tool";
+  if (isGenericToolName(raw)) return t("activity-ui:tool.unnamed");
   const mcp = mcpToolIdentity(raw);
   return sentenceCase(identifierWords(mcp?.name ?? raw));
 }
@@ -144,13 +145,12 @@ type Action =
 
 interface ExactAction {
   action: Action;
-  running?: string;
-  completed?: string;
-  group?: ToolSummaryGroup;
+  copyKey?: string;
+  group?: string;
   family?: ToolFamily;
 }
 
-const group = (key: string, singular: string, plural: string): ToolSummaryGroup => ({ key, singular, plural });
+const group = (key: string): string => key;
 
 const EXACT_ACTIONS: Record<string, ExactAction> = {
   bash: { action: "run" },
@@ -160,73 +160,73 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   run: { action: "run" },
   execute: { action: "run" },
   exec_command: { action: "run" },
-  apply_patch: { action: "update", running: "Applying a patch", completed: "Applied a patch" },
-  read: { action: "read", running: "Reading a file", completed: "Read a file" },
-  write: { action: "update", running: "Writing a file", completed: "Wrote a file" },
-  edit: { action: "update", running: "Editing a file", completed: "Edited a file" },
-  notebook_read: { action: "read", running: "Reading a notebook", completed: "Read a notebook" },
-  notebook_edit: { action: "update", running: "Editing a notebook", completed: "Edited a notebook" },
-  glob: { action: "search", running: "Searching files", completed: "Searched files" },
-  grep: { action: "search", running: "Searching file contents", completed: "Searched file contents", family: "grep" },
-  tool_search: { action: "search", running: "Searching available tools", completed: "Searched available tools", group: group("tool_search", "tool search", "tool searches") },
-  web_search: { action: "search", running: "Searching the web", completed: "Searched the web", family: "web" },
-  web_fetch: { action: "fetch", running: "Fetching a web page", completed: "Fetched a web page", family: "web" },
-  todo_write: { action: "update", running: "Updating the task list", completed: "Updated the task list", family: "plan", group: group("task_operation", "task operation", "task operations") },
-  task_create: { action: "create", running: "Creating a task", completed: "Created a task", family: "plan", group: group("task_operation", "task operation", "task operations") },
-  task_update: { action: "update", running: "Updating a task", completed: "Updated a task", family: "plan", group: group("task_operation", "task operation", "task operations") },
-  task_list: { action: "list", running: "Listing tasks", completed: "Listed tasks", family: "plan", group: group("task_operation", "task operation", "task operations") },
-  task_get: { action: "read", running: "Reading a task", completed: "Read a task", family: "plan", group: group("task_operation", "task operation", "task operations") },
-  enter_plan_mode: { action: "switch", running: "Entering plan mode", completed: "Entered plan mode", family: "plan" },
-  exit_plan_mode: { action: "switch", running: "Leaving plan mode", completed: "Left plan mode", family: "plan" },
-  skill: { action: "read", running: "Loading a skill", completed: "Loaded a skill" },
-  ask_user_question: { action: "request", running: "Requesting input", completed: "Requested input", family: "question" },
-  request_human_input: { action: "request", running: "Requesting input", completed: "Requested input", family: "question", group: group("task_operation", "task operation", "task operations") },
-  agent: { action: "start", running: "Starting a subagent", completed: "Started a subagent", family: "agent" },
-  task: { action: "start", running: "Starting a subagent", completed: "Started a subagent", family: "agent" },
-  task_output: { action: "read", running: "Checking subagent progress", completed: "Checked subagent progress", family: "agent" },
-  task_stop: { action: "stop", running: "Stopping a subagent", completed: "Stopped a subagent", family: "agent" },
-  send_message: { action: "post", running: "Messaging a subagent", completed: "Messaged a subagent", family: "agent" },
-  spawn_agent: { action: "start", running: "Starting a subagent", completed: "Started a subagent", family: "agent" },
-  wait_agent: { action: "wait", running: "Checking subagent progress", completed: "Checked subagent progress", family: "agent" },
-  wait_threads: { action: "wait", running: "Checking task progress", completed: "Checked task progress", family: "agent" },
-  interrupt_agent: { action: "stop", running: "Interrupting a subagent", completed: "Interrupted a subagent", family: "agent" },
-  report_findings: { action: "post", running: "Reporting findings", completed: "Reported findings", family: "safety" },
-  guardian_review: { action: "think", running: "Reviewing safety", completed: "Reviewed safety", family: "safety" },
-  lsp: { action: "read", running: "Inspecting code intelligence", completed: "Inspected code intelligence" },
-  compact_conversation: { action: "think", running: "Compacting context", completed: "Compacted context" },
-  image_generation: { action: "create", running: "Generating an image", completed: "Generated an image", family: "image" },
-  view_image: { action: "read", running: "Viewing an image", completed: "Viewed an image", family: "image" },
-  multi_tool_use_parallel: { action: "run", running: "Running tools in parallel", completed: "Ran tools in parallel" },
-  get_task_context: { action: "read", running: "Reading task context", completed: "Read task context" },
-  get_task_history: { action: "read", running: "Reading task history", completed: "Read task history" },
-  list_documents: { action: "list", running: "Listing documents", completed: "Listed documents" },
-  read_document: { action: "read", running: "Reading a document", completed: "Read a document" },
-  list_document_revisions: { action: "list", running: "Listing document revisions", completed: "Listed document revisions" },
-  report_progress: { action: "post", running: "Reporting progress", completed: "Reported progress" },
-  answer_status_question: { action: "post", running: "Answering a status question", completed: "Answered a status question" },
-  write_document: { action: "update", running: "Writing a document", completed: "Wrote a document" },
-  register_deliverable: { action: "create", running: "Registering a deliverable", completed: "Registered a deliverable" },
-  finish_task: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
-  paperclip_finish: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
-  block_task: { action: "block", running: "Reporting a blocker", completed: "Reported a blocker" },
-  paperclip_block: { action: "block", running: "Reporting a blocker", completed: "Reported a blocker" },
-  request_review: { action: "request", running: "Requesting review", completed: "Requested review" },
-  list_agents: { action: "list", running: "Listing agents", completed: "Listed agents" },
-  get_agent: { action: "read", running: "Reading agent details", completed: "Read agent details" },
-  search_tasks: { action: "search", running: "Searching tasks", completed: "Searched tasks" },
-  list_approvals: { action: "list", running: "Listing approvals", completed: "Listed approvals" },
-  get_approval: { action: "read", running: "Reading an approval", completed: "Read an approval" },
-  get_approval_context: { action: "read", running: "Reading approval context", completed: "Read approval context" },
-  get_workspace_runtime: { action: "read", running: "Reading workspace status", completed: "Read workspace status" },
-  control_workspace_service: { action: "run", running: "Controlling a workspace service", completed: "Controlled a workspace service" },
-  set_dependencies: { action: "update", running: "Updating task dependencies", completed: "Updated task dependencies" },
-  set_task_title: { action: "update", running: "Naming the task", completed: "Named the task" },
-  create_task: { action: "create", running: "Creating a task", completed: "Created a task" },
-  request_approval: { action: "request", running: "Requesting approval", completed: "Requested approval" },
-  decide_approval: { action: "update", running: "Deciding an approval", completed: "Decided an approval" },
-  comment_on_approval: { action: "post", running: "Commenting on an approval", completed: "Commented on an approval" },
-  schedule_wake: { action: "create", running: "Scheduling a wake-up", completed: "Scheduled a wake-up", family: "wait" },
-  generic_api_request: { action: "request", running: "Calling the Paperclip API", completed: "Called the Paperclip API" },
+  apply_patch: { action: "update", copyKey: "tool.exact.apply_patch" },
+  read: { action: "read", copyKey: "tool.exact.read" },
+  write: { action: "update", copyKey: "tool.exact.write" },
+  edit: { action: "update", copyKey: "tool.exact.edit" },
+  notebook_read: { action: "read", copyKey: "tool.exact.notebook_read" },
+  notebook_edit: { action: "update", copyKey: "tool.exact.notebook_edit" },
+  glob: { action: "search", copyKey: "tool.exact.glob" },
+  grep: { action: "search", copyKey: "tool.exact.grep", family: "grep" },
+  tool_search: { action: "search", copyKey: "tool.exact.tool_search", group: group("tool_search") },
+  web_search: { action: "search", copyKey: "tool.exact.web_search", family: "web" },
+  web_fetch: { action: "fetch", copyKey: "tool.exact.web_fetch", family: "web" },
+  todo_write: { action: "update", copyKey: "tool.exact.todo_write", family: "plan", group: group("task_operation") },
+  task_create: { action: "create", copyKey: "tool.exact.task_create", family: "plan", group: group("task_operation") },
+  task_update: { action: "update", copyKey: "tool.exact.task_update", family: "plan", group: group("task_operation") },
+  task_list: { action: "list", copyKey: "tool.exact.task_list", family: "plan", group: group("task_operation") },
+  task_get: { action: "read", copyKey: "tool.exact.task_get", family: "plan", group: group("task_operation") },
+  enter_plan_mode: { action: "switch", copyKey: "tool.exact.enter_plan_mode", family: "plan" },
+  exit_plan_mode: { action: "switch", copyKey: "tool.exact.exit_plan_mode", family: "plan" },
+  skill: { action: "read", copyKey: "tool.exact.skill" },
+  ask_user_question: { action: "request", copyKey: "tool.exact.ask_user_question", family: "question" },
+  request_human_input: { action: "request", copyKey: "tool.exact.request_human_input", family: "question", group: group("task_operation") },
+  agent: { action: "start", copyKey: "tool.exact.agent", family: "agent" },
+  task: { action: "start", copyKey: "tool.exact.task", family: "agent" },
+  task_output: { action: "read", copyKey: "tool.exact.task_output", family: "agent" },
+  task_stop: { action: "stop", copyKey: "tool.exact.task_stop", family: "agent" },
+  send_message: { action: "post", copyKey: "tool.exact.send_message", family: "agent" },
+  spawn_agent: { action: "start", copyKey: "tool.exact.spawn_agent", family: "agent" },
+  wait_agent: { action: "wait", copyKey: "tool.exact.wait_agent", family: "agent" },
+  wait_threads: { action: "wait", copyKey: "tool.exact.wait_threads", family: "agent" },
+  interrupt_agent: { action: "stop", copyKey: "tool.exact.interrupt_agent", family: "agent" },
+  report_findings: { action: "post", copyKey: "tool.exact.report_findings", family: "safety" },
+  guardian_review: { action: "think", copyKey: "tool.exact.guardian_review", family: "safety" },
+  lsp: { action: "read", copyKey: "tool.exact.lsp" },
+  compact_conversation: { action: "think", copyKey: "tool.exact.compact_conversation" },
+  image_generation: { action: "create", copyKey: "tool.exact.image_generation", family: "image" },
+  view_image: { action: "read", copyKey: "tool.exact.view_image", family: "image" },
+  multi_tool_use_parallel: { action: "run", copyKey: "tool.exact.multi_tool_use_parallel" },
+  get_task_context: { action: "read", copyKey: "tool.exact.get_task_context" },
+  get_task_history: { action: "read", copyKey: "tool.exact.get_task_history" },
+  list_documents: { action: "list", copyKey: "tool.exact.list_documents" },
+  read_document: { action: "read", copyKey: "tool.exact.read_document" },
+  list_document_revisions: { action: "list", copyKey: "tool.exact.list_document_revisions" },
+  report_progress: { action: "post", copyKey: "tool.exact.report_progress" },
+  answer_status_question: { action: "post", copyKey: "tool.exact.answer_status_question" },
+  write_document: { action: "update", copyKey: "tool.exact.write_document" },
+  register_deliverable: { action: "create", copyKey: "tool.exact.register_deliverable" },
+  finish_task: { action: "finish", copyKey: "tool.exact.finish_task" },
+  paperclip_finish: { action: "finish", copyKey: "tool.exact.paperclip_finish" },
+  block_task: { action: "block", copyKey: "tool.exact.block_task" },
+  paperclip_block: { action: "block", copyKey: "tool.exact.paperclip_block" },
+  request_review: { action: "request", copyKey: "tool.exact.request_review" },
+  list_agents: { action: "list", copyKey: "tool.exact.list_agents" },
+  get_agent: { action: "read", copyKey: "tool.exact.get_agent" },
+  search_tasks: { action: "search", copyKey: "tool.exact.search_tasks" },
+  list_approvals: { action: "list", copyKey: "tool.exact.list_approvals" },
+  get_approval: { action: "read", copyKey: "tool.exact.get_approval" },
+  get_approval_context: { action: "read", copyKey: "tool.exact.get_approval_context" },
+  get_workspace_runtime: { action: "read", copyKey: "tool.exact.get_workspace_runtime" },
+  control_workspace_service: { action: "run", copyKey: "tool.exact.control_workspace_service" },
+  set_dependencies: { action: "update", copyKey: "tool.exact.set_dependencies" },
+  set_task_title: { action: "update", copyKey: "tool.exact.set_task_title" },
+  create_task: { action: "create", copyKey: "tool.exact.create_task" },
+  request_approval: { action: "request", copyKey: "tool.exact.request_approval" },
+  decide_approval: { action: "update", copyKey: "tool.exact.decide_approval" },
+  comment_on_approval: { action: "post", copyKey: "tool.exact.comment_on_approval" },
+  schedule_wake: { action: "create", copyKey: "tool.exact.schedule_wake", family: "wait" },
+  generic_api_request: { action: "request", copyKey: "tool.exact.generic_api_request" },
 };
 
 const ACTION_PREFIXES: Record<Action, readonly string[]> = {
@@ -307,52 +307,35 @@ const FAMILY_ICONS: Record<ToolFamily, ToolIcon> = {
   other: Wrench,
 };
 
-function actionCopy(action: Action, object: string | undefined): { running: string; completed: string } {
-  const suffix = object ? ` ${object}` : "";
-  switch (action) {
-    case "read": return { running: `Reading${suffix || " data"}`, completed: `Read${suffix || " data"}` };
-    case "list": return { running: `Listing${suffix || " items"}`, completed: `Listed${suffix || " items"}` };
-    case "search": return { running: `Searching${suffix || ""}`, completed: `Searched${suffix || ""}` };
-    case "fetch": return { running: `Fetching${suffix || " data"}`, completed: `Fetched${suffix || " data"}` };
-    case "open": return { running: `Opening${suffix || " an item"}`, completed: `Opened${suffix || " an item"}` };
-    case "update": return { running: `Updating${suffix || " data"}`, completed: `Updated${suffix || " data"}` };
-    case "create": return { running: `Creating${suffix || " an item"}`, completed: `Created${suffix || " an item"}` };
-    case "delete": return { running: `Deleting${suffix || " an item"}`, completed: `Deleted${suffix || " an item"}` };
-    case "move": return { running: `Moving${suffix || " an item"}`, completed: `Moved${suffix || " an item"}` };
-    case "run": return { running: "Running a command", completed: "Ran a command" };
-    case "request": return { running: `Requesting${suffix || " input"}`, completed: `Requested${suffix || " input"}` };
-    case "post": return { running: `Posting${suffix || " an update"}`, completed: `Posted${suffix || " an update"}` };
-    case "start": return { running: `Starting${suffix || " an operation"}`, completed: `Started${suffix || " an operation"}` };
-    case "stop": return { running: `Stopping${suffix || " an operation"}`, completed: `Stopped${suffix || " an operation"}` };
-    case "wait": return { running: "Waiting", completed: "Finished waiting" };
-    case "finish": return { running: "Reporting completion", completed: "Reported completion" };
-    case "block": return { running: "Reporting a blocker", completed: "Reported a blocker" };
-    case "think": return { running: "Thinking", completed: "Finished thinking" };
-    case "switch": return { running: `Switching${suffix || " mode"}`, completed: `Switched${suffix || " mode"}` };
-    case "other": return { running: "Running", completed: "Ran" };
-  }
+function actionCopy(key: string, object?: string) {
+  return {
+    running: t(`activity-ui:${key}.running`, { object }),
+    completed: t(`activity-ui:${key}.completed`, { object }),
+    failed: t(`activity-ui:${key}.failed`, { object }),
+    interrupted: t(`activity-ui:${key}.interrupted`, { object }),
+  };
 }
 
-function defaultSummaryGroup(action: Action): ToolSummaryGroup {
+function defaultSummaryGroup(action: Action): string {
   switch (action) {
-    case "run": return group("command", "command", "commands");
+    case "run": return group("command");
     case "read":
-    case "list": return group("read", "read", "reads");
-    case "search": return group("search", "search", "searches");
+    case "list": return group("read");
+    case "search": return group("search");
     case "update":
     case "create":
     case "delete":
-    case "move": return group("file_change", "file change", "file changes");
+    case "move": return group("file_change");
     case "start":
-    case "stop": return group("delegation", "delegation", "delegations");
-    case "wait": return group("wait", "wait", "waits");
-    default: return group("tool_action", "tool action", "tool actions");
+    case "stop": return group("delegation");
+    case "wait": return group("wait");
+    default: return group("tool_action");
   }
 }
 
-function paperclipSummaryGroup(action: Action): ToolSummaryGroup {
-  if (action === "read" || action === "list") return group("paperclip_read", "Paperclip read", "Paperclip reads");
-  return group("task_operation", "task operation", "task operations");
+function paperclipSummaryGroup(action: Action): string {
+  if (action === "read" || action === "list") return group("paperclip_read");
+  return group("task_operation");
 }
 
 /**
@@ -383,17 +366,15 @@ export function toolActivityPresentation(input: ToolActivityPresentationInput): 
         : isGenericToolName(semanticName)
           ? "unnamed"
           : "fallback";
-  const displayName = isGenericToolName(semanticName) ? "Unnamed tool" : humanizeToolName(semanticName);
+  const displayName = humanizeToolName(semanticName);
   const identifierLikeName = /^[A-Za-z][A-Za-z0-9_.:-]*$/.test(semanticName);
   const objectWords = inferred && identifierLikeName && words.length > 1 ? words.slice(1) : [];
   const object = objectWords.length ? sentenceCase(objectWords).replace(/^./, (letter) => letter.toLowerCase()) : undefined;
-  const copy = exact?.running && exact.completed
-    ? { running: exact.running, completed: exact.completed }
-    : action === "other"
-      ? isGenericToolName(semanticName)
-        ? { running: "Running an unnamed tool", completed: "Ran an unnamed tool" }
-        : { running: `Running ${displayName}`, completed: `Ran ${displayName}` }
-      : actionCopy(action, exact ? undefined : object);
+  const copyKey = exact?.copyKey
+    ?? (action === "other"
+      ? isGenericToolName(semanticName) ? "tool.unnamedAction" : "tool.namedAction"
+      : `tool.action.${action}.${!exact && object ? "object" : "default"}`);
+  const copy = actionCopy(copyKey, action === "other" ? displayName : object);
   const semanticFamily = exact?.family ?? actionFamily(action);
   const family = transport === "mcp" ? "mcp" : semanticFamily;
   const sourceLabel = namespace
@@ -401,7 +382,7 @@ export function toolActivityPresentation(input: ToolActivityPresentationInput): 
     : transport === "mcp"
       ? "MCP"
       : undefined;
-  const summaryGroup = namespace.toLowerCase() === "paperclip"
+  const summaryGroupKey = namespace.toLowerCase() === "paperclip"
     ? paperclipSummaryGroup(action)
     : exact?.group ?? defaultSummaryGroup(action);
 
@@ -410,13 +391,17 @@ export function toolActivityPresentation(input: ToolActivityPresentationInput): 
     family,
     runningLabel: copy.running,
     completedLabel: copy.completed,
-    failedLabel: `${copy.completed} · failed`,
-    interruptedLabel: `${copy.running} · stopped`,
+    failedLabel: copy.failed,
+    interruptedLabel: copy.interrupted,
     displayName,
     sourceLabel,
     technicalName: rawName || undefined,
     confidence,
-    summaryGroup,
+    summaryGroup: {
+      key: summaryGroupKey,
+      singular: t(`activity-ui:tool.group.${summaryGroupKey}.singular`),
+      plural: t(`activity-ui:tool.group.${summaryGroupKey}.plural`),
+    },
   };
 }
 

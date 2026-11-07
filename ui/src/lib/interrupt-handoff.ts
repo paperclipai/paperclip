@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { parseAgentMentionHref } from "@paperclipai/shared";
 
 /**
@@ -71,13 +72,13 @@ export function resolveRunStatusPresentation(
 ): RunStatusPresentation {
   if (status === "cancelled" && opts.operatorInterrupted) {
     return {
-      label: "interrupted",
+      get "label"() { return t("display:copy_2932eaae72d3"); },
       className: "text-amber-700 dark:text-amber-300",
-      srHint: "interrupted by board comment",
+      get "srHint"() { return t("display:copy_22198a392d55"); },
     };
   }
   return {
-    label: status === "timed_out" ? "timed out" : status.replace(/_/g, " "),
+    label: status === "timed_out" ? t("display:copy_8fdf1aaee25c") : status.replace(/_/g, " "),
     className: runStatusClassName(status),
     srHint: null,
   };
@@ -225,13 +226,13 @@ export function computeComposerHandoffPreview(
         ? {
             kind: "interrupt_handoff_agent",
             tone: "neutral",
-            text: "Interrupt current run, hand off to",
+            get "text"() { return t("display:copy_12136de56be9"); },
             chip: { kind: "agent", id: target.id },
           }
         : {
             kind: "wake_agent",
             tone: "neutral",
-            text: "Wake",
+            get "text"() { return t("display:copy_bbacd69d9ead"); },
             chip: { kind: "agent", id: target.id },
           };
     }
@@ -239,16 +240,16 @@ export function computeComposerHandoffPreview(
       return {
         kind: "user_handoff",
         tone: "neutral",
-        text: "Hand off to",
+        get "text"() { return t("display:copy_a949fd1ef01a"); },
         chip: { kind: "user", id: target.id },
-        suffix: "— no agent will be notified",
+        get "suffix"() { return t("display:copy_eedde465e326"); },
       };
     }
     // Cleared / no target chosen for the mutation.
     return {
       kind: "clear_assignee",
       tone: "neutral",
-      text: "Clear responsible — no agent will be notified",
+      get "text"() { return t("display:copy_bfde5f2b530d"); },
     };
   }
 
@@ -256,9 +257,9 @@ export function computeComposerHandoffPreview(
     return {
       kind: "notify_agent",
       tone: "neutral",
-      text: "Notify",
+      get "text"() { return t("display:copy_784309140c76"); },
       chip: input.mentionedAgentId ? { kind: "agent", id: input.mentionedAgentId } : undefined,
-      suffix: input.mentionedAgentId ? undefined : "the mentioned agent",
+      suffix: input.mentionedAgentId ? undefined : t("display:copy_2660413138aa"),
     };
   }
 
@@ -266,7 +267,7 @@ export function computeComposerHandoffPreview(
     return {
       kind: "plain_text_only",
       tone: "warn",
-      text: "No agent will be notified. Use @ to mention an agent.",
+      get "text"() { return t("display:copy_111d6537fde1"); },
     };
   }
 
@@ -299,18 +300,18 @@ export function classifyAssigneeHandoff(
 ): AssigneeHandoffInfo {
   if (to.agentId) {
     const who = opts.agentName ?? "the responsible agent";
-    const suffix = opts.interruptedRunAttached ? " (interrupted run attached)" : "";
-    return { kind: "agent_wake", wakeText: `queued for ${who}${suffix}` };
+    const suffix = opts.interruptedRunAttached ? t("display:copy_f6dec7496d00") : "";
+    return { kind: "agent_wake", get "wakeText"() { return t("display:copy_432e2fbdde54", { value0: who, value1: suffix }); } };
   }
   if (to.userId) {
     return {
       kind: "user_handoff",
-      wakeText: "not created — this is a handoff to a board user",
+      get "wakeText"() { return t("display:copy_8a61c05a9d27"); },
     };
   }
   return {
     kind: "unassigned",
-    wakeText: "not created — no agent selected. Mention @agent or pick a responsible to dispatch.",
+    get "wakeText"() { return t("display:copy_aae061b93e6d"); },
   };
 }
 
@@ -336,9 +337,9 @@ export interface ReassignInterruptCopy {
 export function describeReassignInterrupt(opts: { runningAgentName?: string | null } = {}): ReassignInterruptCopy {
   const who = opts.runningAgentName?.trim() || "An agent";
   return {
-    banner: `${who} is running — changing the responsible will interrupt this run.`,
-    confirmTitle: "Interrupt the current run?",
-    confirmAction: "Interrupt & assign",
+    get "banner"() { return t("display:copy_f46bdb529643", { value0: who }); },
+    get "confirmTitle"() { return t("display:copy_98597aab17d5"); },
+    get "confirmAction"() { return t("display:copy_edba1effe29f"); },
     cancelAction: "Cancel",
   };
 }
@@ -376,19 +377,19 @@ export interface PauseAffectsSummary {
 }
 
 const PAUSE_BUCKET_LABEL: Record<PauseAffectsBucketKey, string> = {
-  live_runs: "Live agent runs",
-  queued_wakes: "Queued wakes",
-  agent_owned: "Agent-owned",
-  human_owned: "Human-owned",
-  static: "Static",
+  get "live_runs"() { return t("display:copy_3989b059f51c"); },
+  get "queued_wakes"() { return t("display:copy_c99c1d52adc0"); },
+  get agent_owned() { return t("final-configuration:agent_ownedLabel"); },
+  get human_owned() { return t("final-configuration:human_ownedLabel"); },
+  get static() { return t("final-configuration:staticLabel"); },
 };
 
 const PAUSE_BUCKET_DETAIL: Record<PauseAffectsBucketKey, string> = {
-  live_runs: "interrupted now, re-queued when you resume",
-  queued_wakes: "held — they won't start until you resume",
-  agent_owned: "responsible agent; no run is live",
-  human_owned: "owned by a board user; pausing won't notify them",
-  static: "no responsible; nothing was going to run",
+  get "live_runs"() { return t("display:copy_27c7b6e30fdc"); },
+  get "queued_wakes"() { return t("display:copy_9df711d909e2"); },
+  get "agent_owned"() { return t("display:copy_7f65d6434b63"); },
+  get "human_owned"() { return t("display:copy_96f48259870e"); },
+  get "static"() { return t("display:copy_a41265fe0a59"); },
 };
 
 /**

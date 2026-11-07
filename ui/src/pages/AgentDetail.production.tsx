@@ -1,3 +1,7 @@
+import { describeUiError } from "@/lib/localized-ui-error";
+import { t as finalPagesT } from "@/i18n";
+import { getAgentRoleLabel } from "@/adapters/display-translations";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { AgentCharacter } from "../components/AgentCharacter";
@@ -35,7 +39,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
-import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import { adapterLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -162,25 +166,25 @@ function shouldUseMarkdownInstructionsEditor(input: {
 }
 
 const sourceLabels: Record<string, string> = {
-  timer: "Timer",
-  assignment: "Assignment",
-  on_demand: "On-demand",
-  automation: "Automation",
+  get timer() { return translateAgentPage("agents:timer"); },
+  get assignment() { return translateAgentPage("agents:assignment"); },
+  get on_demand() { return translateAgentPage("agents:on_demand"); },
+  get automation() { return translateAgentPage("agents:automation"); },
 };
 
 type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "channels" | "runs" | "audit" | "budget";
 
 export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "instructions", label: "Instructions" },
-  { value: "skills", label: "Skills" },
-  { value: "configuration", label: "Configuration" },
-  { value: "secrets", label: "Secrets" },
-  { value: "tools", label: "Tools" },
-  { value: "channels", label: "Channels" },
-  { value: "runs", label: "Runs" },
-  { value: "audit", label: "Audit" },
-  { value: "budget", label: "Budget" },
+  { value: "dashboard", get label() { return translateAgentPage("agents:dashboard"); } },
+  { value: "instructions", get label() { return translateAgentPage("agents:instructions"); } },
+  { value: "skills", get label() { return translateAgentPage("agents:skills"); } },
+  { value: "configuration", get label() { return translateAgentPage("agents:configuration"); } },
+  { value: "secrets", get label() { return translateAgentPage("agents:secrets"); } },
+  { value: "tools", get label() { return translateAgentPage("agents:tools"); } },
+  { value: "channels", get label() { return translateAgentPage("agents:channels"); } },
+  { value: "runs", get label() { return translateAgentPage("agents:runs"); } },
+  { value: "audit", get label() { return translateAgentPage("agents:audit"); } },
+  { value: "budget", get label() { return translateAgentPage("agents:budget"); } },
 ];
 
 export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
@@ -280,6 +284,7 @@ export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000
 }
 
 export function AgentDetail() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
     agentId: string;
@@ -375,7 +380,7 @@ export function AgentDetail() {
       builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key, [kind]),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update bundle resource");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_update_bundle_resource"));
     },
   });
   const runBuiltInRoutine = useMutation({
@@ -383,7 +388,7 @@ export function AgentDetail() {
       builtInAgentsApi.runRoutine(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to run built-in routine");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_run_built_in_routine"));
     },
   });
   const enableBuiltInSchedule = useMutation({
@@ -391,7 +396,7 @@ export function AgentDetail() {
       builtInAgentsApi.enableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to enable routine schedule");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_enable_routine_schedule"));
     },
   });
   const disableBuiltInSchedule = useMutation({
@@ -399,7 +404,7 @@ export function AgentDetail() {
       builtInAgentsApi.disableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to disable routine schedule");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_disable_routine_schedule"));
     },
   });
   const builtInRoutineActionPending =
@@ -459,7 +464,7 @@ export function AgentDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "agent",
       scopeId: agent?.id ?? routeAgentRef,
-      scopeName: agent?.name ?? "Agent",
+      scopeName: agent?.name ?? translateAgentPage("agents:agent_5ce2e6"),
       metric: "billed_cents",
       windowKind: "calendar_month_utc",
       amount: budgetMonthlyCents,
@@ -479,7 +484,7 @@ export function AgentDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef, translateAgentPage]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -528,7 +533,7 @@ export function AgentDetail() {
   // which is surfaced via the pending-approval banner below.
   const agentAction = useMutation({
     mutationFn: async (action: "approve") => {
-      if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
+      if (!agentLookupRef) return Promise.reject(new Error(translateAgentPage("agents:no_agent_reference")));
       if (action === "approve") {
         return agentsApi.approve(agentLookupRef, resolvedCompanyId ?? undefined);
       }
@@ -547,7 +552,7 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      setActionError(err instanceof Error ? err.message : translateAgentPage("agents:action_failed"));
     },
   });
 
@@ -592,42 +597,42 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
+      setActionError(err instanceof Error ? err.message : translateAgentPage("agents:failed_to_update_permissions"));
     },
   });
 
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
-      { label: "Agents", href: "/agents" },
+      { label: translateAgentPage("agents:agentsTitle"), href: "/agents" },
     ];
-    const agentName = agent?.name ?? routeAgentRef ?? "Agent";
+    const agentName = agent?.name ?? routeAgentRef ?? translateAgentPage("agents:agent_5ce2e6");
     if (activeView === "dashboard" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
       crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
-        crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
+        crumbs.push({ label: translateAgentPage("agents:runs"), href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: translateAgentPage("agents:run", { value1: urlRunId.slice(0, 8) }) });
       } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
+        crumbs.push({ label: translateAgentPage("agents:instructions") });
       } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+        crumbs.push({ label: translateAgentPage("agents:configuration") });
       } else if (activeView === "secrets") {
-        crumbs.push({ label: "Secrets" });
+        crumbs.push({ label: translateAgentPage("agents:secrets") });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
       } else if (activeView === "tools") {
-        crumbs.push({ label: "Tools" });
+        crumbs.push({ label: translateAgentPage("agents:tools") });
       } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
+        crumbs.push({ label: translateAgentPage("agents:runs") });
       } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
+        crumbs.push({ label: translateAgentPage("agents:budget") });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        crumbs.push({ label: translateAgentPage("agents:dashboard") });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, translateAgentPage]);
 
   useEffect(() => {
     closePanel();
@@ -722,7 +727,7 @@ export function AgentDetail() {
 
   if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
   if (agentView.kind === "error") {
-    return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
+    return <QueryErrorState size="page" error={error} action={translateAgentPage("agents:load_this_agent")} onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
   if (!agent) return null;
   if (!urlRunId && !urlTab) {
@@ -752,9 +757,7 @@ export function AgentDetail() {
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
-          <p className="min-w-0 flex-1">
-            You left this agent. It no longer appears in your sidebar.
-          </p>
+          <p className="min-w-0 flex-1">{translateAgentPage("agents:you_left_this_agent_it_no_longer_appears")}</p>
           <MembershipAction
             compact
             state="left"
@@ -777,7 +780,7 @@ export function AgentDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
-            aria-label="Dismiss agent membership notice"
+            aria-label={translateAgentPage("agents:dismiss_agent_membership_notice")}
             onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
           >
             ×
@@ -788,7 +791,7 @@ export function AgentDetail() {
         <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 space-y-1">
-            <p className="font-medium">Escalation path is paused</p>
+            <p className="font-medium">{translateAgentPage("agents:escalation_path_is_paused")}</p>
             <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
           </div>
         </div>
@@ -797,19 +800,16 @@ export function AgentDetail() {
         <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 space-y-1">
-            <p className="font-medium">Invalid reporting chain</p>
+            <p className="font-medium">{translateAgentPage("agents:invalid_reporting_chain")}</p>
             <p className="text-amber-900/90 dark:text-amber-100/90">
-              {agent.name} cannot accept tasks or start runs until its reporting chain is repaired.
-            </p>
+              {agent.name}{" "}{translateAgentPage("agents:cannot_accept_tasks_or_start_runs_until_its")}</p>
             <p className="break-words font-mono text-xs text-amber-900/80 dark:text-amber-100/80">
               {formatOrgChainHealthPath(agent)}
             </p>
             {agent.orgChainHealth?.repairGuidance ? (
               <p className="text-amber-900/85 dark:text-amber-100/85">{agent.orgChainHealth.repairGuidance}</p>
             ) : (
-              <p className="text-amber-900/85 dark:text-amber-100/85">
-                Assign this agent to an active manager/root, or explicitly pause or terminate the affected agent/subtree.
-              </p>
+              <p className="text-amber-900/85 dark:text-amber-100/85">{translateAgentPage("agents:assign_this_agent_to_an_active_manager_root")}</p>
             )}
           </div>
         </div>
@@ -823,7 +823,7 @@ export function AgentDetail() {
               <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
             </div>
             <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
+              {getAgentRoleLabel(agent.role)}
               {agent.title ? ` - ${agent.title}` : ""}
             </p>
           </div>
@@ -844,11 +844,11 @@ export function AgentDetail() {
           <AgentActionButtons
             agent={agent}
             companyId={resolvedCompanyId}
-            assignLabel="Assign Task"
-            runLabel="Run Heartbeat"
+            assignLabel={translateAgentPage("agents:assign_task_a96a1a")}
+            runLabel={translateAgentPage("agents:run_heartbeat")}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
-            workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+            workActionsDisabledReason={translateAgentPage("agents:repair_this_agent_s_reporting_chain_before_assigning")}
             hasPendingNavigationChanges={configDirty}
             onBeforeNavigate={prepareAgentNavigation}
             onActionError={setActionError}
@@ -857,13 +857,12 @@ export function AgentDetail() {
             pauseConfirm={
               builtInState
                 ? {
-                    title: `Pause the ${builtInState.definition.displayName}?`,
+                    title: translateAgentPage("agents:pause_the", { value1: builtInState.definition.displayName }),
                     description: (
                       <>
-                        {builtInFeatureLabel} depends on this agent. While paused,{" "}
-                        {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
-                        {builtInFeatureLabel} page shows a warning.
-                      </>
+                        {builtInFeatureLabel}{" "}{translateAgentPage("agents:depends_on_this_agent_while_paused")}{" "}
+                        {builtInFeatureLabel.toLowerCase()}{" "}{translateAgentPage("agents:generation_is_skipped_and_the")}{" "}
+                        {builtInFeatureLabel}{" "}{translateAgentPage("agents:page_shows_a_warning")}</>
                     ),
                   }
                 : undefined
@@ -878,7 +877,7 @@ export function AgentDetail() {
                   <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
                 </span>
-                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
+                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{translateAgentPage("agents:live")}</span>
               </Link>
             )}
           </AgentActionButtons>
@@ -888,7 +887,7 @@ export function AgentDetail() {
       {builtInState && (
         <InlineBanner
           tone="info"
-          title="Built-in agent"
+          title={translateAgentPage("agents:built_in_agent")}
           actions={
             <Button
               variant="outline"
@@ -896,13 +895,10 @@ export function AgentDetail() {
               onClick={() => resetBuiltIn.mutate()}
               disabled={resetBuiltIn.isPending}
             >
-              {resetBuiltIn.isPending ? "Resetting…" : "Reset to defaults"}
+              {resetBuiltIn.isPending ? translateAgentPage("agents:resetting") : translateAgentPage("agents:reset_to_defaults")}
             </Button>
           }
-        >
-          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
-          any agent — model, instructions, budget. It can be paused but not deleted; pausing it
-          pauses {builtInFeatureLabel}.
+        >{translateAgentPage("agents:ships_with_paperclip_and_powers")}{" "}<strong>{builtInFeatureLabel}</strong>{translateAgentPage("agents:configure_it_like_any_agent_model_instructions_budget")}{" "}{builtInFeatureLabel}.
         </InlineBanner>
       )}
 
@@ -949,7 +945,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
-          <span>This agent is pending board approval and cannot be invoked yet.</span>
+          <span>{translateAgentPage("agents:this_agent_is_pending_board_approval_and_cannot")}</span>
           <Button
             variant="outline"
             size="sm"
@@ -957,7 +953,7 @@ export function AgentDetail() {
             disabled={agentAction.isPending}
           >
             <CheckCircle2 className="h-3.5 w-3.5 sm:mr-1" />
-            <span>Approve agent</span>
+            <span>{translateAgentPage("agents:approve_agent")}</span>
           </Button>
         </div>
       )}
@@ -971,15 +967,13 @@ export function AgentDetail() {
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
-            >
-              Cancel
-            </Button>
+            >{translateAgentPage("agents:cancel")}</Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? translateAgentPage("agents:saving") : translateAgentPage("agents:save")}
             </Button>
           </div>
         </div>
@@ -997,15 +991,13 @@ export function AgentDetail() {
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
-            >
-              Cancel
-            </Button>
+            >{translateAgentPage("agents:cancel")}</Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? translateAgentPage("agents:saving") : translateAgentPage("agents:save")}
             </Button>
           </div>
         </div>
@@ -1163,6 +1155,7 @@ function LatestRunCard({
   agentId: string;
   issuesById: Map<string, LatestRunIssue>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const sorted = useMemo(
     () =>
       [...runs].sort(
@@ -1244,7 +1237,7 @@ function LatestRunCard({
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
             )}
-            <span>{isLive ? "Live Run" : "Latest Run"}</span>
+            <span>{isLive ? translateAgentPage("agents:live_run") : translateAgentPage("agents:latest_run")}</span>
             <span className="font-mono text-xs font-normal text-muted-foreground">
               &middot; {run.id.slice(0, 8)}
             </span>
@@ -1314,6 +1307,7 @@ function AgentOverview({
   agentId: string;
   agentRouteId: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const issuesById = useMemo(() => {
     const map = new Map<string, (typeof assignedIssues)[number]>();
     for (const issue of assignedIssues) map.set(issue.id, issue);
@@ -1327,19 +1321,19 @@ function AgentOverview({
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
+        <ChartCard title={translateAgentPage("agents:run_activity")} subtitle={translateAgentPage("agents:last_14_days")}>
           <RunActivityChart runs={runs} />
         </ChartCard>
         {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
         {SHOW_TASK_PRIORITY_UI && (
-          <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
+          <ChartCard title={translateAgentPage("agents:tasks_by_priority")} subtitle={translateAgentPage("agents:last_14_days")}>
             <PriorityChart issues={assignedIssues} />
           </ChartCard>
         )}
-        <ChartCard title="Tasks by Status" subtitle="Last 14 days">
+        <ChartCard title={translateAgentPage("agents:tasks_by_status")} subtitle={translateAgentPage("agents:last_14_days")}>
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
+        <ChartCard title={translateAgentPage("agents:success_rate")} subtitle={translateAgentPage("agents:last_14_days")}>
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
@@ -1347,16 +1341,14 @@ function AgentOverview({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Tasks</h3>
+          <h3 className="text-sm font-medium">{translateAgentPage("agents:recent_tasks_b91b93")}</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            See All &rarr;
-          </Link>
+          >{translateAgentPage("agents:see_all")}</Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent tasks.</p>
+          <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_recent_tasks")}</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1370,8 +1362,7 @@ function AgentOverview({
             ))}
             {assignedIssues.length > 10 && (
               <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more tasks
-              </div>
+                +{assignedIssues.length - 10}{" "}{translateAgentPage("agents:more_tasks")}</div>
             )}
           </div>
         )}
@@ -1379,7 +1370,7 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="text-sm font-medium">{translateAgentPage("agents:costs")}</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
@@ -1395,6 +1386,7 @@ function CostsSection({
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const runsWithCost = runs
     .filter((r) => {
       const metrics = runMetrics(r);
@@ -1408,19 +1400,19 @@ function CostsSection({
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
+              <span className="text-xs text-muted-foreground block">{translateAgentPage("agents:input_tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
+              <span className="text-xs text-muted-foreground block">{translateAgentPage("agents:output_tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
+              <span className="text-xs text-muted-foreground block">{translateAgentPage("agents:cached_tokens")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
+              <span className="text-xs text-muted-foreground block">{translateAgentPage("agents:total_cost")}</span>
               <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
             </div>
           </div>
@@ -1431,11 +1423,11 @@ function CostsSection({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-accent/20">
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">{translateAgentPage("agents:date")}</th>
+                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">{translateAgentPage("agents:run_b1b392")}</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">{translateAgentPage("agents:input")}</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">{translateAgentPage("agents:output")}</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">{translateAgentPage("agents:cost")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1508,6 +1500,7 @@ function AgentConfigurePage({
   onSavingChange: (saving: boolean) => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
@@ -1543,7 +1536,7 @@ function AgentConfigurePage({
         hideInstructionsFile
       />
       <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
+        <h3 className="text-sm font-medium mb-3">{translateAgentPage("agents:api_keys")}</h3>
         <KeysTab agentId={agentId} companyId={companyId} />
       </div>
 
@@ -1556,14 +1549,12 @@ function AgentConfigurePage({
           {revisionsOpen
             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          }{translateAgentPage("agents:configuration_revisions")}<span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
         </button>
         {revisionsOpen && (
           <div className="mt-3">
             {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+              <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_configuration_revisions_yet")}</p>
             ) : (
               <div className="space-y-2">
                 {(configRevisions ?? []).slice(0, 10).map((revision) => (
@@ -1582,13 +1573,10 @@ function AgentConfigurePage({
                         className="h-7 px-2.5 text-xs"
                         onClick={() => rollbackConfig.mutate(revision.id)}
                         disabled={rollbackConfig.isPending}
-                      >
-                        Restore
-                      </Button>
+                      >{translateAgentPage("agents:restore")}</Button>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+                    <p className="text-xs text-muted-foreground">{translateAgentPage("agents:changed")}{" "}
+                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : translateAgentPage("agents:no_tracked_changes")}
                     </p>
                   </div>
                 ))}
@@ -1626,6 +1614,7 @@ export function ConfigurationTab({
   hideInstructionsFile?: boolean;
   content?: "configuration" | "secrets";
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
@@ -1671,7 +1660,7 @@ export function ConfigurationTab({
       if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
-      pushToast({ title: "Agent saved", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:agent_saved"), tone: "success" });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);
@@ -1680,8 +1669,8 @@ export function ConfigurationTab({
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Could not save agent";
-      pushToast({ title: "Save failed", body: message, tone: "error" });
+            : translateAgentPage("agents:could_not_save_agent");
+      pushToast({ title: translateAgentPage("agents:save_failed"), body: message, tone: "error" });
     },
   });
 
@@ -1704,14 +1693,14 @@ export function ConfigurationTab({
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
+      ? translateAgentPage("agents:enabled_automatically_for_ceo_agents")
       : taskAssignSource === "agent_creator"
-        ? "Enabled automatically while this agent can create new agents."
+        ? translateAgentPage("agents:enabled_automatically_while_this_agent_can_create_new")
         : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
+          ? translateAgentPage("agents:enabled_via_explicit_company_permission_grant")
           : taskAssignSource === "simple_default"
-            ? "Enabled by simple company-wide task assignment defaults."
-            : "Disabled unless explicitly granted.";
+            ? translateAgentPage("agents:enabled_by_simple_company_wide_task_assignment_defaults")
+            : translateAgentPage("agents:disabled_unless_explicitly_granted");
 
   return (
     <div className="space-y-6">
@@ -1732,9 +1721,7 @@ export function ConfigurationTab({
         environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
       />
       {content === "configuration" ? (
-        <p className="text-xs text-muted-foreground">
-          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-        </p>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:saved_adapter_config_affects_the_next_run_active")}</p>
       ) : null}
 
       {content === "configuration" ? <TrustPresetSection
@@ -1762,14 +1749,12 @@ export function ConfigurationTab({
       /> : null}
 
       {content === "configuration" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
+        <h3 className="text-sm font-medium mb-3">{translateAgentPage("agents:permissions")}</h3>
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>Can create new agents</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
-              </p>
+              <div>{translateAgentPage("agents:can_create_new_agents")}</div>
+              <p className="text-xs text-muted-foreground">{translateAgentPage("agents:lets_this_agent_create_or_hire_agents_this")}</p>
             </div>
             <ToggleSwitch
               checked={canCreateAgents}
@@ -1785,10 +1770,8 @@ export function ConfigurationTab({
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>Can create/import skills</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent install, import, create, and scan company skills without creating agents.
-              </p>
+              <div>{translateAgentPage("agents:can_create_import_skills")}</div>
+              <p className="text-xs text-muted-foreground">{translateAgentPage("agents:lets_this_agent_install_import_create_and_scan_62ad2a")}</p>
             </div>
             <ToggleSwitch
               checked={canCreateSkills}
@@ -1804,7 +1787,7 @@ export function ConfigurationTab({
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>Can assign tasks</div>
+              <div>{translateAgentPage("agents:can_assign_tasks")}</div>
               <p className="text-xs text-muted-foreground">
                 {taskAssignHint}
               </p>
@@ -1844,6 +1827,7 @@ export function PromptsTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -1974,7 +1958,7 @@ export function PromptsTab({
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      if (!selectedCompanyId) throw new Error(translateAgentPage("agents:select_a_company_to_upload_images"));
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });
@@ -2164,9 +2148,7 @@ export function PromptsTab({
   if (!isLocal) {
     return (
       <div className="max-w-3xl">
-        <p className="text-sm text-muted-foreground">
-          Instructions bundles are only available for local adapters.
-        </p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:instructions_bundles_are_only_available_for_local_adapters")}</p>
       </div>
     );
   }
@@ -2186,28 +2168,20 @@ export function PromptsTab({
           ))}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
-        Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
-      </p>
+      <p className="text-xs text-muted-foreground">{translateAgentPage("agents:saved_instructions_affect_the_next_run_active_runs")}</p>
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
-          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-          Advanced
-        </CollapsibleTrigger>
+          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />{translateAgentPage("agents:advanced")}</CollapsibleTrigger>
         <CollapsibleContent className="pt-4 pb-6">
           <TooltipProvider>
             <div className="grid gap-x-6 gap-y-4 md:grid-cols-(--gtc-18)">
               <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Mode
-                  <Tooltip>
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{translateAgentPage("agents:mode")}<Tooltip>
                     <TooltipTrigger asChild>
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      Managed: Paperclip stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.
-                    </TooltipContent>
+                    <TooltipContent side="right" sideOffset={4}>{translateAgentPage("agents:managed_paperclip_stores_and_serves_the_instructions_bundle")}</TooltipContent>
                   </Tooltip>
                 </span>
                 <div className="flex gap-2">
@@ -2231,9 +2205,7 @@ export function PromptsTab({
                       });
                       setSelectedFile(nextEntryFile);
                     }}
-                  >
-                    Managed
-                  </Button>
+                  >{translateAgentPage("agents:managed")}</Button>
                   <Button
                     type="button"
                     size="sm"
@@ -2248,26 +2220,20 @@ export function PromptsTab({
                       });
                       setSelectedFile(externalBundle?.selectedFile ?? nextEntryFile);
                     }}
-                  >
-                    External
-                  </Button>
+                  >{translateAgentPage("agents:external")}</Button>
                 </div>
               </label>
               <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Root path
-                  <Tooltip>
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{translateAgentPage("agents:root_path")}<Tooltip>
                     <TooltipTrigger asChild>
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip automatically.
-                    </TooltipContent>
+                    <TooltipContent side="right" sideOffset={4}>{translateAgentPage("agents:the_absolute_directory_on_disk_where_the_instructions")}</TooltipContent>
                   </Tooltip>
                 </span>
                 {currentMode === "managed" ? (
                   <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground pt-1.5">
-                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || "(managed)"}</span>
+                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || translateAgentPage("agents:managed_66a066")}</span>
                     {currentRootPath && (
                       <CopyText text={currentRootPath} className="shrink-0">
                         <Copy className="h-3.5 w-3.5" />
@@ -2303,15 +2269,11 @@ export function PromptsTab({
                 )}
               </label>
               <label className="space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Entry file
-                  <Tooltip>
+                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{translateAgentPage("agents:entry_file")}<Tooltip>
                     <TooltipTrigger asChild>
                       <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
                     </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      The main file the agent reads first when loading instructions. Defaults to AGENTS.md.
-                    </TooltipContent>
+                    <TooltipContent side="right" sideOffset={4}>{translateAgentPage("agents:the_main_file_the_agent_reads_first_when")}</TooltipContent>
                   </Tooltip>
                 </span>
                 <Input
@@ -2358,7 +2320,7 @@ export function PromptsTab({
           isMobile && !showFilePanel && "hidden",
         )}>
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">Files</h4>
+            <h4 className="text-sm font-medium">{translateAgentPage("agents:files")}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
@@ -2415,9 +2377,7 @@ export function PromptsTab({
                     setNewFilePath("");
                     setShowNewFileInput(false);
                   }}
-                >
-                  Create
-                </Button>
+                >{translateAgentPage("agents:create")}</Button>
                 <Button
                   type="button"
                   size="sm"
@@ -2427,9 +2387,7 @@ export function PromptsTab({
                     setShowNewFileInput(false);
                     setNewFilePath("");
                   }}
-                >
-                  Cancel
-                </Button>
+                >{translateAgentPage("agents:cancel")}</Button>
               </div>
             </div>
           )}
@@ -2459,19 +2417,15 @@ export function PromptsTab({
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide cursor-help">
-                        virtual file
-                      </span>
+                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide cursor-help">{translateAgentPage("agents:virtual_file")}</span>
                     </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
-                    </TooltipContent>
+                    <TooltipContent side="right" sideOffset={4}>{translateAgentPage("agents:legacy_inline_prompt_this_deprecated_virtual_file_preserves")}</TooltipContent>
                   </Tooltip>
                 );
               }
               return (
                 <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide">
-                  {file.isEntryFile ? "entry" : `${file.size}b`}
+                  {file.isEntryFile ? finalPagesT("final-pages:entry_923fe5") : finalPagesT("final-pages:value_b_b8abf0", { value: file.size })}
                 </span>
               );
             }}
@@ -2505,9 +2459,9 @@ export function PromptsTab({
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
-                      ? "Deprecated virtual file"
-                      : `${selectedFileDetail?.language ?? "text"} file`
-                    : "New file in this bundle"}
+                      ? translateAgentPage("agents:deprecated_virtual_file")
+                      : translateAgentPage("agents:file", { value1: selectedFileDetail?.language ?? "text" })
+                    : translateAgentPage("agents:new_file_in_this_bundle")}
                 </p>
               </div>
             </div>
@@ -2515,9 +2469,9 @@ export function PromptsTab({
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
-                  ariaLabel="Copy instructions file as markdown"
-                  title="Copy as markdown"
-                  copiedLabel="Copied"
+                  ariaLabel={translateAgentPage("agents:copy_instructions_file_as_markdown")}
+                  title={translateAgentPage("agents:copy_as_markdown")}
+                  copiedLabel={translateAgentPage("agents:copied")}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   <Copy className="h-3.5 w-3.5" />
@@ -2529,7 +2483,7 @@ export function PromptsTab({
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                    if (confirm(translateAgentPage("agents:delete_c93ae0", { value1: selectedOrEntryFile }))) {
                       deleteFile.mutate(selectedOrEntryFile, {
                         onSuccess: () => {
                           setSelectedFile(currentEntryFile);
@@ -2539,9 +2493,7 @@ export function PromptsTab({
                     }
                   }}
                   disabled={deleteFile.isPending}
-                >
-                  Delete
-                </Button>
+                >{translateAgentPage("agents:delete_f6fdbe")}</Button>
               )}
             </div>
           </div>
@@ -2553,7 +2505,7 @@ export function PromptsTab({
               key={selectedOrEntryFile}
               value={displayValue}
               onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
+              placeholder={translateAgentPage("agents:agent_instructions")}
               className="min-w-0 overflow-hidden"
               contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
               imageUploadHandler={async (file) => {
@@ -2567,7 +2519,7 @@ export function PromptsTab({
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
               className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
-              placeholder="File contents"
+              placeholder={translateAgentPage("agents:file_contents")}
             />
           )}
         </div>
@@ -2634,6 +2586,7 @@ function PromptEditorSkeleton() {
 /* ---- Runs Tab ---- */
 
 function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelected: boolean; agentId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
@@ -2676,7 +2629,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)}{" "}{translateAgentPage("agents:tok")}</span>}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
@@ -2701,6 +2654,7 @@ export function RunsTab({
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { isMobile } = useSidebar();
 
   // Sort by created descending
@@ -2713,13 +2667,13 @@ export function RunsTab({
   const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
   const selectedRun = selection.run;
   if (selectedRunId && !selectedRun) {
-    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    if (selection.loading) return <p className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_run")}</p>;
     return <div role="alert">
-      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
-      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : translateAgentPage("agents:this_run_is_unavailable_for_this_agent")}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>{translateAgentPage("agents:try_again")}</Button>}
     </div>;
   }
-  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_runs_yet")}</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -2730,9 +2684,7 @@ export function RunsTab({
             to={`/agents/${agentRouteId}/runs`}
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors no-underline"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to runs
-          </Link>
+            <ArrowLeft className="h-3.5 w-3.5" />{translateAgentPage("agents:back_to_runs")}</Link>
           <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       );
@@ -2774,6 +2726,7 @@ export function RunsTab({
 /* ---- Run Detail (expanded) ---- */
 
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -2842,7 +2795,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         payload: resumePayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(result.message ?? "Resume request was skipped.");
+        throw new Error(result.message ?? translateAgentPage("agents:resume_request_was_skipped"));
       }
       return result;
     },
@@ -2957,7 +2910,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={resumeRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {resumeRun.isPending ? "Resuming…" : "Resume"}
+                  {resumeRun.isPending ? translateAgentPage("agents:resuming") : translateAgentPage("agents:resume")}
                 </Button>
               )}
               {canRetryRun && !canResumeLostRun && (
@@ -2969,7 +2922,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={retryRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending ? translateAgentPage("agents:retrying") : translateAgentPage("agents:retry")}
                 </Button>
               )}
             </div>
@@ -2998,8 +2951,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               <div
                 data-testid="run-detail-on-behalf-of"
                 className="text-xs text-muted-foreground"
-              >
-                On behalf of{" "}
+              >{translateAgentPage("agents:on_behalf_of")}{" "}
                 <span className="text-foreground">
                   {responsibleUserName ?? responsibleUserLabel(null)}
                 </span>
@@ -3007,17 +2959,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {cancelRun.error && (
               <div className="text-xs text-destructive" role="alert">
-                {cancelRun.error instanceof Error ? cancelRun.error.message : "Failed to stop run"}
+                {cancelRun.error instanceof Error ? describeUiError(cancelRun.error).body : translateAgentPage("agents:failed_to_stop_run")}
               </div>
             )}
             {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error ? resumeRun.error.message : translateAgentPage("agents:failed_to_resume_run")}
               </div>
             )}
             {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error ? retryRun.error.message : translateAgentPage("agents:failed_to_retry_run")}
               </div>
             )}
             {startTime && (
@@ -3032,8 +2984,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
                 </div>
                 {displayDurationSec !== null && (
-                  <div className="text-xs text-muted-foreground">
-                    Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
+                  <div className="text-xs text-muted-foreground">{translateAgentPage("agents:duration")}{" "}{displayDurationSec >= 60 ? finalPagesT("final-pages:first_m_second_s_b97502", { first: Math.floor(displayDurationSec / 60), second: displayDurationSec % 60 }) : finalPagesT("final-pages:value_s_47c4d1", { value: displayDurationSec })}
                   </div>
                 )}
               </div>
@@ -3053,19 +3004,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => runClaudeLogin.mutate()}
                   disabled={runClaudeLogin.isPending}
                 >
-                  {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
+                  {runClaudeLogin.isPending ? translateAgentPage("agents:running_claude_login") : translateAgentPage("agents:login_to_claude_code")}
                 </Button>
                 {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
-                      : "Failed to run Claude login"}
+                      : translateAgentPage("agents:failed_to_run_claude_login")}
                   </p>
                 )}
                 {claudeLoginResult?.loginUrl && (
-                  <p className="text-xs">
-                    Login URL:
-                    <a
+                  <p className="text-xs">{translateAgentPage("agents:login_url")}<a
                       href={claudeLoginResult.loginUrl}
                       className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
                       target="_blank"
@@ -3098,9 +3047,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               />
             )}
             {hasNonZeroExit && (
-              <div className="text-xs text-red-600 dark:text-red-400">
-                Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+              <div className="text-xs text-red-600 dark:text-red-400">{translateAgentPage("agents:exit_code")}{" "}{run.exitCode}
+                {run.signal && <span className="text-muted-foreground ml-1">{translateAgentPage("agents:signal")}{" "}{run.signal})</span>}
               </div>
             )}
             {retryState && (
@@ -3133,19 +3081,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           {hasMetrics && (
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
+                <div className="text-xs text-muted-foreground">{translateAgentPage("agents:input")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Output</div>
+                <div className="text-xs text-muted-foreground">{translateAgentPage("agents:output")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
+                <div className="text-xs text-muted-foreground">{translateAgentPage("agents:cached")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
+                <div className="text-xs text-muted-foreground">{translateAgentPage("agents:cost")}</div>
                 <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
               </div>
             </div>
@@ -3159,21 +3107,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setSessionOpen((v) => !v)}
             >
-              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
-              Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
+              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />{translateAgentPage("agents:session")}{sessionChanged && <span className="text-yellow-400 ml-1">{translateAgentPage("agents:changed_1588c0")}</span>}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
                 {run.sessionIdBefore && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
+                    <span className="text-muted-foreground w-12">{sessionChanged ? translateAgentPage("agents:before") : "ID"}</span>
                     <CopyText text={run.sessionIdBefore} className="font-mono" />
                   </div>
                 )}
                 {sessionChanged && run.sessionIdAfter && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">After</span>
+                    <span className="text-muted-foreground w-12">{translateAgentPage("agents:after")}</span>
                     <CopyText text={run.sessionIdAfter} className="font-mono" />
                   </div>
                 )}
@@ -3186,21 +3132,21 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                       onClick={() => {
                         const issueCount = touchedIssueIds.length;
                         const confirmed = window.confirm(
-                          `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
+                          translateAgentPage("agents:clear_session_for_issue_touched_by_this_run_count", { value1: issueCount, count: issueCount }),
                         );
                         if (!confirmed) return;
                         clearSessionsForTouchedIssues.mutate();
                       }}
                     >
                       {clearSessionsForTouchedIssues.isPending
-                        ? "clearing session..."
-                        : "clear session for these tasks"}
+                        ? translateAgentPage("agents:clearing_session")
+                        : translateAgentPage("agents:clear_session_for_these_tasks")}
                     </button>
                     {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
-                          : "Failed to clear sessions"}
+                          : translateAgentPage("agents:failed_to_clear_sessions")}
                       </p>
                     )}
                   </div>
@@ -3214,7 +3160,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Tasks Touched ({touchedIssues.length})</span>
+          <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:tasks_touched")}{touchedIssues.length})</span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
@@ -3236,7 +3182,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
+          <span className="text-xs font-medium text-red-600 dark:text-red-400">{translateAgentPage("agents:stderr")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
         </div>
       )}
@@ -3244,7 +3190,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stdout excerpt when no log is available */}
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
+          <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:stdout")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
         </div>
       )}
@@ -3266,6 +3212,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 /* ---- Keys Tab ---- */
 
 function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");
@@ -3279,7 +3226,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
   });
 
   const createKey = useMutation({
-    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || "Default", companyId),
+    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || translateAgentPage("agents:default"), companyId),
     onSuccess: (data) => {
       setNewToken(data.token);
       setTokenVisible(true);
@@ -3303,7 +3250,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
         setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {
-        pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+        pushToast({ title: translateAgentPage("agents:copy_failed"), body: translateAgentPage("agents:clipboard_access_is_unavailable"), tone: "error" });
       });
   }
 
@@ -3315,9 +3262,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {/* New token banner */}
       {newToken && (
         <div className="border border-yellow-300 dark:border-yellow-600/40 bg-yellow-50 dark:bg-yellow-500/5 rounded-lg p-4 space-y-2">
-          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
-            API key created — copy it now, it will not be shown again.
-          </p>
+          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">{translateAgentPage("agents:api_key_created_copy_it_now_it_will")}</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
@@ -3326,7 +3271,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               variant="ghost"
               size="icon-sm"
               onClick={() => setTokenVisible((v) => !v)}
-              title={tokenVisible ? "Hide" : "Show"}
+              title={tokenVisible ? translateAgentPage("agents:hide") : translateAgentPage("agents:show")}
             >
               {tokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </Button>
@@ -3334,35 +3279,29 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               variant="ghost"
               size="icon-sm"
               onClick={copyToken}
-              title="Copy"
+              title={translateAgentPage("agents:copy")}
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            {copied && <span className="text-xs text-green-400">Copied!</span>}
+            {copied && <span className="text-xs text-green-400">{translateAgentPage("agents:copied_b7c3ca")}</span>}
           </div>
           <Button
             variant="ghost"
             size="sm"
             className="text-muted-foreground text-xs"
             onClick={() => setNewToken(null)}
-          >
-            Dismiss
-          </Button>
+          >{translateAgentPage("agents:dismiss")}</Button>
         </div>
       )}
 
       {/* Create new key */}
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-2">
-          <Key className="h-3.5 w-3.5" />
-          Create API Key
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          API keys allow this agent to authenticate calls to the Paperclip server.
-        </p>
+          <Key className="h-3.5 w-3.5" />{translateAgentPage("agents:create_api_key")}</h3>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:api_keys_allow_this_agent_to_authenticate_calls")}</p>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Key name (e.g. production)"
+            placeholder={translateAgentPage("agents:key_name_e_g_production")}
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             className="h-8 text-sm"
@@ -3375,31 +3314,26 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             onClick={() => createKey.mutate()}
             disabled={createKey.isPending}
           >
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            Create
-          </Button>
+            <Plus className="h-3.5 w-3.5 mr-1" />{translateAgentPage("agents:create")}</Button>
         </div>
       </div>
 
       {/* Active keys */}
-      {isLoading && <p className="text-sm text-muted-foreground">Loading keys...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_keys")}</p>}
 
       {!isLoading && activeKeys.length === 0 && !newToken && (
-        <p className="text-sm text-muted-foreground">No active API keys.</p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_active_api_keys")}</p>
       )}
 
       {activeKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Active Keys
-          </h3>
+          <h3 className="text-xs font-medium text-muted-foreground mb-2">{translateAgentPage("agents:active_keys")}</h3>
           <div className="border border-border rounded-lg divide-y divide-border">
             {activeKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>
                   <span className="text-sm font-medium">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Created {formatDate(key.createdAt)}
+                  <span className="text-xs text-muted-foreground ml-3">{translateAgentPage("agents:created")}{" "}{formatDate(key.createdAt)}
                   </span>
                 </div>
                 <Button
@@ -3408,9 +3342,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                   className="text-destructive hover:text-destructive text-xs"
                   onClick={() => revokeKey.mutate(key.id)}
                   disabled={revokeKey.isPending}
-                >
-                  Revoke
-                </Button>
+                >{translateAgentPage("agents:revoke")}</Button>
               </div>
             ))}
           </div>
@@ -3420,16 +3352,13 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {/* Revoked keys */}
       {revokedKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Revoked Keys
-          </h3>
+          <h3 className="text-xs font-medium text-muted-foreground mb-2">{translateAgentPage("agents:revoked_keys")}</h3>
           <div className="border border-border rounded-lg divide-y divide-border opacity-50">
             {revokedKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>
                   <span className="text-sm line-through">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Revoked {key.revokedAt ? formatDate(key.revokedAt) : ""}
+                  <span className="text-xs text-muted-foreground ml-3">{translateAgentPage("agents:revoked")}{" "}{key.revokedAt ? formatDate(key.revokedAt) : ""}
                   </span>
                 </div>
               </div>

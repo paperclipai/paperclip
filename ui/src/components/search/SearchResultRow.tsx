@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { AgentAvatar } from "../AgentAvatar";
 import { AgentIdentity } from "../AgentIdentity";
 import { memo, type ComponentType, type SVGProps } from "react";
@@ -16,10 +17,10 @@ type SnippetStyle = {
 };
 
 const SNIPPET_STYLES: Record<string, SnippetStyle> = {
-  comment: { Icon: MessageSquare, label: "Comment" },
-  document: { Icon: FileText, label: "Doc" },
-  artifact: { Icon: Paperclip, label: "Artifact" },
-  description: { Icon: Quote, label: "Description" },
+  comment: { Icon: MessageSquare, get label() { return t("task-components:comment_44f5e3fb"); } },
+  document: { Icon: FileText, get label() { return t("task-components:doc_49f4e57c"); } },
+  artifact: { Icon: Paperclip, get label() { return t("task-components:artifact_e06171a1"); } },
+  description: { Icon: Quote, get label() { return t("task-components:description_526e0087"); } },
 };
 
 function snippetStyle(field: string, fallbackLabel: string): SnippetStyle {
@@ -32,19 +33,19 @@ function formatRelativeTime(input: string | null): string {
   if (Number.isNaN(value.getTime())) return "";
   const diffMs = Date.now() - value.getTime();
   const seconds = Math.round(diffMs / 1000);
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return t("task-components:justNow_7ddb44d8");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return t("final-components-a:countM_dfa02f18", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) return t("final-components-a:countH_0419aebe", { count: hours });
   const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d`;
+  if (days < 7) return t("final-components-a:countD_6022a29d", { count: days });
   const weeks = Math.round(days / 7);
-  if (weeks < 5) return `${weeks}w`;
+  if (weeks < 5) return t("final-components-a:countW_23a26981", { count: weeks });
   const months = Math.round(days / 30);
-  if (months < 12) return `${months}mo`;
+  if (months < 12) return t("final-components-a:countMo_7e0fae4b", { count: months });
   const years = Math.round(days / 365);
-  return `${years}y`;
+  return t("final-components-a:countY_42e51531", { count: years });
 }
 
 export interface SearchResultRowProps {
@@ -63,6 +64,7 @@ function SearchResultRowImpl({
   isActive,
   className,
 }: SearchResultRowProps) {
+  useTranslation("task-components");
   if (result.type === "agent") {
     return (
       <Link
@@ -80,7 +82,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="agent"
-              fallbackLabel={result.sourceLabel ?? "Agent"}
+              fallbackLabel={result.sourceLabel ?? t("final-components-a:agent_11b39c93")}
             />
           ) : null}
         </div>
@@ -103,7 +105,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="project"
-              fallbackLabel={result.sourceLabel ?? "Project"}
+              fallbackLabel={result.sourceLabel ?? t("final-components-a:project_98595978")}
             />
           ) : null}
         </div>
@@ -135,7 +137,7 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="artifact"
-              fallbackLabel={result.sourceLabel ?? "Artifact"}
+              fallbackLabel={result.sourceLabel ?? t("final-components-a:artifact_e06171a1")}
               multiline
             />
           ) : null}
@@ -245,6 +247,7 @@ interface SnippetLineProps {
 }
 
 function SnippetLine({ text, highlights, field, fallbackLabel, multiline = false }: SnippetLineProps) {
+  useTranslation("task-components");
   const { Icon, label } = snippetStyle(field, fallbackLabel);
   return (
     <div

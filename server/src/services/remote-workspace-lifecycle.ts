@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, executionWorkspaces, executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLease } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLease, type ExecutionWorkspaceCloseReasonPresentation } from "@paperclipai/shared";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "metadata">;
@@ -66,13 +66,15 @@ export function matchPreparedRemoteWorkspaceSource<T extends PreparedSourceBindi
 export async function inspectRemoteWorkspacePersistence(db: Db | Transaction, workspace: Workspace) {
   const authority = readRemoteWorkspaceAuthority(workspace.metadata);
   if (!authority || authority.dirty || authority.writerRunId || !authority.snapshotId) {
-    return { ready: false, reason: "The workspace still has unsaved work or an unfinished writer.", authority };
+    return { ready: false, reason: "The workspace still has unsaved work or an unfinished writer.", authority,
+      presentation: { code: "remote_unsaved" } satisfies ExecutionWorkspaceCloseReasonPresentation };
   }
   const [snapshot] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
     eq(executionWorkspaceSnapshots.id, authority.snapshotId), eq(executionWorkspaceSnapshots.status, "committed"),
   ));
-  return { ready: Boolean(snapshot), reason: snapshot ? null : "The saved workspace is unavailable. Its remote files were retained.", authority };
+  return { ready: Boolean(snapshot), reason: snapshot ? null : "The saved workspace is unavailable. Its remote files were retained.", authority,
+    presentation: snapshot ? undefined : { code: "remote_saved_unavailable" } satisfies ExecutionWorkspaceCloseReasonPresentation };
 }
 
 /** Called within the workspace lifecycle fence; the saved workspace remains durable. */

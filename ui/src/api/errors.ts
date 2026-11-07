@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 /**
  * Shared error classification and user-facing copy.
  *
@@ -112,7 +114,14 @@ const KIND_COPY: Record<ErrorKind, { title: string; body: string }> = {
 
 /** Copy for a specific code or kind, for callers that build their own messages. */
 export function errorCopy(key: string): { title: string; body: string } {
-  return CODE_COPY[key] ?? KIND_COPY[key as ErrorKind] ?? KIND_COPY.unknown;
+  const source = CODE_COPY[key] ?? KIND_COPY[key as ErrorKind] ?? KIND_COPY.unknown;
+  const path = Object.hasOwn(CODE_COPY, key)
+    ? `code.${key}`
+    : `kind.${Object.hasOwn(KIND_COPY, key) ? key : "unknown"}`;
+  return {
+    title: t(`${path}.title`, { ns: "errors", defaultValue: source.title }),
+    body: t(`${path}.body`, { ns: "errors", defaultValue: source.body }),
+  };
 }
 
 // --- Field extraction -------------------------------------------------------------
@@ -163,11 +172,17 @@ export function isRawErrorCode(value: string): boolean {
     || /^[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+$/.test(text) || /^[A-Z][A-Z0-9_]{2,}$/.test(text);
 }
 
+const generatedApiErrorMessages = new WeakSet<Error>();
+
+export function registerGeneratedApiErrorMessage(error: Error): void {
+  generatedApiErrorMessages.add(error);
+}
+
 /** A server message that is safe to show: not a raw code, not a generic status line. */
 function readableServerMessage(err: unknown): string | null {
   const error = record(err);
   const candidates = [stringField(record(error?.body)?.message), stringField(record(error?.body)?.error)];
-  if (err instanceof Error) candidates.push(stringField(err.message));
+  if (err instanceof Error && !generatedApiErrorMessages.has(err)) candidates.push(stringField(err.message));
   for (const candidate of candidates) {
     if (!candidate) continue;
     if (isRawErrorCode(candidate)) continue;
@@ -269,8 +284,9 @@ export function errorRetryAfterMs(err: unknown): number | null {
 export function describeError(err: unknown, options: DescribeErrorOptions = {}): ErrorDescription {
   const kind = classifyError(err);
   const retryable = kind === "transient" || kind === "unknown";
-  const coded = errorCodes(err).map((code) => CODE_COPY[code]).find(Boolean);
-  const fallback = KIND_COPY[kind];
+  const code = errorCodes(err).find((value) => Object.hasOwn(CODE_COPY, value));
+  const coded = code ? errorCopy(code) : undefined;
+  const fallback = errorCopy(kind);
 
   let body: string;
   if (coded) body = coded.body;
@@ -278,7 +294,7 @@ export function describeError(err: unknown, options: DescribeErrorOptions = {}):
   else body = readableServerMessage(err) ?? fallback.body;
 
   const title = options.action && kind !== "transient"
-    ? `Couldn't ${options.action}`
+    ? t("actionFailed", { ns: "errors", action: options.action })
     : (coded?.title ?? fallback.title);
   return { title, body, retryable };
 }
@@ -289,7 +305,17 @@ export function describeError(err: unknown, options: DescribeErrorOptions = {}):
  * of every `{error.message}` render and `toast(err.message)` call.
  */
 export function apiErrorMessage(status: number, body: unknown): string {
+  return apiErrorMessageSource(status, body).message;
+}
+
+export function apiErrorMessageSource(status: number, body: unknown): { message: string; productCopy: boolean } {
   const raw = stringField(record(body)?.error);
-  if (raw && !isRawErrorCode(raw)) return raw;
-  return describeError({ status, body, code: raw }).body;
+  if (raw && !isRawErrorCode(raw)) return { message: raw, productCopy: false };
+  const error = { status, body, code: raw };
+  const kind = classifyError(error);
+  const code = errorCodes(error).find((value) => Object.hasOwn(CODE_COPY, value));
+  const diagnostic = !code && kind !== "transient" && kind !== "aborted" ? readableServerMessage(error) : null;
+  return diagnostic !== null
+    ? { message: diagnostic, productCopy: false }
+    : { message: errorCopy(code ?? kind).body, productCopy: true };
 }

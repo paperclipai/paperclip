@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 
 import { CoordinatorPresentation } from "../components/coordinator/CoordinatorPresentation";
 import { queryKeys } from "../lib/queryKeys";
@@ -2058,6 +2059,25 @@ describe("FailedRunInboxRow", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("localizes the previous-server stop action without retrying the task", async () => {
+    const root = createRoot(container);
+    const onRetry = vi.fn();
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "user", state: "waiting_for_user",
+      nextRetryAt: null, canRetry: false, userAction: "confirm_owner_stop", sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+    try {
+      await act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id })}
+        issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+        onDismiss={() => {}} onRetry={onRetry} isRetrying={false} />));
+      expect(container.textContent).toContain("Confirm the previous server stopped");
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain("确认先前的服务器已停止");
+      expect(container.textContent).not.toContain("Confirm the previous server stopped");
+      expect(onRetry).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); root.unmount(); });
+    }
   });
 
   it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {

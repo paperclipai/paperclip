@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { ChatEndpoint } from "@/api/chatEndpoints";
 
 export function slackConversationUrl(endpoint: Pick<ChatEndpoint, "providerAccountId" | "setup">, userId: string | null): string {

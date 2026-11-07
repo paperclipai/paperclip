@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { ArrowUpDown, Check, Layers, Plus } from "lucide-react";
 import { Link } from "@/lib/router";
 import { ToolbarSearch } from "./ToolbarSearch";
@@ -22,13 +23,14 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
   selectMode?: boolean;
   onToggleSelect?: () => void;
 }) {
-  return <div data-canonical-toolbar="routines" role="toolbar" aria-label="Routines controls" className="flex flex-wrap items-center gap-4">
-    <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search routines" placeholder="Search routines…" />
+  useTranslation("task-components");
+  return <div data-canonical-toolbar="routines" role="toolbar" aria-label={t("task-components:routinesControls_67bdfdc9")} className="flex flex-wrap items-center gap-4">
+    <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("task-components:searchRoutines_57d0f61e")} placeholder={t("task-components:searchRoutines_80582992")} />
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" title="Sort">
+        <Button variant="outline" size="sm" title={t("task-components:sort_bec69036")}>
           <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span >Sort</span>
+          <span >{t("task-components:sort_bec69036")}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-44 p-0">
@@ -56,7 +58,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
               <span>{label}</span>
               {sortField === field ? (
                 <span className="text-xs text-muted-foreground">
-                  {sortDir === "asc" ? "Asc" : "Desc"}
+                  {sortDir === "asc" ? t("task-components:asc_cddeba5c") : t("task-components:desc_5c4419a6")}
                 </span>
               ) : null}
             </button>
@@ -66,9 +68,9 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
     </Popover>
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" title="Group">
+        <Button variant="outline" size="sm" title={t("task-components:group_34ca0e76")}>
           <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span >Group</span>
+          <span >{t("task-components:group_34ca0e76")}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-44 p-0">
@@ -97,10 +99,10 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
       </PopoverContent>
     </Popover>
     <div className="design-toolbar-actions">
-      {onToggleSelect && <Button variant="outline" size="sm" onClick={onToggleSelect}>{selectMode ? "Done" : "Select"}</Button>}
-      {tasksHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={tasksHref}>View all tasks</Link></Button>}
-      {onNewFolder && <Button variant="outline" size="sm" onClick={onNewFolder}><Plus className="h-4 w-4" />New folder</Button>}
-      <Button variant="outline" size="sm" data-toolbar-primary onClick={onCreateRoutine}><Plus className="h-4 w-4" />Create routine</Button>
+      {onToggleSelect && <Button variant="outline" size="sm" onClick={onToggleSelect}>{selectMode ? t("task-components:done_11a6767d") : t("task-components:select_2a78025d")}</Button>}
+      {tasksHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={tasksHref}>{t("task-components:sentence_44b54ba5cef3")}</Link></Button>}
+      {onNewFolder && <Button variant="outline" size="sm" onClick={onNewFolder}><Plus className="h-4 w-4" />{t("task-components:newFolder_cf28f49e")}</Button>}
+      <Button variant="outline" size="sm" data-toolbar-primary onClick={onCreateRoutine}><Plus className="h-4 w-4" />{t("final-components-a:createRoutine_f0fe0708")}</Button>
     </div>
   </div>;
 }

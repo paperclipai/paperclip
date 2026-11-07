@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentDetailPage } from "./AgentDetailPage";
+import { i18n } from "@/i18n";
 const params = vi.hoisted(() => ({ agentId: "agent", companyPrefix: "CO", tab: "plugin:test.plugin:insights" }));
 const state = vi.hoisted(() => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }, { pluginKey: "test.plugin", id: "notes", displayName: "Notes" }] as unknown[], isLoading: false, errorMessage: null }));
 const mount = vi.hoisted(() => vi.fn());
@@ -31,6 +32,25 @@ function render() {
   return renderToStaticMarkup(view());
 }
 describe("agent plugin detail views", () => {
+  it("updates the mounted unavailable view and title when the language changes", async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      params.tab = "plugin:removed:insights";
+      await act(async () => { await i18n.changeLanguage("en"); root.render(view()); });
+      expect(container.textContent).toContain("This plugin view is unavailable");
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain("此插件视图不可用");
+      expect(document.title).toBe("插件视图 • Agent • 智能体 • Test company • Paperclip");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.textContent).toContain("This plugin view is unavailable");
+    } finally {
+      act(() => root.unmount());
+      await i18n.changeLanguage("en");
+      params.tab = "plugin:test.plugin:insights";
+    }
+  });
   it.each(["insights", "notes"])("mounts arbitrary %s contributions with the resolved agent/company", (id) => {
     params.tab = `plugin:test.plugin:${id}`;
     expect(render()).toContain("Plugin contribution");

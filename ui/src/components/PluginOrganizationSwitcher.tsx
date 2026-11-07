@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState, type ReactNode } from "react";
 import { ChevronsUpDown } from "lucide-react";
 import type { PluginOrganizationSwitcherProps } from "@paperclipai/plugin-sdk/ui";
@@ -11,7 +12,8 @@ import { Skeleton } from "./ui/skeleton";
 
 /** Reserve the trigger's space until its owner is known. Never flash another name. */
 function OrganizationSwitcherLoading({ collapsed }: { collapsed: boolean }) {
-  return <div role="status" aria-label="Loading organization" aria-busy="true"
+  useTranslation("task-components");
+  return <div role="status" aria-label={t("task-components:loadingOrganization_0dc16abf")} aria-busy="true"
     className="flex h-9 min-w-0 flex-1 items-center gap-2 px-4">
     <Skeleton className="size-5 shrink-0" />
     {!collapsed && <>
@@ -27,6 +29,7 @@ export function PluginOrganizationSwitcher({ children, open: controlledOpen, onO
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
+  useTranslation("task-components");
   const { userId, settled, failed } = useAccountIdentity();
   const { selectedCompanyId } = useCompany();
   const companyList = useCompanyListQuery();
@@ -50,6 +53,7 @@ function OrganizationSwitcher({ children, settled, loading, companyId, company, 
   company: { name: string; issuePrefix: string; logoUrl?: string | null } | null;
   open?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
+  useTranslation("task-components");
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const open = controlledOpen ?? internalOpen;

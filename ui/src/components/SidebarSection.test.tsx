@@ -3,7 +3,10 @@
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DashboardLive } from "../pages/DashboardLive";
+import { BreadcrumbProvider } from "../context/BreadcrumbContext";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavExpandedProvider } from "./SidebarNavItem";
 import { Plus } from "lucide-react";
@@ -13,6 +16,9 @@ const sidebarState = vi.hoisted(() => ({
   collapsed: false,
   peeking: false,
 }));
+
+vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1", companies: [] }) }));
+vi.mock("../components/ActiveAgentsPanel", () => ({ ActiveAgentsPanel: () => null }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -76,6 +82,35 @@ describe("SidebarSection", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("updates dashboard live breadcrumbs and document title without translating organization names", async () => {
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+    await act(async () => currentRoot.render(<BreadcrumbProvider companyName="Acme Labs"><DashboardLive /></BreadcrumbProvider>));
+    expect(document.title).toBe("Live runs • Dashboard • Acme Labs • Paperclip");
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(document.title).toBe("实时运行 • 仪表盘 • Acme Labs • Paperclip");
+      expect(container.querySelector('a[href="/dashboard"]')?.textContent).toContain("仪表盘");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(document.title).toBe("Live runs • Dashboard • Acme Labs • Paperclip");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
+  it("localizes generic section accessibility labels on language change", async () => {
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+    await act(async () => currentRoot.render(<SidebarSection label="Custom section" collapsible={{ open: true, onOpenChange: vi.fn() }} menu={{ actions: [{ type: "item", label: "Custom action" }] }}>Content</SidebarSection>));
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector('button[aria-label="收起 Custom section"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="Custom section 的操作"]')).not.toBeNull();
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it("keeps static and collapsible section labels on the same text column", async () => {

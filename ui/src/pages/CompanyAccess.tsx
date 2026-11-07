@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,6 +41,7 @@ const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,fa
 type EditableMemberStatus = "pending" | "active" | "suspended";
 
 export function CompanyAccess() {
+  const { t, i18n } = useTranslation("settings");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -88,11 +90,11 @@ export function CompanyAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Members" },
+      { label: selectedCompany?.name ?? t("companyAccess.organization"), href: "/dashboard" },
+      { label: t("companyAccess.settings"), href: "/company/settings" },
+      { label: t("companyAccess.members") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [t, selectedCompany?.name, setBreadcrumbs]);
 
   const membersQuery = useQuery({
     queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
@@ -131,13 +133,13 @@ export function CompanyAccess() {
       setEditingMemberId(null);
       await refreshAccessData();
       pushToast({
-        title: "Member updated",
+        title: t("companyAccess.member_updated"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to update member",
+        title: t("companyAccess.failed_to_update_member"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -149,13 +151,13 @@ export function CompanyAccess() {
     onSuccess: async () => {
       await refreshAccessData();
       pushToast({
-        title: "Join request approved",
+        title: t("companyAccess.join_request_approved"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to approve join request",
+        title: t("companyAccess.failed_to_approve_join_request"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -167,13 +169,13 @@ export function CompanyAccess() {
     onSuccess: async () => {
       await refreshAccessData();
       pushToast({
-        title: "Join request rejected",
+        title: t("companyAccess.join_request_rejected"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to reject join request",
+        title: t("companyAccess.failed_to_reject_join_request"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -219,17 +221,17 @@ export function CompanyAccess() {
         await queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
       }
       pushToast({
-        title: "Member removed",
+        title: t("companyAccess.member_removed"),
         body:
           result.reassignedIssueCount > 0
-            ? `${result.reassignedIssueCount} assigned task${result.reassignedIssueCount === 1 ? "" : "s"} cleaned up.`
+            ? t("companyAccess.cleaned", { count: result.reassignedIssueCount })
             : undefined,
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to remove member",
+        title: t("companyAccess.failed_to_remove_member"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -248,22 +250,22 @@ export function CompanyAccess() {
   }, [removingMember]);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select an organization to manage access.</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyAccess.select_an_organization_to_manage_access")}</div>;
   }
 
   if (membersQuery.isLoading || membersView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading organization access…</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyAccess.loading_organization_access")}</div>;
   }
 
   if (membersView.kind === "error") {
     if (membersView.errorKind === "forbidden") {
-      return <div className="text-sm text-destructive">You do not have permission to manage organization members.</div>;
+      return <div className="text-sm text-destructive">{t("companyAccess.you_do_not_have_permission_to_manage_organization_members")}</div>;
     }
     return (
       <QueryErrorState
         size="page"
         error={membersQuery.error}
-        action="load organization members"
+        action={t("companyAccess.load_organization_members")}
         onRetry={membersView.retry}
         retrying={membersView.isFetching}
       />
@@ -290,11 +292,11 @@ export function CompanyAccess() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Organization Members</h1>
+          <h1 className="text-lg font-semibold">{t("companyAccess.organization_members")}</h1>
         </div>
         {cloudInviteUrl && (
           <Button asChild>
-            <a href={cloudInviteUrl}><UserPlus />Invite people</a>
+            <a href={cloudInviteUrl}><UserPlus />{t("companyAccess.invite_people")}</a>
           </Button>
         )}
       </div>
@@ -303,8 +305,8 @@ export function CompanyAccess() {
         {!hideInvitesTab && (
           <PageTabBar
             items={[
-              { value: "members", label: "Members" },
-              { value: "invites", label: "Invites" },
+              { value: "members", label: t("companyAccess.members") },
+              { value: "invites", label: t("companyAccess.invites") },
             ]}
             align="start"
             value={activeTab}
@@ -314,9 +316,7 @@ export function CompanyAccess() {
         <TabsContent value="members" className="space-y-8">
 
       {access && !access.currentUserRole && (
-        <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          This account can manage access here through instance-admin privileges, but it does not currently hold an active organization membership.
-        </div>
+        <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">{t("companyAccess.this_account_can_manage_access_here_through_instance_admin")}</div>
       )}
 
       <section className="space-y-4">
@@ -324,12 +324,10 @@ export function CompanyAccess() {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-semibold">Pending human joins</h3>
-                <p className="text-sm text-muted-foreground">
-                  Review pending join requests before they become active organization members.
-                </p>
+                <h3 className="text-sm font-semibold">{t("companyAccess.pending_human_joins")}</h3>
+                <p className="text-sm text-muted-foreground">{t("companyAccess.review_pending_join_requests_before_they_become_active_organization")}</p>
               </div>
-              <Badge variant="outline">{pendingHumanJoinRequests.length} pending</Badge>
+              <Badge variant="outline">{t("companyAccess.pendingCount", { count: pendingHumanJoinRequests.length })}</Badge>
             </div>
             <div className="space-y-3">
               {pendingHumanJoinRequests.map((request) => (
@@ -339,22 +337,22 @@ export function CompanyAccess() {
                     request.requesterUser?.name ||
                     request.requestEmailSnapshot ||
                     request.requestingUserId ||
-                    "Unknown human requester"
+                    t("companyAccess.unknown_human_requester")
                   }
                   subtitle={
                     request.requesterUser?.email ||
                     request.requestEmailSnapshot ||
                     request.requestingUserId ||
-                    "No email available"
+                    t("companyAccess.no_email_available")
                   }
                   context={
                     request.invite
-                      ? `${request.invite.allowedJoinTypes} join invite${request.invite.humanRole ? ` • default role ${request.invite.humanRole}` : ""}`
-                      : "Invite metadata unavailable"
+                      ? t(request.invite.humanRole ? "companyAccess.joinInviteRole" : "companyAccess.joinInvite", { type: t(`joinTypes.${request.invite.allowedJoinTypes}`), role: request.invite.humanRole ? t(`roles.${request.invite.humanRole}`) : "" })
+                      : t("companyAccess.invite_metadata_unavailable")
                   }
-                  detail={`Submitted ${new Date(request.createdAt).toLocaleString()}`}
-                  approveLabel="Approve human"
-                  rejectLabel="Reject human"
+                  detail={t("companyAccess.submitted", { date: new Date(request.createdAt).toLocaleString(i18n.language) })}
+                  approveLabel={t("companyAccess.approve_human")}
+                  rejectLabel={t("companyAccess.reject_human")}
                   disabled={joinRequestActionPending}
                   onApprove={() => approveJoinRequestMutation.mutate(request.id)}
                   onReject={() => rejectJoinRequestMutation.mutate(request.id)}
@@ -368,22 +366,31 @@ export function CompanyAccess() {
           <table className="w-full min-w-(--sz-44rem) text-left text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Email</th>
-                <th className="px-3 py-2 font-medium">Role</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 text-right font-medium">Action</th>
+                <th className="px-3 py-2 font-medium">{t("companyAccess.name")}</th>
+                <th className="px-3 py-2 font-medium">{t("companyAccess.email")}</th>
+                <th className="px-3 py-2 font-medium">{t("companyAccess.role")}</th>
+                <th className="px-3 py-2 font-medium">{t("companyAccess.status")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("companyAccess.action")}</th>
               </tr>
             </thead>
             <tbody>
               {members.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
-                    No user memberships found for this organization yet.
-                  </td>
+                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">{t("companyAccess.no_user_memberships_found_for_this_organization_yet")}</td>
                 </tr>
               ) : members.map((member) => {
-                const removalReason = member.removal?.reason ?? null;
+                const rawRemovalReason = member.removal?.reason;
+                const removalReasonKeys = {
+                  "Only human company members can be removed.": "companyAccess.removalReason0",
+                  "Board access is required to remove members.": "companyAccess.removalReason1",
+                  "You cannot remove yourself.": "companyAccess.removalReason2",
+                  "Instance admins cannot be removed from company access.": "companyAccess.removalReason3",
+                  "Board owners cannot be removed from company access.": "companyAccess.removalReason4",
+                  "Company admins cannot be removed from company access.": "companyAccess.removalReason5",
+                  "Only active company members can remove users.": "companyAccess.removalReason6",
+                  "You can only remove users below your company role.": "companyAccess.removalReason7",
+                } as Record<string, string>;
+                const removalReason = rawRemovalReason ? t(removalReasonKeys[rawRemovalReason] ?? "companyAccess.unknownRemovalReason", { defaultValue: rawRemovalReason }) : null;
                 const canArchive = member.removal?.canArchive ?? true;
                 const displayName = memberDisplayName(member);
                 return (
@@ -402,19 +409,17 @@ export function CompanyAccess() {
                     </td>
                     <td className="px-3 py-3">
                       {member.membershipRole
-                        ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
-                        : "Unset"}
+                        ? t(`roles.${member.membershipRole}`, { defaultValue: HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole] })
+                        : t("companyAccess.unset")}
                     </td>
                     <td className="px-3 py-3">
                       <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                        {member.status.replace("_", " ")}
+                        {t(`statuses.${member.status}`, { defaultValue: member.status.replace("_", " ") })}
                       </Badge>
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex justify-end gap-2">
-                        <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
-                          Edit
-                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>{t("companyAccess.edit")}</Button>
                         <span
                           className="inline-flex"
                           title={!canArchive ? removalReason ?? undefined : undefined}
@@ -426,9 +431,7 @@ export function CompanyAccess() {
                             disabled={!canArchive}
                             title={!canArchive ? removalReason ?? undefined : undefined}
                           >
-                            <Trash2 className="mr-1 h-3.5 w-3.5" />
-                            Remove
-                          </Button>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />{t("companyAccess.remove")}</Button>
                         </span>
                       </div>
                     </td>
@@ -443,16 +446,15 @@ export function CompanyAccess() {
       <Dialog open={!!editingMember} onOpenChange={(open) => !open && setEditingMemberId(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Edit member</DialogTitle>
-            <DialogDescription>
-              Update organization role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+            <DialogTitle>{t("companyAccess.edit_member")}</DialogTitle>
+            <DialogDescription>{t("companyAccess.editDescription", { name: editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId || t("companyAccess.thisMember") })}
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Organization role</span>
+                  <span className="font-medium">{t("companyAccess.organization_role")}</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
@@ -460,16 +462,16 @@ export function CompanyAccess() {
                       setDraftRole((event.target.value || null) as CompanyMember["membershipRole"])
                     }
                   >
-                    <option value="">Unset</option>
+                    <option value="">{t("companyAccess.unset")}</option>
                     {Object.entries(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS).map(([value, label]) => (
                       <option key={value} value={value}>
-                        {label}
+                        {t(`roles.${value}`, { defaultValue: label })}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Membership status</span>
+                  <span className="font-medium">{t("companyAccess.membership_status")}</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftStatus}
@@ -477,18 +479,16 @@ export function CompanyAccess() {
                       setDraftStatus(event.target.value as EditableMemberStatus)
                     }
                   >
-                    <option value="active">Active</option>
-                    <option value="pending">Pending</option>
-                    <option value="suspended">Suspended</option>
+                    <option value="active">{t("companyAccess.active")}</option>
+                    <option value="pending">{t("companyAccess.pending_1459")}</option>
+                    <option value="suspended">{t("companyAccess.suspended")}</option>
                   </select>
                 </label>
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingMemberId(null)}>
-              Cancel
-            </Button>
+            <Button variant="outline" onClick={() => setEditingMemberId(null)}>{t("companyAccess.cancel")}</Button>
             <Button
               onClick={() => {
                 if (!editingMember) return;
@@ -500,7 +500,7 @@ export function CompanyAccess() {
               }}
               disabled={updateMemberMutation.isPending}
             >
-              {updateMemberMutation.isPending ? "Saving…" : "Save member"}
+              {updateMemberMutation.isPending ? t("companyAccess.saving") : t("companyAccess.save_member")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -509,10 +509,8 @@ export function CompanyAccess() {
       <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Remove member</DialogTitle>
-            <DialogDescription>
-              Archive {memberDisplayName(removingMember)} and move active assignments before hiding this user from assignment fields.
-            </DialogDescription>
+            <DialogTitle>{t("companyAccess.remove_member")}</DialogTitle>
+            <DialogDescription>{t("companyAccess.removeDescription", { name: memberDisplayName(removingMember) || t("companyAccess.thisMember") })}</DialogDescription>
           </DialogHeader>
           {removingMember && (
             <div className="space-y-5">
@@ -521,22 +519,22 @@ export function CompanyAccess() {
                 <div className="text-sm text-muted-foreground">{removingMember.user?.email || removingMember.principalId}</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {assignedIssuesQuery.isLoading
-                    ? "Checking assigned tasks..."
-                    : `${assignedIssues.length} open assigned task${assignedIssues.length === 1 ? "" : "s"}`}
+                    ? t("companyAccess.checking_assigned_tasks")
+                    : t("companyAccess.openAssigned", { count: assignedIssues.length })}
                 </div>
               </div>
 
               {assignedIssues.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Task reassignment</div>
+                  <div className="text-sm font-medium">{t("companyAccess.task_reassignment")}</div>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                     value={reassignmentTarget}
                     onChange={(event) => setReassignmentTarget(event.target.value)}
                   >
-                    <option value="__unassigned">Leave unassigned</option>
+                    <option value="__unassigned">{t("companyAccess.leave_unassigned")}</option>
                     {activeReassignmentUsers.length > 0 ? (
-                      <optgroup label="Humans">
+                      <optgroup label={t("companyAccess.humans")}>
                         {activeReassignmentUsers.map((member) => (
                           <option key={member.id} value={`user:${member.principalId}`}>
                             {memberDisplayName(member)}
@@ -545,7 +543,7 @@ export function CompanyAccess() {
                       </optgroup>
                     ) : null}
                     {activeReassignmentAgents.length > 0 ? (
-                      <optgroup label="Agents">
+                      <optgroup label={t("companyAccess.agents")}>
                         {activeReassignmentAgents.map((agent) => (
                           <option key={agent.id} value={`agent:${agent.id}`}>
                             {agent.name} ({agent.role})
@@ -563,7 +561,7 @@ export function CompanyAccess() {
                     ))}
                     {assignedIssues.length > 6 ? (
                       <div className="px-3 py-2 text-sm text-muted-foreground">
-                        {assignedIssues.length - 6} more task{assignedIssues.length - 6 === 1 ? "" : "s"}
+                        {t("companyAccess.moreTasks", { count: assignedIssues.length - 6 })}
                       </div>
                     ) : null}
                   </div>
@@ -572,9 +570,7 @@ export function CompanyAccess() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRemovingMemberId(null)}>
-              Cancel
-            </Button>
+            <Button variant="outline" onClick={() => setRemovingMemberId(null)}>{t("companyAccess.cancel")}</Button>
             <Button
               variant="destructive"
               onClick={() => {
@@ -586,7 +582,7 @@ export function CompanyAccess() {
               }}
               disabled={archiveMemberMutation.isPending || assignedIssuesQuery.isLoading}
             >
-              {archiveMemberMutation.isPending ? "Removing..." : "Remove member"}
+              {archiveMemberMutation.isPending ? t("companyAccess.removing") : t("companyAccess.remove_member")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -603,6 +599,7 @@ export function CompanyAccess() {
 }
 
 export function CompanyAccessLegacyRoute() {
+  const { t, i18n } = useTranslation("settings");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { slots, isLoading, errorMessage } = usePluginSlots({
@@ -613,10 +610,10 @@ export function CompanyAccessLegacyRoute() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Access" },
+      { label: t("companyAccess.settings"), href: "/company/settings" },
+      { label: t("companyAccess.access") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [t, setBreadcrumbs]);
 
   const permissionsSlot = slots.find((slot) => slot.routePath === "permissions");
   if (permissionsSlot) {
@@ -624,7 +621,7 @@ export function CompanyAccessLegacyRoute() {
   }
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Checking for advanced permission extensions...</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyAccess.checking_for_advanced_permission_extensions")}</div>;
   }
 
   return (
@@ -632,29 +629,25 @@ export function CompanyAccessLegacyRoute() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Advanced Permissions</h1>
+          <h1 className="text-lg font-semibold">{t("companyAccess.advanced_permissions")}</h1>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Advanced access, scoped assignment, and explicit grant controls are provided by installed organization settings extensions.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("companyAccess.advanced_access_scoped_assignment_and_explicit_grant_controls_are")}</p>
       </div>
 
       <div className="space-y-4 rounded-xl border border-border px-5 py-5">
         <div className="space-y-2">
-          <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
-          <p className="text-sm text-muted-foreground">
-            Core Paperclip keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
-          </p>
+          <h2 className="text-sm font-semibold">{t("companyAccess.advanced_permissions_unavailable")}</h2>
+          <p className="text-sm text-muted-foreground">{t("companyAccess.core_paperclip_keeps_enforcing_organization_boundaries_and_any_existing")}</p>
           {errorMessage ? (
-            <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>
+            <p className="text-sm text-destructive">{t("companyAccess.pluginError", { error: errorMessage })}</p>
           ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild>
-            <Link to="/company/settings/members">Open Members</Link>
+            <Link to="/company/settings/members">{t("companyAccess.open_members")}</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/company/settings/members?tab=invites">Open Invites</Link>
+            <Link to="/company/settings/members?tab=invites">{t("companyAccess.open_invites")}</Link>
           </Button>
         </div>
       </div>
@@ -663,7 +656,7 @@ export function CompanyAccessLegacyRoute() {
 }
 
 function memberDisplayName(member: CompanyMember | null) {
-  if (!member) return "this member";
+  if (!member) return "";
   return member.user?.name?.trim() || member.user?.email || member.principalId;
 }
 

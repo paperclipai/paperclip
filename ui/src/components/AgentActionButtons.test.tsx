@@ -131,11 +131,13 @@ describe("AgentActionButtons", () => {
 
   function render(agent: Agent, props: Partial<ComponentProps<typeof AgentActionButtons>> = {}) {
     root ??= createRoot(container);
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
-      </QueryClientProvider>,
-    );
+    act(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
+        </QueryClientProvider>,
+      );
+    });
   }
 
   it.each(["codex_local", "claude_local", "opencode_local", "pi_local", "paperclip_runner"])("returns unfinished %s agents to their saved runner", async adapterType => {

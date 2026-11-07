@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import {
   AlertCircle,
   AlertOctagon,
@@ -77,18 +78,18 @@ export function externalObjectIconForLiveness(liveness: string): LucideIcon | nu
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  unknown: "Not yet resolved",
-  open: "Open",
-  waiting: "Waiting",
-  running: "Running",
-  succeeded: "Succeeded",
-  failed: "Failed",
-  blocked: "Blocked",
-  closed: "Closed",
-  archived: "Archived",
-  auth_required: "Authorization required",
-  rate_limited: "Rate limited",
-  unreachable: "Unreachable",
+  get "unknown"() { return t("display:meta_53ed2fa2a089"); },
+  get "open"() { return t("display:meta_cf9b77061f7b"); },
+  get "waiting"() { return t("display:meta_33d30632848d"); },
+  get "running"() { return t("display:meta_73989d9c5926"); },
+  get "succeeded"() { return t("display:meta_c8fbda90950d"); },
+  get "failed"() { return t("display:meta_09fef5d8d9a3"); },
+  get "blocked"() { return t("display:meta_99613c74ce01"); },
+  get "closed"() { return t("display:meta_88d86b7721d5"); },
+  get "archived"() { return t("display:meta_eddc813f35b1"); },
+  get "auth_required"() { return t("display:meta_823a8a83f58e"); },
+  get "rate_limited"() { return t("display:meta_9f0d69d17887"); },
+  get "unreachable"() { return t("display:meta_aa284d0c56a2"); },
 };
 
 export function externalObjectCategoryLabel(category: string): string {
@@ -96,12 +97,12 @@ export function externalObjectCategoryLabel(category: string): string {
 }
 
 const LIVENESS_LABELS: Record<string, string> = {
-  unknown: "Not yet refreshed",
-  fresh: "Fresh",
-  stale: "Stale",
-  auth_required: "Requires auth",
-  rate_limited: "Rate limited",
-  unreachable: "Unreachable",
+  get "unknown"() { return t("display:meta_af75c0f3862b"); },
+  get "fresh"() { return t("display:meta_f65d3258c00d"); },
+  get "stale"() { return t("display:meta_189cc40c2206"); },
+  get "auth_required"() { return t("display:meta_eadf133f8c34"); },
+  get "rate_limited"() { return t("display:meta_9f0d69d17887"); },
+  get "unreachable"() { return t("display:meta_aa284d0c56a2"); },
 };
 
 export function externalObjectLivenessLabel(liveness: string): string {
@@ -120,7 +121,7 @@ export function externalObjectDisplayStatusLabel(input: {
   const isGenericUrl = input.providerKey === "url" && input.objectType === "link";
   const hasKnownObjectType = Boolean(input.providerKey && input.objectType);
   if (input.statusCategory === "unknown" && hasKnownObjectType && !isGenericUrl) {
-    if (input.liveness === "fresh") return "Status unavailable";
+    if (input.liveness === "fresh") return t("display:copy_965b909ecf5c");
     return externalObjectLivenessLabel(input.liveness);
   }
   return externalObjectCategoryLabel(input.statusCategory);
@@ -177,7 +178,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 export function externalObjectProviderLabel(providerKey: string | null | undefined): string {
-  if (!providerKey) return "External";
+  if (!providerKey) return t("display:copy_2e7d2b3c6434");
   const lookup = PROVIDER_LABELS[providerKey];
   if (lookup) return lookup;
   return providerKey
@@ -187,17 +188,17 @@ export function externalObjectProviderLabel(providerKey: string | null | undefin
 }
 
 const OBJECT_TYPE_LABELS: Record<string, string> = {
-  pull_request: "pull request",
-  issue: "issue",
-  deployment: "deployment",
-  workflow_run: "workflow run",
-  ticket: "ticket",
-  lead: "lead",
+  get "pull_request"() { return t("display:meta_51ae8d2d0402"); },
+  get "issue"() { return t("display:meta_00819c0e54f9"); },
+  get "deployment"() { return t("display:meta_7233fb3683f4"); },
+  get "workflow_run"() { return t("display:meta_f2c546d0cd13"); },
+  get "ticket"() { return t("display:meta_346d34a0f0d9"); },
+  get "lead"() { return t("display:meta_8cb33b2754e5"); },
   url_link: "URL",
 };
 
 export function externalObjectTypeLabel(objectType: string | null | undefined): string {
-  if (!objectType) return "object";
+  if (!objectType) return t("display:copy_62a93e02d830");
   return OBJECT_TYPE_LABELS[objectType] ?? objectType.replace(/_/g, " ");
 }
 

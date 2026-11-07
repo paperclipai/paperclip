@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useMemo, type MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { SummarySlotIssueRef } from "@paperclipai/shared";
@@ -37,6 +38,7 @@ export interface StatusCardTileProps {
 }
 
 function StateDot({ className }: { className: string }) {
+  const { t: translateShell } = useTranslation("shell");
   return <span className={cn("mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full", className)} aria-hidden="true" />;
 }
 
@@ -60,6 +62,7 @@ export function StatusCardTile({
   refreshPending,
   recompilePending,
 }: StatusCardTileProps) {
+  const { t: translateShell } = useTranslation("shell");
   const lifecycle = deriveStatusCardLifecycle(card);
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
   // A setup run is actually in flight when the card is compiling AND has a
@@ -72,16 +75,16 @@ export function StatusCardTile({
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
     () =>
       lifecycle === "updating" && card.generatingIssueId
-        ? { id: card.generatingIssueId, identifier: null, title: card.title ?? "Status update", status: "in_progress" }
+        ? { id: card.generatingIssueId, identifier: null, title: card.title ?? translateShell("shell:status_update"), status: "in_progress" }
         : null,
-    [lifecycle, card.generatingIssueId, card.title],
+    [lifecycle, card.generatingIssueId, card.title, translateShell],
   );
   const draftStream = useSummaryDraftStream(companyId, generatingIssue);
 
   const policyLabel = describeRefreshPolicy(card.refreshPolicy);
   const tokensLabel = formatTokens(card.todayTokens);
   const costLabel = formatCents(card.todayCostCents);
-  const freshnessLabel = card.lastGeneratedAt ? relativeTime(card.lastGeneratedAt) : "no summary yet";
+  const freshnessLabel = card.lastGeneratedAt ? relativeTime(card.lastGeneratedAt) : translateShell("shell:no_summary_yet_3e7069");
   const hasSummary = Boolean(card.summaryBody && card.summaryBody.trim().length > 0);
 
   return (
@@ -112,31 +115,25 @@ export function StatusCardTile({
           )}
           title={card.title ?? card.interestPrompt}
         >
-          {card.title ?? "New card"}
+          {card.title ?? translateShell("shell:new_card")}
         </span>
         <div onClick={(event) => event.stopPropagation()}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="-mr-1 -mt-1 h-7 w-7 text-muted-foreground" aria-label="Card actions">
+              <Button variant="ghost" size="icon" className="-mr-1 -mt-1 h-7 w-7 text-muted-foreground" aria-label={translateShell("shell:card_actions")}>
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={onOpen}>Open detail</DropdownMenuItem>
-              <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>
-                Refresh now
-              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onOpen}>{translateShell("shell:open_detail")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>{translateShell("shell:refresh_now")}</DropdownMenuItem>
               {(lifecycle === "compiling" && !setupRunning) || lifecycle === "error" ? (
-                <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>
-                  Run now
-                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>{translateShell("shell:run_now")}</DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
-              <DropdownMenuItem onSelect={onOpenDebug}>Query debug</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onEditInterest}>{translateShell("shell:edit_interest_settings")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onOpenDebug}>{translateShell("shell:query_debug")}</DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={onArchive} variant="destructive">
-                Archive
-              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onArchive} variant="destructive">{translateShell("shell:archive")}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -154,7 +151,7 @@ export function StatusCardTile({
               ) : (
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
               )}
-              <span>{setupRunning ? "Setting up your card…" : "Setup didn’t finish"}</span>
+              <span>{setupRunning ? translateShell("shell:setting_up_your_card") : translateShell("shell:setup_didn_t_finish")}</span>
             </div>
             <p className="mt-1 line-clamp-2 text-muted-foreground">“{card.interestPrompt}”</p>
             {setupRunning ? (
@@ -165,9 +162,7 @@ export function StatusCardTile({
                 onClick={(event) => event.stopPropagation()}
                 className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline"
               >
-                <ExternalLink className="h-3.5 w-3.5" />
-                View setup task
-              </Link>
+                <ExternalLink className="h-3.5 w-3.5" />{translateShell("shell:view_setup_task")}</Link>
             ) : (
               // The first run stalled (agent run died mid-setup) and the card
               // can sit here forever, so offer a manual re-kick.
@@ -178,7 +173,7 @@ export function StatusCardTile({
                 className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60"
               >
                 <Wand2 className={cn("h-3.5 w-3.5", recompilePending && "animate-pulse")} />
-                {recompilePending ? "Starting…" : "Run now"}
+                {recompilePending ? translateShell("shell:starting") : translateShell("shell:run_now")}
               </button>
             )}
           </div>
@@ -191,8 +186,8 @@ export function StatusCardTile({
               <span className="min-w-0 flex-1 truncate" title={draftStream.statusLine ?? undefined}>
                 {draftStream.statusLine
                   ?? (card.pendingChangeCount > 0
-                    ? `Integrating ${card.pendingChangeCount} ${card.pendingChangeCount === 1 ? "change" : "changes"}…`
-                    : "Updating now…")}
+                    ? translateShell("shell:card_integrating_changes", { count: card.pendingChangeCount })
+                    : translateShell("shell:updating_now"))}
               </span>
               {card.generatingIssueId ? (
                 <Link
@@ -200,9 +195,7 @@ export function StatusCardTile({
                   onClick={(event) => event.stopPropagation()}
                   className="inline-flex shrink-0 items-center gap-1 font-medium underline-offset-2 hover:underline"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  View update task
-                </Link>
+                  <ExternalLink className="h-3.5 w-3.5" />{translateShell("shell:view_update_task")}</Link>
               ) : null}
             </div>
           </div>
@@ -216,25 +209,18 @@ export function StatusCardTile({
             className="flex w-full items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-amber-500/10 disabled:opacity-60"
           >
             <span>
-              {card.pendingChangeCount} {card.pendingChangeCount === 1 ? "change" : "changes"} since last update
-            </span>
-            <span className="shrink-0 font-medium text-amber-700 dark:text-amber-400">Refresh</span>
+              {translateShell("shell:card_changes_since_update", { count: card.pendingChangeCount })}</span>
+            <span className="shrink-0 font-medium text-amber-700 dark:text-amber-400">{translateShell("shell:refresh")}</span>
           </button>
         ) : null}
 
         {lifecycle === "error" ? (
           <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-1.5 text-xs">
             <span className="flex items-center gap-1.5 text-destructive">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              Last update failed
-            </span>
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />{translateShell("shell:last_update_failed")}</span>
             <span className="flex shrink-0 items-center gap-3">
-              <button type="button" onClick={stopClick(onRefresh)} disabled={refreshPending} className="font-medium text-destructive hover:underline disabled:opacity-60">
-                Retry
-              </button>
-              <button type="button" onClick={stopClick(onOpen)} className="text-muted-foreground hover:underline">
-                Details
-              </button>
+              <button type="button" onClick={stopClick(onRefresh)} disabled={refreshPending} className="font-medium text-destructive hover:underline disabled:opacity-60">{translateShell("shell:retry")}</button>
+              <button type="button" onClick={stopClick(onOpen)} className="text-muted-foreground hover:underline">{translateShell("shell:details")}</button>
             </span>
           </div>
         ) : null}
@@ -244,8 +230,8 @@ export function StatusCardTile({
             <PauseCircle className="h-3.5 w-3.5 shrink-0 text-orange-500" />
             <span>
               {lifecycle === "paused_budget"
-                ? "Daily token cap reached — auto-updates paused"
-                : "Outside active hours — auto-updates paused"}
+                ? translateShell("shell:daily_token_cap_reached_auto_updates_paused")
+                : translateShell("shell:outside_active_hours_auto_updates_paused")}
             </span>
           </div>
         ) : null}
@@ -254,18 +240,16 @@ export function StatusCardTile({
       {/* Summary body — kept visible for stale/error/updating/paused (never blank) */}
       <div className="min-h-0 flex-1 overflow-hidden px-4 pt-2">
         {lifecycle === "error" && card.summaryBody ? (
-          <p className="mb-1 text-(length:--text-micro) text-muted-foreground">Showing last good summary:</p>
+          <p className="mb-1 text-(length:--text-micro) text-muted-foreground">{translateShell("shell:showing_last_good_summary")}</p>
         ) : null}
         {hasSummary ? (
           <MarkdownBody className="text-xs leading-6 text-foreground [&_p]:my-0.5">{card.summaryBody!}</MarkdownBody>
         ) : lifecycle === "compiling" ? (
-          <p className="text-xs text-muted-foreground">
-            You can add instructions and pick an update policy while this runs.
-          </p>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:you_can_add_instructions_and_pick_an")}</p>
         ) : lifecycle === "updating" && draftStream.draft ? (
           <MarkdownBody className="text-xs leading-6 text-foreground [&_p]:my-0.5">{draftStream.draft}</MarkdownBody>
         ) : (
-          <p className="text-xs text-muted-foreground">No summary yet.</p>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:no_summary_yet_959097")}</p>
         )}
       </div>
 
@@ -273,7 +257,7 @@ export function StatusCardTile({
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-border px-4 py-2.5">
         <span className="truncate text-(length:--text-micro) text-muted-foreground">
           {lifecycle === "compiling" ? (
-            "setting up · first summary pending"
+            translateShell("shell:setting_up_first_summary_pending")
           ) : (
             <>
               {freshnessLabel} · {policyLabel}
@@ -292,7 +276,7 @@ export function StatusCardTile({
             className="h-7 w-7 shrink-0 text-muted-foreground"
             onClick={stopClick(onRefresh)}
             disabled={refreshPending}
-            aria-label="Refresh card"
+            aria-label={translateShell("shell:refresh_card")}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", refreshPending && "animate-spin")} />
           </Button>

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SecretStatus, UserSecretDefinition } from "@paperclipai/shared";
@@ -65,6 +66,7 @@ const emptyForm: DefinitionForm = {
  * only — never values — per the UX terminology decisions.
  */
 export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -125,7 +127,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
     onSuccess: (definition) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });
       pushToast({
-        title: editing ? "Definition updated" : "Definition created",
+        title: editing ? translateAgentPage("agents:definition_updated") : translateAgentPage("agents:definition_created"),
         body: definition.name,
         tone: "success",
       });
@@ -140,12 +142,12 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
       secretsApi.removeUserSecretDefinition(companyId, definition.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });
-      pushToast({ title: "Definition removed", tone: "info" });
+      pushToast({ title: translateAgentPage("agents:definition_removed"), tone: "info" });
       setDeleteTarget(null);
     },
     onError: (err) =>
       pushToast({
-        title: "Could not remove definition",
+        title: translateAgentPage("agents:could_not_remove_definition"),
         body: describeError(err).body,
         tone: "error",
       }),
@@ -157,17 +159,12 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
       <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
         <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
-        <p>
-          Define credentials that <span className="font-medium">each member supplies for
-          themselves</span>. You set the shape here; every user enters their own value under My
-          secrets. Coverage shows how many members have set a value — never the values themselves.
-        </p>
+        <p>{translateAgentPage("agents:define_credentials_that")}{" "}<span className="font-medium">{translateAgentPage("agents:each_member_supplies_for_themselves")}</span>{translateAgentPage("agents:you_set_the_shape_here_every_user_enters")}</p>
       </div>
 
       <div className="flex items-center justify-end">
         <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-1 h-3.5 w-3.5" /> New user secret
-        </Button>
+          <Plus className="mr-1 h-3.5 w-3.5" />{" "}{translateAgentPage("agents:new_user_secret")}</Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -175,7 +172,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
           <div className="py-4">
             <QueryErrorState
               error={definitionsQuery.error}
-              action="load definitions"
+              action={translateAgentPage("agents:load_definitions")}
               onRetry={definitionsView.retry}
               retrying={definitionsView.isFetching}
             />
@@ -183,8 +180,8 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
         ) : definitions.length === 0 && !definitionsQuery.isPending && definitionsView.kind !== "reconnecting" ? (
           <EmptyState
             icon={UserRound}
-            message="No user secret definitions yet. Create one to require each member to supply their own credential."
-            action="New user secret"
+            message={translateAgentPage("agents:no_user_secret_definitions_yet_create_one_to")}
+            action={translateAgentPage("agents:new_user_secret")}
             onAction={openCreate}
           />
         ) : (
@@ -237,17 +234,15 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {editing ? "Edit user secret" : "New user secret"}
+              {editing ? translateAgentPage("agents:edit_user_secret") : translateAgentPage("agents:new_user_secret")}
               <UserSecretChip />
             </DialogTitle>
-            <DialogDescription>
-              Members supply their own value for this credential. No value is entered here.
-            </DialogDescription>
+            <DialogDescription>{translateAgentPage("agents:members_supply_their_own_value_for_this_credential")}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Name</label>
+              <label className="text-xs font-medium text-foreground">{translateAgentPage("agents:name")}</label>
               <Input
                 value={form.name}
                 onChange={(event) => {
@@ -258,52 +253,50 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                     key: keyDirty ? current.key : keyFromName(name),
                   }));
                 }}
-                placeholder="Personal GitHub token"
+                placeholder={translateAgentPage("agents:personal_github_token")}
                 autoFocus
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Key</label>
+              <label className="text-xs font-medium text-foreground">{translateAgentPage("agents:key")}</label>
               <Input
                 value={form.key}
                 onChange={(event) => {
                   setKeyDirty(true);
                   setForm((current) => ({ ...current, key: event.target.value }));
                 }}
-                placeholder="PERSONAL_GH_TOKEN"
+                placeholder={translateAgentPage("agents:personal_gh_token")}
                 className="font-mono text-sm"
                 disabled={Boolean(editing)}
               />
-              <p className="text-(length:--text-micro) text-muted-foreground">
-                Stable identifier referenced by env bindings. {editing ? "Cannot be changed." : ""}
+              <p className="text-(length:--text-micro) text-muted-foreground">{translateAgentPage("agents:stable_identifier_referenced_by_env_bindings")}{" "}{editing ? translateAgentPage("agents:cannot_be_changed") : ""}
               </p>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Description</label>
+              <label className="text-xs font-medium text-foreground">{translateAgentPage("agents:description")}</label>
               <Input
                 value={form.description}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, description: event.target.value }))
                 }
-                placeholder="What this credential is for"
+                placeholder={translateAgentPage("agents:what_this_credential_is_for")}
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">
-                Usage guidance <span className="text-muted-foreground">(optional)</span>
+              <label className="text-xs font-medium text-foreground">{translateAgentPage("agents:usage_guidance")}{" "}<span className="text-muted-foreground">{translateAgentPage("agents:optional_b16c7a")}</span>
               </label>
               <Textarea
                 value={form.usageGuidance}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, usageGuidance: event.target.value }))
                 }
-                placeholder="Tell members how to create their token, required scopes, etc."
+                placeholder={translateAgentPage("agents:tell_members_how_to_create_their_token_required")}
                 className="min-h-(--sz-70px) text-sm"
               />
             </div>
             {editing ? (
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">Status</label>
+                <label className="text-xs font-medium text-foreground">{translateAgentPage("agents:status")}</label>
                 <Select
                   value={form.status}
                   onValueChange={(status) =>
@@ -314,9 +307,9 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="disabled">Disabled</SelectItem>
-                    <SelectItem value="archived">Archived</SelectItem>
+                    <SelectItem value="active">{translateAgentPage("agents:active")}</SelectItem>
+                    <SelectItem value="disabled">{translateAgentPage("agents:disabled")}</SelectItem>
+                    <SelectItem value="archived">{translateAgentPage("agents:archived")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -325,11 +318,9 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
           </div>
 
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDialogOpen(false)} disabled={save.isPending}>
-              Cancel
-            </Button>
+            <Button variant="ghost" onClick={() => setDialogOpen(false)} disabled={save.isPending}>{translateAgentPage("agents:cancel")}</Button>
             <Button onClick={() => save.mutate()} disabled={!canSave || save.isPending}>
-              {save.isPending ? "Saving…" : editing ? "Save changes" : "Create"}
+              {save.isPending ? translateAgentPage("agents:saving") : editing ? translateAgentPage("agents:save_changes") : translateAgentPage("agents:create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -339,22 +330,17 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove user secret?</DialogTitle>
-            <DialogDescription>
-              This removes the definition <span className="font-mono">{deleteTarget?.key}</span> for
-              the whole company. Existing member values become unreferenced. This cannot be undone.
-            </DialogDescription>
+            <DialogTitle>{translateAgentPage("agents:remove_user_secret")}</DialogTitle>
+            <DialogDescription>{translateAgentPage("agents:this_removes_the_definition")}{" "}<span className="font-mono">{deleteTarget?.key}</span>{" "}{translateAgentPage("agents:for_the_whole_company_existing_member_values_become")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={remove.isPending}>
-              Cancel
-            </Button>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={remove.isPending}>{translateAgentPage("agents:cancel")}</Button>
             <Button
               variant="destructive"
               onClick={() => deleteTarget && remove.mutate(deleteTarget)}
               disabled={remove.isPending}
             >
-              {remove.isPending ? "Removing…" : "Remove"}
+              {remove.isPending ? translateAgentPage("agents:removing") : translateAgentPage("agents:remove")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -370,6 +356,7 @@ function CoverageBadge({
   companyId: string;
   definitionId: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const coverageQuery = useQuery({
     queryKey: queryKeys.secrets.userDefinitionCoverage(companyId, definitionId),
     queryFn: () => secretsApi.userSecretDefinitionCoverage(companyId, definitionId),
@@ -379,10 +366,9 @@ function CoverageBadge({
   const missing = summary ? summary.missingCount : 0;
   return (
     <p className="mt-1 inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
-      <Users className="h-3 w-3" />
-      Coverage: {coverageSummaryLabel(summary)}
+      <Users className="h-3 w-3" />{translateAgentPage("agents:coverage_a721d2")}{" "}{coverageSummaryLabel(summary)}
       {summary && missing > 0 ? (
-        <span className="text-amber-600 dark:text-amber-400">· {missing} not set</span>
+        <span className="text-amber-600 dark:text-amber-400">· {missing}{" "}{translateAgentPage("agents:not_set")}</span>
       ) : null}
     </p>
   );

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { AgentAvatar } from "./AgentAvatar";
 import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -34,6 +35,7 @@ export interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className, appearance = "default", density = "comfortable" }: ActivityRowProps) {
+  useTranslation("final-components-b");
   const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
@@ -54,7 +56,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorName = actor?.name ?? (event.actorType === "system" ? t("final-components-b:ActivityRow.System_6725e7") : userProfile?.label ?? (event.actorType === "user" ? t("final-components-b:ActivityRow.Board_4816cb") : event.actorId || t("final-components-b:ActivityRow.Unknown_b764cd")));
   const actorAvatarUrl = userProfile?.image ?? null;
   const avatar = event.actorType === "agent" ? (
     <AgentAvatar agent={actor} name={actorName} size={24} className="@xl:self-center" />
@@ -66,7 +68,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
   );
 
   if (appearance === "refreshed") {
-    const subject = event.entityType === "issue" ? entityTitle || name || "Task" : [name, entityTitle].filter(Boolean).join(" — ");
+    const subject = event.entityType === "issue" ? entityTitle || name || t("final-components-b:ActivityRow.Task_4bc74b") : [name, entityTitle].filter(Boolean).join(" — ");
     return <RefreshedActivityRow event={event} avatar={avatar} actorName={actorName} verb={verb} subject={subject} identifier={event.entityType === "issue" ? name ?? undefined : undefined} link={link} density={density} className={className} />;
   }
 
@@ -130,6 +132,7 @@ function RefreshedActivityRow({ event, avatar, actorName, verb, subject, identif
   event: ActivityEvent; avatar: ReactNode; actorName: string; verb: string; subject: string;
   identifier?: string; link: string | null; density: "comfortable" | "compact"; className?: string;
 }) {
+  useTranslation("final-components-b");
   const { hoveredCell, onMouseMove, clearHoveredCell } = useCellMarqueeHover();
   const [focused, setFocused] = useState(false);
   const rowProps = {

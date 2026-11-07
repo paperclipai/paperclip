@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect } from "react";
 import { useParams, useSearchParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -14,6 +15,7 @@ import { TEMPLATES, type TemplateKey } from "./profile-model";
  * the rest of the tool-access surface.
  */
 export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ profileId?: string }>();
@@ -28,16 +30,16 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Access profiles", href: advancedTabHref("profiles") },
-      { label: mode === "edit" ? "Resume draft" : "New profile" },
+      { label: selectedCompany?.name ?? translateAgentPage("agents:organization"), href: "/dashboard" },
+      { label: translateAgentPage("agents:apps_d9a368"), href: "/apps" },
+      { label: translateAgentPage("agents:access_profiles"), href: advancedTabHref("profiles") },
+      { label: mode === "edit" ? translateAgentPage("agents:resume_draft") : translateAgentPage("agents:new_profile") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, mode]);
+  }, [setBreadcrumbs, selectedCompany?.name, mode, translateAgentPage]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to create a profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{translateAgentPage("agents:select_an_organization_to_create_a_profile")}</div>;
   }
 
   return (
@@ -45,11 +47,9 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
           <h1 className="text-xl font-bold text-foreground">
-            {mode === "edit" ? "Finish your profile" : "New access profile"}
+            {mode === "edit" ? translateAgentPage("agents:finish_your_profile") : translateAgentPage("agents:new_access_profile")}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Choose which tools this profile allows, then assign it to the agents that need them.
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{translateAgentPage("agents:choose_which_tools_this_profile_allows_then_assign")}</p>
         </header>
         <ProfileWizard
           companyId={selectedCompanyId}

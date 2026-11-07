@@ -1,8 +1,29 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 
 function source(relativePath: string) {
-  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  const content = readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  const namespace = /useTranslation\("([^"]+)"\)/.exec(content)?.[1] ?? "translation";
+  const resolve = (key: string) => {
+    const colon = key.indexOf(":");
+    return i18n.getResource("en", colon < 0 ? namespace : key.slice(0, colon), colon < 0 ? key : key.slice(colon + 1));
+  };
+  const translatedMarkup = Array.from(content.matchAll(/<Trans\b[^>]*?i18nKey="([^"]+)"/g), ([tag, key]) => {
+    const ns = /\bns="([^"]+)"/.exec(tag)?.[1] ?? namespace;
+    const value = i18n.getResource("en", ns, key);
+    return typeof value === "string" ? value : "";
+  });
+  return content
+    .replace(/\{((?:t|translate|finalPagesT)\("([^"]+)"\))\}/g, (match, _call: string, key: string) => {
+      const value = resolve(key);
+      return typeof value === "string" ? JSON.stringify(value) : match;
+    })
+    .replace(/\b(?:t|translate|finalPagesT)\("([^"]+)"(?:,\s*\{[^}]*\})?\)/g, (match, key: string) => {
+      const value = resolve(key);
+      return typeof value === "string" ? JSON.stringify(value) : match;
+    })
+    .concat("\n", translatedMarkup.join("\n"), "\n", translatedMarkup.map(value => value.replace(/<\/?[^>]+>/g, "")).join("\n"));
 }
 
 describe("chat connector UI contract", () => {
@@ -185,7 +206,7 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("/task@bot_username");
     expect(setup).toContain("registers its command menu automatically");
     expect(setup).toContain(
-      "ordinary\n          mentions are not delivered to bots",
+      "ordinary mentions are not delivered to bots",
     );
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");

@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project, ResourceMemberships } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProjects } from "./SidebarProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -363,6 +364,22 @@ describe("SidebarProjects", () => {
     });
     await flushReact();
   }
+
+  it("localizes project sorting menus while preserving project names and ordering", async () => {
+    await renderSidebarProjects();
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="项目分组操作"]');
+      expect(trigger).not.toBeNull();
+      await act(async () => { trigger!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); trigger!.click(); });
+      await flushReact();
+      expect(document.body.textContent).toContain("按名称排序");
+      expect(document.body.textContent).toContain("最近更新");
+      expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("renders icon-only project rows with tooltips and no row actions in the rail", async () => {
     await renderRailSidebarProjects();

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   IssueCommentMetadata,
   IssueCommentMetadataRow,
@@ -11,11 +12,11 @@ import type {
 } from "../components/SystemNotice";
 
 const TONE_LABEL: Record<SystemNoticeTone, string> = {
-  neutral: "System notice",
-  info: "System notice",
-  success: "System notice",
-  warning: "System warning",
-  danger: "System alert",
+  get "neutral"() { return t("display:copy_399320a290b7"); },
+  get "info"() { return t("display:copy_399320a290b7"); },
+  get "success"() { return t("display:copy_399320a290b7"); },
+  get "warning"() { return t("display:copy_2cb0b2be0241"); },
+  get "danger"() { return t("display:copy_835afd6493fe"); },
 };
 
 function metadataRowText(row: { label?: string | null }, fallback: string) {
@@ -29,19 +30,19 @@ function mapMetadataRow(
 ): SystemNoticeMetadataRow | null {
   switch (row.type) {
     case "text":
-      return { kind: "text", label: metadataRowText(row, "Detail"), value: row.text };
+      return { kind: "text", label: metadataRowText(row, t("display:copy_6d045cadcec9")), value: row.text };
     case "code":
-      return { kind: "code", label: metadataRowText(row, "Code"), value: row.code };
+      return { kind: "code", label: metadataRowText(row, t("display:copy_9026b76a390f")), value: row.code };
     case "key_value":
       return { kind: "text", label: row.label, value: row.value };
     case "issue_link": {
       const identifier = row.identifier ?? null;
       if (!identifier) {
-        return { kind: "text", label: metadataRowText(row, "Task"), value: row.title ?? "unknown" };
+        return { kind: "text", label: metadataRowText(row, t("display:copy_4a37fef800cd")), value: row.title ?? t("display:copy_4042057e3f06") };
       }
       return {
         kind: "issue",
-        label: metadataRowText(row, "Task"),
+        label: metadataRowText(row, t("display:copy_4a37fef800cd")),
         identifier,
         href: `/issues/${identifier}`,
         title: row.title ?? undefined,
@@ -51,7 +52,7 @@ function mapMetadataRow(
       const name = row.name?.trim() || row.agentId.slice(0, 8);
       return {
         kind: "agent",
-        label: metadataRowText(row, "Agent"),
+        label: metadataRowText(row, t("display:copy_e8ff02c389eb")),
         name,
         href: `/agents/${row.agentId}`,
       };
@@ -61,7 +62,7 @@ function mapMetadataRow(
       const href = runAgentId ? `/agents/${runAgentId}/runs/${row.runId}` : undefined;
       return {
         kind: "run",
-        label: metadataRowText(row, "Run"),
+        label: metadataRowText(row, t("display:copy_cbea70186698")),
         runId: row.runId,
         href,
         status: row.title ?? undefined,

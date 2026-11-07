@@ -1,3 +1,4 @@
+import { t as translate } from "@/i18n";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
@@ -18,8 +19,8 @@ import { LINK_LABEL_FADE_IN, LINK_LABEL_FADE_OUT } from "./onboarding-motion";
  */
 
 const LINK_LABEL: Record<CredentialMode, string> = {
-  subscription: "Use subscription instead",
-  api: "Use API key instead",
+  get subscription() { return translate("connections:use_subscription_instead_1e08ed4"); },
+  get api() { return translate("connections:use_api_key_instead_3c9d814"); },
 };
 const NATIVE_MODES: CredentialMode[] = ["subscription", "api"];
 

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
@@ -26,6 +27,7 @@ export function TaskDocumentPanel({
   documentIssueId?: string;
   currentIssueId?: string;
 }) {
+  useTranslation("task-components");
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
@@ -50,9 +52,7 @@ export function TaskDocumentPanel({
   if (query.isLoading || view.kind === "reconnecting") {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        Loading document…
-      </div>
+        <Loader2 className="size-4 animate-spin" aria-hidden />{t("task-components:loadingDocument_d71a0ada")}</div>
     );
   }
   if (view.kind === "error") {
@@ -68,9 +68,9 @@ export function TaskDocumentPanel({
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
         <FileQuestion className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
         <div className="space-y-1">
-          <p className="font-medium">{revisionId ? "Reviewed revision unavailable" : "Document no longer available"}</p>
+          <p className="font-medium">{revisionId ? t("final-components-b:task-side-panel.TaskDocumentPanel.Reviewed_revision_unavailable_a18955") : t("task-components:documentNoLongerAvailable_d368fef9")}</p>
           <p className="text-muted-foreground">
-            {revisionId ? "The exact reviewed revision could not be found. The current version has not been substituted." : "Close this tab or choose another document."}
+            {revisionId ? t("final-components-b:task-side-panel.TaskDocumentPanel.The_exact_reviewed_revision_could_not_be_found_The_current_versio_cf4387") : t("final-components-b:task-side-panel.TaskDocumentPanel.Close_this_tab_or_choose_another_document_be3fcd")}
           </p>
         </div>
       </div>
@@ -82,15 +82,15 @@ export function TaskDocumentPanel({
       <header className="space-y-1">
         <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
+          <span>{t("task-components:revision_a0d7e8c6", { value1: document.latestRevisionNumber ?? 1 })}</span>
           <span aria-hidden>·</span>
-          <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
+          <span>{t("task-components:updated_0041faff", { value1: new Date(document.updatedAt).toLocaleString() })}</span>
           {!revisionId ? <DocumentAnnotationsCountChip
             issueId={issueId}
             docKey={document.key}
             panelOpen={annotationPanelOpen}
             onToggle={() => setAnnotationPanelOpen((open) => !open)}
-          /> : <span>· Reviewed version</span>}
+          /> : <span>{t("task-components:sentence_36363885f626")}</span>}
         </div>
       </header>
       {document.body.trim() ? (
@@ -112,7 +112,7 @@ export function TaskDocumentPanel({
           </DocumentMarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
-        <p className="text-sm text-muted-foreground">Document is empty.</p>
+        <p className="text-sm text-muted-foreground">{t("task-components:documentIsEmpty_14945822")}</p>
       )}
     </article>
   );

@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { Fragment, useId, useState, type ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
@@ -62,6 +63,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   sort?: TaskListOrder;
   onSortChange?: (sort: TaskListSort | undefined) => void;
 }) {
+  useTranslation("task-components");
   const localKey = useId();
   const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
   const [localSort, setLocalSort] = useState<TaskListSort>();
@@ -109,7 +111,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
           unreadState={item.unread ? "visible" : "hidden"}
           treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
           leadingControl={children.length ? (
-            <Button variant="ghost" size="icon-xs" className="task-row-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} ${issue.title}`} aria-expanded={expanded} onClick={() => {
+            <Button variant="ghost" size="icon-xs" className="task-row-disclosure" aria-label={expanded ? t("final-components-b:Collapse_taskTitle_180f07", { taskTitle: issue.title }) : t("final-components-b:Expand_taskTitle_ce4740", { taskTitle: issue.title })} aria-expanded={expanded} onClick={() => {
               const next = new Set(collapsed);
               if (next.has(issue.id)) next.delete(issue.id); else next.add(issue.id);
               setCollapsed(next);
@@ -138,27 +140,30 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     );
   };
   const groups = new Map<string, Issue[]>();
+  const groupLabels = new Map<string, string>();
   for (const root of roots) {
-    const label = groupBy === "status" ? issueFilterLabel(root.status) : groupBy === "project" ? root.project?.name ?? "No project" : "";
-    groups.set(label, [...(groups.get(label) ?? []), root]);
+    const label = groupBy === "status" ? issueFilterLabel(root.status) : groupBy === "project" ? root.project?.name ?? t("final-components-b:TaskList.No_project_f34c2b") : "";
+    const groupKey = JSON.stringify([groupBy, groupBy === "status" ? root.status : groupBy === "project" ? root.projectId : null]);
+    groupLabels.set(groupKey, label);
+    groups.set(groupKey, [...(groups.get(groupKey) ?? []), root]);
   }
   return (
     <TaskListViewport visibleColumns={columns} columnOrder={columnOrder} controls={<TaskListColumnSettings visibleColumns={columns} onVisibleColumnsChange={updateColumns} onColumnOrderChange={setColumnOrder} onResetDefaults={() => setSort(undefined)} />}>
       <TaskListColumnHeader sort={sort && isTaskListColumnSort(sort) ? sort : undefined} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
       {items.length === 0 ? emptyState : (
-        <div aria-label={`${density} task list`}>
-          {[...groups].map(([label, groupRoots]) => groupRoots.some(issue => renderedIds.has(issue.id)) ? (
-            <Fragment key={label}>
-              {label ? <IssueGroupHeader label={label} className="task-list-group-heading" trailing={<span className="text-xs text-muted-foreground">{groupRoots.length}</span>} /> : null}
-              {groupRoots.filter(issue => renderedIds.has(issue.id)).map(issue => <TaskRowGroup key={issue.id} role="rowgroup" aria-label={`${issue.title} task group`}
+        <div aria-label={t("task-components:taskList_ac152ab7", { value1: density })}>
+          {[...groups].map(([groupKey, groupRoots]) => groupRoots.some(issue => renderedIds.has(issue.id)) ? (
+            <Fragment key={groupKey}>
+              {groupLabels.get(groupKey) ? <IssueGroupHeader label={groupLabels.get(groupKey)!} className="task-list-group-heading" trailing={<span className="text-xs text-muted-foreground">{groupRoots.length}</span>} /> : null}
+              {groupRoots.filter(issue => renderedIds.has(issue.id)).map(issue => <TaskRowGroup key={issue.id} role="rowgroup" aria-label={t("task-components:taskGroup_cb957b96", { value1: issue.title })}
                 data-density={density} className={childMap.get(issue.id)?.length ? undefined : "task-row-deferred"}>{renderBranch(issue, 0)}</TaskRowGroup>)}
             </Fragment>
           ) : null)}
         </div>
       )}
       {hasMore ? <div ref={sentinel} className="flex items-center gap-3 py-2 text-sm text-muted-foreground">
-        <span>Rendering {Math.min(limit, rowIds.length)} of {rowIds.length} tasks</span>
-        <Button variant="outline" size="sm" onClick={loadMore}>Show more tasks</Button>
+        <span><Trans ns="final-components-b" i18nKey="numeric.TaskList.980402d09fae_1ecb4" values={{ count: Math.min(limit, rowIds.length), totalCount: rowIds.length }} /></span>
+        <Button variant="outline" size="sm" onClick={loadMore}>{t("task-components:sentence_45219cf285e5")}</Button>
       </div> : null}
     </TaskListViewport>
   );

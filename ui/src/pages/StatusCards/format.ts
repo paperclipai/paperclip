@@ -1,10 +1,11 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import type { StatusCardRefreshPolicy, StatusCardUpdate } from "@paperclipai/shared";
 
 /** "1.1k tok" / "940 tok" — compact token count for footers and chips. */
 export function formatTokens(tokens: number | null | undefined): string | null {
   if (tokens === null || tokens === undefined) return null;
-  if (tokens < 1000) return `${tokens} tok`;
-  return `${(tokens / 1000).toFixed(1)}k tok`;
+  if (tokens < 1000) return translateShell("shell:tok", { value1: tokens });
+  return translateShell("shell:k_tok", { value1: (tokens / 1000).toFixed(1) });
 }
 
 /**
@@ -98,8 +99,8 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
     const cost = `${formatCents(EST_FULL_CENTS)} · ${formatTokens(EST_FULL_TOKENS)}`;
     return {
       cost,
-      primary: `~1 rebuild per refresh ≈ ${cost}`,
-      note: "Manual cards only cost tokens when you press Refresh.",
+      primary: translateShell("shell:1_rebuild_per_refresh", { value1: cost }),
+      note: translateShell("shell:manual_cards_only_cost_tokens_when_you"),
     };
   }
 
@@ -109,11 +110,11 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
   if (policy.mode === "interval") {
     const interval = policy.intervalMinutes ?? 15;
     maxPerDay = Math.floor(windowMinutes / interval);
-    cadence = `every ${interval} min`;
+    cadence = translateShell("shell:every_min", { value1: interval });
   } else {
     const perHour = policy.maxUpdatesPerHour ?? 6;
     maxPerDay = Math.round((windowMinutes / 60) * perHour);
-    cadence = `up to ${perHour}/hour`;
+    cadence = translateShell("shell:up_to_hour", { value1: perHour });
   }
 
   const cap = policy.dailyTokenCap ?? null;
@@ -123,33 +124,33 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
 
   const tokens = effective * EST_INCREMENTAL_TOKENS;
   const cents = effective * EST_INCREMENTAL_CENTS;
-  const withinHours = policy.activeHours ? " during active hours" : "";
+  const withinHours = policy.activeHours ? translateShell("shell:during_active_hours") : "";
   const cost = `${formatCents(cents)} · ${formatTokens(tokens)}`;
 
   return {
     cost,
-    primary: `Up to ~${effective} updates/day (${cadence}${withinHours}) ≈ ${cost}`,
+    primary: translateShell("shell:up_to_updates_day", { value1: effective, value2: cadence, value3: withinHours, value4: cost }),
     note: cappedByTokenCap
-      ? `Capped by your ${formatTokens(cap!)} daily token cap — the card pauses when it's hit.`
-      : "Only runs when something changed; a cheap no-op check otherwise.",
+      ? translateShell("shell:capped_by_your_daily_token_cap_the", { value1: formatTokens(cap!) })
+      : translateShell("shell:only_runs_when_something_changed_a_cheap"),
   };
 }
 
 /** "0.4k in / 0.2k out" — the per-update token split shown in history rows. */
 export function formatTokenSplit(inputTokens: number, outputTokens: number): string {
   const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
-  return `${fmt(inputTokens)} in / ${fmt(outputTokens)} out`;
+  return translateShell("shell:in_out", { value1: fmt(inputTokens), value2: fmt(outputTokens) });
 }
 
 /** Human label for an update's kind. */
 export function updateKindLabel(kind: StatusCardUpdate["kind"]): string {
   switch (kind) {
     case "compile":
-      return "compile";
+      return translateShell("shell:update_kind_compile");
     case "full":
-      return "full rebuild";
+      return translateShell("shell:full_rebuild");
     case "incremental":
-      return "incremental";
+      return translateShell("shell:update_kind_incremental");
     default:
       return kind;
   }

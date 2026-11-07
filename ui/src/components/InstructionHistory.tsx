@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import type { AgentInstructionsFileDetail } from "@paperclipai/shared";
@@ -21,6 +22,7 @@ export function InstructionHistory({
   disabled: boolean;
   onRestored: (file: AgentInstructionsFileDetail) => void;
 }) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const history = useInfiniteQuery({
@@ -68,9 +70,7 @@ export function InstructionHistory({
         variant="outline"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-      >
-        History
-      </Button>
+      >{t("task-components:history_0e769600")}</Button>
       {open && (
         <div className="space-y-3">
           {historyView.kind === "error" && (
@@ -95,7 +95,7 @@ export function InstructionHistory({
             <p role="alert" className="text-sm text-destructive">{describeError(restore.error).body}</p>
           )}
           {(historyView.kind === "loading" || historyView.kind === "reconnecting") && (
-            <p role="status" className="text-sm text-muted-foreground">Loading revisions…</p>
+            <p role="status" className="text-sm text-muted-foreground">{t("task-components:loadingRevisions_c5c85196")}</p>
           )}
           {history.data?.pages
             .flatMap((page) => page.revisions)
@@ -112,7 +112,7 @@ export function InstructionHistory({
                 <span className="text-sm text-muted-foreground">
                   {revision.source} ·{" "}
                   {new Date(revision.createdAt).toLocaleString()}
-                  {revision.id === currentRevisionId ? " · Current" : ""}
+                  {revision.id === currentRevisionId ? (" " + t("task-components:current_995e3aca")) : ""}
                 </span>
               </div>
             ))}
@@ -122,25 +122,21 @@ export function InstructionHistory({
               variant="ghost"
               disabled={history.isFetchingNextPage}
               onClick={() => void history.fetchNextPage()}
-            >
-              Older revisions
-            </Button>
+            >{t("task-components:olderRevisions_11ad78ef")}</Button>
           )}
           {diff.data && (
             <>
-              <p className="text-sm text-muted-foreground">Selected revision</p>
+              <p className="text-sm text-muted-foreground">{t("task-components:selectedRevision_52dba32d")}</p>
               <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">
                 {diff.data.from.content}
               </pre>
-              <p className="text-sm text-muted-foreground">
-                Changes from selected revision to current
-              </p>
+              <p className="text-sm text-muted-foreground">{t("task-components:changesFromSelectedRevisionToCurrent_d8a8577f")}</p>
               <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">
-                {diff.data.removed && `Removed:\n${diff.data.removed}\n`}
-                {diff.data.added && `Added:\n${diff.data.added}`}
+                {diff.data.removed && t("final-components-b:Removed_content_667e3d", { content: diff.data.removed })}
+                {diff.data.added && t("final-components-b:Added_content_482c11", { content: diff.data.added })}
                 {!diff.data.removed &&
                   !diff.data.added &&
-                  "No content changes."}
+                  t("task-components:noContentChanges_7e2ced81")}
               </pre>
               <Button
                 type="button"
@@ -150,13 +146,9 @@ export function InstructionHistory({
                   selected === currentRevisionId
                 }
                 onClick={() => restore.mutate()}
-              >
-                Restore as new revision
-              </Button>
+              >{t("task-components:restoreAsNewRevision_b5a56640")}</Button>
               {disabled && (
-                <p className="text-sm text-muted-foreground">
-                  Save or cancel your edits before restoring.
-                </p>
+                <p className="text-sm text-muted-foreground">{t("task-components:saveOrCancelYourEditsBeforeRestoring_da38de7c")}</p>
               )}
             </>
           )}

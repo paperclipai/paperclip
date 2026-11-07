@@ -1762,6 +1762,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
       ttlMs: 10_000,
       action: { label: "Open chat connections", href: "/apps" },
       dedupeKey: "run-status:run-low-trust:failed",
+      presentation: { render: expect.any(Function) },
     });
 
     expect(

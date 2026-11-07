@@ -1,3 +1,6 @@
+import { i18n, useTranslation } from "@/i18n";
+import { t } from "@/i18n";
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { usePageVisibility } from "../../lib/page-visibility";
@@ -99,6 +102,7 @@ export function useLiveRunTranscripts({
   enableRealtimeUpdates = true,
   enabled = true,
 }: UseLiveRunTranscriptsOptions) {
+  useTranslation("final-components-a");
   // Ticker consumers opt into the silent chunk-count cap; full task views use a
   // byte budget that collapses (not discards) the oldest output when exceeded.
   const { visible } = usePageVisibility();
@@ -503,7 +507,7 @@ export function useLiveRunTranscripts({
           setErrorsByRun((previous) => {
             if (previous.has(run.id)) return previous;
             const next = new Map(previous);
-            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
+            next.set(run.id, error instanceof Error ? error : localizeUiError(new Error("Run history could not be loaded"), { key: "final-components-a:runHistoryCouldNotBe_2da122cc" }));
             return next;
           });
         }
@@ -596,7 +600,7 @@ export function useLiveRunTranscripts({
       }
     }
     return next;
-  }, [chunksByRun, generalSettings?.censorUsernameInLogs, normalizedRuns, parserTick]);
+  }, [chunksByRun, generalSettings?.censorUsernameInLogs, normalizedRuns, parserTick, i18n.language]);
 
   return {
     transcriptByRun,

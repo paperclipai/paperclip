@@ -10,6 +10,7 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { queryKeys } from "../lib/queryKeys";
+import { i18n } from "@/i18n";
 
 const mockIssuesApi = vi.hoisted(() => ({
   listDocuments: vi.fn(),
@@ -689,6 +690,12 @@ describe("IssueDocumentsSection", () => {
     await flush();
     expect(container.textContent).toContain("Create and revise Plans in the task conversation.");
     expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try {
+      expect(container.textContent).toContain("请在任务对话中创建和修改计划。");
+      expect(container.querySelector<HTMLInputElement>('input')?.value).toBe("plan");
+      expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
     await act(async () => root.unmount());
     client.clear();
   });

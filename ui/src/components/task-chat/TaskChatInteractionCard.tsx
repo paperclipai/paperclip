@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ComponentProps } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -48,6 +49,7 @@ export function TaskChatInteractionCard({
   draftKey,
   ...cardProps
 }: TaskChatInteractionCardProps) {
+  useTranslation("task-components");
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const interaction = item.interaction;
   if (coordinatorEnabled && interaction.kind === "suggest_tasks" && !shouldHideInteractionCard(interaction)) {
@@ -56,19 +58,19 @@ export function TaskChatInteractionCard({
     </div>;
   }
   if (presentation === "timeline" && showUnansweredQuestion && !shouldHideInteractionCard(interaction) && interaction.kind === "ask_user_questions" && interaction.status === "pending") {
-    const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? "Question";
+    const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? t("task-chat-ui:question");
     return (
       <button
         type="button"
         id={`interaction-${interaction.id}`}
         data-testid="task-chat-unanswered-question"
-        aria-label={`Answer question: ${prompt}`}
+        aria-label={t("task-components:answerQuestion_e88088a1", { value1: prompt })}
         disabled={!onReviewRequest}
         onClick={() => onReviewRequest?.(interaction.id)}
         className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1"><span className="block text-xs">Unanswered question</span><span className="block truncate">{markdownToPlainText(prompt)}</span></span>
+        <span className="min-w-0 flex-1"><span className="block text-xs">{t("task-components:unansweredQuestion_a36c3c6b")}</span><span className="block truncate">{markdownToPlainText(prompt)}</span></span>
         <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
       </button>
     );
@@ -84,7 +86,7 @@ export function TaskChatInteractionCard({
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <AppLogo name={action.appDisplayName || action.toolDisplayName} size={36} />
             <div className="min-w-0 flex-1"><MarkdownBody>{action.previewMarkdown.split(/\n\s*\n/)[0] || action.toolDisplayName}</MarkdownBody></div>
-            <Button className="ml-auto" size="sm" variant="outline" disabled={!onReviewRequest} onClick={() => onReviewRequest?.(interaction.id)}>Review request</Button>
+            <Button className="ml-auto" size="sm" variant="outline" disabled={!onReviewRequest} onClick={() => onReviewRequest?.(interaction.id)}>{t("task-components:reviewRequest_dcea8abb")}</Button>
           </div>
         ) : (
           <IssueThreadInteractionCard interaction={interaction} {...cardProps} />
@@ -95,7 +97,7 @@ export function TaskChatInteractionCard({
   if (presentation === "timeline" && showPendingRequest && interaction.status === "pending"
     && interaction.kind !== "connection_intent" && interaction.kind !== "ask_user_questions"
     && !shouldHideInteractionCard(interaction)) {
-    const label = interaction.title ?? (interaction.kind === "suggest_tasks" ? "Suggested tasks" : "Review request");
+    const label = interaction.title ?? (interaction.kind === "suggest_tasks" ? t("task-chat-ui:suggestedTasks") : t("task-chat-ui:reviewRequest"));
     const preview = interaction.summary ?? ("prompt" in interaction.payload ? interaction.payload.prompt : null);
     // One truncated line: show the words, not the markdown syntax.
     const previewText = preview ? markdownToPlainText(preview) : null;
@@ -109,7 +111,7 @@ export function TaskChatInteractionCard({
       <div className="w-full space-y-2">
         {showPlan ? <TaskChatPlanPreviewCard source={{ kind: "saved", document: planDocument }} testId="plan-review-preview" /> : null}
         <button type="button" id={`interaction-${interaction.id}`} data-testid="task-chat-pending-request"
-          aria-label={`Open request: ${label}`} disabled={!onReviewRequest}
+          aria-label={t("task-chat-ui:openRequest", { label })} disabled={!onReviewRequest}
           onClick={() => onReviewRequest?.(interaction.id)}
           className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />

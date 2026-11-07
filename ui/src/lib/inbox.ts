@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   Approval,
   HeartbeatRun,
@@ -524,7 +525,7 @@ export function getInboxSearchSupplementIssues({
 
 function formatDefaultWorkspaceGroupLabel(name: string | null | undefined): string {
   const normalizedName = name?.trim();
-  return normalizedName ? `${normalizedName} (default)` : "Default workspace";
+  return normalizedName ? t("display:copy_d89b7ac3ad65", { value0: normalizedName }) : t("display:copy_4605f255f23b");
 }
 
 function resolveDefaultProjectWorkspaceInfo(
@@ -640,7 +641,7 @@ export function resolveIssueWorkspaceGroup(
 
   return {
     key: "workspace:none",
-    label: "No workspace",
+    get "label"() { return t("display:copy_85ced46f3472"); },
   };
 }
 
@@ -846,10 +847,10 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
-  issue: "Tasks",
-  approval: "Approvals",
-  failed_run: "Failed runs",
-  join_request: "Join requests",
+  get "issue"() { return t("display:copy_a24a9522a00e"); },
+  get "approval"() { return t("display:copy_307c5b1a8e79"); },
+  get "failed_run"() { return t("display:copy_5fb5b83f378c"); },
+  get "join_request"() { return t("display:copy_36c130958dcd"); },
 };
 
 function resolveIssueAssigneeGroup(
@@ -871,18 +872,18 @@ function resolveIssueAssigneeGroup(
   if (issue.assigneeUserId) {
     return {
       key: `assignee:user:${issue.assigneeUserId}`,
-      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? "User",
+      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? t("display:copy_21d45a07395b"),
     };
   }
 
-  return { key: "assignee:none", label: "Unassigned" };
+  return { key: "assignee:none", get "label"() { return t("display:copy_999b59ab441c"); } };
 }
 
 function resolveIssueProjectGroup(
   issue: Pick<Issue, "projectId">,
   { projectById }: Pick<InboxWorkspaceGroupingOptions, "projectById">,
 ): { key: string; label: string } {
-  if (!issue.projectId) return { key: "project:none", label: "No project" };
+  if (!issue.projectId) return { key: "project:none", get "label"() { return t("display:copy_5febc405b9dc"); } };
 
   const projectName = projectById?.get(issue.projectId)?.name?.trim();
   return {

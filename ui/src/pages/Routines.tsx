@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -74,13 +75,13 @@ import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
-  always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
-  skip_if_active: "Drop new trigger occurrences while a run is still active.",
+  get coalesce_if_active() { return t("work:copy.ifARunIsAlreadyActiveKeepJustOne_9975f7"); },
+  get always_enqueue() { return t("work:copy.queueEveryTriggerOccurrenceEvenIfTheRoutineIs_033757"); },
+  get skip_if_active() { return t("work:copy.dropNewTriggerOccurrencesWhileARunIsStill_eb088f"); },
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
-  skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows after recovery; sub-hourly schedules are combined into one catch-up run, slower schedules replay each missed window up to a cap.",
+  get skip_missed() { return t("work:copy.ignoreWindowsThatWereMissedWhileTheSchedulerOr_77dc55"); },
+  get enqueue_missed_with_cap() { return t("work:copy.catchUpMissedScheduleWindowsAfterRecoverySubHourly_5137b6"); },
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -186,8 +187,8 @@ export function buildRoutineGroups(
         const positionCompare = leftPosition - rightPosition;
         if (positionCompare !== 0) return positionCompare;
 
-        const labelCompare = (leftFolder?.name ?? "Unknown folder").localeCompare(
-          rightFolder?.name ?? "Unknown folder",
+        const labelCompare = (leftFolder?.name ?? t("work:copy.unknownFolder_292238")).localeCompare(
+          rightFolder?.name ?? t("work:copy.unknownFolder_292238"),
           undefined,
           { sensitivity: "base" },
         );
@@ -195,7 +196,7 @@ export function buildRoutineGroups(
       })
       .map((key) => ({
         key,
-        label: key === "__unfiled" ? "Unfiled" : (folderById.get(key)?.name ?? "Unknown folder"),
+        label: key === "__unfiled" ? t("work:copy.unfiled_d64dc9") : (folderById.get(key)?.name ?? t("work:copy.unknownFolder_292238")),
         items: groups[key]!,
       }));
   }
@@ -204,13 +205,13 @@ export function buildRoutineGroups(
     const groups = groupBy(routines, (routine) => routine.projectId ?? "__no_project");
     return Object.keys(groups)
       .sort((left, right) => {
-        const leftLabel = left === "__no_project" ? "No project" : (projectById.get(left)?.name ?? "Unknown project");
-        const rightLabel = right === "__no_project" ? "No project" : (projectById.get(right)?.name ?? "Unknown project");
+        const leftLabel = left === "__no_project" ? t("work:copy.noProject_f34c2b") : (projectById.get(left)?.name ?? t("work:copy.unknownProject_ed51cf"));
+        const rightLabel = right === "__no_project" ? t("work:copy.noProject_f34c2b") : (projectById.get(right)?.name ?? t("work:copy.unknownProject_ed51cf"));
         return leftLabel.localeCompare(rightLabel);
       })
       .map((key) => ({
         key,
-        label: key === "__no_project" ? "No project" : (projectById.get(key)?.name ?? "Unknown project"),
+        label: key === "__no_project" ? t("work:copy.noProject_f34c2b") : (projectById.get(key)?.name ?? t("work:copy.unknownProject_ed51cf")),
         items: groups[key]!,
       }));
   }
@@ -218,13 +219,13 @@ export function buildRoutineGroups(
   const groups = groupBy(routines, (routine) => routine.assigneeAgentId ?? "__unassigned");
   return Object.keys(groups)
     .sort((left, right) => {
-      const leftLabel = left === "__unassigned" ? "Unassigned" : (agentById.get(left)?.name ?? "Unknown agent");
-      const rightLabel = right === "__unassigned" ? "Unassigned" : (agentById.get(right)?.name ?? "Unknown agent");
+      const leftLabel = left === "__unassigned" ? t("work:copy.unassigned_14d33b") : (agentById.get(left)?.name ?? t("work:copy.unknownAgent_342b4a"));
+      const rightLabel = right === "__unassigned" ? t("work:copy.unassigned_14d33b") : (agentById.get(right)?.name ?? t("work:copy.unknownAgent_342b4a"));
       return leftLabel.localeCompare(rightLabel);
     })
     .map((key) => ({
       key,
-      label: key === "__unassigned" ? "Unassigned" : (agentById.get(key)?.name ?? "Unknown agent"),
+      label: key === "__unassigned" ? t("work:copy.unassigned_14d33b") : (agentById.get(key)?.name ?? t("work:copy.unknownAgent_342b4a")),
       items: groups[key]!,
     }));
 }
@@ -246,7 +247,7 @@ export function buildRoutineSections(
     .filter((group) => group.items.length > 0)
     .map((group) => (
       builtInRoutines.length > 0 && groupByValue === "none" && group.key === "__all"
-        ? { ...group, label: "Custom routines" }
+        ? { ...group, label: t("work:copy.customRoutines_9454c5") }
         : group
     ));
 
@@ -256,7 +257,7 @@ export function buildRoutineSections(
     ...customGroups,
     {
       key: builtInRoutineGroupKey,
-      label: "Built-in routines",
+      label: t("work:copy.builtInRoutines_f81d47"),
       items: builtInRoutines,
     },
   ];
@@ -296,6 +297,7 @@ function RoutineSectionHeader({
   count: number;
   isOpen: boolean;
 }) {
+  const { t } = useTranslation("work");
   return (
     <div className="flex items-center gap-2 px-2 py-1.5">
       <CollapsibleTrigger className="flex items-center gap-1.5">
@@ -312,6 +314,7 @@ function RoutineSectionHeader({
 }
 
 export function Routines() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -366,8 +369,8 @@ export function Routines() {
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("work:copy.routines_61b7bb") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     setRoutineViewState(getRoutineViewState(routineViewStateKey));
@@ -433,7 +436,7 @@ export function Routines() {
       projects: (projects ?? []).filter((project) => !project.archivedAt),
       members: companyMembers?.users,
     });
-  }, [agents, companyMembers?.users, projects]);
+  }, [agents, companyMembers?.users, projects, t]);
 
   const createRoutine = useMutation({
     mutationFn: () =>
@@ -454,10 +457,10 @@ export function Routines() {
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
-        title: "Routine created",
+        title: t("work:copy.routineCreated_73aa78"),
         body: routine.assigneeAgentId
-          ? "Add the first trigger to turn it into a live workflow."
-          : "Draft saved. Add a default agent before enabling automation.",
+          ? t("work:copy.addTheFirstTriggerToTurnItIntoA_0dd3f8")
+          : t("work:copy.draftSavedAddADefaultAgentBeforeEnablingAutomation_ed85f3"),
         tone: "success",
       });
       navigate(routineDetailHref(routine.id, "triggers"));
@@ -483,8 +486,8 @@ export function Routines() {
           ]);
         } catch (moveError) {
           pushToast({
-            title: "Folder created, move failed",
-            body: describeError(moveError, { action: "move the selected routines" }).body,
+            title: t("work:copy.folderCreatedMoveFailed_cc9449"),
+            body: describeError(moveError, { action: t("work:copy.moveTheSelectedRoutines_6c40e3") }).body,
             tone: "error",
           });
           return;
@@ -492,12 +495,12 @@ export function Routines() {
       } else {
         setFolderSelection(folder.id);
       }
-      pushToast({ title: "Folder created", body: folder.name, tone: "success" });
+      pushToast({ title: t("work:copy.folderCreated_b1dfe0"), body: folder.name, tone: "success" });
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to save folder",
-        body: describeError(mutationError, { action: "save the folder" }).body,
+        title: t("work:copy.failedToSaveFolder_64879e"),
+        body: describeError(mutationError, { action: t("work:copy.saveTheFolder_e4162e") }).body,
         tone: "error",
       });
     },
@@ -512,8 +515,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Folder save failed",
-        body: describeError(mutationError, { action: "update the folder" }).body,
+        title: t("work:copy.folderSaveFailed_b0b2fe"),
+        body: describeError(mutationError, { action: t("work:copy.updateTheFolder_433cb8") }).body,
         tone: "error",
       });
     },
@@ -527,12 +530,12 @@ export function Routines() {
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
       ]);
-      pushToast({ title: "Folder deleted", body: "Items moved to Unfiled.", tone: "success" });
+      pushToast({ title: t("work:copy.folderDeleted_796dc5"), body: t("work:copy.itemsMovedToUnfiled_ec2297"), tone: "success" });
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Folder delete failed",
-        body: describeError(mutationError, { action: "delete the folder" }).body,
+        title: t("work:copy.folderDeleteFailed_cdb83b"),
+        body: describeError(mutationError, { action: t("work:copy.deleteTheFolder_54010d") }).body,
         tone: "error",
       });
     },
@@ -548,8 +551,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Move failed",
-        body: describeError(mutationError, { action: "move the routine" }).body,
+        title: t("work:copy.moveFailed_55185d"),
+        body: describeError(mutationError, { action: t("work:copy.moveTheRoutine_bce497") }).body,
         tone: "error",
       });
     },
@@ -570,8 +573,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: describeError(mutationError, { action: "update the routine" }).body,
+        title: t("work:copy.failedToUpdateRoutine_658553"),
+        body: describeError(mutationError, { action: t("work:copy.updateTheRoutine_b91df2") }).body,
         tone: "error",
       });
     },
@@ -605,15 +608,15 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: describeError(mutationError, { action: "start the routine run" }).body,
+        title: t("work:copy.routineRunFailed_296c7c"),
+        body: describeError(mutationError, { action: t("work:copy.startTheRoutineRun_b7d489") }).body,
         tone: "error",
       });
     },
   });
 
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
-  const recentProjectIds = useMemo(() => getRecentProjectIds(), [composerOpen]);
+  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen, t]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [composerOpen, t]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -624,7 +627,7 @@ export function Routines() {
         label: agent.name,
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
-    [agents, recentAssigneeIds],
+    [agents, recentAssigneeIds, t],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -633,31 +636,31 @@ export function Routines() {
         label: project.name,
         searchText: project.description ?? "",
       })),
-    [projects],
+    [projects, t],
   );
   const agentById = useMemo(
     () => new Map((agents ?? []).map((agent) => [agent.id, agent])),
-    [agents],
+    [agents, t],
   );
   const projectById = useMemo(
     () => new Map((projects ?? []).map((project) => [project.id, project])),
-    [projects],
+    [projects, t],
   );
   const folderById = useMemo(
     () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
-    [routineFolders],
+    [routineFolders, t],
   );
   const visibleRoutines = useMemo(
     () => (routines ?? []).filter((routine) => routine.status !== "archived"),
-    [routines],
+    [routines, t],
   );
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, routineExecutionIssues),
-    [liveRuns, routineExecutionIssues],
+    [liveRuns, routineExecutionIssues, t],
   );
   const recentRunsIssueLinkState = useMemo(
-    () => createIssueDetailLocationState("Recent Runs", "/routines?tab=runs", "issues"),
-    [],
+    () => createIssueDetailLocationState(t("work:copy.recentRuns_53972e"), "/routines?tab=runs", "issues"),
+    [t],
   );
   const updateIssue = useUpdateIssueMutation({
     companyId: selectedCompanyId,
@@ -675,7 +678,7 @@ export function Routines() {
     if (folderSelection === "all") return visibleRoutines;
     if (folderSelection === "unfiled") return visibleRoutines.filter((routine) => !routine.folderId);
     return visibleRoutines.filter((routine) => routine.folderId === folderSelection);
-  }, [folderSelection, routineViewState.groupBy, visibleRoutines]);
+  }, [folderSelection, routineViewState.groupBy, visibleRoutines, t]);
   // Rail counts reflect the page's visible scope (archived hidden), not raw DB
   // counts (ux-spec §5.3).
   const railFolderResult = useMemo(() => {
@@ -695,7 +698,7 @@ export function Routines() {
         itemCount: counts.get(folder.id) ?? 0,
       })),
     };
-  }, [routineFolders, visibleRoutines]);
+  }, [routineFolders, visibleRoutines, t]);
   const sortedRoutines = useMemo(
     () => {
       const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -705,11 +708,11 @@ export function Routines() {
       });
       return sortRoutines(matches, routineViewState.sortField, routineViewState.sortDir);
     },
-    [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField],
+    [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField, t],
   );
   const routineSections = useMemo(
     () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
-    [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines],
+    [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines, t],
   );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
@@ -760,11 +763,11 @@ export function Routines() {
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
       ]);
-      pushToast({ title: "Routines moved", body: `${ids.length} routine${ids.length === 1 ? "" : "s"} filed.`, tone: "success" });
+      pushToast({ title: t("work:copy.routinesMoved_b282d6"), body: t("work:messages.routinesFiled", { count: ids.length }), tone: "success" });
     } catch (moveError) {
       pushToast({
-        title: "Failed to move routines",
-        body: describeError(moveError, { action: "move the selected routines" }).body,
+        title: t("work:copy.failedToMoveRoutines_cd16ae"),
+        body: describeError(moveError, { action: t("work:copy.moveTheSelectedRoutines_6c40e3") }).body,
         tone: "error",
       });
     }
@@ -777,8 +780,8 @@ export function Routines() {
   function handleToggleEnabled(routine: RoutineListItem, enabled: boolean) {
     if (!enabled && !routine.assigneeAgentId) {
       pushToast({
-        title: "Default agent required",
-        body: "Set a default agent before enabling routine automation.",
+        title: t("work:copy.defaultAgentRequired_2761f3"),
+        body: t("work:copy.setADefaultAgentBeforeEnablingRoutineAutomation_1885fd"),
         tone: "warn",
       });
       return;
@@ -797,7 +800,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
+    return <EmptyState icon={Repeat} message={t("work:copy.selectAnOrganizationToViewRoutines_7b360f")} />;
   }
 
   if (streamlinedUiEnabled && legacyRunsRequested) {
@@ -815,15 +818,11 @@ export function Routines() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Routines</h1>
-            <p className="text-sm text-muted-foreground">
-              Recurring work definitions that materialize into auditable execution tasks.
-            </p>
+            <h1 className="text-2xl font-semibold tracking-tight">{t("work:copy.routines_61b7bb")}</h1>
+            <p className="text-sm text-muted-foreground">{t("work:copy.recurringWorkDefinitionsThatMaterializeIntoAuditableExecutionTasks_2b8bf1")}</p>
           </div>
           <Button onClick={openCreateRoutine}>
-            <Plus className="mr-2 h-4 w-4" />
-            Create routine
-          </Button>
+            <Plus className="mr-2 h-4 w-4" />{t("work:copy.createRoutine_f0fe07")}</Button>
         </div>
         <Tabs value={activeTab} onValueChange={handleLegacyTabChange}>
           <PageTabBar
@@ -831,8 +830,8 @@ export function Routines() {
             value={activeTab}
             onValueChange={handleLegacyTabChange}
             items={[
-              { value: "routines", label: "Routines" },
-              { value: "runs", label: "Recent Runs" },
+              { value: "routines", label: t("work:copy.routines_61b7bb") },
+              { value: "runs", label: t("work:copy.recentRuns_53972e") },
             ]}
           />
         </Tabs>
@@ -873,8 +872,8 @@ export function Routines() {
             value={activeTab}
             onValueChange={handleLegacyTabChange}
             items={[
-              { value: "routines", label: "Routines" },
-              { value: "runs", label: "Recent Runs" },
+              { value: "routines", label: t("work:copy.routines_61b7bb") },
+              { value: "runs", label: t("work:copy.recentRuns_53972e") },
             ]}
           />
         </Tabs>
@@ -886,7 +885,7 @@ export function Routines() {
             <FolderChip
               result={railFolderResult}
               selection={folderSelection}
-              allLabel="All routines"
+              allLabel={t("work:copy.allRoutines_4a8c78")}
               onClick={() => setMobileFoldersOpen(true)}
             />
           </div>
@@ -907,10 +906,8 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">New routine</p>
-              <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Default project and agent are optional for draft routines.
-              </p>
+              <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("work:copy.newRoutine_d5e520")}</p>
+              <p className="text-sm text-muted-foreground">{t("work:copy.defineTheRecurringWorkFirstDefaultProjectAndAgent_5e3613")}</p>
             </div>
             <Button
               variant="ghost"
@@ -920,9 +917,7 @@ export function Routines() {
                 setAdvancedOpen(false);
               }}
               disabled={createRoutine.isPending}
-            >
-              Cancel
-            </Button>
+            >{t("work:copy.cancel_19766e")}</Button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -930,7 +925,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={t("work:copy.routineTitle_26d0f8")}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -963,16 +958,16 @@ export function Routines() {
             <div className="px-5 pb-3">
               <div className="overflow-x-auto overscroll-x-contain">
                 <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-                  <span>For</span>
+                  <span>{t("work:copy.for_ca15eb")}</span>
                   <InlineEntitySelector
                     ref={assigneeSelectorRef}
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
-                    placeholder="Responsible"
-                    noneLabel="No responsible"
-                    searchPlaceholder="Search responsible..."
-                    emptyMessage="No responsible found."
+                    placeholder={t("work:copy.responsible_bc110a")}
+                    noneLabel={t("work:copy.noResponsible_15abde")}
+                    searchPlaceholder={t("work:copy.searchResponsible_9cb8d7")}
+                    emptyMessage={t("work:copy.noResponsibleFound_045a8f")}
                     onChange={(assigneeAgentId) => {
                       if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
                       setDraft((current) => ({ ...current, assigneeAgentId }));
@@ -995,7 +990,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         )
                       ) : (
-                        <span className="text-muted-foreground">Responsible</span>
+                        <span className="text-muted-foreground">{t("work:copy.responsible_bc110a")}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -1009,16 +1004,16 @@ export function Routines() {
                       );
                     }}
                   />
-                  <span>in</span>
+                  <span>{t("work:copy.in_582967")}</span>
                   <InlineEntitySelector
                     ref={projectSelectorRef}
                     value={draft.projectId}
                     options={projectOptions}
                     recentOptionIds={recentProjectIds}
-                    placeholder="Project"
-                    noneLabel="No project"
-                    searchPlaceholder="Search projects..."
-                    emptyMessage="No projects found."
+                    placeholder={t("work:copy.project_985959")}
+                    noneLabel={t("work:copy.noProject_f34c2b")}
+                    searchPlaceholder={t("work:copy.searchProjects_c59dd5")}
+                    emptyMessage={t("work:copy.noProjectsFound_26e923")}
                     onChange={(projectId) => {
                       if (projectId) trackRecentProject(projectId);
                       setDraft((current) => ({ ...current, projectId }));
@@ -1034,7 +1029,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Project</span>
+                        <span className="text-muted-foreground">{t("work:copy.project_985959")}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -1051,7 +1046,7 @@ export function Routines() {
                       );
                     }}
                   />
-                  <span>filed in</span>
+                  <span>{t("work:copy.filedIn_8effe1")}</span>
                   <Select
                     value={draft.folderId ?? "__unfiled"}
                     onValueChange={(value) => setDraft((current) => ({
@@ -1063,7 +1058,7 @@ export function Routines() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__unfiled">Unfiled</SelectItem>
+                      <SelectItem value="__unfiled">{t("work:copy.unfiled_d64dc9")}</SelectItem>
                       {(routineFolders?.folders ?? []).map((folder) => (
                         <SelectItem key={folder.id} value={folder.id}>
                           {folder.name}
@@ -1080,7 +1075,7 @@ export function Routines() {
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
-                placeholder="Add instructions..."
+                placeholder={t("work:copy.addInstructions_d49e19")}
                 bordered={false}
                 contentClassName="min-h-(--sz-160px) text-sm text-muted-foreground"
                 mentions={mentionOptions}
@@ -1096,15 +1091,15 @@ export function Routines() {
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                   <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    <p className="text-sm font-medium">{t("work:copy.advancedDeliverySettings_6fbfb2")}</p>
+                    <p className="text-sm text-muted-foreground">{t("work:copy.keepPolicyControlsSecondaryToTheWorkDefinition_264481")}</p>
                   </div>
                   {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("work:copy.concurrency_870849")}</p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -1114,14 +1109,14 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{t(`work:policies.${value}`)}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("work:copy.catchUp_1c2d0f")}</p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -1131,7 +1126,7 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {catchUpPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{t(`work:policies.${value}`)}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -1144,9 +1139,7 @@ export function Routines() {
           </div>
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
-            </div>
+            <div className="text-sm text-muted-foreground">{t("work:copy.afterCreationPaperclipTakesYouStraightToTriggerSetup_1ff03d")}</div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
                 onClick={() => createRoutine.mutate()}
@@ -1156,11 +1149,11 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending ? t("work:copy.creating_def709") : t("work:copy.createRoutine_f0fe07")}
               </Button>
               {createRoutine.isError ? ( // query-error-ok: mutation result, not a query
                 <p role="alert" className="text-sm text-destructive">
-                  {describeError(createRoutine.error, { action: "create the routine" }).body}
+                  {describeError(createRoutine.error, { action: t("work:copy.createTheRoutine_061ef3") }).body}
                 </p>
               ) : null}
             </div>
@@ -1171,7 +1164,7 @@ export function Routines() {
       {routinesView.kind === "error" ? (
         <QueryErrorState
           error={routinesView.error}
-          action="load routines"
+          action={t("work:copy.loadRoutines_3b1ef2")}
           onRetry={routinesView.retry}
           retrying={routinesView.isFetching}
         />
@@ -1182,8 +1175,8 @@ export function Routines() {
             <FolderRail
               result={railFolderResult}
               selection={folderSelection}
-              allLabel="All routines"
-              itemLabelPlural="routines"
+              allLabel={t("work:copy.allRoutines_4a8c78")}
+              itemLabelPlural={t("work:copy.routines_2a9035")}
               loading={foldersLoading}
               onSelect={setFolderSelection}
               onCreate={() => openCreateFolder()}
@@ -1198,11 +1191,11 @@ export function Routines() {
           <div className="min-w-0 flex-1">
           {routineViewState.groupBy === "folder" && hasRoutineFolders ? (
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              {folderSelection === "all" ? <FolderIconHeader label="All routines" count={sortedRoutines.length} /> : (
+              {folderSelection === "all" ? <FolderIconHeader label={t("work:copy.allRoutines_4a8c78")} count={sortedRoutines.length} /> : (
                 <div className="flex min-w-0 items-center gap-2 text-sm">
                   <FolderSwatch color={activeFolder?.color} />
-                  <span className="truncate font-medium">{folderSelection === "unfiled" ? "Unfiled" : activeFolder?.name ?? "Folder"}</span>
-                  <span className="text-muted-foreground">{sortedRoutines.length} routine{sortedRoutines.length === 1 ? "" : "s"}</span>
+                  <span className="truncate font-medium">{folderSelection === "unfiled" ? t("work:copy.unfiled_d64dc9") : activeFolder?.name ?? t("work:copy.folder_74ccd4")}</span>
+                  <span className="text-muted-foreground">{t("work:counts.routines", { count: sortedRoutines.length })}</span>
                 </div>
               )}
             </div>
@@ -1210,7 +1203,7 @@ export function Routines() {
           {routineViewState.groupBy === "folder" && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
             <AllUnfiledBanner
               storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
-              itemLabelPlural="routines"
+              itemLabelPlural={t("work:copy.routines_2a9035")}
               onCreateFolder={() => openCreateFolder()}
             />
           ) : null}
@@ -1231,21 +1224,19 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message={t("work:copy.noActiveRoutinesUseCreateRoutineToDefineThe_7ba430")}
               />
             </div>
           ) : sortedRoutines.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message={query.trim() ? "No routines match your search." : folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
+                message={query.trim() ? t("work:copy.noRoutinesMatchYourSearch_d841e9") : folderSelection === "all" ? t("work:copy.noRoutinesMatchThisView_7bf937") : t("work:copy.thisFolderIsEmpty_bd88d7")}
               />
               {folderSelection !== "all" ? (
                 <div className="mt-3 flex justify-center">
                   <Button size="sm" onClick={openCreateRoutine}>
-                    <Plus className="mr-2 h-3.5 w-3.5" />
-                    New routine in this folder
-                  </Button>
+                    <Plus className="mr-2 h-3.5 w-3.5" />{t("work:copy.newRoutineInThisFolder_086c8a")}</Button>
                 </div>
               ) : null}
             </div>
@@ -1304,13 +1295,13 @@ export function Routines() {
                                 const previousFolderId = routine.folderId ?? null;
                                 moveRoutineToFolder.mutate({ itemId: routine.id, folderId });
                                 pushToast({
-                                  title: "Routine moved",
+                                  title: t("work:copy.routineMoved_071030"),
                                   body: folderId
-                                    ? `Moved "${routine.title}" to ${routineFolders?.folders.find((folder) => folder.id === folderId)?.name ?? "folder"}.`
-                                    : `Moved "${routine.title}" to Unfiled.`,
+                                    ? t("work:copy.movedTo_c66b8a", { value1: routine.title, value2: routineFolders?.folders.find((folder) => folder.id === folderId)?.name ?? "folder" })
+                                    : t("work:copy.movedToUnfiled_de48bf", { value1: routine.title }),
                                   tone: "success",
                                   action: {
-                                    label: "Undo",
+                                    label: t("work:copy.undo_a8283a"),
                                     onClick: () => moveRoutineToFolder.mutate({ itemId: routine.id, folderId: previousFolderId }),
                                   },
                                 });
@@ -1343,7 +1334,7 @@ export function Routines() {
       <DeleteFolderDialog
         open={deleteFolderTarget !== null}
         folder={deleteFolderTarget}
-        itemLabelPlural="routines"
+        itemLabelPlural={t("work:copy.routines_2a9035")}
         pending={deleteFolder.isPending}
         onOpenChange={(open) => {
           if (!open) setDeleteFolderTarget(null);
@@ -1357,8 +1348,8 @@ export function Routines() {
         onOpenChange={setMobileFoldersOpen}
         result={railFolderResult}
         selection={folderSelection}
-        allLabel="All routines"
-        itemLabelPlural="Routines"
+        allLabel={t("work:copy.allRoutines_4a8c78")}
+        itemLabelPlural={t("work:copy.routines_61b7bb")}
         onSelect={setFolderSelection}
         onCreate={() => openCreateFolder()}
       />
@@ -1386,11 +1377,12 @@ export function Routines() {
 }
 
 function FolderIconHeader({ label, count }: { label: string; count: number }) {
+  const { t } = useTranslation("work");
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
       <Repeat className="h-3.5 w-3.5 text-muted-foreground" />
       <span className="truncate font-medium">{label}</span>
-      <span className="text-muted-foreground">{count} routine{count === 1 ? "" : "s"}</span>
+      <span className="text-muted-foreground">{t("work:counts.routines", { count: count })}</span>
     </div>
   );
 }

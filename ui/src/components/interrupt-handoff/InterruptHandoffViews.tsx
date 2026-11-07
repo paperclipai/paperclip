@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AlertTriangle, Info, PauseCircle, User, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
@@ -38,8 +39,8 @@ function agentIcon(agentId: string, resolvers: HandoffChipResolvers): string | n
 
 function userLabel(userId: string, resolvers: HandoffChipResolvers): string {
   const label = resolvers.resolveUserLabel?.(userId) ?? null;
-  const base = label ?? "Board";
-  return resolvers.currentUserId && resolvers.currentUserId === userId ? `${base} (you)` : base;
+  const base = label ?? t("final-components-a:board_4816cbfd");
+  return resolvers.currentUserId && resolvers.currentUserId === userId ? t("final-components-a:userYou_d87ad12c", { user: base }) : base;
 }
 
 const CHIP_CLASS =
@@ -56,10 +57,11 @@ export function AssigneeChip({
   resolvers: HandoffChipResolvers;
   className?: string;
 }) {
+  useTranslation("task-components");
   if (assignee.agentId) {
     return (
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="agent">
-        <span className="sr-only">Agent </span>
+        <span className="sr-only">{t("task-components:agent_11b39c93")}{" "}</span>
         <AgentAvatar agent={{ ...resolvers.agentMap?.get(assignee.agentId), id: assignee.agentId }} size={16} />
         <span className="max-w-(--sz-12rem) truncate">{agentName(assignee.agentId, resolvers)}</span>
       </span>
@@ -68,7 +70,7 @@ export function AssigneeChip({
   if (assignee.userId) {
     return (
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="user">
-        <span className="sr-only">User </span>
+        <span className="sr-only">{t("task-components:user_b512d97e")}{" "}</span>
         <User className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="max-w-(--sz-12rem) truncate">{userLabel(assignee.userId, resolvers)}</span>
       </span>
@@ -80,9 +82,7 @@ export function AssigneeChip({
       data-testid="handoff-assignee-chip"
       data-kind="unassigned"
     >
-      <span className="sr-only">No responsible — </span>
-      Unassigned
-    </span>
+      <span className="sr-only">{t("task-components:noResponsible_e364c2d1")}{" "}</span>{t("task-components:unassigned_14d33bd0")}</span>
   );
 }
 
@@ -97,6 +97,7 @@ export function HandoffWakeRow({
   resolvers: HandoffChipResolvers;
   interruptedRunAttached?: boolean;
 }) {
+  useTranslation("task-components");
   const info = classifyAssigneeHandoff(to, {
     agentName: to.agentId ? agentName(to.agentId, resolvers) : null,
     interruptedRunAttached,
@@ -107,7 +108,7 @@ export function HandoffWakeRow({
       data-testid="handoff-wake-row"
       data-kind={info.kind}
     >
-      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Wake</span>
+      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("task-components:wake_33a7e908")}</span>
       <span className={cn(info.kind === "agent_wake" ? "text-foreground" : "text-muted-foreground")}>
         {info.wakeText}
       </span>
@@ -126,6 +127,7 @@ export function RunStatusBadge({
   operatorInterrupted?: boolean;
   className?: string;
 }) {
+  useTranslation("task-components");
   const p = resolveRunStatusPresentation(status, { operatorInterrupted });
   return (
     <span
@@ -146,6 +148,7 @@ function PreviewChip({
   chip: NonNullable<ComposerHandoffPreview["chip"]>;
   resolvers: HandoffChipResolvers;
 }) {
+  useTranslation("task-components");
   return (
     <AssigneeChip
       assignee={chip.kind === "agent" ? { agentId: chip.id, userId: null } : { agentId: null, userId: chip.id }}
@@ -162,6 +165,7 @@ export function ComposerHandoffPreviewRow({
   preview: ComposerHandoffPreview;
   resolvers: HandoffChipResolvers;
 }) {
+  useTranslation("task-components");
   if (preview.kind === "none") return null;
   return (
     <div
@@ -194,6 +198,7 @@ export function ComposerMentionCoach({
   onInsert: () => void;
   onDismiss: () => void;
 }) {
+  useTranslation("task-components");
   return (
     <div
       className="flex items-center gap-2 rounded-md border border-amber-300/40 bg-amber-50/70 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
@@ -202,23 +207,18 @@ export function ComposerMentionCoach({
       aria-live="polite"
     >
       <Info className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1">
-        Did you mean <span className="font-medium">@{candidate.matchedText}</span>? Plain text won't
-        notify or assign an agent.
-      </span>
+      <span className="min-w-0 flex-1"><Trans ns="task-components" i18nKey="sentence_cd904d522a2f" components={{ part1: <>{<span className="font-medium">@{candidate.matchedText}</span>}</> }} /></span>
       <button
         type="button"
         onClick={onInsert}
         className="shrink-0 rounded border border-amber-400/50 px-1.5 py-0.5 font-medium hover:bg-amber-100/60 dark:hover:bg-amber-500/20"
-        aria-label={`Insert mention for ${agentDisplayName} into your comment`}
-      >
-        Insert mention
-      </button>
+        aria-label={t("task-components:insertMentionForIntoYourComment_cfcce88d", { value1: agentDisplayName })}
+      >{t("task-components:insertMention_3fa5e7ca")}</button>
       <button
         type="button"
         onClick={onDismiss}
         className="shrink-0 rounded p-0.5 hover:bg-amber-100/60 dark:hover:bg-amber-500/20"
-        aria-label="Dismiss suggestion"
+        aria-label={t("task-components:dismissSuggestion_ae5e3911")}
       >
         <X className="h-3.5 w-3.5" aria-hidden />
       </button>
@@ -235,6 +235,7 @@ export function AssigneeRunningBanner({
   copy: ReassignInterruptCopy;
   className?: string;
 }) {
+  useTranslation("task-components");
   return (
     <div
       role="status"
@@ -267,6 +268,7 @@ export function InterruptAssignConfirm({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  useTranslation("task-components");
   return (
     <div
       data-testid="interrupt-assign-confirm"
@@ -277,7 +279,7 @@ export function InterruptAssignConfirm({
         <div className="min-w-0 flex-1 space-y-1">
           <p className="font-medium">{copy.confirmTitle}</p>
           <p className="flex flex-wrap items-center gap-1 text-amber-700/90 dark:text-amber-300/90">
-            <span>Hand off to</span>
+            <span>{t("task-components:handOffTo_7bcbd89d")}</span>
             <AssigneeChip assignee={to} resolvers={resolvers} />
           </p>
         </div>
@@ -311,6 +313,7 @@ export function PauseAffectsSummaryView({
   summary: PauseAffectsSummary;
   className?: string;
 }) {
+  useTranslation("task-components");
   const visibleBuckets = summary.buckets.filter((bucket) => bucket.count > 0);
   return (
     <div
@@ -318,14 +321,9 @@ export function PauseAffectsSummaryView({
       className={cn("space-y-2 rounded-md border border-border bg-muted/30 p-3", className)}
     >
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        <PauseCircle className="h-3.5 w-3.5" aria-hidden />
-        What this affects
-      </div>
+        <PauseCircle className="h-3.5 w-3.5" aria-hidden />{t("task-components:whatThisAffects_b06916c5")}</div>
       {summary.nothingLive ? (
-        <p role="status" className="text-xs text-muted-foreground" data-testid="pause-nothing-live">
-          Nothing live to pause — no agent run is in flight or queued. This records a hold so new work
-          won't start until you resume.
-        </p>
+        <p role="status" className="text-xs text-muted-foreground" data-testid="pause-nothing-live">{t("task-components:nothingLiveToPauseNoAgentRun_322ccbc8")}</p>
       ) : null}
       {visibleBuckets.length > 0 ? (
         <ul className="space-y-1">
@@ -342,7 +340,7 @@ export function PauseAffectsSummaryView({
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-muted-foreground">No tasks are affected.</p>
+        <p className="text-xs text-muted-foreground">{t("task-components:noTasksAreAffected_9f04a13f")}</p>
       )}
     </div>
   );

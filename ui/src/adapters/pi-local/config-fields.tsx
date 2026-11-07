@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -9,7 +10,7 @@ import { ChoosePathButton } from "../../components/PathInstructionsModal";
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+  () => t("agent-config:absolutePathToAMarkdownFileEG_62d9ce4");
 
 export function PiLocalConfigFields({
   section,
@@ -21,9 +22,10 @@ export function PiLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("agent-config");
   if (hideInstructionsFile) return null;
   return configFieldsForSection(section, (
-    <Field label="Agent instructions file" hint={instructionsFileHint}>
+    <Field label={t("agent-config:agentInstructionsFile_9765d14")} hint={instructionsFileHint()}>
       <div className="flex items-center gap-2">
         <DraftInput
           value={

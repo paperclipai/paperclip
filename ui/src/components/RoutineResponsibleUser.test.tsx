@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -24,7 +25,8 @@ describe("RoutineResponsibleUser", () => {
   let container: HTMLDivElement;
   let client: QueryClient;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -38,6 +40,7 @@ describe("RoutineResponsibleUser", () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    await i18n.changeLanguage("en");
     container.remove();
     client.clear();
     vi.restoreAllMocks();
@@ -56,6 +59,15 @@ describe("RoutineResponsibleUser", () => {
     await act(async () => option!.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
   }
+
+  it("switches responsibility labels to Chinese while preserving names and submitted IDs", async () => {
+    await render();
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.textContent).toContain("负责人");
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("更改负责人：Alex");
+    await selectSam();
+    expect(routinesApi.update).toHaveBeenCalledWith("routine-1", { responsibleUserId: "user-sam", baseRevisionId: "revision-1" });
+  });
 
   it("shows the person and inheritance rules to read-only viewers", async () => {
     await render({ ...routine, canChangeResponsibleUser: false });

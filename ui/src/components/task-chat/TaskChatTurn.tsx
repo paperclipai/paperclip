@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
@@ -37,7 +38,7 @@ export function turnSummaryMetrics(
   if (summary.durationLabel) parts.push(summary.durationLabel);
   if (summary.toolCount > 0)
     parts.push(
-      `${summary.toolCount} tool${summary.toolCount === 1 ? "" : "s"}`,
+      summary.toolCount === 1 ? t("task-chat-ui:oneTool", { count: summary.toolCount }) : t("task-chat-ui:manyTools", { count: summary.toolCount }),
     );
   if (summary.added > 0 || summary.removed > 0)
     parts.push(`+${summary.added} −${summary.removed}`);
@@ -48,7 +49,7 @@ export function turnSummaryMetrics(
 /** "✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens" (parts omitted when unknown). */
 export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
   const metrics = turnSummaryMetrics(summary);
-  const label = summary.failed ? "Stopped" : "Worked";
+  const label = summary.failed ? t("task-chat-ui:stopped") : t("task-chat-ui:worked");
   return metrics ? `${label} · ${metrics}` : label;
 }
 
@@ -77,6 +78,7 @@ export function TaskChatTurn({
   timestampPrefix,
   leading,
 }: TaskChatTurnProps) {
+  useTranslation("task-components");
   const streamlined = useStreamlinedTaskChatPresentation();
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
@@ -102,12 +104,12 @@ export function TaskChatTurn({
             />
           ) : null}
           {!item.historical ? <span className="min-w-0 truncate">
-            {item.continuedAfterSteering ? "Continued after steering · " : ""}
+            {item.continuedAfterSteering ? (t("task-components:continuedAfterSteering_d964b95e") + " ") : ""}
             {item.summary.durationLabel
-              ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+              ? t("task-components:for_53e51106", { value1: item.summary.failed ? "Stopped" : "Worked", value2: item.summary.durationLabel })
               : item.summary.failed
-                ? "Stopped"
-                : "Worked"}
+                ? t("task-components:stopped_1a4f630a")
+                : t("task-components:worked_e7f93aad")}
           </span> : null}
         </div> : null}
         <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
@@ -209,11 +211,11 @@ export function TaskChatTurn({
         <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
       ) : null}
       <span>
-        {item.historical ? "Activity" : item.standaloneHeader && item.summary.durationLabel
-          ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+        {item.historical ? t("task-components:activity_38da1505") : item.standaloneHeader && item.summary.durationLabel
+          ? t("task-components:for_53e51106", { value1: item.summary.failed ? "Stopped" : "Worked", value2: item.summary.durationLabel })
           : item.summary.failed
-            ? "Stopped"
-            : "Worked"}
+            ? t("task-components:stopped_1a4f630a")
+            : t("task-components:worked_e7f93aad")}
       </span>
       {!item.standaloneHeader && turnSummaryMetrics(item.summary) ? (
         // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the

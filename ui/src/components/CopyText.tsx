@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -21,8 +22,9 @@ export function CopyText({
   className,
   ariaLabel,
   title,
-  copiedLabel = "Copied!",
+  copiedLabel = t("final-components-b:CopyText.Copied_ea61bc"),
 }: CopyTextProps) {
+  useTranslation("final-components-b");
   const [visible, setVisible] = useState(false);
   const [label, setLabel] = useState(copiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);

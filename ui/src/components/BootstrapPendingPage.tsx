@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import type { ReactNode } from "react";
 import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -16,16 +17,17 @@ type BootstrapPendingPageProps = {
 };
 
 function CliFallback({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
+  useTranslation("task-components");
   return (
     <div className="mt-6 border-t border-border pt-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Terminal className="size-4 text-muted-foreground" aria-hidden />
-        <span>Prefer to finish setup from the host?</span>
+        <span>{t("task-components:preferToFinishSetupFromTheHost_d29e5c6f")}</span>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
         {hasActiveInvite
-          ? "A bootstrap invite is already active. Check your Paperclip startup logs for the first-admin URL, or run this command on the host to rotate it:"
-          : "Run this command on the host that runs Paperclip to print a one-time first-admin invite URL:"}
+          ? t("task-components:aBootstrapInviteIsAlreadyActiveCheck_3c8fb492")
+          : t("task-components:runThisCommandOnTheHostThat_ca2f606a")}
       </p>
       <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
 {BOOTSTRAP_FALLBACK_COMMAND}
@@ -35,6 +37,7 @@ function CliFallback({ hasActiveInvite = false }: { hasActiveInvite?: boolean })
 }
 
 function StateChrome({ children }: { children: ReactNode }) {
+  useTranslation("task-components");
   return (
     <div className="mx-auto max-w-xl py-10">
       <Card className="block p-6">{children}</Card>
@@ -49,18 +52,18 @@ function displayIdentity(session: AuthSession) {
 function claimErrorCopy(error: BootstrapPendingPageProps["claimError"]) {
   if (error?.status === 409) {
     return {
-      title: "Someone else has already claimed this instance.",
-      body: "Refresh to sign in, or ask the existing admin to invite you from Settings -> Access.",
+      title: t("task-components:someoneElseHasAlreadyClaimedThisInstance_e9efa2de"),
+      body: t("final-components-a:refreshToSignInOr_3a564548"),
     };
   }
   if (error?.status === 401) {
     return {
-      title: "Your session expired. Sign in again to claim this instance.",
+      title: t("task-components:yourSessionExpiredSignInAgainTo_7c6edab3"),
       body: "",
     };
   }
   return {
-    title: "We couldn't reach the server. Try again in a moment.",
+    title: t("task-components:weCouldnTReachTheServerTry_2fca89bf"),
     body: "",
   };
 }
@@ -73,19 +76,14 @@ export function BootstrapPendingPage({
   claimError,
   onClaim,
 }: BootstrapPendingPageProps) {
+  useTranslation("task-components");
   if (!claimAvailable) {
     return (
       <StateChrome>
-        <h1 className="text-xl font-semibold">This Paperclip is waiting on its first admin</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This instance runs in invite-only mode. The operator must generate a one-time first-admin invite URL
-          from the host. Once you have the link, open it from this browser to finish setup.
-        </p>
+        <h1 className="text-xl font-semibold">{t("task-components:thisPaperclipIsWaitingOnItsFirst_fe4cc591")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("task-components:thisInstanceRunsInInviteOnlyMode_b781534e")}</p>
         <CliFallback hasActiveInvite={hasActiveInvite} />
-        <p className="mt-4 text-xs text-muted-foreground">
-          Browser-based claim is intentionally disabled in public mode so anyone on the network can't promote
-          themselves.
-        </p>
+        <p className="mt-4 text-xs text-muted-foreground">{t("task-components:browserBasedClaimIsIntentionallyDisabledIn_bbdfcda4")}</p>
       </StateChrome>
     );
   }
@@ -98,19 +96,17 @@ export function BootstrapPendingPage({
             <ShieldCheck className="size-5" aria-hidden />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">You're the instance admin</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Setup is complete. Taking you to onboarding to create your first organization...
-            </p>
+            <h1 className="text-xl font-semibold">{t("task-components:youReTheInstanceAdmin_7b0496df")}</h1>
+            <p className="mt-2 text-sm text-muted-foreground">{t("task-components:setupIsCompleteTakingYouToOnboarding_6e267116")}</p>
           </div>
         </div>
         <div className="mt-5 flex items-center gap-3">
           <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-          <span className="text-sm text-muted-foreground">Redirecting...</span>
+          <span className="text-sm text-muted-foreground">{t("task-components:redirecting_cd23991b")}</span>
         </div>
         <div className="mt-5">
           <Button asChild variant="outline">
-            <a href="/">Continue to dashboard</a>
+            <a href="/">{t("task-components:continueToDashboard_740e1ec1")}</a>
           </Button>
         </div>
       </StateChrome>
@@ -120,14 +116,11 @@ export function BootstrapPendingPage({
   if (!session) {
     return (
       <StateChrome>
-        <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          No admin has claimed this instance yet. Sign in or create your Paperclip account to become the first
-          admin from this browser.
-        </p>
+        <h1 className="text-xl font-semibold">{t("task-components:finishSettingUpThisPaperclip_fd728e25")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("task-components:noAdminHasClaimedThisInstanceYet_dcabbf1b")}</p>
         <div className="mt-5">
           <Button asChild>
-            <Link to="/auth?next=/">Sign in / Create account</Link>
+            <Link to="/auth?next=/">{t("task-components:signInCreateAccount_5d4f5eb1")}</Link>
           </Button>
         </div>
         <CliFallback hasActiveInvite={hasActiveInvite} />
@@ -139,26 +132,17 @@ export function BootstrapPendingPage({
   const isClaiming = claimState === "claiming";
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
-      </p>
+      <h1 className="text-xl font-semibold">{t("task-components:finishSettingUpThisPaperclip_fd728e25")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("task-components:noAdminHasClaimedThisInstanceYet_c5c1f5e4")}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Button onClick={onClaim} disabled={isClaiming}>
           {isClaiming && <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />}
-          {isClaiming ? "Claiming..." : "Claim this instance"}
+          {isClaiming ? t("task-components:claiming_a07badb5") : t("task-components:claimThisInstance_b7c7de5d")}
         </Button>
-        <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">{displayIdentity(session)}</span>
+        <span className="text-sm text-muted-foreground">{t("task-components:signedInAs_abc50e33")}{" "}<span className="font-medium text-foreground">{displayIdentity(session)}</span>
         </span>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">
-        Wrong account?{" "}
-        <Link to="/auth?next=/" className="underline underline-offset-2">
-          Switch account
-        </Link>
-        .
-      </p>
+      <p className="mt-3 text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_27debccaca16" components={{ part1: <>{<Link to="/auth?next=/" className="underline underline-offset-2">{t("task-components:switchAccount_fedce010")}</Link>}</> }} /></p>
       {claimError && (
         <div
           role="alert"

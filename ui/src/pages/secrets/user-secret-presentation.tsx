@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import type { SecretStatus, UserSecretCoverageSummary } from "@paperclipai/shared";
 import { UserRound } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -13,7 +14,8 @@ export const USER_SECRET_ACCENT_BORDER = "border-violet-500/30";
 export const USER_SECRET_ACCENT_BG = "bg-violet-500/10";
 
 /** Small pill used to mark user-scoped rows and headers. */
-export function UserSecretChip({ className, label = "User secret" }: { className?: string; label?: string }) {
+export function UserSecretChip({ className, label }: { className?: string; label?: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Badge variant="outline"
       className={cn(
@@ -25,7 +27,7 @@ export function UserSecretChip({ className, label = "User secret" }: { className
       )}
     >
       <UserRound className="h-3 w-3" />
-      {label}
+      {label ?? translateAgentPage("agents:user_secret")}
     </Badge>
   );
 }
@@ -61,11 +63,11 @@ export function myValueTone(state: MyValueState): string {
 export function myValueLabel(state: MyValueState): string {
   switch (state) {
     case "set":
-      return "Value set";
+      return translateAgentPage("agents:value_set");
     case "not_set":
-      return "Not set";
+      return translateAgentPage("agents:not_set_93039e");
     case "inactive":
-      return "Disabled";
+      return translateAgentPage("agents:disabled");
   }
 }
 
@@ -76,5 +78,5 @@ export function myValueLabel(state: MyValueState): string {
 export function coverageSummaryLabel(summary: UserSecretCoverageSummary | undefined): string {
   if (!summary) return "—";
   const total = summary.configuredCount + summary.missingCount + summary.inactiveCount;
-  return `${summary.configuredCount} of ${total} set`;
+  return translateAgentPage("agents:of_set", { value1: summary.configuredCount, value2: total });
 }

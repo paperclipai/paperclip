@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { FlaskConical, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -16,10 +18,10 @@ const HEALTH_DOT: Record<SmokeHealth, string> = {
 };
 
 const HEALTH_LABEL: Record<SmokeHealth, string> = {
-  green: "All paths passing",
-  amber: "Needs a run",
-  red: "Failing paths",
-  unknown: "No runs yet",
+  get green() { return finalPagesT("final-pages:All_paths_passing_d44639"); },
+  get amber() { return finalPagesT("final-pages:Needs_a_run_dde76a"); },
+  get red() { return finalPagesT("final-pages:Failing_paths_099064"); },
+  get unknown() { return finalPagesT("final-pages:No_runs_yet_306b45"); },
 };
 
 function formatTime(value: string | Date | null | undefined): string {
@@ -37,6 +39,7 @@ function formatTime(value: string | Date | null | undefined): string {
  * the Developer › Smoke Lab tab.
  */
 export function SmokeLabDashboardCard({ companyId }: { companyId: string }) {
+  useTranslation("task-components");
   const { enabled, loaded } = useSmokeLabEnabled();
 
   const runsQuery = useQuery({
@@ -72,14 +75,14 @@ export function SmokeLabDashboardCard({ companyId }: { companyId: string }) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", HEALTH_DOT[health])} />
-            <p className="truncate text-sm font-semibold text-foreground">Integration smoke</p>
+            <p className="truncate text-sm font-semibold text-foreground">{t("task-components:integrationSmoke_287f3802")}</p>
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {HEALTH_LABEL[health]}
             {failing.length > 0 && `: ${failing.join(", ")}`}
           </p>
           <p className="mt-0.5 truncate text-(length:--text-micro) text-muted-foreground/80">
-            {latestRun ? `Last run ${formatTime(latestRun.startedAt)}` : "Run one from the Smoke Lab tab"}
+            {latestRun ? t("task-components:lastRun_c4b1abe8", { value1: formatTime(latestRun.startedAt) }) : t("task-components:runOneFromTheSmokeLabTab_0de15b47")}
           </p>
         </div>
       </div>

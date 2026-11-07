@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DocumentAnnotationComment, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
@@ -17,6 +18,7 @@ interface MutationOptions {
 }
 
 export function useDocumentAnnotationMutations(options: MutationOptions) {
+  const { t: displayT } = useTranslation("display");
   const queryClient = useQueryClient();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const { data: session } = useQuery({
@@ -26,9 +28,9 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
   });
   const currentUser = useMemo(() => ({
     id: session?.user?.id ?? null,
-    name: session?.user?.name?.trim() || session?.user?.email?.trim() || "You",
+    name: session?.user?.name?.trim() || session?.user?.email?.trim() || t("display:copy_8b5ac377f8a0"),
     image: session?.user?.image ?? null,
-  }), [session]);
+  }), [session, displayT]);
   const queryKey = useMemo(() => options.target.kind === "routine"
     ? queryKeys.routines.documentAnnotations(options.target.routineId, options.target.documentKey, "all")
     : options.target.kind === "case"
@@ -43,8 +45,8 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
 
   const createThread = useMutation({
     mutationFn: async (body: string) => {
-      if (!options.pendingAnchor) throw new Error("No selection to anchor to.");
-      if (!options.baseRevisionId) throw new Error("Document has no revision yet.");
+      if (!options.pendingAnchor) throw new Error(t("display:copy_02d0a44d3d16"));
+      if (!options.baseRevisionId) throw new Error(t("display:copy_bcbfaec96fa7"));
       return documentAnnotationsApi.createForTarget(options.target, {
         baseRevisionId: options.baseRevisionId,
         baseRevisionNumber: options.baseRevisionNumber,
@@ -64,7 +66,7 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     },
     onError: (error, _body, context) => {
       if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
-      setMutationError(messageFor(error, "Failed to create comment."));
+      setMutationError(messageFor(error, t("display:copy_2bc6bcc64cf2")));
     },
     onSuccess: (thread, _body, context) => {
       queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(queryKey, (current) =>
@@ -89,7 +91,7 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     },
     onError: (error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
-      setMutationError(messageFor(error, "Failed to add reply."));
+      setMutationError(messageFor(error, t("display:copy_69d2262ff8ed")));
     },
     onSuccess: (_comment, variables) => {
       setMutationError(null);
@@ -109,7 +111,7 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     },
     onError: (error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
-      setMutationError(messageFor(error, "Failed to update comment status."));
+      setMutationError(messageFor(error, t("display:copy_1c3a7899ff8b")));
     },
     onSuccess: () => setMutationError(null),
     onSettled: invalidateAll,

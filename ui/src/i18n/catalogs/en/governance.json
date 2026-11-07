@@ -1,0 +1,20 @@
+{
+  "kindSuggestedTasks": "Suggested tasks",
+  "kindAskUserQuestions": "Ask user questions",
+  "kindConfirmations": "Confirmations",
+  "kindCheckboxConfirmations": "Checkbox confirmations",
+  "kindItemVerdicts": "Item verdicts",
+  "kindConnectionRequests": "Connection requests",
+  "anyoneDefault": "Anyone (default)",
+  "noCap": "No cap",
+  "defaultOpenEffect": "New cards are open — the board or any agent can respond, including the one that asked.",
+  "uncappedEffect": "A request keeps whatever audience it asks for.",
+  "defaultNotCreatorEffect": "New cards exclude the agent that created them, so the answer comes from someone else.",
+  "defaultHumanOnlyEffect": "New cards wait for a person on the board. Agents are turned away.",
+  "capNotCreatorEffect": "Even a card that asks for Anyone is narrowed to exclude its creator.",
+  "capHumanOnlyEffect": "Every card of this kind waits for a person, whatever it asked for.",
+  "defaultAudienceForKind": "Default resolver audience for {{kind}}",
+  "capForKind": "Resolver cap for {{kind}}",
+  "defaultPolicy": "Default policy",
+  "cap": "Cap"
+}

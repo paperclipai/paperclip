@@ -1,3 +1,6 @@
+import { t as finalPagesT } from "@/i18n";
+import { Trans } from "react-i18next";
+import { useTranslation, t as translate } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -52,7 +55,7 @@ import { appTabHref } from "../app-tabs";
 
 /** "1.2s" / "0.4s" — the copy-spec always shows seconds with one decimal. */
 function seconds(ms: number): string {
-  return `${(ms / 1000).toFixed(1)}s`;
+  return translate("connections:s_877e2e1", { value: (ms / 1000).toFixed(1) });
 }
 
 /** relativeTime() returns "just now"; the spec capitalizes it ("Just now"). */
@@ -90,6 +93,7 @@ export function ActionTestDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation("connections");
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
     queryFn: () => toolsApi.listTestAgents(connectionId),
@@ -100,7 +104,7 @@ export function ActionTestDialog({
     () => [...(testAgentsQuery.data?.agents ?? [])].sort(
       (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
     ),
-    [testAgentsQuery.data],
+    [testAgentsQuery.data, t],
   );
   const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
   const agentId = requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)
@@ -120,30 +124,26 @@ export function ActionTestDialog({
     selectedAgentBase && accessQuery.data
       ? { ...selectedAgentBase, effectiveAccess: accessQuery.data.access }
       : null
-  ), [accessQuery.data, selectedAgentBase]);
+  ), [accessQuery.data, selectedAgentBase, t]);
   const decision = useMemo<ToolConnectionTestDecision>(() => {
     const tool = selectedAgent?.effectiveAccess.tools.find((candidate) => (
       candidate.toolName === entry.toolName || candidate.gatewayToolName === entry.toolName
     ));
     return tool?.decision ?? "off";
-  }, [entry.toolName, selectedAgent]);
+  }, [entry.toolName, selectedAgent, t]);
   const title = entry.title ?? entry.toolName;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Test {title}</DialogTitle>
-          <DialogDescription>
-            Run a real action with the same permissions and credentials an agent would use.
-          </DialogDescription>
+          <DialogTitle>{t("test_ac83c54", { title: title })}</DialogTitle>
+          <DialogDescription>{t("run_a_real_action_with_the_same_0bd2db1")}</DialogDescription>
         </DialogHeader>
 
         {testAgentsQuery.isLoading || testAgentsView.kind === "reconnecting" ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agents…
-          </div>
+            <Loader2 className="h-4 w-4 animate-spin" />{t("loading_agents_0424b4e")}</div>
         ) : testAgentsView.kind === "error" ? (
           <QueryErrorState
             className="my-6"
@@ -153,7 +153,7 @@ export function ActionTestDialog({
             retrying={testAgentsView.isFetching}
           />
         ) : agents.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
+          <p className="py-6 text-sm text-muted-foreground">{t("no_agents_are_available_to_test_as_4621705")}</p>
         ) : accessView.kind === "error" ? (
           <QueryErrorState
             className="my-6"
@@ -164,13 +164,11 @@ export function ActionTestDialog({
           />
         ) : !selectedAgent ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agent permissions…
-          </div>
+            <Loader2 className="h-4 w-4 animate-spin" />{t("loading_agent_permissions_2cd0493")}</div>
         ) : (
           <div className="space-y-5">
             <div className="rounded-md border border-border bg-muted/30 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Act as</p>
+              <p className="text-xs font-medium text-muted-foreground">{t("act_as_1c8bd07")}</p>
               <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 <AgentPicker
                   agents={agents}
@@ -201,15 +199,15 @@ export function ActionTestDialog({
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
-    label: "Allowed",
+    get label() { return translate("connections:allowed_77c7b49"); },
     className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   ask_first: {
-    label: "Ask first",
+    get label() { return translate("connections:ask_first_1aeb84d"); },
     className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   off: {
-    label: "Off",
+    get label() { return translate("connections:off_e3de5ab"); },
     className: "border-border bg-muted text-muted-foreground",
   },
 };
@@ -245,6 +243,7 @@ function AgentPicker({
   connectionId: string;
   appName: string;
 }) {
+  const { t } = useTranslation("connections");
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -258,7 +257,7 @@ function AgentPicker({
         <button
           type="button"
           className="inline-flex items-center gap-1.5 font-semibold text-foreground underline-offset-2 outline-none hover:text-primary hover:underline focus-visible:text-primary"
-          aria-label="Choose which agent to test as"
+          aria-label={t("choose_which_agent_to_test_as_4e2048d")}
         >
           {selectedAgent.name}
           <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -269,8 +268,8 @@ function AgentPicker({
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Search agents"
-              placeholder="Search agents…"
+              aria-label={t("search_agents_f1ff540")}
+              placeholder={t("search_agents_97ce8aa")}
               className="h-8 pl-8 text-sm"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -280,7 +279,7 @@ function AgentPicker({
         </div>
         <div className="max-h-60 overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <p className="px-3 py-4 text-center text-xs text-muted-foreground">No agents match.</p>
+            <p className="px-3 py-4 text-center text-xs text-muted-foreground">{t("no_agents_match_8ac1ae4")}</p>
           ) : (
             filtered.map((agent) => {
               const detail = agent.title?.trim() || agent.role;
@@ -314,24 +313,20 @@ function AgentPicker({
           )}
         </div>
         <div className="border-t border-border px-3 py-2 text-(length:--text-micro) text-muted-foreground">
-          <p>Only agents you can assign tasks to are listed.</p>
-          <p>Pick one to preview what they'd see in {appName}.</p>
+          <p>{t("only_agents_you_can_assign_tasks_to_dc71684")}</p>
+          <p>{t("pick_one_to_preview_what_they_d_2c8409f", { appName: appName })}</p>
         </div>
         <div className="border-t border-border p-3">
-          <p className="text-xs font-semibold text-foreground">What the badges mean</p>
+          <p className="text-xs font-semibold text-foreground">{t("what_the_badges_mean_f1edba9")}</p>
           <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li><span className="font-medium text-foreground">Allowed</span> — runs immediately when you press Run.</li>
-            <li><span className="font-medium text-foreground">Ask first</span> — Run is parked in Review for your OK.</li>
+            <li><span className="font-medium text-foreground">{t("allowed_77c7b49")}</span>{t("runs_immediately_when_you_press_run_5e98b1e")}</li>
+            <li><span className="font-medium text-foreground">{t("ask_first_1aeb84d")}</span>{t("run_is_parked_in_review_for_your_7ec24f0")}</li>
             <li>
-              <span className="font-medium text-foreground">Off</span> — won't run. Change it in{" "}
-              <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>.
+              <span className="font-medium text-foreground">{t("off_e3de5ab")}</span>{t("won_t_run_change_it_in_2dde1a7")}{" "}
+              <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>{t("permissions_e011dfa")}</Link>.
             </li>
           </ul>
-          <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
-            Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each.
-          </p>
+          <p className="mt-2 text-(length:--text-micro) text-muted-foreground">{t("badges_reflect_this_agent_s_current_settings_c026c0e")}</p>
         </div>
       </PopoverContent>
     </Popover>
@@ -406,9 +401,9 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
 }
 
 const GUT_CHECK: Record<ToolConnectionTestDecision, (app: string, agent: string) => string> = {
-  allowed: (app, agent) => `This runs a real call against ${app} as ${agent}.`,
-  ask_first: () => `Waiting for your OK before this call leaves Paperclip.`,
-  off: (_app, agent) => `No call will be made — this action is off for ${agent}.`,
+  allowed: (app, agent) => translate("connections:this_runs_a_real_call_against_as_7cce2f7", { app: app, agent: agent }),
+  ask_first: () => translate("connections:waiting_for_your_ok_before_this_call_8901570"),
+  off: (_app, agent) => translate("connections:no_call_will_be_made_this_action_4097671", { agent: agent }),
 };
 
 function ActionTester({
@@ -428,10 +423,11 @@ function ActionTester({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
+  const { t } = useTranslation("connections");
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const rawSchema = (entry.inputSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
-  const formSchema = useMemo(() => splitRequiredOptional(rawSchema), [rawSchema]);
+  const formSchema = useMemo(() => splitRequiredOptional(rawSchema), [rawSchema, t]);
   const [values, setValues] = useState<Record<string, unknown>>(() => getDefaultValues(rawSchema));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [outcome, setOutcome] = useState<RunOutcome | null>(() =>
@@ -536,10 +532,10 @@ function ActionTester({
           onChange={setValues}
           errors={errors}
           disabled={running}
-          advancedLabel="More options"
+          advancedLabel={finalPagesT("final-pages:More_options_bc79cd")}
         />
       ) : (
-        <p className="text-xs text-muted-foreground">This action takes no inputs.</p>
+        <p className="text-xs text-muted-foreground">{t("this_action_takes_no_inputs_22aaf38")}</p>
       )}
 
       <p className="text-xs text-muted-foreground">{GUT_CHECK[decision](appName, agent.name)}</p>
@@ -548,29 +544,24 @@ function ActionTester({
         <Button onClick={onRun} disabled={running || !!outcome?.result.upstreamPending?.resumeTool || outcome?.result.decision === "ask_first"} size="sm">
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…
-            </>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />{t("running_464a219")}</>
           ) : (
             <>
-              <Play className="h-3.5 w-3.5" /> {outcome ? "Run again" : "Run"}
+              <Play className="h-3.5 w-3.5" /> {outcome ? t("run_again_ee1d36f") : t("run_b1b3926")}
             </>
           )}
         </Button>
-        <Button onClick={onReset} disabled={running} size="sm" variant="ghost">
-          Reset
-        </Button>
+        <Button onClick={onReset} disabled={running} size="sm" variant="ghost">{t("reset_5cbb04b")}</Button>
       </div>
 
-      {(outcome?.result.decision === "ask_first" || outcome?.result.upstreamPending?.resumeTool) && <p className="text-xs text-muted-foreground">Finish the existing request below. Use Reset only when you intend to start a new call.</p>}
+      {(outcome?.result.decision === "ask_first" || outcome?.result.upstreamPending?.resumeTool) && <p className="text-xs text-muted-foreground">{t("finish_the_existing_request_below_use_reset_8eb3ae9")}</p>}
 
       {running && (
         <RunningCard entry={entry} appName={appName} agentName={agent.name} elapsedMs={elapsedMs} onCancel={onCancelRunning} />
       )}
 
       {run.error && !running && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          Couldn't reach {agent.name}. {describeError(run.error).body}
-        </div>
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{t("couldn_t_reach_e995515", { name: agent.name, body: describeError(run.error).body })}</div>
       )}
 
       {outcome && !running && (
@@ -597,21 +588,17 @@ function RunningCard({
   elapsedMs: number;
   onCancel: () => void;
 }) {
-  const verb = entry.isReadOnly ? "Reading from" : entry.isWrite ? "Writing to" : "Calling";
+  const { t } = useTranslation("connections");
   return (
     <div className="rounded-md border border-border bg-muted/30 p-4">
       <div className="flex items-center gap-2">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">Running…</span>
+        <span className="text-sm font-medium text-foreground">{t("running_7ef25a7")}</span>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {verb} {appName} as {agentName}.
-      </p>
+      <p className="mt-1 text-xs text-muted-foreground">{t(entry.isReadOnly ? "reviewBReadingAs" : entry.isWrite ? "reviewBWritingAs" : "reviewBCallingAs", { appName, agentName })}</p>
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Started {seconds(elapsedMs)} ago · Press cancel to stop</span>
-        <Button onClick={onCancel} size="sm" variant="outline">
-          Cancel
-        </Button>
+        <span className="text-xs text-muted-foreground">{t("started_ago_press_cancel_to_stop_50818a4", { value: seconds(elapsedMs) })}</span>
+        <Button onClick={onCancel} size="sm" variant="outline">{t("cancel_1791a62")}</Button>
       </div>
     </div>
   );
@@ -634,13 +621,14 @@ function ResultPanel({
   connectionId: string;
   agent?: TestAgentWithAccess;
 }) {
+  const { t } = useTranslation("connections");
   const { result } = outcome;
   if (result.upstreamPending) return <ProviderPendingResult pending={result.upstreamPending} appName={appName} connectionId={connectionId} agent={agent} />;
   if (result.decision === "ask_first") {
     return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} agent={agent} />;
   }
   if (result.decision === "off") {
-    const offMessage = result.error?.message ?? "This action is off and won't run."; // query-error-ok: the tool call's own result error, not a query or mutation error
+    const offMessage = result.error?.message ?? t("this_action_is_off_and_won_t_5f0d326"); // query-error-ok: the tool call's own result error, not a query or mutation error
     return (
       <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
         {offMessage}
@@ -658,6 +646,7 @@ function ResultPanel({
 }
 
 function ProviderPendingResult({ pending, appName, connectionId, agent }: { pending: ToolUpstreamPending; appName: string; connectionId: string; agent?: TestAgentWithAccess }) {
+  const { t } = useTranslation("connections");
   const [resumed, setResumed] = useState<{ outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" } | null>(null);
   const resumeError = resumed && (resumed.outcome.result.error ?? mcpToolError(resumed.outcome.result.result));
   const stoppedByUser = resumed && resumeError?.reasonCode === "tool_error" &&
@@ -665,29 +654,29 @@ function ProviderPendingResult({ pending, appName, connectionId, agent }: { pend
       (resumed.action === "cancel" && /request was cancelled by the user/i.test(resumeError.message))); // query-error-ok: classifies the tool result, nothing is rendered here
   const resumeMessage = stoppedByUser ? resumeError.message : null; // query-error-ok: the tool call's own result error, not a query or mutation error
   if (stoppedByUser) return <div role="status" className="space-y-2 rounded-md border border-border bg-muted/40 p-4 text-sm">
-    <p className="font-medium">{resumed.action === "decline" ? "Request declined" : "Request cancelled"}</p>
+    <p className="font-medium">{resumed.action === "decline" ? t("request_declined_4d5f51f") : t("request_cancelled_fe169fa")}</p>
     <p>{resumeMessage}</p>
-    <p className="text-muted-foreground">The original call was not repeated.</p>
-    {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
+    <p className="text-muted-foreground">{t("the_original_call_was_not_repeated_8e3766a")}</p>
+    {pending.executionId && <p>{t("execution_0cbb19a")}<code className="break-all">{pending.executionId}</code></p>}
   </div>;
   if (resumed) return <ResultPanel outcome={resumed.outcome} entry={resumed.entry} appName={appName} connectionId={connectionId} agent={agent} />;
   return (
     <div role="status" className="space-y-3 rounded-md border border-border bg-muted/40 p-4 text-sm">
-      <p className="font-medium">{pending.kind === "approval" ? "Approval needed" : "Authorization needed"} in {appName}</p>
-      <p className="text-muted-foreground">Paperclip allowed this call. The provider needs your input before it can continue.</p>
+      <p className="font-medium">{pending.kind === "approval" ? finalPagesT("final-pages:Approval_needed_in_appName_b31cf2", { appName }) : finalPagesT("final-pages:Authorization_needed_in_appName_2bba22", { appName })}</p>
+      <p className="text-muted-foreground">{t("paperclip_allowed_this_call_the_provider_needs_0e82ff8")}</p>
       {pending.links.map((link) => {
         const checked = checkOAuthEndpointUrl(link.url);
-        return checked.ok ? <Button key={checked.url} variant="outline" asChild><a href={checked.url} target="_blank" rel="noopener noreferrer">Continue at {checked.host}</a></Button> : null;
+        return checked.ok ? <Button key={checked.url} variant="outline" asChild><a href={checked.url} target="_blank" rel="noopener noreferrer">{t("continue_at_d5f5945", { host: checked.host })}</a></Button> : null;
       })}
       {pending.message && <p className="whitespace-pre-wrap break-words">{pending.message}</p>}
-      {pending.links.length === 0 && !pending.resumeTool && <p>Open the provider dashboard to complete this request.</p>}
-      {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
-      {pending.elicitationId && <p>Request: <code className="break-all">{pending.elicitationId}</code></p>}
-      {pending.expiresAt && <p>Approval expires {new Date(pending.expiresAt).toLocaleTimeString()}.</p>}
+      {pending.links.length === 0 && !pending.resumeTool && <p>{t("open_the_provider_dashboard_to_complete_this_934850d")}</p>}
+      {pending.executionId && <p>{t("execution_0cbb19a")}<code className="break-all">{pending.executionId}</code></p>}
+      {pending.elicitationId && <p>{t("request_ec0e7ce")}<code className="break-all">{pending.elicitationId}</code></p>}
+      {pending.expiresAt && <p>{t("approval_expires_a011685", { value: new Date(pending.expiresAt).toLocaleTimeString() })}</p>}
       {pending.resumeTool && agent ? <ProviderResumeControls pending={pending} connectionId={connectionId} agent={agent} onResult={setResumed} /> :
       <p className="text-muted-foreground">{pending.resumeTool
-        ? `After approval, test the ${pending.resumeTool} action with this execution ID. Do not start the original action again.`
-        : "After authorizing, check the provider's result before using Run again. Paperclip will not repeat the call automatically."}</p>}
+        ? t("after_approval_test_the_action_with_this_7f24ae8", { resumeTool: pending.resumeTool })
+        : t("after_authorizing_check_the_provider_s_result_80d6cda")}</p>}
     </div>
   );
 }
@@ -696,6 +685,7 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
   pending: ToolUpstreamPending; connectionId: string; agent: TestAgentWithAccess;
   onResult: (result: { outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" }) => void;
 }) {
+  const { t } = useTranslation("connections");
   const catalog = useQuery({ queryKey: queryKeys.tools.catalog(connectionId), queryFn: () => toolsApi.listCatalog(connectionId) });
   const catalogView = useQueryView(catalog);
   const entry = catalog.data?.catalog.find((item) => item.toolName === pending.resumeTool && item.status === "active");
@@ -718,16 +708,16 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
     if (!Object.keys(validation).length) resume.mutate(action);
   };
   return <div className="space-y-3">
-    <p className="text-muted-foreground">Review the provider's request, then resume this execution as {agent.name}. The original action will not be started again.</p>
-    <div className="flex items-center gap-2"><span>Resume permission</span><DecisionBadge decision={permission} /></div>
+    <p className="text-muted-foreground">{t("review_the_provider_s_request_then_resume_b6776b6", { name: agent.name })}</p>
+    <div className="flex items-center gap-2"><span>{t("resume_permission_4fbbd00")}</span><DecisionBadge decision={permission} /></div>
     {Object.keys(schema.properties ?? {}).length > 0 && <JsonSchemaForm schema={schema} values={content} onChange={setContent} errors={errors} disabled={resume.isPending} />}
     <div className="flex flex-wrap gap-2">
-      <Button disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("accept")}>{resume.isPending ? "Resuming…" : "Approve and resume"}</Button>
-      <Button variant="outline" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("decline")}>Decline</Button>
-      <Button variant="ghost" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("cancel")}>Cancel request</Button>
+      <Button disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("accept")}>{resume.isPending ? t("resuming_ab0bec1") : t("approve_and_resume_3b3ac05")}</Button>
+      <Button variant="outline" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("decline")}>{t("decline_b59cf9e")}</Button>
+      <Button variant="ghost" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("cancel")}>{t("cancel_request_84837a2")}</Button>
     </div>
-    {expired && <p>This provider approval expired. Check the provider before starting a new action.</p>}
-    {permission === "off" && <p>Allow the resume action in Permissions before continuing.</p>}
+    {expired && <p>{t("this_provider_approval_expired_check_the_provider_3a411bd")}</p>}
+    {permission === "off" && <p>{t("allow_the_resume_action_in_permissions_before_34fb0ba")}</p>}
     {catalogView.kind === "error" && <QueryErrorState size="inline" error={catalog.error} action="load the resume action" onRetry={catalogView.retry} retrying={catalogView.isFetching} />}
     {resume.error && <p role="alert">{describeError(resume.error).body}</p>}
   </div>;
@@ -750,7 +740,7 @@ function mcpToolError(value: unknown): { message: string; reasonCode: string | n
   const message =
     (typeof envelope.content === "string" && envelope.content.trim() !== "" && envelope.content)
     || (typeof envelope.error === "string" && envelope.error.trim() !== "" && envelope.error)
-    || "The app returned an error result.";
+    || translate("connections:the_app_returned_an_error_result_a818bf4");
   return { message, reasonCode: "tool_error" };
 }
 
@@ -812,15 +802,15 @@ function resultPreview(value: unknown): { items: Array<{ label: string | null; v
     if (content.type === "text" && typeof content.text === "string") {
       const parsed = parseText(content.text);
       if (structured === null || structured === undefined || safeStringify(parsed) !== safeStringify(structuredValue)) {
-        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? "Text" : null, value: parsed });
+        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? translate("connections:text_c3328c3") : null, value: parsed });
       }
     } else if (content.type === "image" || content.type === "audio") {
-      items.push({ label: content.type === "image" ? "Image" : "Audio", value: typeof content.mimeType === "string" ? content.mimeType : "Media attachment" });
+      items.push({ label: content.type === "image" ? translate("connections:image_50e19fd") : translate("connections:audio_acdac20"), value: typeof content.mimeType === "string" ? content.mimeType : translate("connections:media_attachment_9c24b44") });
     } else if (content.type === "resource_link") {
-      items.push({ label: "Resource", value: content.title ?? content.name ?? content.uri ?? "Resource link" });
+      items.push({ label: translate("connections:resource_021493f"), value: content.title ?? content.name ?? content.uri ?? translate("connections:resource_link_2428493") });
     } else if (content.type === "resource" && content.resource && typeof content.resource === "object") {
       const resource = content.resource as Record<string, unknown>;
-      items.push({ label: "Resource", value: typeof resource.text === "string" ? parseText(resource.text) : resource.uri ?? "Embedded resource" });
+      items.push({ label: translate("connections:resource_021493f"), value: typeof resource.text === "string" ? parseText(resource.text) : resource.uri ?? translate("connections:embedded_resource_89ca96d") });
     } else {
       return { items: [{ label: null, value }], summary: value, rawFallback: true };
     }
@@ -841,11 +831,11 @@ function writeVerb(entry: ToolCatalogEntry): string | null {
 
 function successHeadline(value: unknown, entry: ToolCatalogEntry, appName: string): string {
   const verb = writeVerb(entry);
-  if (!entry.isReadOnly && verb) return `Worked. Row ${verb}.`;
+  if (!entry.isReadOnly && verb) return translate("connections:worked_row_501ec1c", { verb: translate(`connections:reviewBRow${verb}`) });
   const rows = asRows(value);
-  if (rows) return `Worked. ${rows.length} ${rows.length === 1 ? "row" : "rows"} came back.`;
-  if (isEmptyResult(value)) return "Worked. No data to show.";
-  return `Worked. ${appName} sent back the result.`;
+  if (rows) return translate("connections:worked_came_back_4a12b13", { length: rows.length, value: rows.length === 1 ? "row" : "rows" , count: rows.length});
+  if (isEmptyResult(value)) return translate("connections:worked_no_data_to_show_cc47b26");
+  return translate("connections:worked_sent_back_the_result_32cdc6f", { appName: appName });
 }
 
 function AllowedResult({
@@ -859,6 +849,7 @@ function AllowedResult({
   appName: string;
   connectionId: string;
 }) {
+  const { t } = useTranslation("connections");
   const value = outcome.result.result;
   const preview = resultPreview(value);
   return (
@@ -868,13 +859,12 @@ function AllowedResult({
         <span className="text-sm font-medium text-foreground">{successHeadline(preview.summary, entry, appName)}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Clock className="h-3 w-3" />
-        Ran as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        <Clock className="h-3 w-3" />{t("ran_as_55dc786")}{outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
       </p>
 
       {preview.items.some((item) => !isEmptyResult(item.value)) && (
         <div className="mt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("preview_f1fbb2b")}</p>
           <div className="mt-1.5">
             <div className="space-y-2">
               {preview.items.map((item, index) => (
@@ -890,20 +880,18 @@ function AllowedResult({
 
       <RawResponseDisclosure value={value} initiallyOpen={preview.rawFallback} />
 
-      <p className="mt-3 text-xs text-muted-foreground">
-        This call is in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
+      <p className="mt-3 text-xs text-muted-foreground">{t("this_call_is_in_the_c17f8d2")}{" "}
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">{t("audit_log_81fff15")}</Link>
         .
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">Last run finished in {seconds(outcome.durationMs)}.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("last_run_finished_in_677ccc3", { value: seconds(outcome.durationMs) })}</p>
     </div>
   );
 }
 
 /** Pretty preview: tables for row arrays, labeled fields for objects, plain text for prose. */
 function PrettyPreview({ value }: { value: unknown }) {
+  const { t } = useTranslation("connections");
   const rows = asRows(value);
   if (rows) {
     const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r)))).slice(0, 6);
@@ -916,7 +904,7 @@ function PrettyPreview({ value }: { value: unknown }) {
         <div className="space-y-2">
           {shown.map((row, index) => <PreviewRowCard key={index} row={row} index={index} />)}
           {rows.length > shown.length && (
-            <p className="text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows in the raw response</p>
+            <p className="text-(length:--text-micro) text-muted-foreground">{t("more_rows_in_the_raw_response_e10b918", { value: rows.length - shown.length })}</p>
           )}
         </div>
       );
@@ -942,7 +930,7 @@ function PrettyPreview({ value }: { value: unknown }) {
           </tbody>
         </table>
         {rows.length > shown.length && (
-          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows</p>
+          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">{t("more_rows_b8d837e", { value: rows.length - shown.length })}</p>
         )}
       </div>
     );
@@ -970,6 +958,7 @@ function PrettyPreview({ value }: { value: unknown }) {
 }
 
 function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: number }) {
+  const { t } = useTranslation("connections");
   const titleKey = ["title", "name", "label"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
@@ -985,9 +974,9 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
     <div className="min-w-0 rounded-md border border-border bg-background p-3 text-xs">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <p className="min-w-0 break-words text-sm font-medium text-foreground">
-          {titleKey ? cellText(row[titleKey]) : `Result ${index + 1}`}
+          {titleKey ? cellText(row[titleKey]) : t("result_00e360b", { value: index + 1 })}
         </p>
-        {url && <a className="shrink-0 text-primary hover:underline" href={url} target="_blank" rel="noopener noreferrer">Open link</a>}
+        {url && <a className="shrink-0 text-primary hover:underline" href={url} target="_blank" rel="noopener noreferrer">{t("open_link_d2de1a2")}</a>}
       </div>
       {summaryKey && <p className="mt-1 line-clamp-2 break-words text-muted-foreground">{cellText(row[summaryKey]).replace(/\*\*(.*?)\*\*/g, "$1")}</p>}
       {details.length > 0 && (
@@ -1000,7 +989,7 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
           ))}
         </dl>
       )}
-      {details.length > 3 && <p className="mt-2 text-muted-foreground">{details.length - 3} more {details.length === 4 ? "field" : "fields"} in the raw response</p>}
+      {details.length > 3 && <p className="mt-2 text-muted-foreground">{t("more_in_the_raw_response_798bf7f", { count: details.length - 3 })}</p>}
     </div>
   );
 }
@@ -1024,6 +1013,7 @@ function collapseDeep(value: unknown, maxDepth: number, depth = 0): unknown {
 }
 
 function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknown; initiallyOpen?: boolean }) {
+  const { t } = useTranslation("connections");
   const [showRaw, setShowRaw] = useState(initiallyOpen);
   if (value === undefined || value === null) return null;
   return (
@@ -1033,7 +1023,7 @@ function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknow
         onClick={() => setShowRaw((prev) => !prev)}
         className="text-xs font-semibold uppercase tracking-wide text-primary hover:underline"
       >
-        {showRaw ? "Hide raw response" : "Show raw response"}
+        {showRaw ? t("hide_raw_response_268bdd1") : t("show_raw_response_6e1943f")}
       </button>
       {showRaw && (
         <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
@@ -1057,6 +1047,7 @@ function ErrorResult({
   connectionId: string;
   error: { message: string; reasonCode: string | null };
 }) {
+  const { t } = useTranslation("connections");
   const toolErrorMessage = error.message; // query-error-ok: the tool call's own result error, not a query or mutation error
   const hints = errorHints(toolErrorMessage, error.reasonCode);
   const needsReconnect = isReconnectError(error.reasonCode);
@@ -1064,19 +1055,18 @@ function ErrorResult({
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">It didn't work.</span>
+        <span className="text-sm font-medium text-foreground">{t("it_didn_t_work_6a26144")}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Clock className="h-3 w-3" />
-        Tried as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        <Clock className="h-3 w-3" />{t("tried_as_0dba851")}{outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
       </p>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What {appName} said</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("what_said_658adad", { appName: appName })}</p>
         <p className="mt-1 break-words text-sm text-foreground">{toolErrorMessage}</p>
-        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">code: {error.reasonCode}</p>}
+        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">{finalPagesT("final-pages:code_code_396e73", { code: error.reasonCode })}</p>}
       </div>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What to try</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("what_to_try_a0f3069")}</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-4 text-sm text-foreground">
           {hints.map((hint) => (
             <li key={hint}>{hint}</li>
@@ -1085,13 +1075,10 @@ function ErrorResult({
       </div>
       {outcome.result.result !== undefined && <RawResponseDisclosure value={outcome.result.result} initiallyOpen />}
       <p className="mt-3 text-xs text-muted-foreground">
-        {needsReconnect ? "After reconnecting, run this action again." : "Adjust the input above and try again."}
+        {needsReconnect ? t("after_reconnecting_run_this_action_again_a43fb12") : t("adjust_the_input_above_and_try_again_53e514e")}
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Also visible in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
+      <p className="mt-1 text-xs text-muted-foreground">{t("also_visible_in_the_e0918a1")}{" "}
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">{t("audit_log_81fff15")}</Link>
         .
       </p>
     </div>
@@ -1134,6 +1121,7 @@ function AskFirstResult({
   connectionId: string;
   agent?: TestAgentWithAccess;
 }) {
+  const { t } = useTranslation("connections");
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const actionRequestId = outcome.result.actionRequestId;
@@ -1191,37 +1179,37 @@ function AskFirstResult({
   const where = formatWhere(status?.parameters);
   const statusLabel =
     phase === "running"
-      ? "Approved · running"
+      ? t("approved_running_ac7e19f")
       : phase === "denied"
-        ? "Denied — see Review for why"
+        ? t("denied_see_review_for_why_aae0b25")
         : phase === "cancelled"
-          ? "Cancelled"
+          ? t("cancelled_a1bf92e")
           : phase === "expired"
-            ? "Expired — send it again"
-            : `Waiting · ${relTime(requestedAt)}`;
+            ? t("expired_send_it_again_a5efa4e")
+            : t("waiting_f94a161", { value: relTime(requestedAt) });
   const settled = phase === "denied" || phase === "cancelled" || phase === "expired";
 
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <ShieldQuestion className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">Sent for your OK.</span>
+        <span className="text-sm font-medium text-foreground">{t("sent_for_your_ok_0819e9e")}</span>
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{outcome.agentName} needs your approval before this runs.</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{t("needs_your_approval_before_this_runs_e9cd167", { agentName: outcome.agentName })}</p>
 
       <dl className="mt-3 space-y-1.5 text-sm">
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("action_97c89a4")}</dt>
           <dd className="text-foreground">{entry.title ?? entry.toolName}</dd>
         </div>
         {where && (
           <div className="flex gap-3">
-            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where</dt>
+            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("where_525f61b")}</dt>
             <dd className="break-words text-foreground">{where}</dd>
           </div>
         )}
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("status_bae7d5b")}</dt>
           <dd className={cn("flex items-center gap-1.5 text-foreground", settled && "text-muted-foreground")}>
             {phase === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
             {statusLabel}
@@ -1230,22 +1218,16 @@ function AskFirstResult({
       </dl>
 
       {!settled && (
-        <p className="mt-3 text-sm text-foreground">
-          Approve it in the{" "}
-          <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")}>
-            Review tab
-          </Link>{" "}
-          to finish the test. You can also cancel the request.
-        </p>
+        <p className="mt-3 text-sm text-foreground"><Trans ns="connections" i18nKey="reviewBApproveTestInstructions" components={{ review: <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")} /> }} /></p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button asChild size="sm" variant="outline">
-          <Link to={appTabHref(connectionId, "review")}>Open Review tab</Link>
+          <Link to={appTabHref(connectionId, "review")}>{t("open_review_tab_c1ad07a")}</Link>
         </Button>
         {phase === "waiting" && actionRequestId && selectedCompanyId && (
           <Button size="sm" variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
-            {cancel.isPending ? "Cancelling…" : "Cancel this request"}
+            {cancel.isPending ? t("cancelling_cee1848") : t("cancel_this_request_f56a63e")}
           </Button>
         )}
       </div>
@@ -1269,6 +1251,7 @@ function OffExplanation({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
+  const { t } = useTranslation("connections");
   const title = entry.title ?? entry.toolName;
   const permHref = `${appTabHref(connectionId, "permissions")}?focus=${encodeURIComponent(entry.id)}`;
 
@@ -1278,8 +1261,8 @@ function OffExplanation({
   const others = allAgents.filter((a) => a.id !== agent.id);
 
   const whyBody = entry.status === "quarantined"
-    ? "This action is new and hasn't been turned on yet."
-    : `${agent.name}'s access profile sets this action to Off.`;
+    ? t("this_action_is_new_and_hasn_t_4ce4cfd")
+    : t("s_access_profile_sets_this_action_to_c039365", { name: agent.name });
 
   // "Last changed by {Actor} · {relativeTime}" — only the access config carries
   // this; a quarantined action has never been configured, so there's nothing to
@@ -1287,7 +1270,7 @@ function OffExplanation({
   const { lastChangedAt, lastChangedByName } = agent.effectiveAccess;
   const auditHint =
     entry.status !== "quarantined" && lastChangedAt
-      ? `Last changed${lastChangedByName ? ` by ${lastChangedByName}` : ""} · ${relTime(new Date(lastChangedAt))}`
+      ? lastChangedByName ? t("reviewBLastChangedBy", { name: lastChangedByName, time: relTime(new Date(lastChangedAt)) }) : t("last_changed_080d679", { time: relTime(new Date(lastChangedAt)) })
       : null;
 
   return (
@@ -1296,30 +1279,24 @@ function OffExplanation({
         <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
-            <p className="mt-0.5">It won't run here, and it won't run from a task either.</p>
-            <p className="mt-2">
-              Want to test it? Turn it on for {agent.name} in{" "}
-              <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>{" "}
-              — set it to Allowed or Ask first.
-            </p>
+            <p className="font-medium text-foreground">{t("is_off_for_2313807", { title: title, name: agent.name })}</p>
+            <p className="mt-0.5">{t("it_won_t_run_here_and_it_95135c6")}</p>
+            <p className="mt-2"><Trans ns="connections" i18nKey="want_to_test_it_turn_it_on_79ee4f5" values={{ agentName: agent.name }} components={{ permissions: <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")} /> }} /></p>
           </div>
         </div>
         <Button asChild size="sm">
-          <Link to={permHref}>Open Permissions →</Link>
+          <Link to={permHref}>{t("open_permissions_4f6ff2e")}</Link>
         </Button>
-        <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
+        <p className="text-xs text-muted-foreground">{t("no_call_will_be_made_this_action_38b3331", { name: agent.name })}</p>
       </div>
 
       <aside>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("why_this_is_off_9a9909e")}</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
         {others.length > 0 && (
           <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">{t("try_as_a_different_agent_7aa9be7")}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {others.slice(0, 4).map((other) => (
                 <button
@@ -1362,33 +1339,33 @@ function isReconnectError(reasonCode: string | null | undefined): boolean {
 
 export function errorHints(message: string, reasonCode: string | null | undefined): string[] {
   if (reasonCode === "grant_credential_invalid") {
-    return ["Ask the connection owner to reconnect it from Connectors with a fresh key or server URL."];
+    return [translate("connections:ask_the_connection_owner_to_reconnect_it_4715324")];
   }
   if (reasonCode === "oauth_insufficient_scope") {
-    return ["Reconnect the app and allow the permissions required for this action."];
+    return [translate("connections:repairPermissionHint")];
   }
   const haystack = `${reasonCode ?? ""} ${message}`.toUpperCase();
   if (haystack.includes("NOT_FOUND")) {
     return [
-      "Double-check the ID or name you entered — pick it from a dropdown if one is offered.",
-      "Make sure this agent has access to that resource in the connected account.",
+      translate("connections:double_check_the_id_or_name_you_f8e4dcb"),
+      translate("connections:make_sure_this_agent_has_access_to_a69281c"),
     ];
   }
   if (haystack.includes("PERMISSION") || haystack.includes("FORBIDDEN") || haystack.includes("UNAUTHORIZED")) {
     return [
-      "The connected account may not have permission for this action.",
-      "Reconnect the app from Setup if its access was recently changed.",
+      translate("connections:the_connected_account_may_not_have_permission_2826459"),
+      translate("connections:reconnect_the_app_from_setup_if_its_5636f24"),
     ];
   }
   if (haystack.includes("INVALID_ARGUMENT") || haystack.includes("INVALID") || haystack.includes("BAD_REQUEST")) {
     return [
-      "Check the field formats above — a value may be the wrong type or shape.",
-      "Open “More options” to confirm any advanced fields are filled in correctly.",
+      translate("connections:check_the_field_formats_above_a_value_7bf2976"),
+      translate("connections:open_more_options_to_confirm_any_advanced_69099e9"),
     ];
   }
   if (haystack.includes("RATE_LIMIT") || haystack.includes("RESOURCE_EXHAUSTED") || haystack.includes("429")) {
-    return ["The app is rate-limiting calls right now — wait a moment and run it again."];
+    return [translate("connections:the_app_is_rate_limiting_calls_right_ee0a05f")];
   }
   // Locked generic fallback (copy-spec decision #2).
-  return ["Check the inputs above and try again."];
+  return [translate("connections:check_the_inputs_above_and_try_again_b45bf56")];
 }

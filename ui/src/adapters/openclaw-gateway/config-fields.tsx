@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -30,6 +31,7 @@ function HeadersJsonTextarea({
   onEditCommit: (next: string) => void;
   inputClass: string;
 }) {
+  useTranslation("agent-config");
   const [editDraft, setEditDraft] = useState<string>(editStringified);
   const [lastSyncedFromConfig, setLastSyncedFromConfig] = useState<string>(editStringified);
   useEffect(() => {
@@ -70,6 +72,7 @@ function SecretField({
   onCommit: (v: string) => void;
   placeholder?: string;
 }) {
+  useTranslation("agent-config");
   const [visible, setVisible] = useState(false);
   return (
     <Field label={label}>
@@ -110,6 +113,7 @@ export function OpenClawGatewayConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("agent-config");
   const configuredHeaders =
     config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
       ? (config.headers as Record<string, unknown>)
@@ -144,7 +148,7 @@ export function OpenClawGatewayConfigFields({
 
   return configFieldsForSection(section, (
     <>
-      <Field label="Gateway URL" hint={help.webhookUrl}>
+      <Field label={t("agent-config:gatewayUrl_f741a7a")} hint={help.webhookUrl}>
         <DraftInput
           value={
             isCreate
@@ -172,7 +176,7 @@ export function OpenClawGatewayConfigFields({
 
       {/* Auth and Identity - available in both create and edit modes */}
       <SecretField
-        label="Gateway auth token"
+        label={t("agent-config:gatewayAuthToken_28389e5")}
         value={
           isCreate
             ? values!.authToken ?? ""
@@ -183,10 +187,10 @@ export function OpenClawGatewayConfigFields({
             ? set!({ authToken: v })
             : commitGatewayToken(v)
         }
-        placeholder="OpenClaw gateway token"
+        placeholder={t("agent-config:openclawGatewayToken_5a84362")}
       />
 
-      <Field label="Agent ID">
+      <Field label={t("agent-config:agentId_9f2c11d")}>
         <DraftInput
           value={
             isCreate
@@ -200,11 +204,11 @@ export function OpenClawGatewayConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="agent-123"
+          placeholder={t("agent-config:agent123_cfbfb52")}
         />
       </Field>
 
-      <Field label="Session strategy">
+      <Field label={t("agent-config:sessionStrategy_5ecdd73")}>
         <select
           value={
             isCreate
@@ -218,14 +222,14 @@ export function OpenClawGatewayConfigFields({
           }
           className={inputClass}
         >
-          <option value="fixed">Fixed</option>
-          <option value="issue">Per issue</option>
-          <option value="run">Per run</option>
+          <option value="fixed">{t("agent-config:fixed_ab98f5b")}</option>
+          <option value="issue">{t("agent-config:perIssue_468a87d")}</option>
+          <option value="run">{t("agent-config:perRun_36b3aee")}</option>
         </select>
       </Field>
 
       {(isCreate ? values!.sessionKeyStrategy ?? "fixed" : sessionStrategy) === "fixed" && (
-        <Field label="Session key">
+        <Field label={t("agent-config:sessionKey_7b732b7")}>
           <DraftInput
             value={
               isCreate
@@ -245,7 +249,7 @@ export function OpenClawGatewayConfigFields({
       )}
 
       <SecretField
-        label="Password (alternative auth)"
+        label={t("agent-config:passwordAlternativeAuth_9c49cd7")}
         value={
           isCreate
             ? values!.password ?? ""
@@ -256,10 +260,10 @@ export function OpenClawGatewayConfigFields({
             ? set!({ password: v })
             : mark("adapterConfig", "password", v || undefined)
         }
-        placeholder="Gateway shared password"
+        placeholder={t("agent-config:gatewaySharedPassword_c4e187d")}
       />
 
-      <Field label="Role">
+      <Field label={t("agent-config:role_c3f104d")}>
         <DraftInput
           value={
             isCreate
@@ -277,7 +281,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Scopes (comma-separated)">
+      <Field label={t("agent-config:scopesCommaSeparated_70ff3f4")}>
         <DraftInput
           value={
             isCreate
@@ -297,7 +301,7 @@ export function OpenClawGatewayConfigFields({
           }}
           immediate
           className={inputClass}
-          placeholder="operator.admin"
+          placeholder={t("agent-config:operatorAdmin_d78f1b9")}
         />
       </Field>
 
@@ -309,7 +313,7 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
-      <Field label="Paperclip API URL override">
+      <Field label={t("agent-config:paperclipApiUrlOverride_036bdae")}>
         <DraftInput
           value={
             isCreate
@@ -327,7 +331,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field configSection="runPolicy" label="Timeout (seconds)">
+      <Field configSection="runPolicy" label={t("agent-config:timeoutSeconds_e4ea982")}>
         <DraftInput
           value={
             isCreate
@@ -349,7 +353,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Headers JSON">
+      <Field label={t("agent-config:headersJson_b4a4a3a")}>
         <HeadersJsonTextarea
           isCreate={isCreate}
           createDraft={isCreate ? values!.headersJson ?? "" : ""}
@@ -375,7 +379,7 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       {!isCreate && (
-        <Field label="Claimed API key path">
+        <Field label={t("agent-config:claimedApiKeyPath_e1a1f3c")}>
           <DraftInput
             value={eff("adapterConfig", "claimedApiKeyPath", String(config.claimedApiKeyPath ?? ""))}
             onCommit={(v) => mark("adapterConfig", "claimedApiKeyPath", v || undefined)}
@@ -386,7 +390,7 @@ export function OpenClawGatewayConfigFields({
         </Field>
       )}
 
-      <Field configSection="runPolicy" label="Wait timeout (ms)">
+      <Field configSection="runPolicy" label={t("agent-config:waitTimeoutMs_99fbf59")}>
         <DraftInput
           value={
             isCreate
@@ -410,7 +414,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Disable device auth">
+      <Field label={t("agent-config:disableDeviceAuth_211ce97")}>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -424,12 +428,10 @@ export function OpenClawGatewayConfigFields({
                 ? set!({ disableDeviceAuth: e.target.checked })
                 : mark("adapterConfig", "disableDeviceAuth", e.target.checked || undefined)
             }
-          />
-          Skip device key authentication
-        </label>
+          />{t("agent-config:skipDeviceKeyAuthentication_76e522b")}</label>
       </Field>
 
-      <Field label="Auto-pair on first connect">
+      <Field label={t("agent-config:autoPairOnFirstConnect_43fa906")}>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -443,16 +445,11 @@ export function OpenClawGatewayConfigFields({
                 ? set!({ autoPairOnFirstConnect: e.target.checked })
                 : mark("adapterConfig", "autoPairOnFirstConnect", e.target.checked)
             }
-          />
-          Automatically approve device pairing
-        </label>
+          />{t("agent-config:automaticallyApproveDevicePairing_40df6d8")}</label>
       </Field>
 
-      <Field label="Device auth">
-        <div className="text-xs text-muted-foreground leading-relaxed">
-          When enabled, Paperclip persists a device key during onboarding so pairing approvals
-          remain stable across runs.
-        </div>
+      <Field label={t("agent-config:deviceAuth_2b04a9b")}>
+        <div className="text-xs text-muted-foreground leading-relaxed">{t("agent-config:whenEnabledPaperclipPersistsADeviceKeyDuring_d216633")}</div>
       </Field>
     </>
   ));

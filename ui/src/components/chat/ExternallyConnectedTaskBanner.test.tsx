@@ -321,6 +321,10 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Sent to channel",
       body: "The board update was published to the connected conversation.",
+      presentation: {
+        title: { key: "task-components:sentToChannel_255e7030" },
+        body: { key: "final-components-b:delivery.The_board_update_was_published_to_the_connected_conversation_a82e4a" },
+      },
       tone: "success",
     });
     expect(container.querySelector("textarea")).toBeNull();

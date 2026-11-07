@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Work Timeline layout — pure transform from the Phase B endpoint contract
  * (`WorkTimelineResult`) into a renderable view model for the custom-SVG Gantt.
@@ -409,7 +410,7 @@ export function chooseTickStepMs(pxPerMinute: number): number {
 
 export function formatDuration(startMs: number, endMs: number): string {
   const mins = Math.max(0, Math.round((endMs - startMs) / 60000));
-  if (mins >= 1440) return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
-  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-  return `${mins}m`;
+  if (mins >= 1440) return t("display:copy_c976a02f23d5", { value0: Math.floor(mins / 1440), value1: Math.floor((mins % 1440) / 60) });
+  if (mins >= 60) return t("display:copy_32ffeced9a2c", { value0: Math.floor(mins / 60), value1: mins % 60 });
+  return t("display:copy_a5493f9192e3", { value0: mins });
 }

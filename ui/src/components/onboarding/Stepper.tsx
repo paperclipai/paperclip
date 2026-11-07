@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { cn } from "../../lib/utils";
 
 /**
@@ -107,6 +108,7 @@ export function Stepper({
   canJumpToStep?: (target: number) => boolean;
   onJumpToStep?: (target: number) => void;
 }) {
+  const { t } = useTranslation("connections");
   return (
     <div className="mb-11 flex items-center justify-center gap-2">
       {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
@@ -115,7 +117,7 @@ export function Stepper({
           <button
             key={segment}
             type="button"
-            aria-label={labels[segment - 1] ?? `Step ${segment}`}
+            aria-label={(labels === AGENT_ARC_STEP_LABELS || labels === ONBOARDING_STEP_LABELS) && labels[segment - 1] ? t(({ "Create your first agent": "create_your_first_agent_e9f219b", "Connect a model": "connect_a_model_aaf2b3e", "Review": "review_e29a79f", "Name your organization": "name_your_organization_d91b443" } as Record<string, string>)[labels[segment - 1]]) : labels[segment - 1] ?? t("step_678e2eb", { segment: segment })}
             aria-current={segment === step ? "step" : undefined}
             disabled={!jumpable}
             onClick={() => jumpable && onJumpToStep?.(segment)}
@@ -133,9 +135,7 @@ export function Stepper({
         );
       })}
       {/* Out of flow, so it neither takes a row nor picks up the gap. */}
-      <span className="sr-only">
-        Step {step} of {total}
-      </span>
+      <span className="sr-only">{t("step_of_d04f38b", { step: step, total: total })}</span>
     </div>
   );
 }

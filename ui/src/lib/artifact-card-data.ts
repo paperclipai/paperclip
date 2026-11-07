@@ -1,3 +1,5 @@
+import { localizeUiError } from "./localized-ui-error";
+
 /** Optional producer metadata must never become invented facts in an artifact card. */
 export function artifactText(
   metadata: Record<string, unknown> | null,
@@ -54,9 +56,9 @@ const CSV_PREVIEW_MAX_COLUMNS = 50;
 /** RFC 4180 quoting, CRLF, embedded newlines, and a UTF-8 BOM; bounded for the UI. */
 export function parseArtifactCsv(text: string) {
   if (new TextEncoder().encode(text).length > CSV_PREVIEW_MAX_BYTES)
-    throw new Error(
+    throw localizeUiError(new Error(
       "CSV is too large to preview. Download the file to view it.",
-    );
+    ), { key: "integration-errors:csvTooLarge" });
   const records: string[][] = [];
   let row: string[] = [],
     field = "",
@@ -65,9 +67,9 @@ export function parseArtifactCsv(text: string) {
   const endField = () => {
     row.push(field);
     if (row.length > CSV_PREVIEW_MAX_COLUMNS)
-      throw new Error(
+      throw localizeUiError(new Error(
         "CSV has too many columns to preview. Download the file to view it.",
-      );
+      ), { key: "integration-errors:csvColumns" });
     field = "";
     closedQuote = false;
   };
@@ -94,16 +96,16 @@ export function parseArtifactCsv(text: string) {
       quoted = true;
     } else {
       if (closedQuote || char === '"')
-        throw new Error(
+        throw localizeUiError(new Error(
           "CSV could not be previewed. Download the file to view it.",
-        );
+        ), { key: "integration-errors:csvMalformed" });
       field += char;
     }
   }
   if (quoted)
-    throw new Error(
+    throw localizeUiError(new Error(
       "CSV could not be previewed. Download the file to view it.",
-    );
+    ), { key: "integration-errors:csvMalformed" });
   if (field || row.length || closedQuote) {
     endField();
     records.push(row);
@@ -121,25 +123,25 @@ export async function loadArtifactCsv(
   signal?: AbortSignal,
 ) {
   if (!/^\/api\/attachments\/[a-zA-Z0-9-]+\/content$/.test(contentPath))
-    throw new Error(
+    throw localizeUiError(new Error(
       "CSV preview is unavailable. Download the file to view it.",
-    );
+    ), { key: "integration-errors:csvUnavailable" });
   const response = await fetch(contentPath, {
     credentials: "same-origin",
     redirect: "error",
     signal,
   });
   if (!response.ok)
-    throw new Error("CSV could not be loaded. Try again or download the file.");
+    throw localizeUiError(new Error("CSV could not be loaded. Try again or download the file."), { key: "integration-errors:csvLoad" });
   if (Number(response.headers.get("content-length")) > CSV_PREVIEW_MAX_BYTES) {
     await response.body?.cancel();
-    throw new Error(
+    throw localizeUiError(new Error(
       "CSV is too large to preview. Download the file to view it.",
-    );
+    ), { key: "integration-errors:csvTooLarge" });
   }
   const reader = response.body?.getReader();
   if (!reader)
-    throw new Error("CSV could not be loaded. Try again or download the file.");
+    throw localizeUiError(new Error("CSV could not be loaded. Try again or download the file."), { key: "integration-errors:csvLoad" });
   const decoder = new TextDecoder();
   let text = "",
     size = 0;
@@ -150,9 +152,9 @@ export async function loadArtifactCsv(
       size += value.byteLength;
       if (size > CSV_PREVIEW_MAX_BYTES) {
         await reader.cancel();
-        throw new Error(
+        throw localizeUiError(new Error(
           "CSV is too large to preview. Download the file to view it.",
-        );
+        ), { key: "integration-errors:csvTooLarge" });
       }
       text += decoder.decode(value, { stream: true });
     }

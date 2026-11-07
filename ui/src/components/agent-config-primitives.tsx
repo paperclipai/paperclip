@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Tooltip,
@@ -16,67 +17,72 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
+import { getAgentConfigDisplayText, getAgentRoleLabel } from "../adapters/display-translations";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
-  name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
-  role: "Organizational role. Determines position and capabilities.",
-  reportsTo: "The agent this one reports to in the org hierarchy.",
-  capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
-  thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
-  chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
-  dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
-  search: "Enable Codex web search capability during runs.",
-  fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-6, GPT-5.6, GPT-5.5, GPT-5.4, and manual Codex model IDs.",
-  workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
-  command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
-  args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
-  envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  secretAccess:
-    "Secrets this agent can reach. Env-var bindings are injected at run start; API-access bindings are fetched on demand via the run-bound agent API and never written to the environment.",
-  bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
-  heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
-  graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
-  wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
-  cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
-  maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
-  maxTurnContinuationEnabled: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted.",
-  maxTurnContinuationMaxAttempts: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run.",
-  maxTurnContinuationDelaySec: "Seconds to wait before starting each max-turn continuation.",
-  budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  get name() { return t("agent-config:displayNameForThisAgent_218242d"); },
+  get title() { return t("agent-config:pathHelp_aa9834e7"); },
+  get role() { return t("agent-config:organizationalRoleDeterminesPositionAndCapabilities_f1327d1"); },
+  get reportsTo() { return t("agent-config:theAgentThisOneReportsToInThe_57937e6"); },
+  get capabilities() { return t("agent-config:describesWhatThisAgentCanDoShownIn_042371f"); },
+  get adapterType() { return t("agent-config:howThisAgentRunsLocalCliClaudeCodex_e1b34e8"); },
+  get cwd() { return t("agent-config:deprecatedLegacyWorkingDirectoryFallbackForLocalAdapters_246fdfd"); },
+  get promptTemplate() { return t("agent-config:sentOnEveryHeartbeatKeepThisSmallAnd_0535c4f", { interpolation: { skipOnVariables: false } }); },
+  get model() { return t("agent-config:overrideTheDefaultModelUsedByTheAdapter_ba4f99e"); },
+  get thinkingEffort() { return t("agent-config:controlModelReasoningDepthSupportedValuesVaryBy_ba698c4"); },
+  get chrome() { return t("agent-config:enableClaudeSChromeIntegrationByPassingChrome_4952df5"); },
+  get dangerouslySkipPermissions() { return t("agent-config:runUnattendedByAutoApprovingAdapterPermissionPrompts_5865926"); },
+  get dangerouslyBypassSandbox() { return t("agent-config:runCodexWithoutSandboxRestrictionsRequiredForFilesystem_7ab5938"); },
+  get search() { return t("agent-config:enableCodexWebSearchCapabilityDuringRuns_1f3af9b"); },
+  get fastMode() { return t("agent-config:enableCodexFastModeThisBurnsCreditsTokens_aa3a9c3"); },
+  get workspaceStrategy() { return t("agent-config:howPaperclipShouldRealizeAnExecutionWorkspaceFor_86e70aa"); },
+  get workspaceBaseRef() { return t("agent-config:baseGitRefUsedWhenCreatingAWorktree_f61dc23"); },
+  get workspaceBranchTemplate() { return t("agent-config:templateForNamingDerivedBranchesSupportsValueValue_0c4469e", { interpolation: { skipOnVariables: false } }); },
+  get worktreeParentDir() { return t("agent-config:directoryWhereDerivedWorktreesShouldBeCreatedAbsolute_5156652"); },
+  get runtimeServicesJson() { return t("agent-config:optionalWorkspaceRuntimeServiceDefinitionsUseThisFor_31d4eb5"); },
+  get maxTurnsPerRun() { return t("agent-config:maximumNumberOfAgenticTurnsToolCallsPer_6549630"); },
+  get command() { return t("agent-config:theCommandToExecuteEGNodePython_c5373d1"); },
+  get localCommand() { return t("agent-config:overrideThePathToTheCliCommandYou_0072577"); },
+  get args() { return t("agent-config:commandLineArgumentsCommaSeparated_1e50e05"); },
+  get extraArgs() { return t("agent-config:extraCliArgumentsForLocalAdaptersCommaSeparated_4adf09f"); },
+  get envVars() { return t("agent-config:environmentVariablesInjectedIntoTheAdapterProcessUse_50b61dd"); },
+  get secretAccess() { return t("agent-config:secretsThisAgentCanReachEnvVarBindings_a13e386"); },
+  get bootstrapPrompt() { return t("agent-config:onlySentWhenPaperclipStartsAFreshSession_9eca31c"); },
+  get payloadTemplateJson() { return t("agent-config:optionalJsonMergedIntoRemoteAdapterRequestPayloads_8eb267a"); },
+  get webhookUrl() { return t("agent-config:theUrlThatReceivesPostRequestsWhenThe_7f1a9d1"); },
+  get heartbeatInterval() { return t("agent-config:runThisAgentAutomaticallyOnATimerUseful_7c3c865"); },
+  get intervalSec() { return t("agent-config:secondsBetweenAutomaticHeartbeatInvocations_f3cfd77"); },
+  get timeoutSec() { return t("agent-config:maximumSecondsARunCanTakeBeforeBeing_9eeb3a8"); },
+  get graceSec() { return t("agent-config:secondsToWaitAfterSendingInterruptBeforeForce_06ea360"); },
+  get wakeOnDemand() { return t("agent-config:allowThisAgentToBeWokenByAssignments_f809c33"); },
+  get cooldownSec() { return t("agent-config:minimumSecondsBetweenConsecutiveHeartbeatRuns_4e9b842"); },
+  get maxConcurrentRuns() { return t("agent-config:maximumNumberOfHeartbeatRunsThatCanExecute_a519c30"); },
+  get maxTurnContinuationEnabled() { return t("agent-config:automaticallyQueueBoundedContinuationRunsWhenAnAdapter_4c6f145"); },
+  get maxTurnContinuationMaxAttempts() { return t("agent-config:maximumAutomaticContinuationsAfterOneMaxTurnStop_8355c4b"); },
+  get maxTurnContinuationDelaySec() { return t("agent-config:secondsToWaitBeforeStartingEachMaxTurn_fc22296"); },
+  get budgetMonthlyCents() { return t("agent-config:monthlySpendingLimitInCents0MeansNo_6fef348"); },
 };
 
-import { getAdapterLabels } from "../adapters/adapter-display-registry";
+import { getAdapterLabel, getAdapterLabels } from "../adapters/adapter-display-registry";
 
-export const adapterLabels = getAdapterLabels();
+export const adapterLabels: Record<string, string> = Object.defineProperties({}, Object.fromEntries(
+  Object.keys(getAdapterLabels()).map((type) => [type, { enumerable: true, get: () => getAdapterLabel(type) }]),
+));
 
-export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+export const roleLabels: Record<string, string> = Object.defineProperties({}, Object.fromEntries(
+  Object.keys(AGENT_ROLE_LABELS).map((role) => [role, { enumerable: true, get: () => getAgentRoleLabel(role) }]),
+));
 
 /* ---- Primitive components ---- */
 
 export function HintIcon({ text }: { text: string }) {
+  useTranslation("agent-config");
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+        <button type="button" aria-label={text} className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
           <HelpCircle className="h-3 w-3" />
         </button>
       </TooltipTrigger>
@@ -88,6 +94,7 @@ export function HintIcon({ text }: { text: string }) {
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
+  useTranslation("agent-config");
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -112,6 +119,7 @@ export function ToggleField({
   onChange: (v: boolean) => void;
   toggleTestId?: string;
 }) {
+  useTranslation("agent-config");
   return (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-1.5">
@@ -154,6 +162,7 @@ export function ToggleWithNumber({
   numberPrefix?: string;
   showNumber: boolean;
 }) {
+  useTranslation("agent-config");
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -198,6 +207,7 @@ export function CollapsibleSection({
   bordered?: boolean;
   children: React.ReactNode;
 }) {
+  useTranslation("agent-config");
   return (
     <div className={cn(bordered && "border-t border-border")}>
       <button
@@ -228,6 +238,7 @@ export function AutoExpandTextarea({
   placeholder?: string;
   minRows?: number;
 }) {
+  useTranslation("agent-config");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rows = minRows ?? 3;
   const lineHeight = 20;
@@ -238,7 +249,7 @@ export function AutoExpandTextarea({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
-  }, [minHeight]);
+  }, [minHeight, i18n.resolvedLanguage]);
 
   useEffect(() => { adjustHeight(); }, [value, adjustHeight]);
 
@@ -271,6 +282,7 @@ export function DraftInput({
   immediate?: boolean;
   className?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className">) {
+  useTranslation("agent-config");
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
 
@@ -306,6 +318,7 @@ export function DraftTextarea({
   placeholder?: string;
   minRows?: number;
 }) {
+  useTranslation("agent-config");
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
 
@@ -319,7 +332,7 @@ export function DraftTextarea({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
-  }, [minHeight]);
+  }, [minHeight, i18n.resolvedLanguage]);
 
   useEffect(() => { adjustHeight(); }, [draft, adjustHeight]);
 
@@ -356,6 +369,7 @@ export function DraftNumberInput({
   immediate?: boolean;
   className?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className" | "type">) {
+  useTranslation("agent-config");
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
 
@@ -382,6 +396,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation("agent-config");
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -389,56 +404,47 @@ export function ChoosePathButton() {
         type="button"
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
-      >
-        Choose
-      </button>
+      >{t("agent-config:choose_78b7c9f")}</button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
-            <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
-            </DialogDescription>
+            <DialogTitle>{t("agent-config:pathHelp_69e3ccf6")}</DialogTitle>
+            <DialogDescription>{t("agent-config:pathHelp_518ee87d")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{t("agent-config:pathHelp_3062366d")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("agent-config:pathHelp_104cd52e")}</li>
+                <li>{t("agent-config:hold_3bd3283")} <kbd>{t("agent-config:option_e31d972")}</kbd> {t("agent-config:andRightClickTheFolder_bb9f12a")}</li>
+                <li>{t("agent-config:pathHelp_32393ab7")}</li>
+                <li>{t("agent-config:pathHelp_17b3e1f6")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("agent-config:pathHelp_4301ae38")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("agent-config:pathHelp_90ba5754")}</li>
+                <li>{t("agent-config:hold_3bd3283")} <kbd>{t("agent-config:shift_469d5b1")}</kbd> {t("agent-config:andRightClickTheFolder_bb9f12a")}</li>
+                <li>{t("agent-config:pathHelp_752e3bff")}</li>
+                <li>{t("agent-config:pathHelp_17b3e1f6")}</li>
               </ol>
-              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                C:\Users\yourname\Documents\project
-              </p>
+              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">{"C:\\Users\\yourname\\Documents\\project"}</p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("agent-config:pathHelp_ed492ced")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{t("agent-config:run_b1b3926")} <code>cd /path/to/folder</code>.</li>
+                <li>{t("agent-config:run_b1b3926")} <code>pwd</code>.</li>
+                <li>{t("agent-config:pathHelp_a1b1947e")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
-            </Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{t("agent-config:pathHelp_9ce3bd42")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -450,6 +456,7 @@ export function ChoosePathButton() {
  * Label + input rendered on the same line (inline layout for compact fields).
  */
 export function InlineField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  useTranslation("agent-config");
   return (
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-1.5 shrink-0">

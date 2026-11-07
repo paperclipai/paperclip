@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { describeError } from "@/api/errors";
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,6 +16,7 @@ export function SkillSourceConnectionRepair({ companyId, source, onClose, onSave
   companyId: string; source: SkillSource; onClose: () => void; onSaved: () => Promise<void>;
   onReturnFocus?: () => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const [connectionId, setConnectionId] = useState(source.connectionId ?? '');
   const [chooseBranch, setChooseBranch] = useState(false);
   const client = useQueryClient();
@@ -35,23 +37,23 @@ export function SkillSourceConnectionRepair({ companyId, source, onClose, onSave
     <DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-hidden sm:max-w-md"
       onCloseAutoFocus={event => { if (onReturnFocus) { event.preventDefault(); onReturnFocus(); } }}>
       <DialogHeader className="shrink-0">
-        <DialogTitle>Choose GitHub connection</DialogTitle>
-        <DialogDescription>Automatic updates will use your access to this connection. Installed skills and selections stay in place.</DialogDescription>
+        <DialogTitle>{translateShell("shell:choose_github_connection")}</DialogTitle>
+        <DialogDescription>{translateShell("shell:automatic_updates_will_use_your_access_to")}</DialogDescription>
       </DialogHeader>
       <div className="min-h-0 overflow-y-auto space-y-4">
-      {query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading connections…</p>}
-      {query.error && <p role="alert" className="text-sm text-destructive">{describeError(query.error).body} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Try again</Button></p>}
-      <RadioCardGroup ariaLabel="GitHub connection" value={connectionId} onValueChange={setConnectionId} disabled={save.isPending}
+      {query.isPending && <p role="status" className="text-sm text-muted-foreground">{translateShell("shell:loading_connections")}</p>}
+      {query.error && <p role="alert" className="text-sm text-destructive">{describeError(query.error).body} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>{translateShell("shell:try_again")}</Button></p>}
+      <RadioCardGroup ariaLabel={translateShell("shell:extra_8_github_connection")} value={connectionId} onValueChange={setConnectionId} disabled={save.isPending}
         options={connections.map(connection => ({ value: connection.id, title: connection.name }))} />
-      {query.isSuccess && connections.length === 0 && <p className="text-sm text-muted-foreground">Connect GitHub to continue.</p>}
-      <Button asChild variant="link" className="justify-start p-0"><Link to="/apps">Manage GitHub connections</Link></Button>
+      {query.isSuccess && connections.length === 0 && <p className="text-sm text-muted-foreground">{translateShell("shell:connect_github_to_continue")}</p>}
+      <Button asChild variant="link" className="justify-start p-0"><Link to="/apps">{translateShell("shell:manage_github_connections")}</Link></Button>
       {save.error && <p role="alert" className="text-sm text-destructive">{save.error instanceof ApiError && save.error.status === 409 && (save.error.body as { code?: string } | null)?.code === 'skill_source_settings_changed'
-        ? 'This source was updated. Your connection is still selected. Save again to apply it.' : save.error.message}</p>}
-      {branchMissing && source.accessScope !== 'projects' && !source.projects?.some(project => project.active) && <Button variant="outline" disabled={!canSave || save.isPending} onClick={() => setChooseBranch(true)}>Choose a new branch</Button>}
+        ? translateShell("shell:this_source_was_updated_your_connection_is") : save.error.message}</p>}
+      {branchMissing && source.accessScope !== 'projects' && !source.projects?.some(project => project.active) && <Button variant="outline" disabled={!canSave || save.isPending} onClick={() => setChooseBranch(true)}>{translateShell("shell:choose_a_new_branch")}</Button>}
       </div>
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border pt-4">
-        <Button variant="ghost" disabled={save.isPending} onClick={onClose}>Cancel</Button>
-        <Button disabled={!canSave || save.isPending} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save connection'}</Button>
+        <Button variant="ghost" disabled={save.isPending} onClick={onClose}>{translateShell("shell:cancel")}</Button>
+        <Button disabled={!canSave || save.isPending} onClick={() => save.mutate()}>{save.isPending ? translateShell("shell:saving") : translateShell("shell:save_connection")}</Button>
       </footer>
     </DialogContent>
   </Dialog>;

@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { isTextAttachment } from "@/lib/issue-attachments";
 import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
@@ -39,34 +40,34 @@ export function stateChipFor(
   reviewState: IssueWorkProduct["reviewState"] | string | null | undefined,
 ): StateChip | null {
   if (reviewState === "changes_requested" || status === "changes_requested") {
-    return { label: "Changes requested", tone: "failure" };
+    return { label: t("task-components:changesRequested_10a92a8a"), tone: "failure" };
   }
   if (reviewState === "needs_board_review" || status === "ready_for_review") {
-    return { label: "Review", tone: "review" };
+    return { label: t("task-components:review_aff0766a"), tone: "review" };
   }
   if (["failed", "unhealthy", "down"].includes(status ?? "")) {
-    return { label: "Failed", tone: "failure" };
+    return { label: t("task-components:failed_031a8f0f"), tone: "failure" };
   }
   if (["pending", "opening"].includes(status ?? "")) {
-    return { label: status === "opening" ? "Opening" : "Pending", tone: "progress", dashed: true };
+    return { label: status === "opening" ? t("deep-ui:opening_f4b13e") : t("task-components:pending_331551b0"), tone: "progress", dashed: true };
   }
   if (kind === "pull_request" && (status === "active" || status === "open")) {
-    return { label: "Open", tone: "progress" };
+    return { label: t("deep-ui:pr_open"), tone: "progress" };
   }
   if (kind === "pull_request" && status === "draft") {
-    return { label: "Draft", tone: "review" };
+    return { label: t("task-components:draft_ebf12ef4"), tone: "review" };
   }
   if (kind === "pull_request" && status === "merged") {
-    return { label: "Merged", tone: "success" };
+    return { label: t("deep-ui:merged_bd0a06"), tone: "success" };
   }
   if (kind === "pull_request" && status === "closed") {
-    return { label: "Closed", tone: "neutral" };
+    return { label: t("deep-ui:closed_c21ead"), tone: "neutral" };
   }
   if (kind === "runtime_service" && status === "active") {
-    return { label: "Running", tone: "progress" };
+    return { label: t("task-components:running_f4ccae29"), tone: "progress" };
   }
   if (kind === "runtime_service" && status === "closed") {
-    return { label: "Stopped", tone: "failure" };
+    return { label: t("task-components:stopped_1a4f630a"), tone: "failure" };
   }
   return null;
 }
@@ -105,6 +106,7 @@ function urlLabel(url: string | null): string | null {
 }
 
 function Chip({ chip }: { chip: StateChip }) {
+  useTranslation("task-components");
   const cssVar = chip.tone === "failure"
     ? "--status-task-blocked"
     : chip.tone === "success"
@@ -134,6 +136,7 @@ export interface RichWorkProductCardProps {
 }
 
 export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
+  useTranslation("task-components");
   const openIssueGallery = useContext(IssueGalleryContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -143,7 +146,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
-  let action = "Open preview";
+  let action = t("deep-ui:open_preview_f7afe3");
 
   switch (workProduct.type) {
     case "pull_request": {
@@ -153,40 +156,40 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       const base = stringMeta(metadata, "baseRef", "base", "baseBranch");
       const head = stringMeta(metadata, "headRef", "head", "headBranch", "branch");
       meta = [repository, number ? `#${number.replace(/^#/, "")}` : null, base && head ? `${base} ← ${head}` : null, urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      action = t("deep-ui:open_on_github_03f698");
       break;
     }
     case "commit":
       Icon = GitCommit;
       meta = [stringMeta(metadata, "shortSha", "sha")?.slice(0, 8) ?? workProduct.externalId?.slice(0, 8) ?? null, stringMeta(metadata, "branch", "branchName"), urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      action = t("deep-ui:open_on_github_03f698");
       break;
     case "branch":
       Icon = GitBranch;
-      meta = [href ? "Branch" : "Branch · no remote link", stringMeta(metadata, "repository", "repo", "repositoryName"), stringMeta(metadata, "branch", "branchName") ?? workProduct.externalId, urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      meta = [href ? t("deep-ui:branch_52656e") : t("deep-ui:branch_no_remote_link_b39f12"), stringMeta(metadata, "repository", "repo", "repositoryName"), stringMeta(metadata, "branch", "branchName") ?? workProduct.externalId, urlLabel(workProduct.url)];
+      action = t("deep-ui:open_on_github_03f698");
       break;
     case "artifact": {
       Icon = isImage ? Image : isVideo ? Film : File;
       const size = numberMeta(metadata, "byteSize", "size");
-      meta = [isImage ? "Image" : isVideo ? "Video" : stringMeta(metadata, "kind", "fileType") ?? "File", size === null ? null : formatBytes(size)];
-      action = isImage || isVideo ? "Open gallery" : "Download";
+      meta = [isImage ? t("deep-ui:image_1aa4cb") : isVideo ? t("deep-ui:video_d534be") : stringMeta(metadata, "kind", "fileType") ?? t("deep-ui:file_50009c"), size === null ? null : formatBytes(size)];
+      action = isImage || isVideo ? t("deep-ui:open_gallery_1f0a43") : t("deep-ui:download_d6eafe");
       break;
     }
     case "document":
       Icon = FileText;
-      meta = ["Document", stringMeta(metadata, "revision", "revisionNumber") ? `rev ${stringMeta(metadata, "revision", "revisionNumber")}` : null];
-      action = "Open document";
+      meta = [t("deep-ui:document_d6bd8c"), stringMeta(metadata, "revision", "revisionNumber") ? t("deep-ui:work_revision", { revision: stringMeta(metadata, "revision", "revisionNumber") }) : null];
+      action = t("deep-ui:open_document_07e93c");
       break;
     case "preview_url":
       Icon = Globe;
       meta = [urlLabel(workProduct.url)];
-      action = "Open preview";
+      action = t("deep-ui:open_preview_f7afe3");
       break;
     case "runtime_service":
       Icon = Server;
-      meta = [stringMeta(metadata, "service", "serviceName") ?? workProduct.provider, stringMeta(metadata, "port") ? `port ${stringMeta(metadata, "port")}` : null];
-      action = "Open service";
+      meta = [stringMeta(metadata, "service", "serviceName") ?? workProduct.provider, stringMeta(metadata, "port") ? t("deep-ui:work_port", { port: stringMeta(metadata, "port") }) : null];
+      action = t("deep-ui:open_service_40f3c5");
       break;
   }
 
@@ -199,9 +202,9 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const unhealthyChip =
     workProduct.healthStatus === "unhealthy"
       ? workProduct.type === "preview_url"
-        ? { label: "Down", tone: "failure" as const }
+        ? { label: t("task-components:down_b86d11af"), tone: "failure" as const }
         : workProduct.type === "runtime_service" && workProduct.status !== "closed"
-          ? { label: "Unhealthy", tone: "failure" as const }
+          ? { label: t("task-components:unhealthy_317b1fbc"), tone: "failure" as const }
           : null
       : null;
   const chip =
@@ -221,7 +224,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const changeCounts = [additions === null ? null : `+${additions}`, deletions === null ? null : `−${deletions}`]
     .filter(Boolean)
     .join(" ");
-  const fileCount = files === null ? null : `${files} ${files === 1 ? "file" : "files"}`;
+  const fileCount = files === null ? null : t("deep-ui:work_files", { count: files });
   const statsLabel = [changeCounts || null, fileCount].filter(Boolean).join(" · ");
   const compact = variant === "compact";
   const mediaPath = workProduct.type === "artifact" && (isImage || isVideo)
@@ -287,11 +290,11 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
         {!compact && summary && !linklessBranch ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
         {expandable && detailsOpen ? (
           <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
-            {workProduct.type !== "branch" ? <p>No link was provided for this work product.</p> : null}
-            <p>{workProduct.provider} · {workProduct.status.replaceAll("_", " ")} · Updated {formatDateTime(workProduct.updatedAt)}</p>
+            {workProduct.type !== "branch" ? <p>{t("task-components:noLinkWasProvidedForThisWork_e8448297")}</p> : null}
+            <p><Trans ns="task-components" i18nKey="sentence_fe810789afbd" components={{ part1: <>{workProduct.provider}</>, part2: <>{workProduct.status.replaceAll("_", " ")}</>, part3: <>{formatDateTime(workProduct.updatedAt)}</> }} /></p>
             {linklessBranch && summary ? (
               <details className="relative z-10 mt-1">
-                <summary className="w-fit cursor-pointer font-medium text-foreground">Saved description</summary>
+                <summary className="w-fit cursor-pointer font-medium text-foreground">{t("task-components:savedDescription_1e502410")}</summary>
                 <p className="mt-1 whitespace-pre-wrap break-words">{summary}</p>
               </details>
             ) : null}
@@ -304,10 +307,10 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
           <button
             type="button"
             onClick={() => openText!(textMetadata!.attachmentId, textMetadata!.originalFilename ?? workProduct.title)}
-            aria-label={`Open in tab: ${workProduct.title}`}
+            aria-label={t("task-components:openInTab_5d58d268", { value1: workProduct.title })}
             className="inline-flex items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring"
           >
-            {compact ? null : <span className="hidden @sm:inline">Open in tab</span>}<FileText aria-hidden className="h-3 w-3" />
+            {compact ? null : <span className="hidden @sm:inline">{t("task-components:openInTab_0e5d9596")}</span>}<FileText aria-hidden className="h-3 w-3" />
           </button>
         ) : null}
         {mediaPath ? (
@@ -322,11 +325,11 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
           <button
             type="button"
             onClick={() => setDetailsOpen((open) => !open)}
-            aria-label={`${detailsOpen ? "Hide" : "Show"} details: ${workProduct.title}`}
+            aria-label={detailsOpen ? t("deep-ui:work_hide_details", { title: workProduct.title }) : t("deep-ui:work_show_details", { title: workProduct.title })}
             aria-expanded={detailsOpen}
             className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring"
           >
-            <span>{detailsOpen ? "Hide details" : "Show details"}</span>
+            <span>{detailsOpen ? t("task-components:hideDetails_c9722a7a") : t("task-components:showDetails_1af77ee2")}</span>
             <ChevronDown aria-hidden className={cn("h-4 w-4", detailsOpen && "rotate-180")} />
           </button>
         ) : null}

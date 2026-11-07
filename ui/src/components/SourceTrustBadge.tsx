@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { BadgeCheck, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -14,13 +15,14 @@ export function SourceTrustBadge({
   artifactLabel?: "comment" | "document" | "work product" | "content";
   className?: string;
 }) {
+  useTranslation("deep-ui");
   const label = sourceTrustLabel(sourceTrust);
   if (!label) return null;
 
   const promoted = sourceTrust?.disposition === "promoted";
   const tooltip = promoted
-    ? `Promoted from low-trust${sourceTrust.promotedAt ? ` on ${new Date(sourceTrust.promotedAt).toLocaleString()}` : ""}.`
-    : `Authored by a low-trust review agent. Raw ${artifactLabel} is not auto-shared with higher-trust agents.`;
+    ? sourceTrust.promotedAt ? t("deep-ui:trust_promoted_date", { date: new Date(sourceTrust.promotedAt).toLocaleString(i18n.language) }) : t("deep-ui:trust_promoted")
+    : t(`deep-ui:trust_raw_${artifactLabel.replaceAll(" ", "_")}`);
 
   return (
     <Tooltip>

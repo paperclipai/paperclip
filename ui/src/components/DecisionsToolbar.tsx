@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { type ReactNode } from "react";
 import { ArrowUpDown, Check, Layers, ListFilter } from "lucide-react";
 import {
@@ -19,10 +20,10 @@ import { Checkbox } from "./ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 const SEVERITY_LABELS: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
+  get critical() { return t("final-components-b:DecisionsToolbar.Critical_427dd2"); },
+  get high() { return t("final-components-b:DecisionsToolbar.High_c4ebc6"); },
+  get medium() { return t("final-components-b:DecisionsToolbar.Medium_8e588c"); },
+  get low() { return t("final-components-b:DecisionsToolbar.Low_f793de"); },
 };
 
 interface DecisionsToolbarProps {
@@ -58,10 +59,11 @@ export function DecisionsToolbar({
   sortOrder,
   onSortOrderChange,
 }: DecisionsToolbarProps) {
+  useTranslation("task-components");
   const activeFilterCount = countActiveAttentionFilters(filters);
   return (
-    <div data-canonical-toolbar="decisions" role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
-      <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search decisions" placeholder="Search decisions…" />
+    <div data-canonical-toolbar="decisions" role="toolbar" aria-label={t("task-components:decisionsControls_46d82504")} className="flex flex-wrap items-center gap-2">
+      <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("task-components:searchDecisions_a941e56e")} placeholder={t("task-components:searchDecisions_bc11c325")} />
       {/* Filter */}
       <Popover>
         <PopoverTrigger asChild>
@@ -70,9 +72,9 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className={cn("h-8 w-8 shrink-0", activeFilterCount > 0 && "bg-accent")}
-            title="Filter"
+            title={t("task-components:filter_638e249f")}
             data-active={activeFilterCount > 0}
-            aria-label="Filter"
+            aria-label={t("task-components:filter_638e249f")}
           >
             <ListFilter className="h-3.5 w-3.5" />
           </Button>
@@ -89,9 +91,9 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-            title="Group"
+            title={t("task-components:group_34ca0e76")}
             data-active={groupBy !== "none"}
-            aria-label="Group"
+            aria-label={t("task-components:group_34ca0e76")}
           >
             <Layers className="h-3.5 w-3.5" />
           </Button>
@@ -123,8 +125,8 @@ export function DecisionsToolbar({
             variant="outline"
             size="icon"
             className="h-8 w-8 shrink-0"
-            title="Sort"
-            aria-label="Sort"
+            title={t("task-components:sort_bec69036")}
+            aria-label={t("task-components:sort_bec69036")}
           >
             <ArrowUpDown className="h-3.5 w-3.5" />
           </Button>
@@ -148,7 +150,7 @@ export function DecisionsToolbar({
           </div>
         </PopoverContent>
       </Popover>
-      <span data-toolbar-count className="w-full text-xs text-muted-foreground" aria-live="polite">{visibleCount} {visibleCount === 1 ? "decision" : "decisions"}</span>
+      <span data-toolbar-count className="w-full text-xs text-muted-foreground" aria-live="polite">{visibleCount} {visibleCount === 1 ? t("task-components:decision_86ae35d5") : t("task-components:decisions_3183d37b")}</span>
     </div>
   );
 }
@@ -162,6 +164,7 @@ function FilterMenu({
   filters: AttentionFilterState;
   onChange: (next: AttentionFilterState) => void;
 }) {
+  useTranslation("task-components");
   const toggle = (key: keyof AttentionFilterState, value: string) => {
     const list = filters[key] as string[];
     const nextList = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
@@ -172,20 +175,18 @@ function FilterMenu({
   return (
     <div className="max-h-(--sz-70vh) overflow-y-auto">
       <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filter</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("task-components:filter_638e249f")}</span>
         {hasActive && (
           <button
             type="button"
             className="text-xs text-muted-foreground hover:text-foreground"
             onClick={() => onChange(defaultAttentionFilterState)}
-          >
-            Clear
-          </button>
+          >{t("task-components:clear_83b12c22")}</button>
         )}
       </div>
 
       {options.sourceKinds.length > 1 && (
-        <FilterSection title="Type">
+        <FilterSection title={t("task-components:type_baaddf70")}>
           {options.sourceKinds.map((kind) => (
             <FilterRow
               key={kind}
@@ -198,7 +199,7 @@ function FilterMenu({
       )}
 
       {options.severities.length > 1 && (
-        <FilterSection title="Severity">
+        <FilterSection title={t("task-components:severity_5e9f9812")}>
           {options.severities.map((severity) => (
             <FilterRow
               key={severity}
@@ -211,7 +212,7 @@ function FilterMenu({
       )}
 
       {(options.projects.length > 0 || options.hasNoProject) && (
-        <FilterSection title="Project">
+        <FilterSection title={t("task-components:project_98595978")}>
           {options.projects.map((project) => (
             <FilterRow
               key={project.id}
@@ -222,7 +223,7 @@ function FilterMenu({
           ))}
           {options.hasNoProject && (
             <FilterRow
-              label="No project"
+              label={t("task-components:noProject_f34c2be0")}
               checked={filters.projectIds.includes(NO_GROUP_SENTINEL)}
               onToggle={() => toggle("projectIds", NO_GROUP_SENTINEL)}
             />
@@ -231,7 +232,7 @@ function FilterMenu({
       )}
 
       {(options.workspaces.length > 0 || options.hasNoWorkspace) && (
-        <FilterSection title="Workspace">
+        <FilterSection title={t("task-components:workspace_87bb59ba")}>
           {options.workspaces.map((workspace) => (
             <FilterRow
               key={workspace.id}
@@ -242,7 +243,7 @@ function FilterMenu({
           ))}
           {options.hasNoWorkspace && (
             <FilterRow
-              label="No workspace"
+              label={t("task-components:noWorkspace_fce263d3")}
               checked={filters.workspaceIds.includes(NO_GROUP_SENTINEL)}
               onToggle={() => toggle("workspaceIds", NO_GROUP_SENTINEL)}
             />
@@ -254,6 +255,7 @@ function FilterMenu({
 }
 
 function FilterSection({ title, children }: { title: string; children: ReactNode }) {
+  useTranslation("task-components");
   return (
     <div className="border-t border-border/60 px-2 py-1.5">
       <p className="px-1 pb-1 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
@@ -273,6 +275,7 @@ function FilterRow({
   checked: boolean;
   onToggle: () => void;
 }) {
+  useTranslation("task-components");
   return (
     <button
       type="button"

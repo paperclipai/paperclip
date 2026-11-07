@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { describeError } from "@/api/errors";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { onChunkLoadReloadAbandoned, reloadForChunkLoadError } from "@/lib/chunk-load-recovery";
@@ -57,19 +58,15 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
     if (!error) return this.props.children;
     if (reloading) {
       return (
-        <div role="status" className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
-          Reloading Paperclip…
-        </div>
+        <div role="status" className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">{t("task-components:reloadingPaperclip_64246e58")}</div>
       );
     }
 
     return (
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center space-y-4 px-4 py-10">
         <div>
-          <h1 className="text-lg font-semibold">Paperclip hit an error</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Something went wrong while running the app. Reloading usually fixes this.
-          </p>
+          <h1 className="text-lg font-semibold">{t("task-components:paperclipHitAnError_e8f13f5d")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{t("task-components:somethingWentWrongWhileRunningTheApp_c2ff1843")}</p>
         </div>
         <pre className="overflow-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive whitespace-pre-wrap">
           {describeError(error).body}{/* // query-error-ok: error boundary; crash diagnostics, not a query read */}
@@ -79,9 +76,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
             type="button"
             className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground"
             onClick={() => window.location.reload()}
-          >
-            Reload page
-          </button>
+          >{t("task-components:reloadPage_437d0d63")}</button>
         </div>
       </div>
     );

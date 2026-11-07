@@ -1,8 +1,11 @@
+import { localizeUiError } from "./localized-ui-error";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { heartbeatsApi } from "../api/heartbeats";
 
 const STOPPED_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+
+const STILL_STOPPING = "The stop was requested, but work is still stopping. Try Stop again if it continues.";
 
 const VERIFICATION_ERROR = "The stop was requested, but stopping could not be verified. Refresh and try Stop again if work is still running.";
 
@@ -53,8 +56,8 @@ export async function waitForStoppedRuns(
   let transientFailure = false;
   while (remaining.length > 0) {
     if (Date.now() >= deadline) {
-      throw new StopVerificationError(transientFailure ? VERIFICATION_ERROR
-        : "The stop was requested, but work is still stopping. Try Stop again if it continues.", targets);
+      throw localizeUiError(new StopVerificationError(transientFailure ? VERIFICATION_ERROR
+        : STILL_STOPPING, targets), { key: transientFailure ? "integration-errors:stopVerification" : "integration-errors:stopStillStopping" });
     }
     let states;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -70,24 +73,24 @@ export async function waitForStoppedRuns(
       ]);
     } catch (error) {
       const transient = error instanceof TypeError || (error instanceof ApiError && error.status >= 500);
-      if (!transient || Date.now() >= deadline) throw new StopVerificationError(VERIFICATION_ERROR, targets);
+      if (!transient || Date.now() >= deadline) throw localizeUiError(new StopVerificationError(VERIFICATION_ERROR, targets), { key: "integration-errors:stopVerification" });
       transientFailure = true;
     } finally {
       clearTimeout(timeout);
     }
     if (states) {
       if (states.some((run, index) => !run || run.id !== remaining[index])) {
-        throw new StopVerificationError(VERIFICATION_ERROR, targets);
+        throw localizeUiError(new StopVerificationError(VERIFICATION_ERROR, targets), { key: "integration-errors:stopVerification" });
       }
       transientFailure = false;
       remaining = remaining.filter((_id, index) => !isRunStopConfirmed(states[index]!));
     }
     if (remaining.length === 0) return;
     if (Date.now() >= deadline) {
-      throw new StopVerificationError(
-        "The stop was requested, but work is still stopping. Try Stop again if it continues.",
+      throw localizeUiError(new StopVerificationError(
+        STILL_STOPPING,
         targets,
-      );
+      ), { key: "integration-errors:stopStillStopping" });
     }
     await new Promise((resolve) =>
       setTimeout(resolve, Math.min(options.intervalMs ?? 500, Math.max(0, deadline - Date.now()))),

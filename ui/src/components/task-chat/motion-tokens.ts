@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 /**
  * Catalog of the redesign's motion tokens. This mirrors the `--motion-*`
  * custom properties declared in ui/src/index.css and its motion token import, and is the list the dev
@@ -88,11 +89,11 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
 
 /** Common easing presets offered by the tweak panel's easing picker. */
 export const EASING_PRESETS: { label: string; value: string }[] = [
-  { label: "ease-out-expo (house)", value: "cubic-bezier(0.16, 1, 0.3, 1)" },
-  { label: "standard (house)", value: "cubic-bezier(0.4, 0, 0.2, 1)" },
-  { label: "ease-out", value: "cubic-bezier(0, 0, 0.2, 1)" },
-  { label: "ease-in-out", value: "cubic-bezier(0.42, 0, 0.58, 1)" },
-  { label: "linear", value: "linear" },
+  { get label() { return t("final-components-a:easeOutExpoHouse_59e1c263"); }, value: "cubic-bezier(0.16, 1, 0.3, 1)" },
+  { get label() { return t("final-components-a:standardHouse_20f4407e"); }, value: "cubic-bezier(0.4, 0, 0.2, 1)" },
+  { get label() { return t("final-components-a:easeOut_791c2d09"); }, value: "cubic-bezier(0, 0, 0.2, 1)" },
+  { get label() { return t("final-components-a:easeInOut_16c2539d"); }, value: "cubic-bezier(0.42, 0, 0.58, 1)" },
+  { get label() { return t("final-components-a:linear_7f2fe580"); }, value: "linear" },
 ];
 
 /** Ordered list of the panel's groups. */

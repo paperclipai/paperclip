@@ -1,0 +1,6 @@
+{
+  "imageUploadFailed": "Image upload failed",
+  "noImageUploadHandler": "No image upload handler",
+  "secretCreateFailure": "Failed to create secret",
+  "revisionLabel": "rev {{revision}}"
+}

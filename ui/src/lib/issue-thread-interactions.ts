@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 export type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
@@ -163,19 +164,19 @@ export function buildItemVerdictsSummary(
     result: interaction.result,
   });
   if (interaction.status === "answered") {
-    const parts = [`${progress.decided} decided`];
-    if (progress.approved > 0) parts.push(`${progress.approved} approved`);
-    if (progress.rejected > 0) parts.push(`${progress.rejected} rejected`);
-    if (progress.deferred > 0) parts.push(`${progress.deferred} deferred`);
+    const parts = [t("display:copy_ea39dae55e62", { value0: progress.decided })];
+    if (progress.approved > 0) parts.push(t("display:copy_edf169754312", { value0: progress.approved }));
+    if (progress.rejected > 0) parts.push(t("display:copy_9805efb50d5c", { value0: progress.rejected }));
+    if (progress.deferred > 0) parts.push(t("display:copy_044b1567e983", { value0: progress.deferred }));
     return parts.join(" · ");
   }
   if (interaction.status === "expired") {
     const outcome = interaction.result?.outcome;
-    if (outcome === "superseded_by_comment") return "Verdicts expired after comment";
-    if (outcome === "stale_target") return "Verdicts expired after target changed";
-    return "Verdicts expired";
+    if (outcome === "superseded_by_comment") return t("display:copy_59cfca4a5ac6");
+    if (outcome === "stale_target") return t("display:copy_220aea3e5f07");
+    return t("display:copy_e9969dcd51e6");
   }
-  return `${progress.decided} of ${progress.total} decided`;
+  return t("display:copy_85ba17b77cb3", { value0: progress.decided, value1: progress.total });
 }
 
 export function getCheckboxConfirmationSelectedLabels(args: {
@@ -223,60 +224,60 @@ export function buildIssueThreadInteractionSummary(
   const administrativeOutcome = interaction.result && "outcome" in interaction.result
     ? interaction.result.outcome
     : null;
-  if (administrativeOutcome === "skipped") return "Skipped interaction";
-  if (administrativeOutcome === "withdrawn") return "Withdrawn interaction";
-  if (administrativeOutcome === "issue_closed") return "Expired when issue closed";
-  if (administrativeOutcome === "addressee_deleted") return "Cancelled when addressee was deleted";
+  if (administrativeOutcome === "skipped") return t("display:copy_2b5cc7b61717");
+  if (administrativeOutcome === "withdrawn") return t("display:copy_7e95384c4a2e");
+  if (administrativeOutcome === "issue_closed") return t("display:copy_ca5e85954421");
+  if (administrativeOutcome === "addressee_deleted") return t("display:copy_b754443d1e32");
   if (interaction.kind === "suggest_tasks") {
     const count = interaction.payload.tasks.length;
     if (interaction.status === "accepted") {
       const createdCount = interaction.result?.createdTasks?.length ?? 0;
       const skippedCount = interaction.result?.skippedClientKeys?.length ?? 0;
       if (skippedCount > 0) {
-        return `Accepted ${createdCount} of ${count} tasks`;
+        return t("display:copy_66e61904dfee", { value0: createdCount, value1: count });
       }
-      return createdCount === 1 ? "Accepted 1 task" : `Accepted ${createdCount} tasks`;
+      return createdCount === 1 ? t("display:copy_c0ae702ef1ed") : t("display:copy_41ba1db8590f", { value0: createdCount });
     }
     if (interaction.status === "rejected") {
-      return count === 1 ? "Rejected 1 task" : `Rejected ${count} tasks`;
+      return count === 1 ? t("display:copy_fca05e7cc213") : t("display:copy_59224d94f807", { value0: count });
     }
-    return count === 1 ? "Suggested 1 task" : `Suggested ${count} tasks`;
+    return count === 1 ? t("display:copy_8e3c150c86c0") : t("display:copy_65df02fb96e5", { value0: count });
   }
 
   if (interaction.kind === "request_confirmation") {
-    if (interaction.status === "accepted") return "Confirmed request";
+    if (interaction.status === "accepted") return t("display:copy_ab53b4a5972a");
     if (interaction.status === "rejected") {
       const rejectLabel = interaction.payload.rejectLabel?.trim();
-      return rejectLabel ? `Selected “${rejectLabel}”` : "Declined request";
+      return rejectLabel ? t("display:copy_d02ec68c4fd0", { value0: rejectLabel }) : t("display:copy_13c9c429e53a");
     }
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
-      if (outcome === "superseded_by_comment") return "Confirmation expired after comment";
-      if (outcome === "stale_target") return "Confirmation expired after target changed";
-      return "Confirmation expired";
+      if (outcome === "superseded_by_comment") return t("display:copy_3eaa0ccf93e0");
+      if (outcome === "stale_target") return t("display:copy_b28a30b87b83");
+      return t("display:copy_892d8f0353f4");
     }
-    return "Requested confirmation";
+    return t("display:copy_cc128229f995");
   }
 
   if (interaction.kind === "request_checkbox_confirmation") {
     const optionCount = interaction.payload.options.length;
     if (interaction.status === "accepted") {
       const selectedCount = interaction.result?.selectedOptionIds?.length ?? 0;
-      if (selectedCount === 0) return "Confirmed with no options selected";
+      if (selectedCount === 0) return t("display:copy_82148cc6c994");
       return selectedCount === 1
-        ? `Confirmed 1 of ${optionCount} options`
-        : `Confirmed ${selectedCount} of ${optionCount} options`;
+        ? t("display:copy_0a83ecfb7720", { value0: optionCount })
+        : t("display:copy_dff9ca5edd35", { value0: selectedCount, value1: optionCount });
     }
-    if (interaction.status === "rejected") return "Declined selection";
+    if (interaction.status === "rejected") return t("display:copy_074104f433ba");
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
-      if (outcome === "superseded_by_comment") return "Selection expired after comment";
-      if (outcome === "stale_target") return "Selection expired after target changed";
-      return "Selection expired";
+      if (outcome === "superseded_by_comment") return t("display:copy_752efbccee52");
+      if (outcome === "stale_target") return t("display:copy_b1ea21f9c529");
+      return t("display:copy_5ed75d045c3b");
     }
     return optionCount === 1
-      ? "Requested a selection from 1 option"
-      : `Requested a selection from ${optionCount} options`;
+      ? t("display:copy_b130bf23da00")
+      : t("display:copy_92759ea1298f", { value0: optionCount });
   }
 
   if (interaction.kind === "request_item_verdicts") {
@@ -284,30 +285,30 @@ export function buildIssueThreadInteractionSummary(
   }
 
   if (interaction.kind === "connection_intent") {
-    if (interaction.status === "accepted") return `${interaction.payload.serviceName} connected`;
-    if (interaction.status === "rejected") return `${interaction.payload.serviceName} declined`;
+    if (interaction.status === "accepted") return t("display:copy_05bb865f49eb", { value0: interaction.payload.serviceName });
+    if (interaction.status === "rejected") return t("display:copy_0829a95ab55a", { value0: interaction.payload.serviceName });
     if (interaction.status === "expired") {
       return interaction.result?.outcome === "superseded"
-        ? `${interaction.payload.serviceName} request superseded`
-        : `${interaction.payload.serviceName} request expired`;
+        ? t("display:copy_301cfd27790e", { value0: interaction.payload.serviceName })
+        : t("display:copy_431e8ba974f9", { value0: interaction.payload.serviceName });
     }
-    return `Connect ${interaction.payload.serviceName}`;
+    return t("display:copy_f5a0edd52398", { value0: interaction.payload.serviceName });
   }
 
   const count = interaction.payload.questions.length;
   if (interaction.status === "answered") {
-    return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;
+    return count === 1 ? t("display:copy_8c5f1c53ceb8") : t("display:copy_e96f408a5573", { value0: count });
   }
   if (interaction.status === "cancelled") {
-    return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
+    return count === 1 ? t("display:copy_8c04fdeda14e") : t("display:copy_ea112cc6d26c", { value0: count });
   }
   if (interaction.status === "expired") {
     if (interaction.result?.expirationReason === "superseded_by_comment") {
-      return count === 1 ? "Question expired after comment" : "Questions expired after comment";
+      return count === 1 ? t("display:copy_5fa61bbe4a9b") : t("display:copy_db369c1d7beb");
     }
-    return count === 1 ? "Question expired" : "Questions expired";
+    return count === 1 ? t("display:copy_8122d9ae5e33") : t("display:copy_830301f4aca2");
   }
-  return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
+  return count === 1 ? t("display:copy_67d272ee9129") : t("display:copy_6852bfb562d2", { value0: count });
 }
 
 /** Readable model input for a durable answer delivered into a successor run. */

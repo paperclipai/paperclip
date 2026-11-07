@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
 import { formatReviewPolicyValue } from "./review-policy";
@@ -23,189 +24,189 @@ interface ActivityFormatOptions {
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
-  "case.created": "created",
-  "case.updated": "updated",
-  "case.fields_changed": "updated details on",
-  "case.status_changed": "changed status on",
-  "case.issue_linked": "linked a task to",
-  "case.issue_unlinked": "unlinked a task from",
-  "case.child_linked": "linked a child to",
-  "case.attachment_added": "attached a file to",
-  "case.label_added": "added a label to",
-  "case.label_removed": "removed a label from",
-  "case.document_revised": "updated a document on",
-  "case.handoff_requested": "requested a handoff for",
-  "case.handoff_applied": "handed off",
-  "case.handoff_delivered": "delivered a handoff for",
-  "case.handoff_retry_requested": "retried a handoff for",
-  "case.handoff_cancelled": "cancelled a handoff for",
-  "case.handoff_completed": "completed",
-  "issue.created": "created",
-  "issue.updated": "updated",
-  "issue.read_marked": "read",
-  "issue.read_unmarked": "marked unread",
-  "issue.checked_out": "checked out",
-  "issue.released": "released",
-  "issue.comment_added": "commented on",
-  "issue.comment_cancelled": "cancelled a queued comment on",
-  "issue.queued_comment_edited": "edited a queued comment on",
-  "issue.queued_comments_reordered": "reordered queued comments on",
-  "issue.queued_comment_discarded": "discarded a queued comment on",
-  "issue.comment_deleted": "deleted a comment on",
-  "issue.attachment_added": "attached file to",
-  "issue.attachment_removed": "removed attachment from",
-  "issue.document_created": "created document for",
-  "issue.document_updated": "updated document on",
-  "issue.document_locked": "locked document on",
-  "issue.document_unlocked": "unlocked document on",
-  "issue.document_deleted": "deleted document from",
-  "issue.monitor_scheduled": "scheduled monitor on",
-  "issue.monitor_triggered": "triggered monitor for",
-  "issue.monitor_cleared": "cleared monitor on",
-  "issue.monitor_skipped": "skipped monitor for",
-  "issue.monitor_exhausted": "exhausted monitor on",
-  "issue.monitor_recovery_wake_queued": "queued monitor recovery for",
-  "issue.monitor_recovery_issue_created": "created monitor recovery for",
-  "issue.monitor_escalated_to_board": "escalated monitor for",
-  "issue.commented": "commented on",
-  "issue.deleted": "deleted",
-  "issue.successful_run_handoff_required": "flagged missing next step on",
-  "issue.successful_run_handoff_resolved": "recorded next step chosen on",
-  "issue.successful_run_handoff_escalated": "escalated missing next step on",
-  "issue.accepted_plan_decomposition_updated": "updated accepted-plan decomposition on",
-  "issue.recovery_action_opened": "opened a recovery action on",
-  "issue.workspace_recovered": "recovered saved work for",
-  "issue.workspace_recovery_requested": "requested workspace recovery for",
-  "issue.recovery_action_resolved": "resolved the recovery action on",
-  "issue.recovery_action_escalated": "escalated the recovery action on",
-  "agent.created": "created",
-  "agent.updated": "updated",
-  "agent.paused": "paused",
-  "agent.resumed": "resumed",
-  "agent.error_cleared": "cleared error on",
-  "agent.terminated": "terminated",
-  "agent.key_created": "created API key for",
-  "agent.budget_updated": "updated budget for",
-  "agent.runtime_session_reset": "reset session for",
-  "heartbeat.invoked": "invoked heartbeat for",
-  "heartbeat.cancelled": "cancelled heartbeat for",
-  "heartbeat.output_stale_source_resolved": "system-folded stale run on",
-  "heartbeat.output_stale_recovery_recursion_refused": "refused recovery-on-recovery for",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
+  "case.created": "activity_activity_row_verbs_case_created",
+  "case.updated": "activity_activity_row_verbs_case_updated",
+  "case.fields_changed": "activity_activity_row_verbs_case_fields_changed",
+  "case.status_changed": "activity_activity_row_verbs_case_status_changed",
+  "case.issue_linked": "activity_activity_row_verbs_case_issue_linked",
+  "case.issue_unlinked": "activity_activity_row_verbs_case_issue_unlinked",
+  "case.child_linked": "activity_activity_row_verbs_case_child_linked",
+  "case.attachment_added": "activity_activity_row_verbs_case_attachment_added",
+  "case.label_added": "activity_activity_row_verbs_case_label_added",
+  "case.label_removed": "activity_activity_row_verbs_case_label_removed",
+  "case.document_revised": "activity_activity_row_verbs_case_document_revised",
+  "case.handoff_requested": "activity_activity_row_verbs_case_handoff_requested",
+  "case.handoff_applied": "activity_activity_row_verbs_case_handoff_applied",
+  "case.handoff_delivered": "activity_activity_row_verbs_case_handoff_delivered",
+  "case.handoff_retry_requested": "activity_activity_row_verbs_case_handoff_retry_requested",
+  "case.handoff_cancelled": "activity_activity_row_verbs_case_handoff_cancelled",
+  "case.handoff_completed": "activity_activity_row_verbs_case_handoff_completed",
+  "issue.created": "activity_activity_row_verbs_issue_created",
+  "issue.updated": "activity_activity_row_verbs_issue_updated",
+  "issue.read_marked": "activity_activity_row_verbs_issue_read_marked",
+  "issue.read_unmarked": "activity_activity_row_verbs_issue_read_unmarked",
+  "issue.checked_out": "activity_activity_row_verbs_issue_checked_out",
+  "issue.released": "activity_activity_row_verbs_issue_released",
+  "issue.comment_added": "activity_activity_row_verbs_issue_comment_added",
+  "issue.comment_cancelled": "activity_activity_row_verbs_issue_comment_cancelled",
+  "issue.queued_comment_edited": "activity_activity_row_verbs_issue_queued_comment_edited",
+  "issue.queued_comments_reordered": "activity_activity_row_verbs_issue_queued_comments_reordered",
+  "issue.queued_comment_discarded": "activity_activity_row_verbs_issue_queued_comment_discarded",
+  "issue.comment_deleted": "activity_activity_row_verbs_issue_comment_deleted",
+  "issue.attachment_added": "activity_activity_row_verbs_issue_attachment_added",
+  "issue.attachment_removed": "activity_activity_row_verbs_issue_attachment_removed",
+  "issue.document_created": "activity_activity_row_verbs_issue_document_created",
+  "issue.document_updated": "activity_activity_row_verbs_issue_document_updated",
+  "issue.document_locked": "activity_activity_row_verbs_issue_document_locked",
+  "issue.document_unlocked": "activity_activity_row_verbs_issue_document_unlocked",
+  "issue.document_deleted": "activity_activity_row_verbs_issue_document_deleted",
+  "issue.monitor_scheduled": "activity_activity_row_verbs_issue_monitor_scheduled",
+  "issue.monitor_triggered": "activity_activity_row_verbs_issue_monitor_triggered",
+  "issue.monitor_cleared": "activity_activity_row_verbs_issue_monitor_cleared",
+  "issue.monitor_skipped": "activity_activity_row_verbs_issue_monitor_skipped",
+  "issue.monitor_exhausted": "activity_activity_row_verbs_issue_monitor_exhausted",
+  "issue.monitor_recovery_wake_queued": "activity_activity_row_verbs_issue_monitor_recovery_wake_queued",
+  "issue.monitor_recovery_issue_created": "activity_activity_row_verbs_issue_monitor_recovery_issue_created",
+  "issue.monitor_escalated_to_board": "activity_activity_row_verbs_issue_monitor_escalated_to_board",
+  "issue.commented": "activity_activity_row_verbs_issue_commented",
+  "issue.deleted": "activity_activity_row_verbs_issue_deleted",
+  "issue.successful_run_handoff_required": "activity_activity_row_verbs_issue_successful_run_handoff_required",
+  "issue.successful_run_handoff_resolved": "activity_activity_row_verbs_issue_successful_run_handoff_resolved",
+  "issue.successful_run_handoff_escalated": "activity_activity_row_verbs_issue_successful_run_handoff_escalated",
+  "issue.accepted_plan_decomposition_updated": "activity_activity_row_verbs_issue_accepted_plan_decomposition_updated",
+  "issue.recovery_action_opened": "activity_activity_row_verbs_issue_recovery_action_opened",
+  "issue.workspace_recovered": "activity_activity_row_verbs_issue_workspace_recovered",
+  "issue.workspace_recovery_requested": "activity_activity_row_verbs_issue_workspace_recovery_requested",
+  "issue.recovery_action_resolved": "activity_activity_row_verbs_issue_recovery_action_resolved",
+  "issue.recovery_action_escalated": "activity_activity_row_verbs_issue_recovery_action_escalated",
+  "agent.created": "activity_activity_row_verbs_agent_created",
+  "agent.updated": "activity_activity_row_verbs_agent_updated",
+  "agent.paused": "activity_activity_row_verbs_agent_paused",
+  "agent.resumed": "activity_activity_row_verbs_agent_resumed",
+  "agent.error_cleared": "activity_activity_row_verbs_agent_error_cleared",
+  "agent.terminated": "activity_activity_row_verbs_agent_terminated",
+  "agent.key_created": "activity_activity_row_verbs_agent_key_created",
+  "agent.budget_updated": "activity_activity_row_verbs_agent_budget_updated",
+  "agent.runtime_session_reset": "activity_activity_row_verbs_agent_runtime_session_reset",
+  "heartbeat.invoked": "activity_activity_row_verbs_heartbeat_invoked",
+  "heartbeat.cancelled": "activity_activity_row_verbs_heartbeat_cancelled",
+  "heartbeat.output_stale_source_resolved": "activity_activity_row_verbs_heartbeat_output_stale_source_resolved",
+  "heartbeat.output_stale_recovery_recursion_refused": "activity_activity_row_verbs_heartbeat_output_stale_recovery_recursion_refused",
+  "approval.created": "activity_activity_row_verbs_approval_created",
+  "approval.approved": "activity_activity_row_verbs_approval_approved",
+  "approval.rejected": "activity_activity_row_verbs_approval_rejected",
   // Interaction outcomes (PAP-16506). An agent may now resolve one — including a
   // review of its own work — so these must read as outcomes in the feed instead
   // of falling through to the raw "issue thread interaction accepted" action id.
   // `details.interactionKind` sharpens the wording; see INTERACTION_OUTCOME_LABELS.
-  "issue.thread_interaction_created": "asked for a decision on",
-  "issue.thread_interaction_accepted": "accepted the request on",
-  "issue.thread_interaction_rejected": "rejected the request on",
-  "issue.thread_interaction_answered": "answered the request on",
-  "issue.thread_interaction_withdrawn": "withdrew the request on",
-  "issue.thread_interaction_cancelled": "cancelled the request on",
-  "issue.thread_interaction_skipped": "skipped the request on",
-  "issue.thread_interaction_dismissed": "deferred the request on",
-  "issue.thread_interaction_expired": "expired the request on",
-  "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
-  "issue.stalled_review_decided": "recorded a review verdict on",
-  "project.created": "created",
-  "project.updated": "updated",
-  "project.deleted": "deleted",
-  "goal.created": "created",
-  "goal.updated": "updated",
-  "goal.deleted": "deleted",
-  "cost.reported": "reported cost for",
-  "cost.recorded": "recorded cost for",
-  "company.created": "created organization",
-  "company.updated": "updated organization",
-  "company.archived": "archived",
-  "company.reactivated": "reactivated",
-  "company.budget_updated": "updated budget for",
-  "audit.exported": "exported the agent audit log for",
-  "tool_app.connected": "connected",
-  "tool_app.oauth_connected": "connected credentials for",
-  "tool_app.oauth_failed": "failed to connect credentials for",
-  "tool_app.oauth_access_finalized": "finished credential access for",
-  "tool_app.finished": "finished setup for",
-  "tool_app.reconnected": "reconnected",
-  "tool_connection.created": "created",
-  "tool_connection.updated": "updated",
-  "tool_connection.archived": "removed",
-  "tool_connection.catalog_refresh": "refreshed actions for",
-  "tool_connection.installs_synced": "changed agent installs for",
-  "tool_connection.install_access_extended": "extended agent access for",
-  "tool_connection.grant_audience_replaced": "changed human access for",
-  "tool_connection.grant_added": "added credentials to",
-  "tool_connection.grant_revoked": "revoked credentials from",
-  "tool_connection.grant_delegated": "delegated credentials for",
-  "tool_connection.grant_delegation_revoked": "revoked credential delegation for",
+  "issue.thread_interaction_created": "activity_activity_row_verbs_issue_thread_interaction_created",
+  "issue.thread_interaction_accepted": "activity_activity_row_verbs_issue_thread_interaction_accepted",
+  "issue.thread_interaction_rejected": "activity_activity_row_verbs_issue_thread_interaction_rejected",
+  "issue.thread_interaction_answered": "activity_activity_row_verbs_issue_thread_interaction_answered",
+  "issue.thread_interaction_withdrawn": "activity_activity_row_verbs_issue_thread_interaction_withdrawn",
+  "issue.thread_interaction_cancelled": "activity_activity_row_verbs_issue_thread_interaction_cancelled",
+  "issue.thread_interaction_skipped": "activity_activity_row_verbs_issue_thread_interaction_skipped",
+  "issue.thread_interaction_dismissed": "activity_activity_row_verbs_issue_thread_interaction_dismissed",
+  "issue.thread_interaction_expired": "activity_activity_row_verbs_issue_thread_interaction_expired",
+  "issue.thread_interaction_item_verdicts_submitted": "activity_activity_row_verbs_issue_thread_interaction_item_verdicts_submitted",
+  "issue.stalled_review_decided": "activity_activity_row_verbs_issue_stalled_review_decided",
+  "project.created": "activity_activity_row_verbs_project_created",
+  "project.updated": "activity_activity_row_verbs_project_updated",
+  "project.deleted": "activity_activity_row_verbs_project_deleted",
+  "goal.created": "activity_activity_row_verbs_goal_created",
+  "goal.updated": "activity_activity_row_verbs_goal_updated",
+  "goal.deleted": "activity_activity_row_verbs_goal_deleted",
+  "cost.reported": "activity_activity_row_verbs_cost_reported",
+  "cost.recorded": "activity_activity_row_verbs_cost_recorded",
+  "company.created": "activity_activity_row_verbs_company_created",
+  "company.updated": "activity_activity_row_verbs_company_updated",
+  "company.archived": "activity_activity_row_verbs_company_archived",
+  "company.reactivated": "activity_activity_row_verbs_company_reactivated",
+  "company.budget_updated": "activity_activity_row_verbs_company_budget_updated",
+  "audit.exported": "activity_activity_row_verbs_audit_exported",
+  "tool_app.connected": "activity_activity_row_verbs_tool_app_connected",
+  "tool_app.oauth_connected": "activity_activity_row_verbs_tool_app_oauth_connected",
+  "tool_app.oauth_failed": "activity_activity_row_verbs_tool_app_oauth_failed",
+  "tool_app.oauth_access_finalized": "activity_activity_row_verbs_tool_app_oauth_access_finalized",
+  "tool_app.finished": "activity_activity_row_verbs_tool_app_finished",
+  "tool_app.reconnected": "activity_activity_row_verbs_tool_app_reconnected",
+  "tool_connection.created": "activity_activity_row_verbs_tool_connection_created",
+  "tool_connection.updated": "activity_activity_row_verbs_tool_connection_updated",
+  "tool_connection.archived": "activity_activity_row_verbs_tool_connection_archived",
+  "tool_connection.catalog_refresh": "activity_activity_row_verbs_tool_connection_catalog_refresh",
+  "tool_connection.installs_synced": "activity_activity_row_verbs_tool_connection_installs_synced",
+  "tool_connection.install_access_extended": "activity_activity_row_verbs_tool_connection_install_access_extended",
+  "tool_connection.grant_audience_replaced": "activity_activity_row_verbs_tool_connection_grant_audience_replaced",
+  "tool_connection.grant_added": "activity_activity_row_verbs_tool_connection_grant_added",
+  "tool_connection.grant_revoked": "activity_activity_row_verbs_tool_connection_grant_revoked",
+  "tool_connection.grant_delegated": "activity_activity_row_verbs_tool_connection_grant_delegated",
+  "tool_connection.grant_delegation_revoked": "activity_activity_row_verbs_tool_connection_grant_delegation_revoked",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
-  "issue.comment_added": "added a comment",
-  "issue.comment_cancelled": "cancelled a queued comment",
-  "issue.queued_comment_edited": "edited a queued comment",
-  "issue.queued_comments_reordered": "reordered queued comments",
-  "issue.queued_comment_discarded": "discarded a queued comment",
-  "issue.comment_deleted": "deleted a comment",
-  "issue.feedback_vote_saved": "saved feedback on an AI output",
-  "issue.attachment_added": "added an attachment",
-  "issue.attachment_removed": "removed an attachment",
-  "issue.document_created": "created a document",
-  "issue.document_updated": "updated a document",
-  "issue.document_locked": "locked a document",
-  "issue.document_unlocked": "unlocked a document",
-  "issue.document_deleted": "deleted a document",
-  "issue.monitor_scheduled": "scheduled a monitor",
-  "issue.monitor_triggered": "triggered a monitor",
-  "issue.monitor_cleared": "cleared a monitor",
-  "issue.monitor_skipped": "skipped a monitor",
-  "issue.monitor_exhausted": "exhausted a monitor",
-  "issue.monitor_recovery_wake_queued": "queued a monitor recovery wake",
-  "issue.monitor_recovery_issue_created": "created a monitor recovery issue",
-  "issue.monitor_escalated_to_board": "escalated a monitor to the board",
-  "issue.deleted": "deleted the issue",
-  "issue.successful_run_handoff_required": "Run finished without a clear next step",
-  "issue.successful_run_handoff_resolved": "Next step chosen",
-  "issue.successful_run_handoff_escalated": "Run finished without a next step - recovery escalated",
-  "issue.cross_issue_influence_cap_rejected": "hit the per-run cross-task write cap",
-  "issue.cross_issue_influence_observed": "made a cross-task write",
-  "issue.attribution_spoof_rejected": "tried to choose its own responsible user",
-  "issue.recovery_action_opened": "Opened a source-scoped recovery action",
-  "issue.workspace_recovered": "Saved work recovered.",
-  "issue.workspace_recovery_requested": "Requested workspace recovery",
-  "issue.recovery_action_resolved": "Resolved the recovery action",
-  "issue.recovery_action_escalated": "Escalated the recovery action",
-  "issue.accepted_plan_decomposition_updated": "updated the accepted-plan decomposition",
-  "agent.created": "created an agent",
-  "agent.updated": "updated the agent",
-  "agent.paused": "paused the agent",
-  "agent.resumed": "resumed the agent",
-  "agent.error_cleared": "cleared the agent error",
-  "agent.terminated": "terminated the agent",
-  "heartbeat.invoked": "invoked a heartbeat",
-  "heartbeat.cancelled": "cancelled a heartbeat",
-  "heartbeat.output_stale_source_resolved": "System folded a stale run",
-  "heartbeat.output_stale_recovery_recursion_refused": "Refused recovery-on-recovery escalation",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-  "issue.thread_interaction_created": "asked for a decision",
-  "issue.thread_interaction_accepted": "accepted the request",
-  "issue.thread_interaction_rejected": "rejected the request",
-  "issue.thread_interaction_answered": "answered the request",
-  "issue.thread_interaction_withdrawn": "withdrew the request",
-  "issue.thread_interaction_cancelled": "cancelled the request",
-  "issue.thread_interaction_skipped": "skipped the request",
-  "issue.thread_interaction_dismissed": "deferred the request",
-  "issue.thread_interaction_expired": "expired the request",
-  "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
-  "issue.stalled_review_decided": "recorded a review verdict",
+  "issue.created": "activity_issue_activity_labels_issue_created",
+  "issue.updated": "activity_issue_activity_labels_issue_updated",
+  "issue.checked_out": "activity_issue_activity_labels_issue_checked_out",
+  "issue.released": "activity_issue_activity_labels_issue_released",
+  "issue.comment_added": "activity_issue_activity_labels_issue_comment_added",
+  "issue.comment_cancelled": "activity_issue_activity_labels_issue_comment_cancelled",
+  "issue.queued_comment_edited": "activity_issue_activity_labels_issue_queued_comment_edited",
+  "issue.queued_comments_reordered": "activity_issue_activity_labels_issue_queued_comments_reordered",
+  "issue.queued_comment_discarded": "activity_issue_activity_labels_issue_queued_comment_discarded",
+  "issue.comment_deleted": "activity_issue_activity_labels_issue_comment_deleted",
+  "issue.feedback_vote_saved": "activity_issue_activity_labels_issue_feedback_vote_saved",
+  "issue.attachment_added": "activity_issue_activity_labels_issue_attachment_added",
+  "issue.attachment_removed": "activity_issue_activity_labels_issue_attachment_removed",
+  "issue.document_created": "activity_issue_activity_labels_issue_document_created",
+  "issue.document_updated": "activity_issue_activity_labels_issue_document_updated",
+  "issue.document_locked": "activity_issue_activity_labels_issue_document_locked",
+  "issue.document_unlocked": "activity_issue_activity_labels_issue_document_unlocked",
+  "issue.document_deleted": "activity_issue_activity_labels_issue_document_deleted",
+  "issue.monitor_scheduled": "activity_issue_activity_labels_issue_monitor_scheduled",
+  "issue.monitor_triggered": "activity_issue_activity_labels_issue_monitor_triggered",
+  "issue.monitor_cleared": "activity_issue_activity_labels_issue_monitor_cleared",
+  "issue.monitor_skipped": "activity_issue_activity_labels_issue_monitor_skipped",
+  "issue.monitor_exhausted": "activity_issue_activity_labels_issue_monitor_exhausted",
+  "issue.monitor_recovery_wake_queued": "activity_issue_activity_labels_issue_monitor_recovery_wake_queued",
+  "issue.monitor_recovery_issue_created": "activity_issue_activity_labels_issue_monitor_recovery_issue_created",
+  "issue.monitor_escalated_to_board": "activity_issue_activity_labels_issue_monitor_escalated_to_board",
+  "issue.deleted": "activity_issue_activity_labels_issue_deleted",
+  "issue.successful_run_handoff_required": "activity_issue_activity_labels_issue_successful_run_handoff_required",
+  "issue.successful_run_handoff_resolved": "activity_issue_activity_labels_issue_successful_run_handoff_resolved",
+  "issue.successful_run_handoff_escalated": "activity_issue_activity_labels_issue_successful_run_handoff_escalated",
+  "issue.cross_issue_influence_cap_rejected": "activity_issue_activity_labels_issue_cross_issue_influence_cap_rejected",
+  "issue.cross_issue_influence_observed": "activity_issue_activity_labels_issue_cross_issue_influence_observed",
+  "issue.attribution_spoof_rejected": "activity_issue_activity_labels_issue_attribution_spoof_rejected",
+  "issue.recovery_action_opened": "activity_issue_activity_labels_issue_recovery_action_opened",
+  "issue.workspace_recovered": "activity_issue_activity_labels_issue_workspace_recovered",
+  "issue.workspace_recovery_requested": "activity_issue_activity_labels_issue_workspace_recovery_requested",
+  "issue.recovery_action_resolved": "activity_issue_activity_labels_issue_recovery_action_resolved",
+  "issue.recovery_action_escalated": "activity_issue_activity_labels_issue_recovery_action_escalated",
+  "issue.accepted_plan_decomposition_updated": "activity_issue_activity_labels_issue_accepted_plan_decomposition_updated",
+  "agent.created": "activity_issue_activity_labels_agent_created",
+  "agent.updated": "activity_issue_activity_labels_agent_updated",
+  "agent.paused": "activity_issue_activity_labels_agent_paused",
+  "agent.resumed": "activity_issue_activity_labels_agent_resumed",
+  "agent.error_cleared": "activity_issue_activity_labels_agent_error_cleared",
+  "agent.terminated": "activity_issue_activity_labels_agent_terminated",
+  "heartbeat.invoked": "activity_issue_activity_labels_heartbeat_invoked",
+  "heartbeat.cancelled": "activity_issue_activity_labels_heartbeat_cancelled",
+  "heartbeat.output_stale_source_resolved": "activity_issue_activity_labels_heartbeat_output_stale_source_resolved",
+  "heartbeat.output_stale_recovery_recursion_refused": "activity_issue_activity_labels_heartbeat_output_stale_recovery_recursion_refused",
+  "approval.created": "activity_issue_activity_labels_approval_created",
+  "approval.approved": "activity_issue_activity_labels_approval_approved",
+  "approval.rejected": "activity_issue_activity_labels_approval_rejected",
+  "issue.thread_interaction_created": "activity_issue_activity_labels_issue_thread_interaction_created",
+  "issue.thread_interaction_accepted": "activity_issue_activity_labels_issue_thread_interaction_accepted",
+  "issue.thread_interaction_rejected": "activity_issue_activity_labels_issue_thread_interaction_rejected",
+  "issue.thread_interaction_answered": "activity_issue_activity_labels_issue_thread_interaction_answered",
+  "issue.thread_interaction_withdrawn": "activity_issue_activity_labels_issue_thread_interaction_withdrawn",
+  "issue.thread_interaction_cancelled": "activity_issue_activity_labels_issue_thread_interaction_cancelled",
+  "issue.thread_interaction_skipped": "activity_issue_activity_labels_issue_thread_interaction_skipped",
+  "issue.thread_interaction_dismissed": "activity_issue_activity_labels_issue_thread_interaction_dismissed",
+  "issue.thread_interaction_expired": "activity_issue_activity_labels_issue_thread_interaction_expired",
+  "issue.thread_interaction_item_verdicts_submitted": "activity_issue_activity_labels_issue_thread_interaction_item_verdicts_submitted",
+  "issue.stalled_review_decided": "activity_issue_activity_labels_issue_stalled_review_decided",
 };
 
 /**
@@ -214,9 +215,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
  * Mirrors `StalledReviewDecisionAction` in shared.
  */
 const STALLED_REVIEW_DECISION_LABELS: Record<string, string> = {
-  approve: "approved the review",
-  request_changes: "requested changes on the review",
-  send_back: "sent the review back to work",
+  approve: "activity_stalled_review_decision_labels_approve",
+  request_changes: "activity_stalled_review_decision_labels_request_changes",
+  send_back: "activity_stalled_review_decision_labels_send_back",
 };
 
 /**
@@ -227,17 +228,17 @@ const STALLED_REVIEW_DECISION_LABELS: Record<string, string> = {
  * is also the fallback for an event that carries no kind.
  */
 const INTERACTION_ACCEPTED_LABELS: Record<string, string> = {
-  request_confirmation: "approved the request",
-  request_checkbox_confirmation: "approved the request",
-  suggest_tasks: "accepted the task suggestions",
-  ask_user_questions: "accepted the answers",
+  request_confirmation: "activity_interaction_accepted_labels_request_confirmation",
+  request_checkbox_confirmation: "activity_interaction_accepted_labels_request_checkbox_confirmation",
+  suggest_tasks: "activity_interaction_accepted_labels_suggest_tasks",
+  ask_user_questions: "activity_interaction_accepted_labels_ask_user_questions",
 };
 
 const INTERACTION_REJECTED_LABELS: Record<string, string> = {
-  request_confirmation: "rejected the request",
-  request_checkbox_confirmation: "rejected the request",
-  suggest_tasks: "declined the task suggestions",
-  ask_user_questions: "declined the questions",
+  request_confirmation: "activity_interaction_rejected_labels_request_confirmation",
+  request_checkbox_confirmation: "activity_interaction_rejected_labels_request_checkbox_confirmation",
+  suggest_tasks: "activity_interaction_rejected_labels_suggest_tasks",
+  ask_user_questions: "activity_interaction_rejected_labels_ask_user_questions",
 };
 
 /**
@@ -252,7 +253,7 @@ function formatInteractionOutcomeLabel(action: string, details: ActivityDetails)
       : null;
   if (!table) return null;
   const kind = typeof details?.interactionKind === "string" ? details.interactionKind : null;
-  return kind ? table[kind] ?? null : null;
+  return kind && table[kind] ? t(`display:${table[kind]}`) : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -261,8 +262,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function humanizeValue(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "none");
-  return value.replace(/_/g, " ");
+  if (typeof value !== "string") return String(value ?? t("display:none"));
+  return t(`display:activity_value_${value}`, { defaultValue: value.replace(/_/g, " ") });
 }
 
 function isActivityParticipant(value: unknown): value is ActivityParticipant {
@@ -288,17 +289,17 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
 }
 
 function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
-  if (!userId || userId === "local-board") return "Board";
-  if (options.currentUserId && userId === options.currentUserId) return "You";
+  if (!userId || userId === "local-board") return t("display:board");
+  if (options.currentUserId && userId === options.currentUserId) return t("display:you");
   const profile = options.userProfileMap?.get(userId);
   if (profile) return profile.label;
-  return `user ${userId.slice(0, 5)}`;
+  return t("display:user_short", { id: userId.slice(0, 5) });
 }
 
 function formatParticipantLabel(participant: ActivityParticipant, options: ActivityFormatOptions): string {
   if (participant.type === "agent") {
     const agentId = participant.agentId ?? "";
-    return options.agentMap?.get(agentId)?.name ?? "agent";
+    return options.agentMap?.get(agentId)?.name ?? t("display:agent");
   }
   return formatUserLabel(participant.userId, options);
 }
@@ -307,7 +308,7 @@ function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
   if (reference.identifier) return reference.identifier;
   if (reference.title) return reference.title;
   if (reference.id) return reference.id.slice(0, 8);
-  return "task";
+  return t("display:task");
 }
 
 function formatChangedEntityLabel(
@@ -315,9 +316,9 @@ function formatChangedEntityLabel(
   plural: string,
   labels: string[],
 ): string {
-  if (labels.length <= 0) return plural;
-  if (labels.length === 1) return `${singular} ${labels[0]}`;
-  return `${labels.length} ${plural}`;
+  if (labels.length <= 0) return t(`display:entity_${plural}`);
+  if (labels.length === 1) return t("display:entity_single", { entity: t(`display:entity_${singular}`), name: labels[0] });
+  return t("display:entity_count", { count: labels.length, entity: t(`display:entity_${plural}`) });
 }
 
 function readNumber(value: unknown): number | null {
@@ -338,13 +339,13 @@ function formatAcceptedPlanDecompositionDetail(details: ActivityDetails): string
   const newlyCreated = readStringArrayLength(details.newlyCreatedChildIssueIds);
   const reused = Math.max(0, totalChildren - newlyCreated);
   const parts: string[] = [];
-  if (newlyCreated > 0) parts.push(`created ${newlyCreated} new`);
-  if (reused > 0) parts.push(`reused ${reused} existing`);
-  if (parts.length === 0 && requested !== null) parts.push(`${requested} requested`);
-  const summary = parts.length > 0 ? parts.join(", ") : null;
-  if (status === "completed" && summary) return `decomposition completed (${summary})`;
-  if (status === "completed") return "decomposition completed";
-  if (status === "in_flight" && summary) return `decomposition in flight (${summary})`;
+  if (newlyCreated > 0) parts.push(t("display:decomposition_new", { count: newlyCreated }));
+  if (reused > 0) parts.push(t("display:decomposition_reused", { count: reused }));
+  if (parts.length === 0 && requested !== null) parts.push(t("display:decomposition_requested", { count: requested }));
+  const summary = parts.length > 0 ? parts.join(t("display:list_separator")) : null;
+  if (status === "completed" && summary) return t("display:decomposition_completed_summary", { summary: summary });
+  if (status === "completed") return t("display:decomposition_completed");
+  if (status === "in_flight" && summary) return t("display:decomposition_in_flight", { summary: summary });
   return summary;
 }
 
@@ -355,14 +356,14 @@ function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
     const from = previous.status;
     const to = humanizeValue(details.status === "in_review" && details.externalConversationState === "waiting" ? "idle" : details.status);
     return from
-      ? `changed status from ${humanizeValue(from)} to ${to} on`
-      : `changed status to ${to} on`;
+      ? t("display:activity_status_from_row", { from: humanizeValue(from), to: to })
+      : t("display:activity_status_to_row", { to: to });
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
     return from
-      ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
-      : `changed priority to ${humanizeValue(details.priority)} on`;
+      ? t("display:activity_priority_from_row", { from: humanizeValue(from), to: humanizeValue(details.priority) })
+      : t("display:activity_priority_to_row", { to: humanizeValue(details.priority) });
   }
   return null;
 }
@@ -372,7 +373,7 @@ function formatAssigneeName(details: ActivityDetails, options: ActivityFormatOpt
   const agentId = details.assigneeAgentId;
   const userId = details.assigneeUserId;
   if (typeof agentId === "string" && agentId) {
-    return options.agentMap?.get(agentId)?.name ?? "agent";
+    return options.agentMap?.get(agentId)?.name ?? t("display:agent");
   }
   if (typeof userId === "string" && userId) {
     return formatUserLabel(userId, options);
@@ -390,31 +391,31 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
     const to = humanizeValue(details.status === "in_review" && details.externalConversationState === "waiting" ? "idle" : details.status);
     parts.push(
       from
-        ? `changed the status from ${humanizeValue(from)} to ${to}`
-        : `changed the status to ${to}`,
+        ? t("display:activity_status_from", { from: humanizeValue(from), to: to })
+        : t("display:activity_status_to", { to: to }),
     );
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
     parts.push(
       from
-        ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-        : `changed the priority to ${humanizeValue(details.priority)}`,
+        ? t("display:activity_priority_from", { from: humanizeValue(from), to: humanizeValue(details.priority) })
+        : t("display:activity_priority_to", { to: humanizeValue(details.priority) }),
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    parts.push(assigneeName ? `made ${assigneeName} responsible for the task` : "cleared the responsible");
+    parts.push(assigneeName ? t("display:activity_responsible", { name: assigneeName }) : t("display:activity_responsible_cleared"));
   }
   if (details.reviewPolicy !== undefined) {
     // `null` is the default ("anyone can approve"), so it must not read as
     // "changed the review policy to none" (PAP-16506).
-    parts.push(`changed who can approve to ${formatReviewPolicyValue(details.reviewPolicy)}`);
+    parts.push(t("display:activity_policy", { policy: formatReviewPolicyValue(details.reviewPolicy) }));
   }
-  if (details.title !== undefined) parts.push("updated the title");
-  if (details.description !== undefined) parts.push("updated the description");
+  if (details.title !== undefined) parts.push(t("display:activity_title_updated"));
+  if (details.description !== undefined) parts.push(t("display:activity_description_updated"));
 
-  return parts.length > 0 ? parts.join(", ") : null;
+  return parts.length > 0 ? parts.join(t("display:list_separator")) : null;
 }
 
 function formatStructuredIssueChange(input: {
@@ -431,13 +432,13 @@ function formatStructuredIssueChange(input: {
     const removed = readIssueReferences(details, "removedBlockedByIssues").map(formatIssueReferenceLabel);
     if (added.length > 0 && removed.length === 0) {
       const changed = formatChangedEntityLabel("blocker", "blockers", added);
-      return input.forIssueDetail ? `added ${changed}` : `added ${changed} to`;
+      return input.forIssueDetail ? t("display:change_added", { changed: changed }) : t("display:change_added_row", { changed: changed });
     }
     if (removed.length > 0 && added.length === 0) {
       const changed = formatChangedEntityLabel("blocker", "blockers", removed);
-      return input.forIssueDetail ? `removed ${changed}` : `removed ${changed} from`;
+      return input.forIssueDetail ? t("display:change_removed", { changed: changed }) : t("display:change_removed_row", { changed: changed });
     }
-    return input.forIssueDetail ? "updated blockers" : "updated blockers on";
+    return input.forIssueDetail ? t("display:blockers_updated") : t("display:blockers_updated_row");
   }
 
   if (input.action === "issue.reviewers_updated" || input.action === "issue.approvers_updated") {
@@ -447,13 +448,13 @@ function formatStructuredIssueChange(input: {
     const plural = input.action === "issue.reviewers_updated" ? "reviewers" : "approvers";
     if (added.length > 0 && removed.length === 0) {
       const changed = formatChangedEntityLabel(singular, plural, added);
-      return input.forIssueDetail ? `added ${changed}` : `added ${changed} to`;
+      return input.forIssueDetail ? t("display:change_added", { changed: changed }) : t("display:change_added_row", { changed: changed });
     }
     if (removed.length > 0 && added.length === 0) {
       const changed = formatChangedEntityLabel(singular, plural, removed);
-      return input.forIssueDetail ? `removed ${changed}` : `removed ${changed} from`;
+      return input.forIssueDetail ? t("display:change_removed", { changed: changed }) : t("display:change_removed_row", { changed: changed });
     }
-    return input.forIssueDetail ? `updated ${plural}` : `updated ${plural} on`;
+    return input.forIssueDetail ? t("display:participants_updated", { participants: t(`display:entity_${plural}`) }) : t("display:participants_updated_row", { participants: t(`display:entity_${plural}`) });
   }
 
   return null;
@@ -469,16 +470,16 @@ export function formatActivityVerb(
       ? details.tool
       : typeof details?.upstreamToolName === "string"
         ? details.upstreamToolName
-        : "an app action";
+        : t("display:tool_action");
     const tool = rawTool.replace(/[._-]+/g, " ");
     const isTest = details?.source === "test";
-    if (action === "tool_gateway.call_completed") return `${isTest ? "tested" : "used"} ${tool} on`;
-    if (action === "tool_gateway.call_allowed") return `${isTest ? "started a test of" : "was allowed to use"} ${tool} on`;
-    if (action === "tool_gateway.call_denied") return `was blocked from using ${tool} on`;
-    if (action === "tool_gateway.approval_requested") return `asked to use ${tool} on`;
-    if (action === "tool_gateway.session_created") return "opened an app session for";
-    if (action === "tool_gateway.session_rejected") return "was blocked from opening an app session for";
-    if (action === "tool_gateway.discovery") return "discovered app actions for";
+    if (action === "tool_gateway.call_completed") return isTest ? t("display:tool_tested", { tool: tool }) : t("display:tool_used", { tool: tool });
+    if (action === "tool_gateway.call_allowed") return isTest ? t("display:tool_test_started", { tool: tool }) : t("display:tool_allowed", { tool: tool });
+    if (action === "tool_gateway.call_denied") return t("display:tool_denied", { tool: tool });
+    if (action === "tool_gateway.approval_requested") return t("display:tool_requested", { tool: tool });
+    if (action === "tool_gateway.session_created") return t("display:tool_session");
+    if (action === "tool_gateway.session_rejected") return t("display:tool_session_denied");
+    if (action === "tool_gateway.discovery") return t("display:tool_discovery");
   }
 
   if (action === "issue.updated") {
@@ -488,12 +489,12 @@ export function formatActivityVerb(
 
   if (action === "issue.stalled_review_decided") {
     const decision = typeof details?.action === "string" ? details.action : null;
-    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] : null;
-    if (label) return `${label} on`;
+    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] ? t(`display:${STALLED_REVIEW_DECISION_LABELS[decision]}`) : null : null;
+    if (label) return t("display:activity_outcome_row", { label: label });
   }
 
   const outcomeLabel = formatInteractionOutcomeLabel(action, details);
-  if (outcomeLabel) return `${outcomeLabel} on`;
+  if (outcomeLabel) return t("display:activity_outcome_row", { label: outcomeLabel });
 
   const structuredChange = formatStructuredIssueChange({
     action,
@@ -503,7 +504,7 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
-  return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
+  return ACTIVITY_ROW_VERBS[action] ? t(`display:${ACTIVITY_ROW_VERBS[action]}`) : action.replace(/[._]/g, " ");
 }
 
 export function formatIssueActivityAction(
@@ -531,7 +532,7 @@ export function formatIssueActivityAction(
 
   if (action === "issue.stalled_review_decided") {
     const decision = typeof details?.action === "string" ? details.action : null;
-    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] : null;
+    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] ? t(`display:${STALLED_REVIEW_DECISION_LABELS[decision]}`) : null : null;
     if (label) return label;
   }
 
@@ -542,8 +543,8 @@ export function formatIssueActivityAction(
     const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()
       ? details.serviceName.trim()
       : null;
-    const base = ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
-    return serviceName ? `${base} for ${serviceName}` : base;
+    const base = ISSUE_ACTIVITY_LABELS[action] ? t(`display:${ISSUE_ACTIVITY_LABELS[action]}`) : action.replace(/[._]/g, " ");
+    return serviceName ? t("display:monitor_service", { base: base, service: serviceName }) : base;
   }
 
   if (
@@ -556,10 +557,10 @@ export function formatIssueActivityAction(
     ) &&
     details
   ) {
-    const key = typeof details.key === "string" ? details.key : "document";
+    const key = typeof details.key === "string" ? details.key : t("display:document");
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
-    return `${ISSUE_ACTIVITY_LABELS[action] ?? action} ${key}${title}`;
+    return t("display:activity_document", { action: ISSUE_ACTIVITY_LABELS[action] ? t(`display:${ISSUE_ACTIVITY_LABELS[action]}`) : action, key: key, title: title });
   }
 
-  return ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
+  return ISSUE_ACTIVITY_LABELS[action] ? t(`display:${ISSUE_ACTIVITY_LABELS[action]}`) : action.replace(/[._]/g, " ");
 }

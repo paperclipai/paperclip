@@ -1,3 +1,6 @@
+import { t, useTranslation, Trans } from "@/i18n";
+import { enumDisplayLabel } from "./task-chat-display";
+import { detailDisplayLabel } from "./task-chat-display";
 import { useId, useState, type ReactNode } from "react";
 import {
   Check,
@@ -34,6 +37,7 @@ const COMPACT_WORKSPACE_FILE_LIMIT = 8;
 const RESEARCH_SOURCE_PREVIEW_LIMIT = 3;
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "interrupted" | "informational" }) {
+  useTranslation("task-components");
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-(--status-agent-running)" aria-hidden />;
   if (status === "failed" || status === "interrupted") return <X className="h-3.5 w-3.5 text-destructive" aria-hidden />;
   if (status === "completed") return <Check className="h-3.5 w-3.5 text-(--status-task-icon-done)" aria-hidden />;
@@ -49,12 +53,13 @@ function stepStatusIcon(status: TaskChatProtocolStep["status"], neutral = false)
 }
 
 export function DetailList({ details }: { details: readonly TaskChatProtocolDetail[] }) {
+  useTranslation("task-components");
   if (details.length === 0) return null;
   return (
     <dl className="flex min-w-0 flex-col gap-1.5" data-testid="task-chat-provider-detail-list">
       {details.map((detail) => (
         <div className="grid min-w-0 grid-cols-1 gap-0.5 sm:grid-cols-(--gtc-task-chat-details) sm:gap-3" key={`${detail.label}:${detail.value}`}>
-          <dt className="text-muted-foreground">{detail.label}</dt>
+          <dt className="text-muted-foreground">{detailDisplayLabel(detail)}</dt>
           <dd className={cn("min-w-0 break-words text-foreground", detail.mono && "font-mono")}>{detail.value}</dd>
         </div>
       ))}
@@ -71,6 +76,7 @@ function sourceHostname(href: string): string {
 }
 
 function ResearchDetails({ item }: { item: TaskChatProviderActivityItem }) {
+  useTranslation("task-components");
   const [showAllResults, setShowAllResults] = useState(false);
   const query = item.details.find((detail) => detail.label.toLowerCase() === "query");
   const additionalDetails = item.details.filter((detail) => !["action", "query", "status"].includes(detail.label.toLowerCase()));
@@ -81,16 +87,16 @@ function ResearchDetails({ item }: { item: TaskChatProviderActivityItem }) {
     <div className="flex min-w-0 flex-col gap-2.5">
       {query ? (
         <div className="min-w-0 rounded-sm bg-muted/40 px-2.5 py-2" data-testid="task-chat-research-query">
-          <p className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">Query</p>
+          <p className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">{t("task-components:query_b80a3756")}</p>
           <p className="mt-0.5 min-w-0 break-words font-mono text-(length:--text-micro) text-foreground">{query.value}</p>
         </div>
       ) : null}
       {item.links.length > 0 ? (
         <div className="min-w-0">
           <p className="mb-1 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-            {item.links.length} {item.links.length === 1 ? "result" : "results"}
+            {item.links.length} {item.links.length === 1 ? t("task-components:result_f6a214f7") : t("task-components:results_c099142b")}
           </p>
-          <ol className="divide-y divide-border/60" aria-label="Research sources">
+          <ol className="divide-y divide-border/60" aria-label={t("task-components:researchSources_6891cd22")}>
             {visibleLinks.map((link, index) => (
               <li className="min-w-0 py-1.5 first:pt-0 last:pb-0" key={`${link.href}:${index}`}>
                 <a className="flex min-w-0 items-center gap-1 font-medium text-foreground hover:underline" href={link.href} target="_blank" rel="noreferrer">
@@ -109,34 +115,31 @@ function ResearchDetails({ item }: { item: TaskChatProviderActivityItem }) {
               type="button"
               className="mt-1.5 text-muted-foreground hover:text-foreground"
               onClick={() => setShowAllResults(true)}
-            >
-              Show {hiddenResultCount} more {hiddenResultCount === 1 ? "result" : "results"}
-            </button>
+            >{t("task-chat-ui:moreResults", { count: hiddenResultCount, kind: hiddenResultCount === 1 ? t("task-components:result_f6a214f7") : t("task-components:results_c099142b") })}</button>
           ) : showAllResults && item.links.length > COMPACT_RESEARCH_RESULT_LIMIT ? (
             <button
               type="button"
               className="mt-1.5 text-muted-foreground hover:text-foreground"
               onClick={() => setShowAllResults(false)}
-            >
-              Show fewer results
-            </button>
+            >{t("task-components:showFewerResults_b27c7ae5")}</button>
           ) : null}
         </div>
       ) : null}
       <DetailList details={additionalDetails} />
       {item.output || item.outputTruncated ? (
-        <p className="text-muted-foreground">Additional provider output is available in Runner Inspector.</p>
+        <p className="text-muted-foreground">{t("task-components:additionalProviderOutputIsAvailableInRunner_d70af477")}</p>
       ) : null}
     </div>
   );
 }
 
 function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActivityItem; neutral?: boolean }) {
+  useTranslation("task-components");
   if (item.family === "research") return <ResearchDetails item={item} />;
   return (
     <div className="flex min-w-0 flex-col gap-2">
       {item.steps.length > 0 ? (
-        <ol className="flex flex-col gap-1" aria-label="Plan steps">
+        <ol className="flex flex-col gap-1" aria-label={t("task-components:planSteps_3fa02f98")}>
           {item.steps.map((step) => (
             <li className="flex min-w-0 items-start gap-2" key={step.id}>
               <span className="mt-0.5 shrink-0">{stepStatusIcon(step.status, neutral)}</span>
@@ -146,7 +149,7 @@ function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActi
         </ol>
       ) : null}
       {item.links.length > 0 ? (
-        <ul className="flex flex-col gap-1.5" aria-label="Research sources">
+        <ul className="flex flex-col gap-1.5" aria-label={t("task-components:researchSources_6891cd22")}>
           {item.links.map((link) => (
             <li key={link.href}>
               <a className="inline-flex min-w-0 items-center gap-1 font-medium text-primary hover:underline" href={link.href} target="_blank" rel="noreferrer">
@@ -159,12 +162,12 @@ function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActi
         </ul>
       ) : null}
       {item.children.length > 0 ? (
-        <ul className="flex flex-col gap-1.5" aria-label="Delegated agents">
+        <ul className="flex flex-col gap-1.5" aria-label={t("task-components:delegatedAgents_a3a4ad04")}>
           {item.children.map((child) => (
             <li className="flex min-w-0 flex-col gap-0.5" key={child.id}>
               <span className="flex min-w-0 items-center gap-2">
                 <span className="font-medium text-foreground">{child.title}</span>
-                <span className="capitalize text-muted-foreground">{child.status}</span>
+                <span className="capitalize text-muted-foreground">{enumDisplayLabel(child.status)}</span>
                 {child.metadata ? <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{child.metadata}</span> : null}
               </span>
               {child.summary ? <span className="text-muted-foreground">{child.summary}</span> : null}
@@ -178,18 +181,19 @@ function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActi
       {item.output ? (
         <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.output}</pre>
       ) : null}
-      {item.outputTruncated ? <p className="text-muted-foreground">Output truncated to 8 KiB.</p> : null}
+      {item.outputTruncated ? <p className="text-muted-foreground">{t("task-components:outputTruncatedTo8Kib_71045c3c")}</p> : null}
     </div>
   );
 }
 
 function WorkspaceChangeDetails({ item }: { item: TaskChatWorkspaceChangeItem }) {
-  if (item.files.length === 0) return <p className="text-muted-foreground">No changed-file details were reported.</p>;
+  useTranslation("task-components");
+  if (item.files.length === 0) return <p className="text-muted-foreground">{t("task-components:noChangedFileDetailsWereReported_ab8948ff")}</p>;
   const visibleFiles = item.files.slice(0, COMPACT_WORKSPACE_FILE_LIMIT);
   const hiddenFileCount = item.files.length - visibleFiles.length;
   return (
     <div className="min-w-0" data-testid="task-chat-workspace-change-details">
-      <ul className="flex min-w-0 flex-col divide-y divide-border/60" aria-label="Changed files">
+      <ul className="flex min-w-0 flex-col divide-y divide-border/60" aria-label={t("task-components:changedFiles_5d4041aa")}>
         {visibleFiles.map((file) => (
           <li className="flex min-w-0 items-center gap-2 py-1.5 first:pt-0 last:pb-0" key={`${file.operation}:${file.path}`}>
             <span className="min-w-0 flex-1 truncate font-mono text-foreground" title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}>
@@ -204,12 +208,13 @@ function WorkspaceChangeDetails({ item }: { item: TaskChatWorkspaceChangeItem })
           </li>
         ))}
       </ul>
-      {hiddenFileCount > 0 ? <p className="mt-1.5 text-muted-foreground">{hiddenFileCount} more {hiddenFileCount === 1 ? "file" : "files"} not shown</p> : null}
+      {hiddenFileCount > 0 ? <p className="mt-1.5 text-muted-foreground">{t("task-chat-ui:hiddenFiles", { count: hiddenFileCount, kind: hiddenFileCount === 1 ? t("task-components:file_3b9c358f") : t("task-components:files_3d7db37d") })}</p> : null}
     </div>
   );
 }
 
 function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
+  useTranslation("task-components");
   const workspaceFileRef = {
     path: item.path,
     resourceKind: "file" as const,
@@ -226,8 +231,8 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
         ) : (
           <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.preview}</pre>
         )
-      ) : <p className="text-muted-foreground">Preview unavailable.</p>}
-      {item.previewTruncated ? <p className="text-muted-foreground">Preview truncated by the runner.</p> : null}
+      ) : <p className="text-muted-foreground">{t("task-components:previewUnavailable_769469b5")}</p>}
+      {item.previewTruncated ? <p className="text-muted-foreground">{t("task-components:previewTruncatedByTheRunner_c8a44a1e")}</p> : null}
     </div>
   );
 }
@@ -289,6 +294,7 @@ export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): 
 }
 
 export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
+  useTranslation("task-components");
   const detail = detailContent(item, neutral);
   if (item.surface === "resource") {
     const href = safeActivityHref(item.href);
@@ -352,6 +358,7 @@ function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "fail
 }
 
 export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolItem }) {
+  useTranslation("task-components");
   const shimmer = useTaskChatShimmer(item.id);
   const [open, setOpen] = useState(false);
   const detailId = `task-chat-protocol-activity-${useId().replaceAll(":", "")}`;
@@ -362,17 +369,17 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
     const severity = providerNoticeSeverity(item);
     const summary = item.summary
       ?? item.details.find((entry) => entry.label === "Summary")?.value
-      ?? "The provider reported a notice without a message.";
+      ?? t("task-chat-ui:noticeWithoutMessage");
     return (
       <div className="flex min-w-0 flex-col gap-1.5 py-1 text-xs" data-testid="task-chat-protocol-activity-row" data-activity-family="provider_notice">
         <div className="flex items-center gap-2 text-muted-foreground">
           <NoticeIcon className="size-(--sz-protocol-notice-icon) shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
-          <span className="font-medium">{severity === "error" ? "Error" : severity === "info" ? "Provider update" : "Warning"}</span>
+          <span className="font-medium">{severity === "error" ? t("task-components:error_54a0e8c1") : severity === "info" ? t("task-components:providerUpdate_9c32c148") : t("task-components:warning_e981ddae")}</span>
         </div>
         <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">{summary}</p>
         {item.details.some(detail => detail.label !== "Summary") ? (
           <details className="text-muted-foreground">
-            <summary className="cursor-pointer">Details</summary>
+            <summary className="cursor-pointer">{t("task-components:details_45989de4")}</summary>
             <DetailList details={item.details.filter(detail => detail.label !== "Summary")} />
           </details>
         ) : null}

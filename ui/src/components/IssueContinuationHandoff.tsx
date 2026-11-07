@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ export function IssueContinuationHandoff({
   focusSignal = 0,
   externalReferences,
 }: IssueContinuationHandoffProps) {
+  useTranslation("task-components");
   const [expanded, setExpanded] = useState(false);
   const [highlighted, setHighlighted] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -33,7 +35,7 @@ export function IssueContinuationHandoff({
 
   if (!document) return null;
 
-  const title = document.title?.trim() || "Continuation handoff";
+  const title = document.title?.trim() || t("final-components-b:IssueContinuationHandoff.Continuation_handoff_f052bd");
 
   return (
     <div
@@ -49,7 +51,7 @@ export function IssueContinuationHandoff({
           type="button"
           className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           onClick={() => setExpanded((current) => !current)}
-          aria-label={expanded ? "Collapse continuation handoff" : "Expand continuation handoff"}
+          aria-label={expanded ? t("task-components:collapseContinuationHandoff_d05124b8") : t("task-components:expandContinuationHandoff_85436654")}
           aria-expanded={expanded}
         >
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -58,20 +60,15 @@ export function IssueContinuationHandoff({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{title}</span>
-            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase text-muted-foreground">
-              handoff
-            </Badge>
+            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase text-muted-foreground">{t("task-components:handoff_249215fe")}</Badge>
           </div>
-          <div className="text-(length:--text-micro) text-muted-foreground">
-            Updated {relativeTime(document.updatedAt)}
-            {document.latestRevisionNumber > 0 ? ` - revision ${document.latestRevisionNumber}` : ""}
-          </div>
+          <div className="text-(length:--text-micro) text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_3662e1712ae3" components={{ part1: <>{relativeTime(document.updatedAt)}</>, part2: <>{document.latestRevisionNumber > 0 ? t("final-components-b:revision_revision_b7da21", { revision: document.latestRevisionNumber }) : ""}</> }} /></div>
         </div>
         <AgentSetupPrompt
           prompt={document.body}
-          label="Continue with an agent"
-          title="Task handoff"
-          description="Paste this into your agent to continue from this handoff."
+          label={t("task-components:continueWithAnAgent_f3643464")}
+          title={t("task-components:taskHandoff_3b56d439")}
+          description={t("task-components:pasteThisIntoYourAgentToContinue_5e1b55d6")}
           align="end"
         />
       </div>

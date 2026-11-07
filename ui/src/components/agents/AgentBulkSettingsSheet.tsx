@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { describeError } from "@/api/errors";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,13 +24,15 @@ type Failure = { agent: Agent; message: string };
 export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClose }: {
   companyId: string; agents: Agent[]; totalSelected: number; onClose: (updatedIds: string[], complete?: boolean) => void;
 }) {
+  const { t } = useTranslation("agent-config");
   const client = useQueryClient();
   const harness = bulkAgentHarness(agents[0]);
   const label = getAdapterLabel(harness);
   const [changeConnection, setChangeConnection] = useState(false);
   const [changeModel, setChangeModel] = useState(false);
   const [binding, setBinding] = useState<AiConnectionBinding>();
-  const [selectionError, setSelectionError] = useState("");
+  const [selectionErrorState, setSelectionError] = useState<string | { key: string }>("");
+  const selectionError = typeof selectionErrorState === "object" ? t(selectionErrorState.key) : selectionErrorState;
   const [model, setModel] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -71,7 +74,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
         const restricted = Boolean(routing?.models.length || openRouter || harness === "copilot_runtime");
         return { agent, accounts, binding: effective, models, restricted } satisfies Catalog;
       });
-      return results.map((result, index) => result.status === "fulfilled" ? result.value : { agent: targets[index], error: result.reason instanceof Error ? result.reason.message : "Couldn’t load connections or models" });
+      return results.map((result, index) => result.status === "fulfilled" ? result.value : { agent: targets[index], get error() { return result.reason instanceof Error ? result.reason.message : t("final-configuration:feedback_couldnTLoadConnectionsOrModels_5fa322b"); } });
     },
   });
   const rows = catalogs.data?.filter((r): r is Catalog => !("error" in r)) ?? [];
@@ -88,16 +91,16 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
     let problem: string | null = null;
     if (row.binding) {
       problem = bindingProblem(row.binding, { companyId, provider: row.binding.provider }, row.accounts.connections, row.accounts.currentUserId, agent.id);
-      if (!problem && !isAiConnectionCompatible(row.binding, harness, nextModel)) problem = "Choose a model compatible with this connection.";
+      if (!problem && !isAiConnectionCompatible(row.binding, harness, nextModel)) problem = t("agent-config:chooseAModelCompatibleWithThisConnection_18b9776");
     }
-    if (!problem && row.restricted && !row.models.some(m => m.id === nextModel)) problem = `${nextModel ?? "Harness default"} isn’t available on this connection. Choose a different connection or change the default model.`;
+    if (!problem && row.restricted && !row.models.some(m => m.id === nextModel)) problem = t("agent-config:valueIsnTAvailableOnThisConnectionChoose_9cb9e6f", { value1: nextModel ?? t("agent-config:harnessDefault_6dd2a2f") });
     return problem ? [{ agent, message: problem }] : [];
   });
   const canSave = !saving && !missing && !selectionError && !catalogs.isFetching && !catalogs.error && !loadErrors.length && rows.length === targets.length && !problems.length && changed.length > 0;
   const updateCount = changed.length || agents.length;
   const otherSelected = totalSelected - agents.length;
   const currentConnections = [...new Set(agents.map(a => bulkConnectionName(agentConnection(a), rows.find(r => r.agent.id === a.id)?.accounts)))];
-  const currentModels = [...new Set(agents.map(a => agentDefaultModel(a) ?? "Harness default"))];
+  const currentModels = [...new Set(agents.map(a => agentDefaultModel(a) ?? t("agent-config:harnessDefault_6dd2a2f")))];
   const close = () => { if (!savingRef.current) onClose(updatedIds); };
 
   async function save() {
@@ -118,7 +121,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
     const successes: Agent[] = [];
     results.forEach((result, index) => {
       if (result.status === "fulfilled") successes.push(result.value);
-      else nextFailures.push({ agent: changed[index], message: result.reason instanceof Error ? result.reason.message : "Couldn’t save this agent. Try again." });
+      else nextFailures.push({ agent: changed[index], get message() { return result.reason instanceof Error ? result.reason.message : t("final-configuration:feedback_couldnTSaveThisAgentTryAgain_0f795b8"); } });
     });
     const allUpdated = [...updatedIds, ...successes.map(a => a.id)];
     setUpdatedIds(allUpdated);
@@ -132,29 +135,29 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
   }
 
   return <Sheet open onOpenChange={open => { if (!open) close(); }}><SheetContent className="w-full sm:max-w-lg" showCloseButton={!saving} onEscapeKeyDown={event => { if (savingRef.current) event.preventDefault(); }} onInteractOutside={event => { if (savingRef.current) event.preventDefault(); }}>
-    <SheetHeader className="px-6 pt-6 pb-0"><SheetTitle>Update {agents.length} {label} {agents.length === 1 ? "agent" : "agents"}</SheetTitle><SheetDescription>{totalSelected > agents.length ? `${otherSelected} other selected ${otherSelected === 1 ? "agent" : "agents"} won’t change.` : "Change their connection, default model, or both."}</SheetDescription></SheetHeader>
+    <SheetHeader className="px-6 pt-6 pb-0"><SheetTitle>{t("updateHarnessAgents", { count: agents.length, harness: label })}</SheetTitle><SheetDescription>{totalSelected > agents.length ? t("otherSelectedAgents", { count: otherSelected }) : t("agent-config:changeTheirConnectionDefaultModelOrBoth_ecf8323")}</SheetDescription></SheetHeader>
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-2">
-      <div className="flex flex-wrap gap-2" aria-label="Agents to update">{agents.map(a => <span key={a.id} className={agentIdentityChipClass}><AgentIdentityChipContent agent={a} /></span>)}</div>
-      {failures && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p className="font-medium">{updatedIds.length} updated · {failures.length} couldn’t be saved</p>{failures.map(f => <p key={f.agent.id} className="text-muted-foreground">{f.agent.name}: {f.message}</p>)}<p className="text-xs text-muted-foreground">Retry updates only the remaining agents. Close and reopen to review changed settings.</p></div>}
+      <div className="flex flex-wrap gap-2" aria-label={t("agent-config:agentsToUpdate_d2e3a2f")}>{agents.map(a => <span key={a.id} className={agentIdentityChipClass}><AgentIdentityChipContent agent={a} /></span>)}</div>
+      {failures && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p className="font-medium">{updatedIds.length} updated · {failures.length} couldn’t be saved</p>{failures.map(f => <p key={f.agent.id} className="text-muted-foreground">{f.agent.name}: {f.message}</p>)}<p className="text-xs text-muted-foreground">{t("agent-config:retryUpdatesOnlyTheRemainingAgentsCloseAnd_1d8b42b")}</p></div>}
       <fieldset disabled={saving || failures !== null} className="flex flex-col gap-6 disabled:opacity-60">
-        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeConnection} disabled={!aiProviderForAdapter(harness)} onCheckedChange={value => setChangeConnection(value === true)} aria-label="Change connection" className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">Change connection</span><span className="block text-xs text-muted-foreground">{currentConnections.length === 1 ? currentConnections[0] : `${currentConnections.length} different connections`}{!changeConnection && " · Keep current"}</span></span></label>
-          {changeConnection && <div className="pl-7"><AiConnectionField companyId={companyId} agentId={agents[0].id} agentName={`${agents.length} agents`} adapterType={harness} model={changeModel ? model : undefined} value={binding} readOnly={saving || failures !== null} onChange={value => {
-            if (value.mode === "router") { setSelectionError("Configure connection pools on each agent’s configuration page."); return; }
+        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeConnection} disabled={!aiProviderForAdapter(harness)} onCheckedChange={value => setChangeConnection(value === true)} aria-label={t("agent-config:changeConnection_47b15bd")} className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">{t("agent-config:changeConnection_47b15bd")}</span><span className="block text-xs text-muted-foreground">{currentConnections.length === 1 ? currentConnections[0] : t("agent-config:valueDifferentConnections_5c41568", { value1: currentConnections.length })}{!changeConnection && t("agent-config:keepCurrent_ba8510b")}</span></span></label>
+          {changeConnection && <div className="pl-7"><AiConnectionField companyId={companyId} agentId={agents[0].id} agentName={t("final-configuration:bulkAgentCount", { count: agents.length })} adapterType={harness} model={changeModel ? model : undefined} value={binding} readOnly={saving || failures !== null} onChange={value => {
+            if (value.mode === "router") { setSelectionError({ key: "final-configuration:feedback_configureConnectionPoolsOnEachAgentSConfiguration_53cfe42" }); return; }
             setSelectionError(""); setBinding(value);
           }} /></div>}
         </section>
-        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeModel} onCheckedChange={value => setChangeModel(value === true)} aria-label="Change default model" className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">Change default model</span><span className="block text-xs text-muted-foreground">{currentModels.length === 1 ? currentModels[0] : `${currentModels.length} different models`}{!changeModel && " · Keep current"}</span></span></label>
-          {changeModel && <div className="pl-7"><ModelDropdown models={availableModels} value={model} onChange={setModel} open={modelOpen} onOpenChange={setModelOpen} allowDefault={false} required groupByProvider={false} preserveOrder creatable={allowManualModel} /><p className="pt-2 text-xs text-muted-foreground">{allowManualModel ? "Choose a suggested model or enter a model ID supported by your harness." : `Available on every selected agent’s ${changeConnection ? "new connection" : "current connection"}.`}</p></div>}
+        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeModel} onCheckedChange={value => setChangeModel(value === true)} aria-label={t("agent-config:changeDefaultModel_05f6179")} className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">{t("agent-config:changeDefaultModel_05f6179")}</span><span className="block text-xs text-muted-foreground">{currentModels.length === 1 ? currentModels[0] : t("agent-config:valueDifferentModels_5a99f13", { value1: currentModels.length })}{!changeModel && t("agent-config:keepCurrent_ba8510b")}</span></span></label>
+          {changeModel && <div className="pl-7"><ModelDropdown models={availableModels} value={model} onChange={setModel} open={modelOpen} onOpenChange={setModelOpen} allowDefault={false} required groupByProvider={false} preserveOrder creatable={allowManualModel} /><p className="pt-2 text-xs text-muted-foreground">{allowManualModel ? t("agent-config:chooseASuggestedModelOrEnterAModel_63ca585") : t("agent-config:availableOnEverySelectedAgentSValue_3634580", { value1: changeConnection ? t("agent-config:newConnection_999bf03") : t("agent-config:currentConnection_e86f3c2") })}</p></div>}
         </section>
       </fieldset>
-      {catalogs.isFetching && <p role="status" className="text-xs text-muted-foreground">Checking connections and models…</p>}
-      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error ? describeError(catalogs.error).body : undefined}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? r.error : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>Retry loading options</Button></div>}
+      {catalogs.isFetching && <p role="status" className="text-xs text-muted-foreground">{t("agent-config:checkingConnectionsAndModels_349d127")}</p>}
+      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error ? describeError(catalogs.error).body : undefined}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? r.error : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>{t("agent-config:retryLoadingOptions_99cf637")}</Button></div>}
       {selectionError && <p role="alert" className="text-sm text-destructive">{selectionError}</p>}
-      {problems.length > 0 && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm">{problems.map(p => <p key={p.agent.id}><span className="font-medium">{p.agent.name}: </span>{p.message}</p>)}{!changeModel && !failures && <Button size="sm" variant="outline" onClick={() => setChangeModel(true)}>Change default model</Button>}</div>}
-      {!missing && changed.length > 0 && <section className="space-y-3" aria-label="Changes to apply"><h3 className="text-xs font-medium text-muted-foreground">CHANGES TO APPLY</h3><div className="divide-y divide-border">{changed.map(agent => <div key={agent.id} className="space-y-1.5 py-3 text-xs"><p className="text-sm font-medium">{agent.name}</p>{changeConnection && !sameBinding(binding, agentConnection(agent)) && <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><span>{bulkConnectionName(agentConnection(agent), rows.find(r => r.agent.id === agent.id)?.accounts)}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{bulkConnectionName(binding, rows.find(r => r.agent.id === agent.id)?.accounts)}</span></p>}{changeModel && model !== agentDefaultModel(agent) && <p className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground"><span>{agentDefaultModel(agent) ?? "Harness default"}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{model}</span></p>}</div>)}</div>{targets.length > changed.length && <p className="text-xs text-muted-foreground">{targets.length - changed.length} already have these settings.</p>}</section>}
-      {!missing && !changed.length && <p className="text-sm text-muted-foreground">All selected agents already have these settings.</p>}
-      <p className="text-xs text-muted-foreground">Applies to future runs. Running work keeps its current settings. Task-specific model overrides stay in place. A model change may start a fresh session; existing sessions may retain their connection until reset.</p>
+      {problems.length > 0 && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm">{problems.map(p => <p key={p.agent.id}><span className="font-medium">{p.agent.name}: </span>{p.message}</p>)}{!changeModel && !failures && <Button size="sm" variant="outline" onClick={() => setChangeModel(true)}>{t("agent-config:changeDefaultModel_05f6179")}</Button>}</div>}
+      {!missing && changed.length > 0 && <section className="space-y-3" aria-label={t("agent-config:changesToApply_7a2d43c")}><h3 className="text-xs font-medium text-muted-foreground">{t("agent-config:changesToApply_3545ba1")}</h3><div className="divide-y divide-border">{changed.map(agent => <div key={agent.id} className="space-y-1.5 py-3 text-xs"><p className="text-sm font-medium">{agent.name}</p>{changeConnection && !sameBinding(binding, agentConnection(agent)) && <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><span>{bulkConnectionName(agentConnection(agent), rows.find(r => r.agent.id === agent.id)?.accounts)}</span><ArrowRight className="size-3" aria-label={t("agent-config:to_4374aae")} /><span className="text-foreground">{bulkConnectionName(binding, rows.find(r => r.agent.id === agent.id)?.accounts)}</span></p>}{changeModel && model !== agentDefaultModel(agent) && <p className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground"><span>{agentDefaultModel(agent) ?? t("agent-config:harnessDefault_6dd2a2f")}</span><ArrowRight className="size-3" aria-label={t("agent-config:to_4374aae")} /><span className="text-foreground">{model}</span></p>}</div>)}</div>{targets.length > changed.length && <p className="text-xs text-muted-foreground">{targets.length - changed.length} {t("agent-config:alreadyHaveTheseSettings_63a361d")}</p>}</section>}
+      {!missing && !changed.length && <p className="text-sm text-muted-foreground">{t("agent-config:allSelectedAgentsAlreadyHaveTheseSettings_1fa1d0f")}</p>}
+      <p className="text-xs text-muted-foreground">{t("agent-config:appliesToFutureRunsRunningWorkKeepsIts_c3ca8d3")}</p>
     </div>
-    <SheetFooter className="flex-row items-center justify-between border-t px-6 py-4"><Button variant="ghost" onClick={close} disabled={saving}>{failures ? "Close" : "Cancel"}</Button><Button onClick={() => void save()} disabled={!canSave}>{saving && <Loader2 className="size-4 animate-spin" aria-hidden />}{saving ? "Updating…" : failures ? `Retry ${failures.length} ${failures.length === 1 ? "agent" : "agents"}` : `Update ${updateCount} ${updateCount === 1 ? "agent" : "agents"}`}</Button></SheetFooter>
+    <SheetFooter className="flex-row items-center justify-between border-t px-6 py-4"><Button variant="ghost" onClick={close} disabled={saving}>{failures ? t("agent-config:close_bbfa773") : t("agent-config:cancel_77dfd21")}</Button><Button onClick={() => void save()} disabled={!canSave}>{saving && <Loader2 className="size-4 animate-spin" aria-hidden />}{saving ? t("agent-config:updating_3ab0d73") : failures ? t("retryAgents", { count: failures.length }) : t("updateAgents", { count: updateCount })}</Button></SheetFooter>
   </SheetContent></Sheet>;
 }

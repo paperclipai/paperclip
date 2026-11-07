@@ -6,6 +6,7 @@ import type { AnchorHTMLAttributes, ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, IssueRecoveryAction } from "@paperclipai/shared";
 import { IssueRecoveryActionCard, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
+import { i18n } from "@/i18n";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
@@ -134,6 +135,20 @@ describe("deriveRecoveryCardState", () => {
 });
 
 describe("IssueRecoveryActionCard", () => {
+  it.each([0, 1, 2])("keeps original-owner attempt %s visible while a recovery owner acts", async count => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({ wakePolicy: { type: "bounded_recovery_owner", attempt: 0, maxAttempts: 2 }, evidence: { sourceAttemptCount: count, sourceMaxAttempts: 2 } })} />);
+    expect(node.querySelector('[data-testid="recovery-source-attempts"]')?.textContent).toBe(`The original owner used ${count} of 2 automatic attempts.`);
+    const { act: reactAct } = await import("react");
+    await reactAct(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(node.querySelector('[data-testid="recovery-source-attempts"]')?.textContent).toContain(String(count)); }
+    finally { await reactAct(async () => { await i18n.changeLanguage("en"); }); }
+  });
+  it("translates the recovery headline without changing action evidence", async () => {
+    const action = buildAction(); const before = JSON.stringify(action);
+    await i18n.changeLanguage("zh-CN");
+    try { const node = render(<IssueRecoveryActionCard action={action} />); expect(node.textContent).toContain("运行已结束，但尚未选择下一步"); expect(JSON.stringify(action)).toBe(before); }
+    finally { await i18n.changeLanguage("en"); }
+  });
   it.each(["running", "scheduled", "missed"] as const)("describes native %s finalization without claiming another agent turn", (state) => {
     const node = render(<IssueRecoveryActionCard action={buildAction({
       kind: "active_run_watchdog", cause: "native_finalization_invalid",

@@ -127,6 +127,10 @@ export interface ExecutionWorkspaceCloseAction {
   label: string;
   description: string;
   command: string | null;
+  /** Presentation only; never selects execution or cleanup behavior. */
+  presentation?: {
+    variant: "workspace_cleanup" | "project_workspace_cleanup" | "plugin_storage_removal" | "remote_compute_release";
+  };
 }
 
 export interface ExecutionWorkspaceCloseLinkedIssue {
@@ -154,12 +158,27 @@ export interface ExecutionWorkspaceCloseGitReadiness {
   createdByRuntime: boolean;
 }
 
+/** A first-party sentence, attached by array index, never inferred from diagnostic text. */
+export interface ExecutionWorkspaceCloseReasonPresentation {
+  code: "no_local_path" | "path_missing" | "git_inspection_failed" | "git_status_failed" | "git_comparison_failed"
+    | "storage_inspection_unavailable" | "remote_unsaved" | "remote_saved_unavailable" | "remote_save_incomplete"
+    | "git_status_unverified" | "linked_open_issues" | "shared_linked_open_issues" | "shared_session_only"
+    | "stop_runtime_services" | "dirty_tracked_files" | "untracked_files" | "ahead_of_base" | "behind_base"
+    | "remote_custom_cleanup_unsupported" | "keep_project_workspace";
+  params?: Record<string, string | number | null>;
+}
+
 export interface ExecutionWorkspaceCloseReadiness {
   workspaceId: string;
   deliveryState: ExecutionWorkspaceDeliveryState;
   state: ExecutionWorkspaceCloseReadinessState;
   blockingReasons: string[];
   warnings: string[];
+  /** Optional presentation only. Missing indices are verbatim diagnostics, including text collisions. */
+  presentation?: {
+    warnings: Record<number, ExecutionWorkspaceCloseReasonPresentation>;
+    blockingReasons: Record<number, ExecutionWorkspaceCloseReasonPresentation>;
+  };
   linkedIssues: ExecutionWorkspaceCloseLinkedIssue[];
   plannedActions: ExecutionWorkspaceCloseAction[];
   isDestructiveCloseAllowed: boolean;

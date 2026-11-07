@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useQueryView } from "../components/QueryView";
@@ -35,19 +36,19 @@ export async function fetchIssueExternalObjectSummariesInBatches(
 function formatMentionSourceLabel(mention: ExternalObjectMention): string {
   switch (mention.sourceKind) {
     case "title":
-      return "Title";
+      return t("display:copy_0b15d1b2cfae");
     case "description":
-      return "Description";
+      return t("display:copy_856b2020c4c0");
     case "comment":
-      return "Comment";
+      return t("display:copy_6066468fa754");
     case "document":
-      return mention.documentKey ? `Document: ${mention.documentKey}` : "Document";
+      return mention.documentKey ? t("display:copy_a181ca6ddce9", { value0: mention.documentKey }) : t("display:copy_dd9f7ef61dee");
     case "property":
-      return mention.propertyKey ? `Property: ${mention.propertyKey}` : "Property";
+      return mention.propertyKey ? t("display:copy_f95be1ce3176", { value0: mention.propertyKey }) : t("display:copy_aeed3bd2acd6");
     case "plugin":
-      return "Plugin";
+      return t("display:copy_ae167204e6bc");
     default:
-      return "Source";
+      return t("display:copy_f0eb35b4cfba");
   }
 }
 
@@ -89,6 +90,7 @@ function useExternalObjectsFeature() {
  * surface reads from the same query result.
  */
 export function useIssueExternalObjects(issueId: string | null | undefined): IssueExternalObjectsResult {
+  const { t: displayT } = useTranslation("display");
   const externalObjectsFeature = useExternalObjectsFeature();
   const enabled = externalObjectsFeature.isEnabled && Boolean(issueId);
   const query = useQuery({
@@ -125,7 +127,7 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
           },
         };
       });
-  }, [query.data]);
+  }, [query.data, displayT]);
 
   const markdownReferences = useMemo<MarkdownExternalReferenceMap>(() => {
     const result: MarkdownExternalReferenceMap = {};

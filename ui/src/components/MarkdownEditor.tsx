@@ -1,3 +1,6 @@
+import { describeUiError, resolveUiMessage, type UiMessageDescriptor } from "@/lib/localized-ui-error";
+import { localizeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation, Trans } from "@/i18n";
 import { FILE_DROP_TARGET_ATTRIBUTE } from "../lib/file-drop-target";
 import { AgentAvatar } from "./AgentAvatar";
 import {
@@ -772,6 +775,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
+  useTranslation("task-components");
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   function isSubmitShortcut(event: KeyboardEvent<HTMLElement>): boolean {
     return !readOnly
@@ -800,7 +804,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
    */
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<{ cause: unknown; fallback: UiMessageDescriptor } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<RichEditorError | null>(null);
   const dragDepthRef = useRef(0);
@@ -958,7 +962,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!looksEmpty()) return;
           setRichEditorError({
             code: "MDE-EMPTY",
-            message: "Rich editor failed to load content",
+            message: t("task-components:richEditorFailedToLoadContent_5439d556"),
           });
         }, RICH_EDITOR_EMPTY_CONFIRM_MS);
       }, RICH_EDITOR_EMPTY_CHECK_MS);
@@ -988,7 +992,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const imageHandler = hasImageUpload
       ? async (file: File) => {
           const handler = imageUploadHandlerRef.current;
-          if (!handler) throw new Error("No image upload handler");
+          if (!handler) throw localizeUiError(new Error("No image upload handler"), { key: "integration-toast:noImageUploadHandler" });
           try {
             const src = await handler(file);
             setUploadError(null);
@@ -1015,8 +1019,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
-            setUploadError(message);
+            // Retain the original cause: local/API provenance resolves on each render.
+            setUploadError({ cause: err, fallback: { key: "integration-toast:imageUploadFailed" } });
             throw err;
           }
         }
@@ -1374,8 +1378,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>
-            Rich editor unavailable for this markdown. Showing raw source instead.{" "}
+          <p>{t("task-components:richEditorUnavailableForThisMarkdownShowing_8207a3f8")}{" "}
             <span data-testid="markdown-editor-fallback-code" className="font-mono">
               {richEditorError.code}
             </span>
@@ -1390,9 +1393,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               initialChildOnChangeRef.current = true;
               setRichEditorError(null);
             }}
-          >
-            Retry rich editor
-          </button>
+          >{t("task-components:retryRichEditor_a4cbab20")}</button>
         </div>
         <textarea
           ref={fallbackTextareaRef}
@@ -1571,10 +1572,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           translation={(key, fallback, interpolations = {}) =>
             key === "contentArea.editableMarkdown" && ariaLabel
               ? ariaLabel
-              : Object.entries(interpolations).reduce(
-                  (text, [name, value]) => text.replaceAll(`{{${name}}}`, String(value)),
-                  fallback,
-                )
+              : t(`final-components-a:editor_${key.replaceAll(".", "_")}`, { ...interpolations, defaultValue: fallback })
           }
           markdown={editorValue}
           iconComponentFor={editorIconFor}
@@ -1741,29 +1739,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "issue" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Task
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">{t("task-components:task_4bc74b21")}</span>
                 )}
                 {option.kind === "project" && option.projectId && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Project
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">{t("task-components:project_98595978")}</span>
                 )}
                 {option.kind === "user" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    User
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">{t("task-components:user_b512d97e")}</span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto shrink-0 text-(length:--text-nano) uppercase tracking-wide text-popover-foreground/70">
-                    Skill
-                  </span>
+                  <span className="ml-auto shrink-0 text-(length:--text-nano) uppercase tracking-wide text-popover-foreground/70">{t("task-components:skill_6df1bb18")}</span>
                 )}
                 {option.kind === "routine" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Routine
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">{t("task-components:routine_0b5baf30")}</span>
                 )}
                 {option.kind === "action" && (
                   <span className="ml-auto max-w-28 truncate text-(length:--text-nano) text-popover-foreground/70">
@@ -1782,12 +1770,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
             !bordered && "inset-0 rounded-sm",
           )}
-        >
-          Drop {onDropFile ? "file" : "image"} to upload
-        </div>
+        ><Trans ns="task-components" i18nKey="sentence_0475cf89792e" components={{ part1: <>{onDropFile ? t("task-components:file_3b9c358f") : t("task-components:image_6105d6cc")}</> }} /></div>
       )}
       {uploadError && (
-        <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
+        <p className="px-3 pb-2 text-xs text-destructive">{uploadError.cause instanceof Error ? describeUiError(uploadError.cause).body : resolveUiMessage(uploadError.fallback)}</p>
       )}
     </div>
   );

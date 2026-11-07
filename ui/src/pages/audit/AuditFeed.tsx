@@ -1,3 +1,5 @@
+import { describeUiError } from "@/lib/localized-ui-error";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -24,7 +26,6 @@ import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
-import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -34,31 +35,31 @@ const ALL = "__all";
 
 /** Action-domain prefixes offered in the filter (server does a prefix match). */
 const ACTION_DOMAINS: { value: string; label: string }[] = [
-  { value: ALL, label: "All actions" },
-  { value: "issue.", label: "Tasks" },
-  { value: "case.", label: "Cases" },
-  { value: "agent.", label: "Agents" },
-  { value: "heartbeat.", label: "Runs" },
-  { value: "approval.", label: "Approvals" },
-  { value: "project.", label: "Projects" },
-  { value: "goal.", label: "Goals" },
-  { value: "tool_", label: "Apps & tools" },
-  { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Organization" },
+  { value: ALL, get label() { return translateAgentPage("agents:all_actions"); } },
+  { value: "issue.", get label() { return translateAgentPage("agents:tasks"); } },
+  { value: "case.", get label() { return translateAgentPage("agents:cases"); } },
+  { value: "agent.", get label() { return translateAgentPage("agents:agentsTitle"); } },
+  { value: "heartbeat.", get label() { return translateAgentPage("agents:runs"); } },
+  { value: "approval.", get label() { return translateAgentPage("agents:approvals"); } },
+  { value: "project.", get label() { return translateAgentPage("agents:projects"); } },
+  { value: "goal.", get label() { return translateAgentPage("agents:goals"); } },
+  { value: "tool_", get label() { return translateAgentPage("agents:apps_tools"); } },
+  { value: "cost.", get label() { return translateAgentPage("agents:costs"); } },
+  { value: "company.", get label() { return translateAgentPage("agents:organization"); } },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
 const ENTITY_TYPES: { value: string; label: string }[] = [
-  { value: ALL, label: "All entities" },
-  { value: "issue", label: "Task" },
-  { value: "case", label: "Case" },
-  { value: "agent", label: "Agent" },
-  { value: "heartbeat_run", label: "Run" },
-  { value: "routine", label: "Routine" },
-  { value: "project", label: "Project" },
-  { value: "goal", label: "Goal" },
-  { value: "company", label: "Organization" },
-  { value: "tool_connection", label: "Connection" },
+  { value: ALL, get label() { return translateAgentPage("agents:all_entities"); } },
+  { value: "issue", get label() { return translateAgentPage("agents:task"); } },
+  { value: "case", get label() { return translateAgentPage("agents:case"); } },
+  { value: "agent", get label() { return translateAgentPage("agents:agent_5ce2e6"); } },
+  { value: "heartbeat_run", get label() { return translateAgentPage("agents:run_b1b392"); } },
+  { value: "routine", get label() { return translateAgentPage("agents:routine_482273"); } },
+  { value: "project", get label() { return translateAgentPage("agents:project_f6f4da"); } },
+  { value: "goal", get label() { return translateAgentPage("agents:goal"); } },
+  { value: "company", get label() { return translateAgentPage("agents:organization"); } },
+  { value: "tool_connection", get label() { return translateAgentPage("agents:connection"); } },
 ];
 
 /**
@@ -122,6 +123,7 @@ function AuditActor({
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   // Agent names are company-readable through the same authorization-filtered
   // directory used by this page. The basic audit tier strips privileged
   // attribution (`agentId`) but retains the acting principal (`actorId`), so
@@ -142,7 +144,7 @@ function AuditActor({
     const profile = userProfileMap.get(record.actorId);
     return (
       <Identity
-        name={profile?.label ?? "User"}
+        name={profile?.label ?? translateAgentPage("agents:user_9f8a23")}
         avatarUrl={profile?.image ?? null}
         size="sm"
         className="font-medium text-foreground"
@@ -153,12 +155,12 @@ function AuditActor({
   // deleted or authorization-filtered agents that are absent from the directory.
   const label =
     record.actorType === "plugin"
-      ? "Plugin"
+      ? translateAgentPage("agents:plugin")
       : record.actorType === "agent"
-        ? "Agent"
+        ? translateAgentPage("agents:agent_5ce2e6")
         : record.actorType === "user"
-          ? "User"
-          : "System";
+          ? translateAgentPage("agents:user_9f8a23")
+          : translateAgentPage("agents:system");
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
 
@@ -170,12 +172,13 @@ function AuditActor({
  * that would duplicate the verb.
  */
 function AuditEntityNode({ record }: { record: AuditActionRecord }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const caseHref = useCaseHref();
   if (record.entityType === "case") {
     const caseRef = record.entity.case;
     return (
       <Link to={caseHref(caseRef?.identifier ?? record.entityId)} className="font-medium text-primary hover:underline">
-        {caseRef ? `${caseRef.identifier} · ${caseRef.title}` : "the case"}
+        {caseRef ? `${caseRef.identifier} · ${caseRef.title}` : translateAgentPage("agents:the_case")}
       </Link>
     );
   }
@@ -185,7 +188,7 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   if (issueRef) {
     return (
       <Link to={`/issues/${issueRef}`} className="font-medium text-primary hover:underline">
-        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : "the task"}
+        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : translateAgentPage("agents:the_task")}
       </Link>
     );
   }
@@ -199,9 +202,7 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
       : null;
   if (connectionId) {
     return (
-      <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
-        the connection
-      </Link>
+      <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">{translateAgentPage("agents:the_connection")}</Link>
     );
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
@@ -219,6 +220,7 @@ function AuditRow({
   userProfileMap: Map<string, CompanyUserProfile>;
   casesEnabled: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
@@ -226,7 +228,7 @@ function AuditRow({
     record.responsibleUserId
       && !(record.actorType === "user" && record.actorId === record.responsibleUserId),
   );
-  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? "a user" : null);
+  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? translateAgentPage("agents:a_user") : null);
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
@@ -248,27 +250,23 @@ function AuditRow({
             </p>
           ) : null}
           {workflowTransition?.from && workflowTransition?.to ? <p className="text-xs text-muted-foreground">
-            {workflowTransition.from.name ?? "Case instructions"}{workflowTransition.from.phase ? ` · ${workflowTransition.from.phase}` : ""}
-            {" → "}{workflowTransition.to.name ?? "Case instructions"} · {workflowTransition.to.phase}
+            {workflowTransition.from.name ?? translateAgentPage("agents:case_instructions")}{workflowTransition.from.phase ? ` · ${workflowTransition.from.phase}` : ""}
+            {" → "}{workflowTransition.to.name ?? translateAgentPage("agents:case_instructions")} · {workflowTransition.to.phase}
           </p> : null}
           {documentKey ? (
-            <p className="text-xs text-muted-foreground">
-              Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:document")}{" "}<span className="font-mono text-(length:--text-micro)">{documentKey}</span>
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {showOnBehalf && responsibleLabel ? (
-              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                on behalf of {responsibleLabel}
+              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">{translateAgentPage("agents:on_behalf_of_308287")}{" "}{responsibleLabel}
               </span>
             ) : null}
             {record.runId && record.agentId ? (
               <Link
                 to={`/agents/${record.agentId}/runs/${record.runId}`}
                 className="text-primary hover:underline"
-              >
-                View run
-              </Link>
+              >{translateAgentPage("agents:view_run")}</Link>
             ) : null}
             <span className="font-mono text-(length:--text-micro) opacity-70">{record.action}</span>
           </div>
@@ -287,19 +285,15 @@ function AuditRow({
 
 /** The permission-denied / upsell state shown when the caller lacks the grant. */
 function AuditUpsell() {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Card>
       <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
         <ShieldAlert className="h-10 w-10 text-muted-foreground/50" />
         <div>
-          <p className="text-sm font-medium text-foreground">Agent audit is a Paperclip Enterprise view</p>
-          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            The agent audit log gives you a searchable, exportable record of everything your agents
-            did — every comment, task change, approval, and run — with the responsible person for
-            each action. Ask an administrator to grant you the{" "}
-            <span className="font-mono text-(length:--text-micro)">audit:view_agent_actions</span>{" "}
-            permission to view it.
-          </p>
+          <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:agent_audit_is_a_paperclip_enterprise_view")}</p>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{translateAgentPage("agents:the_agent_audit_log_gives_you_a_searchable")}{" "}
+            <span className="font-mono text-(length:--text-micro)">audit:view_agent_actions</span>{" "}{translateAgentPage("agents:permission_to_view_it")}</p>
         </div>
       </CardContent>
     </Card>
@@ -322,6 +316,7 @@ export function AuditFeed({
   onEntityIdChange,
   onClearFilters,
 }: AuditFeedProps) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const caseHref = useCaseHref();
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
@@ -542,11 +537,12 @@ export function AuditFeed({
       // Browsers may read blob URLs lazily after click(), so keep the URL alive
       // long enough for the download to start.
       window.setTimeout(() => URL.revokeObjectURL(url), 5_000);
-      pushToast({ title: "Audit exported", body: "Your CSV download has started.", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:audit_exported"), body: translateAgentPage("agents:your_csv_download_has_started"), tone: "success" });
     } catch (error) {
       pushToast({
-        title: "Export failed",
-        body: describeError(error, { action: "export the audit log" }).body,
+        title: translateAgentPage("agents:export_failed"),
+        body: describeUiError(error, { key: "agents:export_the_audit_log" }).body,
+        presentation: { error: { cause: error, action: { key: "agents:export_the_audit_log" } }, title: { key: "agents:export_failed" } },
         tone: "error",
       });
     } finally {
@@ -563,11 +559,11 @@ export function AuditFeed({
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-foreground">Activity</h2>
+            <h2 className="text-lg font-semibold text-foreground">{translateAgentPage("agents:activity")}</h2>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action."}
+                ? translateAgentPage("agents:every_recorded_agent_action_newest_first_with_the")
+                : translateAgentPage("agents:everything_happening_in_your_organization_newest_first_people")}
             </p>
           </div>
         </div>
@@ -575,15 +571,13 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList className="design-view-toggle" aria-label="Activity scope">
-            <TabsTrigger value="all">Activity</TabsTrigger>
+          <TabsList className="design-view-toggle" aria-label={translateAgentPage("agents:activity_scope")}>
+            <TabsTrigger value="all">{translateAgentPage("agents:activity")}</TabsTrigger>
             <TabsTrigger
               value="agents"
               disabled={accessTier === "basic"}
-              title={accessTier === "basic" ? "Agent Actions requires audit access" : undefined}
-            >
-              Agent Actions
-            </TabsTrigger>
+              title={accessTier === "basic" ? translateAgentPage("agents:agent_actions_requires_audit_access") : undefined}
+            >{translateAgentPage("agents:agent_actions_c065a3")}</TabsTrigger>
           </TabsList>
         </Tabs>
       ) : null}
@@ -591,25 +585,25 @@ export function AuditFeed({
       {hasLockedScope ? (
         <div className="border-y border-border px-1 py-2 text-xs text-muted-foreground">
           {lockedRunId
-            ? `Scoped to run ${lockedRunId.slice(0, 8)}`
+            ? translateAgentPage("agents:scoped_to_run", { value1: lockedRunId.slice(0, 8) })
             : lockedAgentId
-              ? "Scoped to one agent"
+              ? translateAgentPage("agents:scoped_to_one_agent")
               : scopedCase
-                ? <>Case <Link to={caseHref(scopedCase.identifier)} className="font-medium text-primary hover:underline">{scopedCase.identifier} · {scopedCase.title}</Link></>
-                : `Scoped to ${lockedEntity?.label ?? lockedEntity?.type ?? "entity"}`}
+                ? <>{translateAgentPage("agents:case")}{" "}<Link to={caseHref(scopedCase.identifier)} className="font-medium text-primary hover:underline">{scopedCase.identifier} · {scopedCase.title}</Link></>
+                : translateAgentPage("agents:scoped_to", { value1: lockedEntity?.label ?? lockedEntity?.type ?? "entity" })}
         </div>
       ) : null}
 
       <div data-canonical-toolbar="audit-activity" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {canUseAdvancedControls && !lockedAgentId && !lockedRunId ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-            <span>Agent</span>
+            <span>{translateAgentPage("agents:agent_5ce2e6")}</span>
             <Select value={agent} onValueChange={setAgent}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder={translateAgentPage("agents:agent_5ce2e6")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All agents</SelectItem>
+                <SelectItem value={ALL}>{translateAgentPage("agents:all_agents")}</SelectItem>
                 {(agents.data ?? []).map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name}
@@ -621,14 +615,14 @@ export function AuditFeed({
         ) : null}
         {canUseAdvancedControls ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-            <span>Responsible user</span>
+            <span>{translateAgentPage("agents:responsible_user_59fcd1")}</span>
             <Select value={responsibleUser} onValueChange={setResponsibleUser}>
               {/* Wide enough for "All responsible users" — w-44 truncated it. */}
               <SelectTrigger className="w-52">
-                <SelectValue placeholder="Responsible user" />
+                <SelectValue placeholder={translateAgentPage("agents:responsible_user_59fcd1")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All responsible users</SelectItem>
+                <SelectItem value={ALL}>{translateAgentPage("agents:all_responsible_users")}</SelectItem>
                 {(userDirectory.data?.users ?? []).map((u) => (
                   <SelectItem key={u.principalId} value={u.principalId}>
                     {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
@@ -639,10 +633,10 @@ export function AuditFeed({
           </label>
         ) : null}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>Action</span>
+          <span>{translateAgentPage("agents:action")}</span>
           <Select value={actionDomain} onValueChange={setActionDomain}>
             <SelectTrigger className="w-40">
-              <SelectValue placeholder="Action" />
+              <SelectValue placeholder={translateAgentPage("agents:action")} />
             </SelectTrigger>
             <SelectContent>
               {ACTION_DOMAINS.map((d) => (
@@ -655,10 +649,10 @@ export function AuditFeed({
         </label>
         {!lockedEntity ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-            <span>Entity</span>
+            <span>{translateAgentPage("agents:entity")}</span>
             <Select value={entityType} onValueChange={setEntityType}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Entity" />
+                <SelectValue placeholder={translateAgentPage("agents:entity")} />
               </SelectTrigger>
               <SelectContent>
                 {ENTITY_TYPES.map((e) => (
@@ -672,10 +666,10 @@ export function AuditFeed({
         ) : null}
         {!lockedEntity && entityType === "case" ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-            <span>Case</span>
+            <span>{translateAgentPage("agents:case")}</span>
             <Input
               type="search"
-              aria-label="Case ID or identifier"
+              aria-label={translateAgentPage("agents:case_id_or_identifier")}
               placeholder="CAS-C1"
               value={entityIdDraft}
               onChange={event => {
@@ -694,10 +688,10 @@ export function AuditFeed({
           </label>
         ) : null}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>From</span>
+          <span>{translateAgentPage("agents:from")}</span>
           <Input
             type="date"
-            aria-label="From date"
+            aria-label={translateAgentPage("agents:from_date")}
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -705,10 +699,10 @@ export function AuditFeed({
           />
         </label>
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>To</span>
+          <span>{translateAgentPage("agents:to_ae79ea")}</span>
           <Input
             type="date"
-            aria-label="To date"
+            aria-label={translateAgentPage("agents:to_date")}
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
@@ -716,9 +710,7 @@ export function AuditFeed({
           />
         </label>
         {hasActiveFilters ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
+          <Button variant="ghost" size="sm" onClick={clearFilters}>{translateAgentPage("agents:clear_filters")}</Button>
         ) : null}
         {canUseAdvancedControls ? (
           <Button
@@ -729,25 +721,23 @@ export function AuditFeed({
             disabled={exporting || feed.isLoading || items.length === 0}
           >
             <Download className="mr-1.5 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export CSV"}
+            {exporting ? translateAgentPage("agents:exporting_583ccc") : translateAgentPage("agents:export_csv")}
           </Button>
         ) : null}
       </div>
 
       {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
         <Card>
-          <CardContent className="py-14 text-center text-sm text-muted-foreground">
-            Refreshing audit access…
-          </CardContent>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">{translateAgentPage("agents:refreshing_audit_access")}</CardContent>
         </Card>
       ) : feedView.kind === "loading" || feedView.kind === "reconnecting" ? (
         <Card>
-          <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">{translateAgentPage("agents:loading")}</CardContent>
         </Card>
       ) : feedView.kind === "error" ? (
         <QueryErrorState
           error={feedView.error}
-          action="load the audit log"
+          action={translateAgentPage("agents:load_the_audit_log")}
           onRetry={feedView.retry}
           retrying={feedView.isFetching}
         />
@@ -757,26 +747,24 @@ export function AuditFeed({
             <ScrollText className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-medium text-foreground">
-                {hasActiveFilters ? "No actions match these filters" : "Nothing here yet"}
+                {hasActiveFilters ? translateAgentPage("agents:no_actions_match_these_filters") : translateAgentPage("agents:nothing_here_yet")}
               </p>
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
-                  ? "Try a wider date range or different filters."
+                  ? translateAgentPage("agents:try_a_wider_date_range_or_different_filters")
                   : resolvedMode === "agents"
-                    ? "As soon as your agents start doing things, their actions show up here."
-                    : "As soon as anyone in your organization does something, it shows up here."}
+                    ? translateAgentPage("agents:as_soon_as_your_agents_start_doing_things")
+                    : translateAgentPage("agents:as_soon_as_anyone_in_your_organization_does")}
               </p>
             </div>
             {hasActiveFilters ? (
-              <Button variant="outline" size="sm" onClick={clearFilters}>
-                Clear filters
-              </Button>
+              <Button variant="outline" size="sm" onClick={clearFilters}>{translateAgentPage("agents:clear_filters")}</Button>
             ) : null}
           </CardContent>
         </Card>
       ) : (
         <div className="border-y border-border">
-          <ul className={cn("divide-y divide-border")} aria-label="Audit activity">
+          <ul className={cn("divide-y divide-border")} aria-label={translateAgentPage("agents:audit_activity")}>
             {items.map((record) => (
               <AuditRow
                 key={record.id}
@@ -798,14 +786,12 @@ export function AuditFeed({
             onClick={() => feed.fetchNextPage()}
             disabled={feed.isFetchingNextPage}
           >
-            {feed.isFetchingNextPage ? "Loading…" : "Load more"}
+            {feed.isFetchingNextPage ? translateAgentPage("agents:loading") : translateAgentPage("agents:load_more")}
           </Button>
         </div>
       ) : null}
 
-      <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
-      </p>
+      <p className="text-xs text-muted-foreground">{translateAgentPage("agents:recorded_by_paperclip_entries_can_t_be_edited")}</p>
     </div>
   );
 }

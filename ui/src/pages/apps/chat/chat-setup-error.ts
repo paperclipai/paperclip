@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+
 export const chatSetupErrorFallback =
   "Check the required values and provider access, then try again.";
 
@@ -17,7 +19,7 @@ export function sanitizedSetupErrorMessage(
 ): string {
   // query-error-ok: this is the sanitizer that produces the copy; the raw text is redacted and trimmed before it is shown
   let message = error instanceof Error ? error.message.trim() : "";
-  if (!message) return chatSetupErrorFallback;
+  if (!message) return t("connections:setupErrorFallback");
 
   const submittedSecrets = Object.values(submittedValues ?? {})
     .flatMap((value) => {
@@ -37,5 +39,5 @@ export function sanitizedSetupErrorMessage(
   }
 
   const normalized = message.replace(/\s+/g, " ").trim();
-  return normalized ? normalized.slice(0, 500) : chatSetupErrorFallback;
+  return normalized ? normalized.slice(0, 500) : t("connections:setupErrorFallback");
 }

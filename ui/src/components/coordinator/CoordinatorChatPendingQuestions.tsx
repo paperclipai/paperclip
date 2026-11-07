@@ -1,3 +1,4 @@
+import { t, t as translateShell, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { AttentionItem } from "@paperclipai/shared";
 import { ArrowUpRight } from "lucide-react";
@@ -11,6 +12,7 @@ const EMPTY_QUESTIONS: AttentionItem[] = [];
 
 /** A read projection of the task's question, never a second conversation form. */
 export function useCoordinatorChatPendingQuestions(issueId: string | null, conversationMode: boolean | undefined) {
+  const { t: translateShell } = useTranslation("shell");
   const { enabled, userId } = useCoordinatorWorkspaceEnabled();
   const active = enabled && !!issueId && !!userId && conversationMode === true;
   const query = useQuery({
@@ -27,15 +29,16 @@ export function useCoordinatorChatPendingQuestions(issueId: string | null, conve
 }
 
 export function CoordinatorChatPendingQuestion({ item }: { item: AttentionItem }) {
+  const { t: translateShell } = useTranslation("shell");
   const { userId } = useCoordinatorWorkspaceEnabled();
   const task = item.relatedIssue;
   if (!task) return null;
   const href = `${(task.href ?? `/issues/${task.id}`).split("#")[0]}#interaction-${item.subject.id}`;
   return <section data-testid="coordinator-chat-pending-question" className="space-y-3">
-    <p className="text-sm text-muted-foreground">{item.originAgentName ?? "Your agent"} needs your input on {task.title ?? task.identifier ?? "this task"}.</p>
+    <p className="text-sm text-muted-foreground">{item.originAgentName ?? translateShell("shell:your_agent")}{" "}{translateShell("shell:needs_your_input_on")}{" "}{task.title ?? task.identifier ?? translateShell("shell:this_task")}.</p>
     <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6">
       <AttentionInteractionResolver companyId={task.companyId} issueId={task.id} interactionId={item.subject.id} currentUserId={userId} presentation="coordinator-decision" footerSlot={<Link to={href} className="flex max-w-full items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-        <span className="shrink-0">{task.identifier ?? "Open task"}</span><span className="truncate">{task.title}</span><ArrowUpRight className="size-4 shrink-0" />
+        <span className="shrink-0">{task.identifier ?? t("final-components-a:openTask_6b5c9394")}</span><span className="truncate">{task.title}</span><ArrowUpRight className="size-4 shrink-0" />
       </Link>} />
 
     </article>
@@ -43,8 +46,9 @@ export function CoordinatorChatPendingQuestion({ item }: { item: AttentionItem }
 }
 
 export function CoordinatorChatQuestionStatus({ query }: { query: ReturnType<typeof useCoordinatorChatPendingQuestions> }) {
+  const { t: translateShell } = useTranslation("shell");
   if (!query.enabled || !query.isError) return null;
   return <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-    <span>Task questions couldn’t load.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
+    <span>{translateShell("shell:task_questions_couldn_t_load")}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{translateShell("shell:retry")}</Button>
   </div>;
 }

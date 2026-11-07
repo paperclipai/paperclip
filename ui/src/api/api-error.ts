@@ -1,4 +1,4 @@
-import { apiErrorMessage, parseRetryAfter } from "./errors";
+import { apiErrorMessageSource, parseRetryAfter, registerGeneratedApiErrorMessage } from "./errors";
 
 export interface ApiErrorOptions {
   /** Raw server error code; defaults to `body.error` when that is a string. */
@@ -31,7 +31,10 @@ export class ApiError extends Error {
 
 /** Build the `ApiError` for a non-OK response whose body has been read. */
 export function apiErrorFromResponse(res: Response, body: unknown): ApiError {
-  return new ApiError(apiErrorMessage(res.status, body), res.status, body, {
+  const source = apiErrorMessageSource(res.status, body);
+  const error = new ApiError(source.message, res.status, body, {
     retryAfterMs: parseRetryAfter(res.headers?.get("Retry-After") ?? null),
   });
+  if (source.productCopy) registerGeneratedApiErrorMessage(error);
+  return error;
 }

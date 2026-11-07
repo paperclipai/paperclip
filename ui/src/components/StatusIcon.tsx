@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
@@ -36,6 +37,7 @@ export function getStatusIconLabel(status: string, externalConversationState?: "
  * still rides on the accessible label.
  */
 export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const presentation = { status, displayStatus: presentationStatus, externalConversationState, blockerAttention };
   const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(presentation);
@@ -68,7 +70,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
   const trigger = showLabel ? (
     <button
       type="button"
-      aria-label={`Change status (current: ${ariaLabel})`}
+      aria-label={t("task-components:changeStatusCurrent_e7c495b8", { value1: ariaLabel })}
       className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
     >
       {glyph}
@@ -78,7 +80,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
     <button
       type="button"
       data-slot="icon-button"
-      aria-label={`Change status (current: ${ariaLabel})`}
+      aria-label={t("task-components:changeStatusCurrent_e7c495b8", { value1: ariaLabel })}
       className="inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
     >
       {glyph}

@@ -1,3 +1,5 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation } from "@/i18n";
 import { useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { HeartbeatRun } from "@paperclipai/shared";
@@ -54,6 +56,7 @@ function readRunIssueId(run: HeartbeatRun): string | null {
  * a live `workspace_validation` recovery action.
  */
 export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
+  useTranslation("task-components");
   const issueId = readRunIssueId(run);
   const cause = run.execution?.cause ?? run.errorCode;
   if (issueId && (isNativeWorkspaceExportRepairCause(cause) || cause === "native_workspace_sync_out_unrecoverable"))
@@ -62,6 +65,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
 }
 
 function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
+  useTranslation("task-components");
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -112,21 +116,24 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
       pushToast(
         variables.mode === "quarantine_restore"
           ? {
-              title: "Workspace repaired",
+              title: t("task-components:workspaceRepaired_22f46fd2"),
               body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
+              presentation: { body: { key: "final-components-b:recovery.Dirty_changes_were_quarantined_onto_a_rescue_branch_and_the_recorded_b_22a698" } },
               tone: "success",
             }
           : {
-              title: "Workspace branch reconciled",
+              title: t("task-components:workspaceBranchReconciled_a01d3ef7"),
               body: "The recorded branch now matches the live branch; the task will resume.",
+              presentation: { body: { key: "final-components-b:recovery.The_recorded_branch_now_matches_the_live_branch_the_task_will_resume_f5ddea" } },
               tone: "success",
             },
       );
     },
     onError: (err) => {
       pushToast({
-        title: "Reconcile failed",
+        title: t("task-components:reconcileFailed_45e78183"),
         body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        presentation: { ...(err instanceof Error ? { error: { cause: err } } : { body: { key: "final-components-b:recovery.Unable_to_reconcile_the_workspace_branch_fced34" } }), title: { key: "task-components:reconcileFailed_45e78183" } },
         tone: "error",
       });
     },
@@ -134,7 +141,7 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
 
   const reissue = useMutation({
     mutationFn: async (request: RecoveryReissueRequest) => {
-      if (!issue) throw new Error("Task is not loaded yet.");
+      if (!issue) throw localizeUiError(new Error("Task is not loaded yet."), { key: "final-components-b:error.Task_is_not_loaded_yet_b74b33" });
       const sourceLabel = issue.identifier ?? "the stalled task";
       const descriptionLines = [
         `Re-issued from ${sourceLabel} on an isolated git worktree after a workspace branch divergence.`,
@@ -147,7 +154,7 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
         issue.description ?? "",
       ];
       return issuesApi.create(issue.companyId, {
-        title: `Re-issue (isolated): ${issue.title ?? sourceLabel}`,
+        title: t("task-components:reIssueIsolated_329af416", { value1: issue.title ?? sourceLabel }),
         description: descriptionLines.join("\n"),
         priority: issue.priority,
         projectId: issue.projectId ?? null,
@@ -167,10 +174,11 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
     onSuccess: (created) => {
       invalidate();
       pushToast({
-        title: "Isolated re-issue created",
+        title: t("task-components:isolatedReIssueCreated_6d112862"),
         body: created.identifier
           ? `${created.identifier} will run on a fresh isolated workspace.`
           : "A fresh isolated re-issue was created.",
+        presentation: { ...({ body: created.identifier ? { key: "final-components-b:recovery.identifier_will_run_on_a_fresh_isolated_workspace_c7de48", values: { identifier: created.identifier } } : { key: "final-components-b:recovery.A_fresh_isolated_re_issue_was_created_eeeadd" } }), title: { key: "task-components:isolatedReIssueCreated_6d112862" } },
         tone: "success",
       });
       if (created.identifier) {
@@ -179,8 +187,9 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
     },
     onError: (err) => {
       pushToast({
-        title: "Re-issue failed",
+        title: t("task-components:reIssueFailed_d2f4dc96"),
         body: err instanceof Error ? err.message : "Unable to create an isolated re-issue.",
+        presentation: { ...(err instanceof Error ? { error: { cause: err } } : { body: { key: "final-components-b:recovery.Unable_to_create_an_isolated_re_issue_7d1353" } }), title: { key: "task-components:reIssueFailed_d2f4dc96" } },
         tone: "error",
       });
     },
@@ -191,7 +200,7 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
       outcome: "restored" | "false_positive";
       sourceIssueStatus: "todo" | "done" | "in_review";
     }) => {
-      if (!issueId || !recoveryAction) throw new Error("No recovery action to resolve.");
+      if (!issueId || !recoveryAction) throw localizeUiError(new Error("No recovery action to resolve."), { key: "final-components-b:error.No_recovery_action_to_resolve_b17bdd" });
       return issuesApi.resolveRecoveryAction(issueId, {
         actionId: recoveryAction.id,
         outcome: data.outcome,
@@ -203,8 +212,9 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
     },
     onError: (err) => {
       pushToast({
-        title: "Recovery resolution failed",
+        title: t("task-components:recoveryResolutionFailed_f9244c72"),
         body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        presentation: { ...(err instanceof Error ? { error: { cause: err } } : { body: { key: "final-components-b:recovery.Unable_to_resolve_recovery_action_448a20" } }), title: { key: "task-components:recoveryResolutionFailed_f9244c72" } },
         tone: "error",
       });
     },
@@ -264,7 +274,7 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
   return (
     <div className="space-y-2" data-testid="run-workspace-recovery-surface">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Workspace recovery</span>
+        <span className="text-xs font-medium text-muted-foreground">{t("task-components:workspaceRecovery_9869a222")}</span>
         {issue?.identifier ? (
           <a
             href={`/issues/${issue.identifier}`}

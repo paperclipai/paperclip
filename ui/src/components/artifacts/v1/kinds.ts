@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { Archive, CodeXml, File, FileText, Film, Globe, Image, Music, Presentation, Table2, type LucideIcon } from "lucide-react";
 import type { CompanyArtifact } from "@paperclipai/shared";
 
@@ -71,11 +72,11 @@ const FALLBACK_LABEL: Record<ArtifactKind, string> = {
   slides: "PPTX",
   sheet: "CSV",
   archive: "ZIP",
-  code: "CODE",
-  file: "FILE",
+  get code() { return t("final-components-b:artifactKind.CODE_27204c"); },
+  get file() { return t("final-components-b:artifactKind.FILE_2b6066"); },
   link: "URL",
-  image: "IMG",
-  video: "VIDEO",
+  get image() { return t("final-components-b:artifactKind.IMG_60c81a"); },
+  get video() { return t("final-components-b:artifactKind.VIDEO_9112a1"); },
 };
 
 /** The type in caps, from the real extension when there is one. */

@@ -1,3 +1,4 @@
+import { Trans, useTranslation } from "@/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 import type {
   FeedbackDataSharingPreference,
@@ -48,8 +49,9 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
  * re-declaring the same button markup on each surface.
  */
 export function BubbleCopyButton({ copyText }: { copyText: string }) {
+  const { t } = useTranslation("agent-config");
   const { copied, failed, copy } = useCopyAction(2000);
-  const label = failed ? "Couldn’t copy message" : "Copy message";
+  const label = failed ? t("agent-config:couldnTCopyMessage_63619ad") : t("agent-config:copyMessage_26902ef");
 
   return (
     <button
@@ -111,6 +113,7 @@ export function AgentBubbleActionRow({
   menuItems?: ReactNode;
   className?: string;
 }) {
+  const { t } = useTranslation("agent-config");
   // The menu closes on click, so its copy confirmation has to outlive it.
   const copyWithToast = useCopyToast();
   return (
@@ -145,8 +148,8 @@ export function AgentBubbleActionRow({
             variant="ghost"
             size="icon-xs"
             className="text-muted-foreground hover:text-foreground"
-            title="More actions"
-            aria-label="More actions"
+            title={t("agent-config:moreActions_a1e34f9")}
+            aria-label={t("agent-config:moreActions_a1e34f9")}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -154,12 +157,10 @@ export function AgentBubbleActionRow({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void copyWithToast(copyText, "Message copied");
+              void copyWithToast(copyText, t("agent-config:messageCopied_3cdb879"));
             }}
           >
-            <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy message
-          </DropdownMenuItem>
+            <Copy className="mr-2 h-3.5 w-3.5" />{t("agent-config:copyMessage_26902ef")}</DropdownMenuItem>
           {menuItems}
         </DropdownMenuContent>
       </DropdownMenu>
@@ -183,6 +184,7 @@ export function IssueChatFeedbackButtons({
   termsUrl: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
 }) {
+  const { t } = useTranslation("agent-config");
   const [isSaving, setIsSaving] = useState(false);
   const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -262,8 +264,8 @@ export function IssueChatFeedbackButtons({
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
-        title="Helpful"
-        aria-label="Helpful"
+        title={t("agent-config:helpful_45e36dd")}
+        aria-label={t("agent-config:helpful_45e36dd")}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -279,19 +281,19 @@ export function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={t("agent-config:needsWork_eafabce")}
+            aria-label={t("agent-config:needsWork_eafabce")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("agent-config:whatCouldHaveBeenBetter_2de6ce5")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("agent-config:addAShortNote_9cd96be")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -305,16 +307,14 @@ export function IssueChatFeedbackButtons({
                 setReasonOpen(false);
                 setDownvoteReason("");
               }}
-            >
-              Dismiss
-            </Button>
+            >{t("agent-config:dismiss_70afe9e")}</Button>
             <Button
               type="button"
               size="sm"
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("agent-config:saving_ae7e887") : t("agent-config:saveNote_d69ca0d")}
             </Button>
           </div>
         </PopoverContent>
@@ -331,30 +331,20 @@ export function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
-            <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+            <DialogTitle>{t("agent-config:saveYourFeedbackSharingPreference_c8511f9")}</DialogTitle>
+            <DialogDescription>{t("agent-config:chooseWhetherVotedAiOutputsCanBeShared_ca14bb1")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
-            <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
-            </p>
-            <p>You can change this later in Settings &gt; General.</p>
+            <p>{t("agent-config:thisVoteIsAlwaysSavedLocally_680abb4")}</p>
+            <p><Trans ns="agent-config" i18nKey="feedbackSharingChoice" components={{ allow: <span className="font-medium text-foreground" />, deny: <span className="font-medium text-foreground" /> }} /></p>
+            <p>{t("agent-config:youCanChangeThisLaterInSettingsGeneral_1558d35")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
+              >{t("agent-config:readOurTermsOfService_8a15a6c")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -370,7 +360,7 @@ export function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("agent-config:saving_ae7e887") : t("agent-config:donTAllow_63da960")}
             </Button>
             <Button
               type="button"
@@ -383,7 +373,7 @@ export function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("agent-config:saving_ae7e887") : t("agent-config:alwaysAllow_41325da")}
             </Button>
           </DialogFooter>
         </DialogContent>

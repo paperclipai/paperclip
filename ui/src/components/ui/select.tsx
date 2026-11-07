@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import * as React from "react"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
@@ -26,7 +27,7 @@ export function SelectPopover({
   value,
   onValueChange,
   options = [],
-  placeholder = "Select…",
+  placeholder = t("final-components-a:select_731fe041"),
   displayValue,
   "aria-label": ariaLabel,
   "aria-busy": ariaBusy,
@@ -51,6 +52,7 @@ export function SelectPopover({
   onCloseAutoFocus?: React.ComponentProps<typeof PopoverContent>["onCloseAutoFocus"];
   children?: React.ReactNode;
 }) {
+  useTranslation("final-components-a");
   const [localOpen, setLocalOpen] = React.useState(false);
   const open = controlledOpen ?? localOpen;
   const setOpen = (next: boolean) => {

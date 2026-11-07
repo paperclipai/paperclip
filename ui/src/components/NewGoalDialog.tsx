@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
@@ -27,13 +28,14 @@ import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 
 const levelLabels: Record<string, string> = {
-  company: "Organization",
-  team: "Team",
-  agent: "Agent",
-  task: "Task",
+  get company() { return t("final-components-b:NewGoalDialog.Organization_d764d4"); },
+  get team() { return t("final-components-b:NewGoalDialog.Team_598503"); },
+  get agent() { return t("final-components-b:NewGoalDialog.Agent_11b39c"); },
+  get task() { return t("final-components-b:NewGoalDialog.Task_4bc74b"); },
 };
 
 export function NewGoalDialog() {
+  useTranslation("task-components");
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -70,7 +72,7 @@ export function NewGoalDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No organization selected");
+      if (!selectedCompanyId) throw new Error(t("task-components:noOrganizationSelected_278cd177"));
       return assetsApi.uploadImage(selectedCompanyId, file, "goals/drafts");
     },
   });
@@ -128,7 +130,7 @@ export function NewGoalDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+            <span>{newGoalDefaults.parentId ? t("task-components:newSubGoal_691ebb16") : t("task-components:newGoal_f326ad6e")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -154,7 +156,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={t("task-components:goalTitle_adb0cfb0")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -173,7 +175,7 @@ export function NewGoalDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("task-components:addDescription_94123522")}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
             imageUploadHandler={async (file) => {
@@ -237,7 +239,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
+                {currentParent ? currentParent.title : t("task-components:parentGoal_9ff9195c")}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
@@ -247,9 +249,7 @@ export function NewGoalDialog() {
                   !appliedParentId && "bg-accent"
                 )}
                 onClick={() => { setParentId(""); setParentOpen(false); }}
-              >
-                No parent
-              </button>
+              >{t("task-components:noParent_bfc4337c")}</button>
               {(goals ?? []).map((g) => (
                 <button
                   key={g.id}
@@ -273,7 +273,7 @@ export function NewGoalDialog() {
             disabled={!title.trim() || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending ? t("task-components:creating_c79ed949") : newGoalDefaults.parentId ? t("task-components:createSubGoal_f6444df9") : t("task-components:createGoal_9f58bb98")}
           </Button>
         </div>
       </DialogContent>

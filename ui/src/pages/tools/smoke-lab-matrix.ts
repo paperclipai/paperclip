@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import {
   SMOKE_RUN_STEP_PATHS,
   type SmokeRun,
@@ -19,13 +20,13 @@ import {
  */
 
 export const SMOKE_PATH_LABELS: Record<SmokeRunStepPath, { title: string; detail: string }> = {
-  P1: { title: "Remote HTTP · OAuth", detail: "HTTP MCP fixture behind the fake OAuth provider" },
-  P2: { title: "Remote HTTP · API key", detail: "HTTP MCP fixture with a static bearer key" },
-  P3: { title: "Local stdio (template)", detail: "stdio fixture via the runtime supervisor" },
-  P4: { title: "Plugin integration", detail: "plugin-provided catalog entry + install flow" },
-  P5: { title: "Paste-a-config import", detail: "prosumer import via Advanced setup" },
-  P6: { title: "Token broker / gateway", detail: "run-scoped connection token, TTL + scope checks" },
-  P7: { title: "Governance surfaces", detail: "profiles, ask-first rules, quarantine" },
+  P1: { get title() { return translateAgentPage("agents:remote_http_oauth"); }, get detail() { return translateAgentPage("agents:http_mcp_fixture_behind_the_fake_oauth_provider"); } },
+  P2: { get title() { return translateAgentPage("agents:remote_http_api_key"); }, get detail() { return translateAgentPage("agents:http_mcp_fixture_with_a_static_bearer_key"); } },
+  P3: { get title() { return translateAgentPage("agents:local_stdio_template"); }, get detail() { return translateAgentPage("agents:stdio_fixture_via_the_runtime_supervisor"); } },
+  P4: { get title() { return translateAgentPage("agents:plugin_integration"); }, get detail() { return translateAgentPage("agents:plugin_provided_catalog_entry_install_flow"); } },
+  P5: { get title() { return translateAgentPage("agents:paste_a_config_import"); }, get detail() { return translateAgentPage("agents:prosumer_import_via_advanced_setup"); } },
+  P6: { get title() { return translateAgentPage("agents:token_broker_gateway"); }, get detail() { return translateAgentPage("agents:run_scoped_connection_token_ttl_scope_checks"); } },
+  P7: { get title() { return translateAgentPage("agents:governance_surfaces"); }, get detail() { return translateAgentPage("agents:profiles_ask_first_rules_quarantine"); } },
 };
 
 export interface LifecycleStage {
@@ -37,14 +38,14 @@ export interface LifecycleStage {
 
 /** The PAP-12373 governed lifecycle, in order (plan §3). */
 export const LIFECYCLE_STAGES: LifecycleStage[] = [
-  { key: "connect", label: "Connect", match: ["connect", "oauth", "login", "auth"] },
-  { key: "discover", label: "Discover catalog", match: ["discover", "catalog", "list-tools"] },
-  { key: "read", label: "Allowed read", match: ["read", "allowed"] },
-  { key: "write", label: "Ask-first write", match: ["write", "approve", "ask-first", "askfirst", "review"] },
-  { key: "deny", label: "Denied call", match: ["deny", "denied", "block", "forbidden"] },
-  { key: "quarantine", label: "Schema-change quarantine", match: ["quarantine", "schema"] },
-  { key: "revoke", label: "Revoke", match: ["revoke"] },
-  { key: "audit", label: "Audit evidence", match: ["audit", "activity", "evidence"] },
+  { key: "connect", get label() { return translateAgentPage("agents:connect"); }, match: ["connect", "oauth", "login", "auth"] },
+  { key: "discover", get label() { return translateAgentPage("agents:discover_catalog"); }, match: ["discover", "catalog", "list-tools"] },
+  { key: "read", get label() { return translateAgentPage("agents:allowed_read"); }, match: ["read", "allowed"] },
+  { key: "write", get label() { return translateAgentPage("agents:ask_first_write"); }, match: ["write", "approve", "ask-first", "askfirst", "review"] },
+  { key: "deny", get label() { return translateAgentPage("agents:denied_call"); }, match: ["deny", "denied", "block", "forbidden"] },
+  { key: "quarantine", get label() { return translateAgentPage("agents:schema_change_quarantine"); }, match: ["quarantine", "schema"] },
+  { key: "revoke", get label() { return translateAgentPage("agents:revoke"); }, match: ["revoke"] },
+  { key: "audit", get label() { return translateAgentPage("agents:audit_evidence"); }, match: ["audit", "activity", "evidence"] },
 ];
 
 /** Fold a free-form scenario step onto a canonical lifecycle stage, or null. */

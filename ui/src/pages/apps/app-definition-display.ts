@@ -1,3 +1,4 @@
+import { t as translate } from "@/i18n";
 import { aiConnectionCatalogSlug, aiConnectionMetadataSchema, type AppDefinition, type ToolApplication, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionRouterSlug, aiConnectionRouterPluginKey } from "@paperclipai/shared";
 
@@ -13,7 +14,7 @@ export function appDefinitionSlug(entry: AppGalleryDisplayEntry | null | undefin
 }
 
 export function appDefinitionName(entry: AppGalleryDisplayEntry | null | undefined): string {
-  return entry?.name ?? appDefinitionSlug(entry) ?? "App";
+  return entry?.name ?? appDefinitionSlug(entry) ?? translate("connections:app_fc4a695");
 }
 
 export function appDefinitionDescription(entry: AppGalleryDisplayEntry | null | undefined): string {

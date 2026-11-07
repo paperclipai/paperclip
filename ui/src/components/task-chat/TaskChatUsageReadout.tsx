@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Gauge } from "lucide-react";
 import type { TaskChatUsageItem } from "./task-chat-model";
@@ -8,6 +9,7 @@ import type { TaskChatUsageItem } from "./task-chat-model";
  * Recedes to metadata weight so it never competes with message content.
  */
 export function TaskChatUsageReadout({ item }: { item: TaskChatUsageItem }) {
+  useTranslation("task-components");
   const { used, size, inputTokens, outputTokens, costUsd } = item.usage;
   const contextWindowSize = typeof size === "number" && size > 0 ? size : null;
   const pct = contextWindowSize ? Math.min(100, Math.round((used / contextWindowSize) * 100)) : 0;
@@ -17,9 +19,7 @@ export function TaskChatUsageReadout({ item }: { item: TaskChatUsageItem }) {
         <Gauge className="h-3 w-3" />
         {item.label ? <span className="font-medium">{item.label}</span> : null}
         {contextWindowSize ? (
-          <span>
-            {used.toLocaleString()}/{contextWindowSize.toLocaleString()} ctx ({pct}%)
-          </span>
+          <span>{t("task-chat-ui:contextUsage", { used: used.toLocaleString(), size: contextWindowSize.toLocaleString(), percent: pct })}</span>
         ) : null}
         {inputTokens != null || outputTokens != null ? (
           <span>

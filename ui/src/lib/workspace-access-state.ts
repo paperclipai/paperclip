@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   WorkspaceOperation,
   WorkspaceReadiness,
@@ -75,11 +76,11 @@ function timestampMs(value: Date | string | null | undefined): number | null {
 function failedRepairNotice(repair: WorkspaceOperation): WorkspaceAccessNotice {
   const phase = typeof repair.metadata?.repairPhase === "string" ? repair.metadata.repairPhase : null;
   return {
-    title: "Repair failed",
+    get "title"() { return t("display:copy_cf05c4a1cce4"); },
     description: phase
-      ? `The repair stopped during ${phase}. The pre-repair backup was kept.`
-      : "The repair stopped before the workspace became usable. The pre-repair backup was kept.",
-    action: { kind: "view_logs", label: "View repair log" },
+      ? t("display:copy_0976c488fd52", { value0: phase })
+      : t("display:copy_e618360cc1ea"),
+    action: { kind: "view_logs", get "label"() { return t("display:copy_540a13ed17c0"); } },
   };
 }
 
@@ -88,32 +89,30 @@ function failedProvisionNotice(provision: WorkspaceOperation): WorkspaceAccessNo
     ? provision.metadata.seedFailurePhase
     : null;
   return {
-    title: "Database provisioning failed",
+    get "title"() { return t("display:copy_bc3f498e3bf2"); },
     description: phase
-      ? `The earlier clone attempt failed during ${phase}. The workspace later became usable.`
-      : "An earlier clone attempt failed, but the workspace later became usable.",
-    action: { kind: "view_logs", label: "View provisioning log" },
+      ? t("display:copy_576be712e2f1", { value0: phase })
+      : t("display:copy_b65ed98e7ef7"),
+    action: { kind: "view_logs", get "label"() { return t("display:copy_cfb06ac4480c"); } },
   };
 }
 
 const HANDOFF_REASON_COPY: Record<string, string> = {
-  handoff_not_configured:
-    "This instance has no workspace login handoff configured, so opening the board falls back to snapshot-local credentials.",
-  no_board_identity:
-    "Your session has no cloned user to sign in as, so opening the board falls back to snapshot-local credentials.",
-  runtime_not_running: "No healthy runtime service is publishing a URL for this workspace yet.",
-  runtime_url_unusable: "The runtime row is publishing a URL Paperclip cannot open.",
-  workspace_not_ready: "The cloned database is not ready to accept a login yet.",
+  get "handoff_not_configured"() { return t("display:copy_9b6f65bc9810"); },
+  get "no_board_identity"() { return t("display:copy_b2da4b8a437c"); },
+  get "runtime_not_running"() { return t("display:copy_c47219023fef"); },
+  get "runtime_url_unusable"() { return t("display:copy_751a87ba90b0"); },
+  get "workspace_not_ready"() { return t("display:copy_4f04d4515f14"); },
 };
 
 const READINESS_FAILURE_COPY: Record<string, string> = {
-  database_unreachable: "The isolated database is not answering.",
-  clone_data_missing: "The clone restored no organization or issue rows.",
-  clone_data_unreadable: "The cloned product tables could not be read.",
-  cloned_membership_missing: "No cloned user has an active organization membership.",
-  cloned_identity_unreadable: "The cloned identity tables could not be read.",
-  auth_handoff_not_configured: "The workspace was started without a login handoff key.",
-  seed_manifest_unreadable: "The seed manifest is unreadable, so the restore cannot be trusted.",
+  get "database_unreachable"() { return t("display:copy_e436ca1722c0"); },
+  get "clone_data_missing"() { return t("display:copy_d77c81e18c99"); },
+  get "clone_data_unreadable"() { return t("display:copy_6222865ad6d8"); },
+  get "cloned_membership_missing"() { return t("display:copy_33b46f85aec9"); },
+  get "cloned_identity_unreadable"() { return t("display:copy_037b3ab896f3"); },
+  get "auth_handoff_not_configured"() { return t("display:copy_b19927abddcd"); },
+  get "seed_manifest_unreadable"() { return t("display:copy_877f1465c96d"); },
 };
 
 /**
@@ -126,7 +125,7 @@ export function describeWorkspaceReadinessCause(
   if (!failure) return null;
   const phase = describeSeedPhase(failure.readiness);
   if (phase && READINESS_FAILURE_COPY[phase]) return READINESS_FAILURE_COPY[phase];
-  if (phase) return `Last recorded phase: ${phase}.`;
+  if (phase) return t("display:copy_f41ab05dcc69", { value0: phase });
   if (failure.detail && READINESS_FAILURE_COPY[failure.detail]) return READINESS_FAILURE_COPY[failure.detail];
   return HANDOFF_REASON_COPY[failure.reason] ?? null;
 }
@@ -187,11 +186,11 @@ export function resolveWorkspaceAccessState(input: {
     const phase = typeof repair.metadata?.repairPhase === "string" ? repair.metadata.repairPhase : null;
     return {
       state: "repairing",
-      title: "Repairing workspace database",
+      get "title"() { return t("display:copy_5c8ce995c32e"); },
       description: phase
-        ? `Only the isolated database is replaced; the git worktree and your files are preserved. Current phase: ${phase}.`
-        : "Only the isolated database is replaced; the git worktree and your files are preserved.",
-      action: { kind: "wait", label: "Repair in progress" },
+        ? t("display:copy_a52c118f2950", { value0: phase })
+        : t("display:copy_1f2213b37f5f"),
+      action: { kind: "wait", get "label"() { return t("display:copy_dd376b16c3a1"); } },
       handoffAvailable,
     };
   }
@@ -207,9 +206,9 @@ export function resolveWorkspaceAccessState(input: {
   if (provision?.status === "running") {
     return {
       state: "provisioning",
-      title: "Provisioning database",
-      description: "Restoring the isolated database clone for this workspace. This runs once before the first start.",
-      action: { kind: "wait", label: "Provisioning" },
+      get "title"() { return t("display:copy_1d243d0e2669"); },
+      get "description"() { return t("display:copy_634ea5967357"); },
+      action: { kind: "wait", get "label"() { return t("display:copy_3306224eaa75"); } },
       handoffAvailable,
     };
   }
@@ -219,11 +218,11 @@ export function resolveWorkspaceAccessState(input: {
       : null;
     return {
       state: "failed",
-      title: "Database provisioning failed",
+      get "title"() { return t("display:copy_bc3f498e3bf2"); },
       description: seedPhase
-        ? `The clone failed during ${seedPhase}. Repairing replaces only the isolated database.`
-        : "The clone did not finish, so this workspace has no usable database yet.",
-      action: { kind: "repair", label: "Repair workspace" },
+        ? t("display:copy_8566243b1b9b", { value0: seedPhase })
+        : t("display:copy_eb47c6672d34"),
+      action: { kind: "repair", get "label"() { return t("display:copy_a0d1b1860312"); } },
       handoffAvailable,
     };
   }
@@ -235,9 +234,9 @@ export function resolveWorkspaceAccessState(input: {
     if (failure.reason === "runtime_not_running" && !servingService && !startingService) {
       return {
         state: "stopped",
-        title: "Workspace is not running",
-        description: "Start the workspace runtime to publish its board.",
-        action: { kind: "start", label: "Start workspace" },
+        get "title"() { return t("display:copy_ce47dd8815e3"); },
+        get "description"() { return t("display:copy_3aea9d0f68e4"); },
+        action: { kind: "start", get "label"() { return t("display:copy_5d565ada965e"); } },
         handoffAvailable,
       };
     }
@@ -246,25 +245,25 @@ export function resolveWorkspaceAccessState(input: {
       const validating = readinessState === "validating" || readinessState === "provisioning";
       return {
         state: validating ? "validating" : "degraded",
-        title: validating ? "Validating clone" : "Workspace is degraded",
+        title: validating ? t("display:copy_332bb0b7db51") : t("display:copy_36c6e48e6831"),
         description: [
           cause ?? "The workspace is serving, but its clone did not pass the readiness contract.",
-          validating ? "Paperclip is still confirming the clone." : "One bounded repair replaces the isolated database.",
+          validating ? t("display:copy_1515afd37536") : t("display:copy_b93213fd774c"),
         ].join(" "),
         action: validating
-          ? { kind: "wait", label: "Validating" }
-          : { kind: "repair", label: "Repair workspace" },
+          ? { kind: "wait", get "label"() { return t("display:copy_c419ad45b1c0"); } }
+          : { kind: "repair", get "label"() { return t("display:copy_a0d1b1860312"); } },
         handoffAvailable,
       };
     }
     if (!handoffAvailable) {
       return {
         state: servingService ? "ready" : "degraded",
-        title: servingService ? "Ready — snapshot-local sign-in" : "Workspace is degraded",
-        description: cause ?? "Opening the board will ask for the credentials captured in this snapshot.",
+        title: servingService ? t("display:copy_83c5c11bf68d") : t("display:copy_36c6e48e6831"),
+        description: cause ?? t("display:copy_8ddac8ef1731"),
         action: servingService
-          ? { kind: "open", label: "Open workspace" }
-          : { kind: "start", label: "Start workspace" },
+          ? { kind: "open", get "label"() { return t("display:copy_257e64a4c9f5"); } }
+          : { kind: "start", get "label"() { return t("display:copy_5d565ada965e"); } },
         handoffAvailable: false,
         secondaryNotice,
       };
@@ -274,9 +273,9 @@ export function resolveWorkspaceAccessState(input: {
   if (startingService) {
     return {
       state: "provisioning",
-      title: "Workspace is starting",
-      description: "Paperclip is starting the workspace runtime and waiting for its board URL.",
-      action: { kind: "wait", label: "Starting workspace" },
+      get "title"() { return t("display:copy_52c99d9010c5"); },
+      get "description"() { return t("display:copy_541af8de9d80"); },
+      action: { kind: "wait", get "label"() { return t("display:copy_2e094a0cdf51"); } },
       handoffAvailable,
     };
   }
@@ -284,9 +283,9 @@ export function resolveWorkspaceAccessState(input: {
   if (servingService) {
     return {
       state: "ready",
-      title: "Ready",
-      description: "Opening the workspace signs you in to the cloned board without a password.",
-      action: { kind: "open", label: "Open workspace" },
+      get "title"() { return t("display:copy_4345b3508c8a"); },
+      get "description"() { return t("display:copy_ea9a23f0bd47"); },
+      action: { kind: "open", get "label"() { return t("display:copy_257e64a4c9f5"); } },
       handoffAvailable,
       secondaryNotice,
     };
@@ -298,19 +297,19 @@ export function resolveWorkspaceAccessState(input: {
   if (unhealthyService) {
     return {
       state: "degraded",
-      title: "Workspace is degraded",
+      get "title"() { return t("display:copy_36c6e48e6831"); },
       description: cause
         ?? "The runtime is up but did not report a usable database, so Paperclip will not publish it as ready.",
-      action: { kind: "repair", label: "Repair workspace" },
+      action: { kind: "repair", get "label"() { return t("display:copy_a0d1b1860312"); } },
       handoffAvailable,
     };
   }
 
   return {
     state: "stopped",
-    title: "Workspace is not running",
-    description: "Start the workspace runtime to publish its board.",
-    action: { kind: "start", label: "Start workspace" },
+    get "title"() { return t("display:copy_ce47dd8815e3"); },
+    get "description"() { return t("display:copy_3aea9d0f68e4"); },
+    action: { kind: "start", get "label"() { return t("display:copy_5d565ada965e"); } },
     handoffAvailable,
   };
 }

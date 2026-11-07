@@ -7,6 +7,7 @@ import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
+import { i18n } from "@/i18n";
 
 const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover,
@@ -63,6 +64,14 @@ describe("governed retained-file recovery", () => {
     const target = button(label); expect(target, `missing ${label}`).toBeDefined();
     await act(async () => target!.click()); await settle();
   }
+
+  it("updates retained-file copy without issuing recovery or repeating inspection", async () => {
+    await mount(); const inspections = api.inspect.mock.calls.length;
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("恢复已保存的文件"); expect(api.recover).not.toHaveBeenCalled(); expect(api.inspect).toHaveBeenCalledTimes(inspections); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    expect(button("Recover saved files")).toBeDefined();
+  });
 
   it("offers the existing preservation operation for a stopped, exhausted system-owned export", async () => {
     await mount();
@@ -292,6 +301,38 @@ describe("governed retained-file recovery", () => {
     const ownerAction = { ...action, cause: "native_workspace_finalization_owner_unverified", ownerType: "board", status: "escalated",
       evidence: { runId: "run-1", owner: { token: "owner-token", hostname: "secret-host", pid: 2 },
         workspaceOwnerRecovery: { state: "operator_required" } } } as unknown as IssueRecoveryAction;
+
+    it.each(["fallback", "server"])("localizes owner-stop controls without changing evidence, authority, or %s error provenance", async kind => {
+      const rawError = "The confirmation was not accepted. Refresh the task and try again.";
+      api.resume.mockRejectedValue(kind === "server" ? new Error(rawError) : { code: "rejected" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      await mount(ownerAction);
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      const evidence = "The old server process exited and was not restarted.";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, evidence);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      try {
+        expect(container.textContent).toContain("你如何确认先前的服务器及其文件复制操作已停止？");
+        expect(textarea.placeholder).toBe("例如：旧服务器进程已退出，且未重新启动。");
+        expect(container.querySelector("textarea")).toBe(textarea);
+        expect(textarea.value).toBe(evidence);
+        expect(api.resume).not.toHaveBeenCalled();
+        expect(api.inspect).not.toHaveBeenCalled();
+        await click("确认并继续");
+        expect(api.resume).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+          ownerToken: "owner-token", controllerAndCopybackStopped: true, stopEvidence: evidence });
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(kind === "server"
+          ? rawError : "确认未被接受。请刷新任务后重试。");
+      } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(rawError);
+      expect(textarea.value).toBe(evidence);
+      expect(api.resume).toHaveBeenCalledTimes(1);
+    });
 
     it("offers one board action that resumes the saved result with the board's stop evidence", async () => {
       api.resume.mockResolvedValue({ runId: "run-1", resultId: "result-1", status: "queued" });

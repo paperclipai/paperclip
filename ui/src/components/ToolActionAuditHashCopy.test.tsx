@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -15,16 +16,28 @@ describe("ToolActionAuditHashCopy", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     copyTextToClipboard.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
+    await i18n.changeLanguage("en");
     container.remove();
+  });
+
+  it("updates copy feedback on a locale switch without changing the raw hash", async () => {
+    copyTextToClipboard.mockRejectedValue(new Error("blocked"));
+    await act(async () => root.render(<ToolActionAuditHashCopy hash={hash} />));
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.textContent).toContain("无法复制");
+    expect(container.querySelector('[aria-label="审计哈希"]')?.textContent).toBe(hash);
+    expect(copyTextToClipboard).toHaveBeenCalledWith(hash);
   });
 
   it("copies the hash without showing it", async () => {

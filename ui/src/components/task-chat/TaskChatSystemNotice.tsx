@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "@/components/WorkspaceBaseRefRecovery";
 import { WorkspaceBaseRefRecoveryNotice } from "@/components/WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "@/components/DispositionRecoveryNotice";
@@ -58,6 +59,7 @@ export function TaskChatSystemNotice({
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
+  useTranslation("task-components");
   const recoverySnapshot = useDispositionRecoverySnapshot(item.metadata);
   const branchRecovery = useWorkspaceBaseRefRecovery(item.metadata);
   const workspaceRetry = useWorkspaceRetry(item.metadata);
@@ -101,7 +103,7 @@ export function TaskChatSystemNotice({
       data-testid="task-chat-system-notice"
       data-tone={streamlined ? tone : undefined}
       role={streamlined ? "group" : undefined}
-      aria-label={streamlined ? `System update: ${title}` : undefined}
+      aria-label={streamlined ? t("task-components:systemUpdate_81ed60fb", { value1: title }) : undefined}
     >
       <div className="flex max-w-(--pct-85) items-center gap-1.5">
         <button
@@ -133,7 +135,7 @@ export function TaskChatSystemNotice({
             disabled={tryAgainNoLiveExecutionPathPending}
             data-testid="task-chat-no-live-path-try-again"
           >
-            {tryAgainNoLiveExecutionPathPending ? "Trying again..." : "Try again"}
+            {tryAgainNoLiveExecutionPathPending ? t("task-components:tryingAgain_80804141") : t("task-components:tryAgain_d8b8392e")}
           </Button>
         ) : null}
       </div>
@@ -169,7 +171,7 @@ export function TaskChatSystemNotice({
                 disabled={tryAgainNoLiveExecutionPathPending}
                 data-testid="task-chat-no-live-path-try-again"
               >
-                {tryAgainNoLiveExecutionPathPending ? "Trying again..." : "Try again"}
+                {tryAgainNoLiveExecutionPathPending ? t("task-components:tryingAgain_80804141") : t("task-components:tryAgain_d8b8392e")}
               </Button>
             </div>
           ) : null}

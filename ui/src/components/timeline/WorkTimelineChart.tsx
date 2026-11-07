@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation, Trans } from "@/i18n";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 /**
@@ -141,23 +142,23 @@ export function formatVisibleDurationMinutes(minutes: number): string {
   const rounded = Math.max(1, Math.round(minutes));
   if (rounded >= 7 * 24 * 60 && rounded % (7 * 24 * 60) === 0) {
     const weeks = rounded / (7 * 24 * 60);
-    return `${weeks} week${weeks === 1 ? "" : "s"} visible`;
+    return t("final-components-a:countWeeksVisible_4f3584e5", { count: weeks });
   }
   if (rounded >= 24 * 60 && rounded % (24 * 60) === 0) {
     const days = rounded / (24 * 60);
-    return `${days} day${days === 1 ? "" : "s"} visible`;
+    return t("final-components-a:countDaysVisible_f72c4086", { count: days });
   }
   if (rounded >= 24 * 60) {
     const days = Math.floor(rounded / (24 * 60));
     const hours = Math.round((rounded % (24 * 60)) / 60);
-    return `${days}d${hours > 0 ? ` ${hours}h` : ""} visible`;
+    return hours > 0 ? t("final-components-a:daysDHoursHVisible_39d9785a", { days: days, hours: hours }) : t("final-components-a:daysVisibleCompact", { days });
   }
   if (rounded >= 60 && rounded % 60 === 0) {
     const hours = rounded / 60;
-    return `${hours} hour${hours === 1 ? "" : "s"} visible`;
+    return t("final-components-a:countHoursVisible_543e6440", { count: hours });
   }
-  if (rounded >= 60) return `${Math.floor(rounded / 60)}h ${rounded % 60}m visible`;
-  return `${rounded} minutes visible`;
+  if (rounded >= 60) return t("final-components-a:hoursHMinutesMVisible_b83c8378", { hours: Math.floor(rounded / 60), minutes: rounded % 60 });
+  return t("final-components-a:countMinutesVisible_71b94c5c", { count: rounded });
 }
 
 function truncate(text: string, n = 42): string {
@@ -182,6 +183,7 @@ function ActorGlyph({
   r: number;
   clipId: string;
 }) {
+  useTranslation("task-components");
   if (actor.type === "agent") {
     const size = r > 10 ? 24 : 16;
     const appearance = resolveAgentAppearance(actor.appearance, actor.id.replace(/^agent:/, ""));
@@ -258,6 +260,7 @@ export function WorkTimelineChart({
   onVisibleWindowChange,
   nowMs,
 }: WorkTimelineChartProps) {
+  useTranslation("task-components");
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialWindowKeyRef = useRef<string | null>(null);
@@ -364,7 +367,7 @@ export function WorkTimelineChart({
     const effectiveViewportW = viewportW || DEFAULT_VIEWPORT_W;
     const minutes = plotViewportWidth(effectiveViewportW) / layout.pxPerMinute;
     onVisibleRangeLabelChange(formatVisibleDurationMinutes(minutes));
-  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW]);
+  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW, i18n.language]);
 
   useEffect(() => {
     if (!onVisibleWindowChange || viewportW <= 0) return;
@@ -444,8 +447,8 @@ export function WorkTimelineChart({
     const related = layout.connectors.filter((c) => c.sourceRunId === bar.span.runId || c.targetRunId === bar.span.runId);
     if (related.length === 0) return null;
     return related.some((c) => c.dashed)
-      ? "dashed handoff: retry or changes requested"
-      : "solid handoff: delegation or assignment";
+      ? t("final-components-a:dashedHandoffRetryOrChanges_c018a590")
+      : t("final-components-a:solidHandoffDelegationOrAssignment_47457b08");
   };
 
   const showTooltip = (evt: React.MouseEvent, bar: PositionedBar) => {
@@ -689,6 +692,7 @@ export function WorkTimelineChart({
 }
 
 function ActorGutter({ rows, height }: { rows: ReturnType<typeof computeLayout>["rows"]; height: number }) {
+  useTranslation("task-components");
   return (
     <svg
       aria-hidden="true"
@@ -736,6 +740,7 @@ function TimeAxisOverlay({
   stepMs: number;
   scrollLeft: number;
 }) {
+  useTranslation("task-components");
   return (
     <div
       aria-hidden="true"
@@ -779,10 +784,11 @@ function TimeAxisOverlay({
 }
 
 function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
+  useTranslation("task-components");
   const { bar } = tooltip;
   const startMs = new Date(bar.span.start).getTime();
   const endMs = bar.span.end ? new Date(bar.span.end).getTime() : now;
-  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? "run";
+  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? t("task-components:run_acba2551");
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
@@ -792,14 +798,11 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
     >
       <div className="text-(length:--text-compact) font-medium text-foreground">{truncate(title)}</div>
       <div className="mt-0.5 text-muted-foreground">
-        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
+        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : t("task-components:now_ed5eb9a3")} · {formatDuration(startMs, endMs)} ·{" "}
         <span className="font-medium text-foreground">{bar.span.status}</span>
       </div>
       {bar.kickoff && (
-        <div className="text-muted-foreground">
-          kicked off by: {(bar.kickoff as WorkTimelineActor).name}
-          {bar.span.retryOfRunId ? " · retry" : ""}
-        </div>
+        <div className="text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_4bbc20ea7f3c" components={{ part1: <>{(bar.kickoff as WorkTimelineActor).name}</>, part2: <>{bar.span.retryOfRunId ? (" " + t("task-components:retry_9a8a2cc2")) : ""}</> }} /></div>
       )}
       {tooltip.connectorHint && (
         <div className="text-muted-foreground">{tooltip.connectorHint}</div>
@@ -821,6 +824,7 @@ function MiniMap({
   scrollLeft: number;
   onVisibleRangeChange: (fromMs: number, toMs: number) => void;
 }) {
+  useTranslation("task-components");
   const documentDragCleanupRef = useRef<(() => void) | null>(null);
   const W = Math.max(320, viewportW || 900);
   const H = 54;
@@ -946,7 +950,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-left-handle"
-          label="Drag left edge to resize visible range"
+          label={t("task-components:dragLeftEdgeToResizeVisibleRange_daede244")}
           onMouseDown={(e) => startRangeDrag("left", e)}
         />
         <MiniMapHandle
@@ -955,7 +959,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-right-handle"
-          label="Drag right edge to resize visible range"
+          label={t("task-components:dragRightEdgeToResizeVisibleRange_9e18abba")}
           onMouseDown={(e) => startRangeDrag("right", e)}
         />
       </svg>
@@ -980,6 +984,7 @@ function MiniMapHandle({
   label: string;
   onMouseDown: (event: React.MouseEvent<SVGElement>) => void;
 }) {
+  useTranslation("task-components");
   const left = x - width / 2;
   const gripTop = y + height / 2 - 7;
   return (

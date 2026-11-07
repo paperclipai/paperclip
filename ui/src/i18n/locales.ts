@@ -1,5 +1,6 @@
 import type { Resource } from "i18next";
 
+import { buildCatalogResources } from "./catalog-resources";
 import { assertValidLocaleMessages } from "./locale-validation";
 
 export const DEFAULT_LOCALE = "en" as const;
@@ -34,8 +35,11 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
 
 export const supportedLocales = Object.keys(localeMessages);
 
-export const i18nextResources: Resource = Object.fromEntries(
-  Object.entries(localeMessages).map(([locale, messages]) => [locale, { translation: messages }]),
-) as Resource;
+const catalogModules = import.meta.glob("./catalogs/*/*.json", {
+  eager: true,
+  import: "default",
+}) as Record<string, unknown>;
+
+export const i18nextResources: Resource = buildCatalogResources(localeMessages, catalogModules);
 
 export type SupportedLocale = keyof typeof localeMessages;

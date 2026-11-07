@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Link } from "@/lib/router";
 import { timeAgo } from "../lib/timeAgo";
@@ -31,7 +32,8 @@ import { Card } from "@/components/ui/card";
 type VerbContext = "pinned" | "chronological";
 
 function humanize(value: unknown): string {
-  return typeof value === "string" ? value.replace(/_/g, " ") : String(value ?? "");
+  const labels: Record<string, string> = { backlog: t("deep-ui:feed_value_backlog"), todo: t("deep-ui:feed_value_todo"), in_progress: t("deep-ui:feed_value_in_progress"), in_review: t("deep-ui:feed_value_in_review"), done: t("deep-ui:feed_value_done"), blocked: t("deep-ui:feed_value_blocked"), cancelled: t("deep-ui:feed_value_cancelled"), urgent: t("deep-ui:feed_value_urgent"), high: t("deep-ui:feed_value_high"), medium: t("deep-ui:feed_value_medium"), low: t("deep-ui:feed_value_low") };
+  return typeof value === "string" ? labels[value] ?? value : String(value ?? "");
 }
 
 /** One verb per action. Pinned context (Tier 0) swaps a couple of verbs to
@@ -43,86 +45,86 @@ function formatVerb(
 ): string {
   switch (action) {
     case "issue.created":
-      return "opened";
+      return t("deep-ui:opened_502366");
     case "issue.updated": {
       const status = details?.status;
-      if (status === "in_review" && details?.externalConversationState === "waiting") return "moved to idle";
-      if (typeof status === "string") return `moved to ${humanize(status)}`;
+      if (status === "in_review" && details?.externalConversationState === "waiting") return t("deep-ui:moved_to_idle_f42106");
+      if (typeof status === "string") return t("deep-ui:feed_moved", { status: humanize(status) });
       const priority = details?.priority;
-      if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
-      return "updated";
+      if (typeof priority === "string") return t("deep-ui:feed_priority", { priority: humanize(priority) });
+      return t("task-components:updated_27eb5e51");
     }
     case "issue.document_created":
-      return "wrote doc on";
+      return t("deep-ui:wrote_doc_on_6307b2");
     case "issue.document_updated":
-      return "edited doc on";
+      return t("deep-ui:edited_doc_on_37ce65");
     case "issue.document_deleted":
-      return "deleted doc from";
+      return t("deep-ui:deleted_doc_from_2b415a");
     case "issue.work_product_created":
-      return "delivered work on";
+      return t("deep-ui:delivered_work_on_15a36c");
     case "issue.work_product_updated":
-      return "updated work on";
+      return t("deep-ui:updated_work_on_b5f9db");
     case "issue.work_product_deleted":
-      return "removed work from";
+      return t("deep-ui:removed_work_from_8090d8");
     case "issue.checked_out":
-      return "picked up";
+      return t("deep-ui:picked_up_13d674");
     case "issue.released":
-      return "released";
+      return t("deep-ui:released_d29eae");
     case "issue.commented":
     case "issue.comment_added":
-      return "commented on";
+      return t("deep-ui:commented_on_189a57");
     case "issue.attachment_added":
-      return "attached a file to";
+      return t("deep-ui:attached_a_file_to_14acd5");
     case "issue.attachment_removed":
-      return "removed attachment from";
+      return t("deep-ui:removed_attachment_from_cbeef6");
     case "issue.deleted":
-      return "deleted";
+      return t("task-components:deleted_1185f37d");
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned" ? t("deep-ui:needs_approval_on_09f50e") : t("deep-ui:requested_approval_on_dec1ba");
     case "approval.approved":
-      return "approved";
+      return t("task-components:approved_2687f86e");
     case "approval.rejected":
-      return "rejected";
+      return t("task-components:rejected_20cd938a");
     case "approval.revision_requested":
-      return "requested changes on";
+      return t("deep-ui:requested_changes_on_71b393");
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned" ? t("deep-ui:wants_to_hire_cdffd7") : t("deep-ui:hired_e45af5");
     case "agent.paused":
-      return "paused";
+      return t("task-components:paused_a7a9dc5b");
     case "agent.resumed":
-      return "resumed";
+      return t("deep-ui:resumed_cf8ad4");
     case "agent.updated":
-      return "updated";
+      return t("task-components:updated_27eb5e51");
     case "agent.terminated":
-      return "terminated";
+      return t("task-components:terminated_e8c95a2a");
 
     case "heartbeat.invoked":
-      return "started a run on";
+      return t("deep-ui:started_a_run_on_5d8a35");
     case "heartbeat.cancelled":
-      return "cancelled a run on";
+      return t("deep-ui:cancelled_a_run_on_0c4d28");
 
     case "project.created":
-      return "created project";
+      return t("deep-ui:created_project_ab7240");
     case "project.updated":
-      return "updated project";
+      return t("deep-ui:updated_project_8ec76c");
     case "project.deleted":
-      return "deleted project";
+      return t("deep-ui:deleted_project_1dfe91");
     case "goal.created":
-      return "created goal";
+      return t("deep-ui:created_goal_bed71a");
     case "goal.updated":
-      return "updated goal";
+      return t("deep-ui:updated_goal_b197ce");
     case "goal.deleted":
-      return "deleted goal";
+      return t("deep-ui:deleted_goal_f14af3");
     case "company.created":
-      return "created organization";
+      return t("deep-ui:created_organization_205554");
     case "company.updated":
-      return "updated organization";
+      return t("deep-ui:updated_organization_5c628b");
     case "company.archived":
-      return "archived organization";
+      return t("deep-ui:archived_organization_b66ac8");
     case "company.budget_updated":
-      return "updated organization budget";
+      return t("deep-ui:updated_organization_budget_14e272");
 
     default:
       return action.replace(/[._]/g, " ");
@@ -245,6 +247,7 @@ function getIconSpec(
 }
 
 function StatusCircle({ status }: { status: string }) {
+  useTranslation("task-components");
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isFilled = status === "done";
   return (
@@ -255,6 +258,7 @@ function StatusCircle({ status }: { status: string }) {
 }
 
 function EntityIcon({ spec }: { spec: IconSpec }) {
+  useTranslation("task-components");
   if (spec.kind === "status-circle") {
     return <StatusCircle status={spec.status} />;
   }
@@ -295,10 +299,10 @@ function resolveContent(
   const actorName =
     actor?.name ??
     (event.actorType === "system"
-      ? "System"
+      ? t("deep-ui:system_6725e7")
       : event.actorType === "user"
-        ? "Board"
-        : event.actorId || "Unknown");
+        ? t("deep-ui:board_4816cb")
+        : event.actorId || t("deep-ui:unknown_b764cd"));
 
   const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`) ?? null;
 
@@ -380,6 +384,7 @@ function resolveContent(
 }
 
 function ActorGlyph({ content }: { content: CardContent }) {
+  useTranslation("task-components");
   if (content.actorType === "agent") {
     return (
       <AgentAvatar agent={content.actor} size={16}
@@ -410,7 +415,7 @@ interface FeedCardProps {
    *  timestamp retain their color; leading icon retains its color. */
   isMuted?: boolean;
   /** Tier 0 treatment: adds a trailing "Review →" affordance and swaps in
-   *  pinned-context verb phrasing ("needs approval on", "wants to hire"). */
+   *  pinned-context verb phrasing (t("deep-ui:needs_approval_on_09f50e"), t("deep-ui:wants_to_hire_cdffd7")). */
   isPinned?: boolean;
   className?: string;
 }
@@ -425,6 +430,7 @@ export function FeedCard({
   isPinned = false,
   className,
 }: FeedCardProps) {
+  useTranslation("task-components");
   const details = event.details as Record<string, unknown> | null;
   const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap);
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
@@ -468,7 +474,7 @@ export function FeedCard({
         )}
       </span>
       {isPinned && (
-        <span className="shrink-0 text-xs text-muted-foreground">Review →</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{t("task-components:review_ab7681ea")}</span>
       )}
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}

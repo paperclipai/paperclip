@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
@@ -23,11 +24,11 @@ import {
 
 function getRevisionLabel(revision: DocumentRevision) {
   const actor = revision.createdByUserId
-    ? "board"
+    ? t("final-components-a:board_859169b3")
     : revision.createdByAgentId
-      ? "agent"
-      : "system";
-  return `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)} • ${actor}`;
+      ? t("final-components-a:agent_d4f0bc5a")
+      : t("final-components-a:system_bbc5e661");
+  return t("final-components-a:revRevisionTimeActor_bf5f0ff1", { revision: revision.revisionNumber, time: relativeTime(revision.createdAt), actor: actor });
 }
 
 export function DocumentDiffModal({
@@ -47,6 +48,7 @@ export function DocumentDiffModal({
   revisionsQueryKey?: QueryKey;
   revisionsQueryFn?: () => Promise<DocumentRevision[]>;
 }) {
+  useTranslation("task-components");
   const { data: revisions } = useQuery({
     queryKey: revisionsQueryKey ?? queryKeys.issues.documentRevisions(issueId ?? "", documentKey),
     queryFn: () => revisionsQueryFn ? revisionsQueryFn() : issuesApi.listDocumentRevisions(issueId ?? "", documentKey),
@@ -94,20 +96,19 @@ export function DocumentDiffModal({
       <DialogContent className="!max-w-(--pct-90) w-full max-h-(--sz-85vh) overflow-hidden flex flex-col">
         <div className="flex items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
-            <DialogTitle>
-              Diff — <span className="font-mono text-sm">{documentKey}</span>
+            <DialogTitle>{t("task-components:diff_6b2cacfd")}{" "}<span className="font-mono text-sm">{documentKey}</span>
             </DialogTitle>
           </DialogHeader>
 
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-(length:--text-nano) uppercase tracking-wider text-red-400">Old</Badge>
+              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-(length:--text-nano) uppercase tracking-wider text-red-400">{t("task-components:old_bca97160")}</Badge>
               <Select
                 value={effectiveLeftId ?? ""}
                 onValueChange={(value) => setLeftRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={t("task-components:selectRevision_4c843151")} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -119,13 +120,13 @@ export function DocumentDiffModal({
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="border-green-500/30 bg-green-500/10 text-(length:--text-nano) uppercase tracking-wider text-green-400">New</Badge>
+              <Badge variant="outline" className="border-green-500/30 bg-green-500/10 text-(length:--text-nano) uppercase tracking-wider text-green-400">{t("task-components:new_18fdd549")}</Badge>
               <Select
                 value={effectiveRightId ?? ""}
                 onValueChange={(value) => setRightRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={t("task-components:selectRevision_4c843151")} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -141,18 +142,18 @@ export function DocumentDiffModal({
 
         <div className="overflow-auto flex-1 rounded-md border border-border text-xs">
           {!revisions ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Loading revisions...</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{t("task-components:loadingRevisions_c3cd7185")}</div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Select two revisions to compare.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{t("task-components:selectTwoRevisionsToCompare_e64fab56")}</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{t("task-components:bothSidesAreTheSameRevision_5c3e0d37")}</div>
           ) : (
             <div className="font-mono text-xs leading-6">
               <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                <span>Old</span>
-                <span>New</span>
+                <span>{t("task-components:old_bca97160")}</span>
+                <span>{t("task-components:new_18fdd549")}</span>
                 <span />
-                <span>Content</span>
+                <span>{t("task-components:content_47bd2907")}</span>
               </div>
               {diffRows.map((row, index) => (
                 <div

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { CompanySecret, EnvBinding, SecretVersionSelector, UserSecretDefinition } from "@paperclipai/shared";
 
 export type RowSource = "text" | "secret" | "user_secret";
@@ -181,14 +182,14 @@ export function validateName(
   const trimmed = name.trim();
   if (!trimmed) return null;
   if (!ENV_NAME_RE.test(trimmed)) {
-    return { level: "error", message: "Invalid name — use letters, digits and _" };
+    return { level: "error", message: t("agent-config:invalidNameUseLettersDigitsAnd_43e4120") };
   }
   if (duplicateNames.has(trimmed)) {
-    return { level: "error", message: "Duplicate name" };
+    return { level: "error", message: t("agent-config:duplicateName_5bf58d8") };
   }
   for (const prefix of reservedPrefixes) {
     if (prefix && trimmed.startsWith(prefix)) {
-      return { level: "warn", message: "Reserved prefix — provided automatically and may be overridden" };
+      return { level: "warn", message: t("agent-config:reservedPrefixProvidedAutomaticallyAndMayBeOverridden_9a698d8") };
     }
   }
   return null;
@@ -248,14 +249,14 @@ export function computeRowHealth(row: EnvRow, secrets: readonly CompanySecret[])
     return {
       level: "error",
       kind: "missing",
-      message: "This secret no longer exists — runs will fail until you rebind.",
+      message: t("agent-config:thisSecretNoLongerExistsRunsWillFail_274b254"),
     };
   }
   if (secret.status !== "active") {
     return {
       level: "warn",
       kind: "disabled",
-      message: "Runs will fail until re-enabled or rebound.",
+      message: t("agent-config:runsWillFailUntilReEnabledOrRebound_8b33e4e"),
     };
   }
   return null;
@@ -272,14 +273,14 @@ export function computeUserSecretRowHealth(
     return {
       level: "error",
       kind: "missing",
-      message: "This user secret definition no longer exists — runs will fail until you rebind.",
+      message: t("agent-config:thisUserSecretDefinitionNoLongerExistsRuns_5e9184e"),
     };
   }
   if (definition.status !== "active") {
     return {
       level: "warn",
       kind: "disabled",
-      message: "Runs will fail until this user secret definition is re-enabled or rebound.",
+      message: t("agent-config:runsWillFailUntilThisUserSecretDefinition_2f0af15"),
     };
   }
   return null;

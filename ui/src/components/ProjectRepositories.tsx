@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { LegacyProjectRepository } from "./LegacyProjectRepository";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,6 +12,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
 
 export function ProjectRepositories({ project }: { project: Project }) {
+  useTranslation("task-components");
   const client = useQueryClient();
   const saved: ProjectRepository[] = project.workspaces.flatMap((workspace) => {
     const id = workspace.metadata?.githubRepositoryId;
@@ -30,17 +32,17 @@ export function ProjectRepositories({ project }: { project: Project }) {
       setDraft(null);
     },
   });
-  return <section aria-label="Repositories" className="flex min-w-0 flex-col gap-4 py-4">
+  return <section aria-label={t("task-components:repositories_1e32af87")} className="flex min-w-0 flex-col gap-4 py-4">
     <ProjectRepositoryInput companyId={project.companyId} selected={draft ?? saved} onChange={(repos) => { setDraft(repos); save.reset(); }} onConnect={() => setConnecting(true)} disabled={save.isPending} />
     {project.workspaces.filter((workspace) => workspace.repoUrl && !workspace.metadata?.githubRepositoryId).map((workspace) => <LegacyProjectRepository key={workspace.id} workspace={workspace} projectRef={project.urlKey} />)}
     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4">
       {save.status === "error" && <p role="alert" className="mr-auto text-sm text-destructive">{describeError(save.error).body}</p>}
-      {save.isSuccess && <span role="status" className="mr-auto text-sm text-muted-foreground">Changes saved</span>}
-      {draft && <Button type="button" variant="ghost" disabled={save.isPending} onClick={() => { setDraft(null); save.reset(); }}>Discard changes</Button>}
-      <Button type="button" disabled={!draft || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save changes"}</Button>
+      {save.isSuccess && <span role="status" className="mr-auto text-sm text-muted-foreground">{t("task-components:changesSaved_16bf144a")}</span>}
+      {draft && <Button type="button" variant="ghost" disabled={save.isPending} onClick={() => { setDraft(null); save.reset(); }}>{t("task-components:discardChanges_f9bfa3dc")}</Button>}
+      <Button type="button" disabled={!draft || save.isPending} onClick={() => save.mutate()}>{save.isPending ? t("task-components:saving_23e39291") : t("task-components:saveChanges_dd0ae7a5")}</Button>
     </div>
     <Dialog open={connecting} onOpenChange={setConnecting}><DialogContent showCloseButton={false} aria-describedby={undefined} className="max-h-(--sz-calc-18) overflow-y-auto sm:max-w-2xl">
-      <DialogTitle className="sr-only">Connect GitHub</DialogTitle>
+      <DialogTitle className="sr-only">{t("task-components:connectGithub_4027e5b2")}</DialogTitle>
       <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection onCancel={() => setConnecting(false)} onComplete={() => {
         void client.invalidateQueries({ queryKey: repositoryOptionsKey(project.companyId) });
         setConnecting(false);

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Profiler, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, DocumentAnnotationThreadWithComments, IssueDocument } from "@paperclipai/shared";
@@ -76,6 +77,7 @@ export function IssueDocumentAnnotations({
   initialComposerAnchor,
   onInitialComposerAnchorConsumed,
 }: IssueDocumentAnnotationsProps) {
+  useTranslation("task-components");
   const selectionDebugEnabled = isSelectionDebugEnabled();
   if (selectionDebugEnabled) initializeSelectionDebug();
   const containerRef = useRef<HTMLElement | null>(null);
@@ -130,13 +132,13 @@ export function IssueDocumentAnnotations({
 
   const newCommentDisabled = draftDirty || draftConflicted || historicalPreview || !doc.latestRevisionId;
   const newCommentDisabledReason = historicalPreview
-    ? "New comments are disabled while previewing a historical revision."
+    ? t("final-components-a:newCommentsAreDisabledWhile_8bc39d0f")
     : draftConflicted
-      ? "Resolve the document conflict before adding new comments."
+      ? t("final-components-a:resolveTheDocumentConflictBefore_e7fd5470")
       : draftDirty
-        ? "Save the draft to anchor new comments."
+        ? t("final-components-a:saveTheDraftToAnchor_b1079b9c")
         : !doc.latestRevisionId
-          ? "Document has no saved revision yet."
+          ? t("final-components-a:documentHasNoSavedRevision_26dadff1")
           : null;
 
   const handleSelectionAnchorChange = useCallback((anchor: PendingAnchor | null) => {
@@ -396,6 +398,7 @@ export function DocumentAnnotationsCountChip({
   panelOpen,
   onToggle,
 }: DocumentAnnotationsCountChipProps) {
+  useTranslation("task-components");
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
@@ -427,14 +430,14 @@ export function DocumentAnnotationsCountChip({
       onClick={onToggle}
       data-testid={`document-annotation-count-${docKey}`}
       aria-label={openCount === 0
-        ? `Open comments on ${docKey}`
-        : `Open ${openCount} unresolved comments on ${docKey}`}
+        ? t("task-components:openCommentsOn_044ca6a5", { value1: docKey })
+        : t("task-components:openUnresolvedCommentsOn_4316aaaa", { value1: openCount, value2: docKey })}
       aria-expanded={panelOpen}
     >
       <MessageSquare className="h-3 w-3" aria-hidden="true" />
       <span className="tabular-nums">{openCount}</span>
       <span className="hidden sm:inline">
-        {openCount === 1 ? "comment" : "comments"}
+        {openCount === 1 ? t("task-components:comment_c44bb2fd") : t("task-components:comments_2b4244fb")}
       </span>
     </Button>
   );

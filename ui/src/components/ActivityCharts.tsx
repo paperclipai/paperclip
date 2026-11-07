@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
@@ -28,21 +29,22 @@ const runSegmentColors = {
 
 // Compact per-day tooltip that also attributes failures to their error class.
 function runDayTooltip(entry: DashboardRunActivityDay): string {
-  const lines = [`${entry.date}: ${entry.total} run${entry.total === 1 ? "" : "s"}`];
-  if (entry.succeeded > 0) lines.push(`  succeeded: ${entry.succeeded}`);
-  if (entry.recovered > 0) lines.push(`  recovered: ${entry.recovered} (retry succeeded)`);
+  const lines = [t("final-components-a:chartRunTotal", { date: entry.date, count: entry.total })];
+  if (entry.succeeded > 0) lines.push(t("final-components-a:chartRun_succeeded", { count: entry.succeeded }));
+  if (entry.recovered > 0) lines.push(t("final-components-a:chartRun_recovered", { count: entry.recovered }));
   if (entry.failed > 0) {
-    lines.push(`  failed: ${entry.failed}`);
+    lines.push(t("final-components-a:chartRun_failed", { count: entry.failed }));
     const codes = Object.entries(entry.failedByErrorCode ?? {}).sort((a, b) => b[1] - a[1]);
     for (const [code, count] of codes) lines.push(`    ${code}: ${count}`);
   }
-  if (entry.other > 0) lines.push(`  other: ${entry.other}`);
+  if (entry.other > 0) lines.push(t("final-components-a:chartRun_other", { count: entry.other }));
   return lines.join("\n");
 }
 
 /* ---- Sub-components ---- */
 
 function DateLabels({ days }: { days: string[] }) {
+  useTranslation("task-components");
   return (
     <div className="flex gap-(--sz-3px) mt-1.5">
       {days.map((day, i) => (
@@ -57,6 +59,7 @@ function DateLabels({ days }: { days: string[] }) {
 }
 
 function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
+  useTranslation("task-components");
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
@@ -70,6 +73,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 }
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  useTranslation("task-components");
   return (
     <div className="border border-border rounded-lg p-4 space-y-3">
       <div>
@@ -119,6 +123,7 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
 }
 
 export function RunActivityChart(props: RunChartProps) {
+  useTranslation("task-components");
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
@@ -127,13 +132,13 @@ export function RunActivityChart(props: RunChartProps) {
   const hasData = activity.some(v => v.total > 0);
   const hasRecovered = activity.some(v => v.recovered > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("task-components:noRunsYet_306b45db")}</p>;
 
   const legendItems = [
-    { color: runSegmentColors.succeeded, label: "Succeeded" },
-    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: "Recovered" }] : []),
-    { color: runSegmentColors.failed, label: "Failed" },
-    { color: runSegmentColors.other, label: "Other" },
+    { color: runSegmentColors.succeeded, label: t("task-components:succeeded_6d9a6f97") },
+    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: t("task-components:recovered_37ce0a91") }] : []),
+    { color: runSegmentColors.failed, label: t("task-components:failed_031a8f0f") },
+    { color: runSegmentColors.other, label: t("task-components:other_f97e9da0") },
   ];
 
   return (
@@ -175,6 +180,7 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  useTranslation("task-components");
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -188,7 +194,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("task-components:noTasks_9c2f4744")}</p>;
 
   return (
     <div>
@@ -198,7 +204,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("task-components:issues_2bf6c7e9", { value1: day, value2: total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -237,16 +243,17 @@ const statusColors: Record<string, string> = {
 };
 
 const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
+  get todo() { return t("final-components-a:toDo_150d92c4"); },
+  get in_progress() { return t("final-components-a:inProgress_b4cc4b07"); },
+  get in_review() { return t("final-components-a:inReview_2677214a"); },
+  get done() { return t("final-components-a:done_11a6767d"); },
+  get blocked() { return t("final-components-a:blocked_18f2a094"); },
+  get cancelled() { return t("final-components-a:cancelled_d353a99e"); },
+  get backlog() { return t("final-components-a:backlog_bf986e9a"); },
 };
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  useTranslation("task-components");
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -263,7 +270,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("task-components:noTasks_9c2f4744")}</p>;
 
   return (
     <div>
@@ -273,7 +280,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("task-components:issues_2bf6c7e9", { value1: day, value2: total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -294,12 +301,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
 }
 
 export function SuccessRateChart(props: RunChartProps) {
+  useTranslation("task-components");
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("task-components:noRunsYet_306b45db")}</p>;
 
   return (
     <div>

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 
@@ -222,6 +223,31 @@ describe("CompanyAccess", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each(["en", "zh-CN"])("preserves an unknown removal diagnostic verbatim and disabled (%s)", async locale => {
+    const reason = "Future access policy: role=auditor; retain RAW diagnostic / key-42";
+    listMembersMock.mockResolvedValue({
+      members: [{ id: "member-future", companyId: "company-1", principalType: "user", principalId: "future-user", status: "active", membershipRole: "operator", user: { name: "Future User", email: "future@example.test" }, removal: { canArchive: false, reason }, grants: [] }],
+      access: { currentUserRole: "owner", canManageMembers: true, canInviteUsers: true, canApproveJoinRequests: true },
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await i18n.changeLanguage(locale);
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><CompanyAccess /></QueryClientProvider>));
+      await flushReact();
+      const removal = Array.from(container.querySelectorAll<HTMLButtonElement>("button[title]")).find(button => button.title === reason);
+      expect(removal).toBeDefined();
+      expect(removal!.disabled).toBe(true);
+      expect(i18n.exists("settings:companyAccess.unknownRemovalReason", { lng: locale, fallbackLng: false })).toBe(false);
+      await act(async () => removal!.click());
+      expect(archiveMemberMock).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      queryClient.clear();
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("renders a compact member table without redundant explanatory copy", async () => {

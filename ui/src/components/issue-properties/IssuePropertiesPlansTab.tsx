@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
@@ -36,6 +37,7 @@ function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | und
  * the /dev/task-chat-lab harness).
  */
 export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps) {
+  useTranslation("task-components");
   const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -54,18 +56,16 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
     return (
       <div className="px-1 py-6 text-sm text-muted-foreground">
         {planDocumentLoading ? (
-          "Loading plan…"
+          t("task-components:loadingPlan_c9773eb9")
         ) : issue.workMode === "planning" ? (
           <div className="space-y-2">
-            <p>This task is in plan mode but no plan document has been written yet.</p>
+            <p>{t("task-components:thisTaskIsInPlanModeBut_ff5abc6a")}</p>
             {pendingPlanConfirmation ? (
-              <p className="text-amber-foreground">
-                A plan confirmation is pending, but the plan document it should confirm is missing.
-              </p>
+              <p className="text-amber-foreground">{t("task-components:aPlanConfirmationIsPendingButThe_f9afd8ea")}</p>
             ) : null}
           </div>
         ) : (
-          "No plan yet. The plan document, accepted plans, and their revisions will appear here."
+          t("task-components:noPlanYetThePlanDocumentAccepted_4bafe14d")
         )}
       </div>
     );
@@ -80,12 +80,12 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
       {planDocument ? (
         <section data-testid="issue-plan-document" className="space-y-2">
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            {`Revision ${planDocument.latestRevisionNumber ?? 1} · updated ${new Date(planDocument.updatedAt).toLocaleString([], {
+            {t("task-components:revisionUpdated_97f7c1b8", { value1: planDocument.latestRevisionNumber ?? 1, value2: new Date(planDocument.updatedAt).toLocaleString([], {
               month: "short",
               day: "numeric",
               hour: "numeric",
               minute: "2-digit",
-            })}`}
+            }) })}
             <DocumentAnnotationsCountChip
               issueId={issue.id}
               docKey="plan"

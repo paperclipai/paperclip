@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import {
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
   ISSUE_PRIORITIES,
@@ -40,13 +41,13 @@ export interface SearchOperatorSuggestion {
 export const SEARCH_OPERATOR_QUICK_FILTERS = ["assignee:me", "is:open", "updated:>7d"] as const;
 
 export const SEARCH_OPERATOR_SUGGESTIONS: SearchOperatorSuggestion[] = [
-  { token: "status:todo", label: "Open todo tasks", description: "Filter by task status" },
-  { token: "status:blocked", label: "Blocked tasks", description: "Find blocked work" },
-  { token: "assignee:me", label: "Assigned to me", description: "Use your current board user" },
-  { token: "project:\"Paperclip App\"", label: "Project name", description: "Quote multi-word project names" },
-  { token: "label:bug", label: "Label", description: "Filter by issue label" },
-  { token: "priority:high", label: "High priority", description: "Filter by priority" },
-  { token: "updated:>7d", label: "Recently updated", description: "Updated in the last 7 days" },
+  { token: "status:todo", get "label"() { return t("display:meta_b1297be4e298"); }, get "description"() { return t("display:meta_c236270f7ac8"); } },
+  { token: "status:blocked", get "label"() { return t("display:meta_b7729fa5a121"); }, get "description"() { return t("display:meta_04c93f16aa5d"); } },
+  { token: "assignee:me", get "label"() { return t("display:meta_5db35296ea6a"); }, get "description"() { return t("display:meta_494bd17dd2a4"); } },
+  { token: "project:\"Paperclip App\"", get "label"() { return t("display:meta_ab9773fcf6b2"); }, get "description"() { return t("display:meta_ef25d3d8d4b4"); } },
+  { token: "label:bug", get "label"() { return t("display:meta_74341e3c271d"); }, get "description"() { return t("display:meta_f7351b08791f"); } },
+  { token: "priority:high", get "label"() { return t("display:meta_40cd1b46f9a0"); }, get "description"() { return t("display:meta_870c2d046e58"); } },
+  { token: "updated:>7d", get "label"() { return t("display:meta_5f0500ccf919"); }, get "description"() { return t("display:meta_fb726fb2cb79"); } },
 ];
 
 export interface SearchQueryParserContext {

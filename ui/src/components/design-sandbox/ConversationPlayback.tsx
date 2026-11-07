@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pause, Play, RotateCcw } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
@@ -15,6 +16,7 @@ import { settledPreviewReply } from "./settled-preview-reply";
 export function ConversationPlayback({ header, agentName, agent, onShowSavedThread }: {
   header: ReactNode; agentName: string; agent?: Agent; onShowSavedThread?: () => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const [elapsed, setElapsed] = useState(0);
   const [started, setStarted] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -42,28 +44,28 @@ export function ConversationPlayback({ header, agentName, agent, onShowSavedThre
     stage++;
   }
   const progress = stepMs && stage < CONVERSATION_PLAYBACK_STAGES.length ? (elapsed - offset) / (CONVERSATION_PLAYBACK_STAGES[stage].units * stepMs) : 1;
-  const snapshot = useMemo(() => conversationPlaybackSnapshot(stage, progress), [stage, progress]);
-  const parsed = useMemo(() => transcriptToTaskChatItems(snapshot.entries, { runId: "conversation-playback", agentName, running: !ended }), [snapshot, agentName, ended]);
-  const human = useMemo(() => previewHistory(agentName).human, [agentName]);
+  const snapshot = useMemo(() => conversationPlaybackSnapshot(stage, progress), [stage, progress, translateShell]);
+  const parsed = useMemo(() => transcriptToTaskChatItems(snapshot.entries, { runId: "conversation-playback", agentName, running: !ended }), [snapshot, agentName, ended, translateShell]);
+  const human = useMemo(() => previewHistory(agentName).human, [agentName, translateShell]);
   const followUp = stage >= PLAYBACK_FOLLOW_UP_STAGE;
-  const firstSnapshot = useMemo(() => followUp ? conversationPlaybackSnapshot(6, 1) : snapshot, [followUp, snapshot]);
-  const firstItems = useMemo(() => followUp ? transcriptToTaskChatItems(firstSnapshot.entries, { runId: "playback-count", agentName, running: false }) : parsed, [followUp, firstSnapshot, parsed, agentName]);
-  const firstResponse = useMemo((): TaskChatMessageItem => ({ id: "playback-response", kind: "message", author: "agent", authorName: agentName, agent, channel: "final", text: SYNTHETIC_FINAL, timestamp: "10:11 AM" }), [agentName, agent]);
-  const secondResponse = useMemo((): TaskChatMessageItem => ({ id: "playback-verification", kind: "message", author: "agent", authorName: agentName, agent, channel: "final", text: PLAYBACK_VERIFICATION_FINAL, timestamp: "10:13 AM" }), [agentName, agent]);
-  const firstSettled = useMemo(() => settledPreviewReply(firstResponse, conversationPlaybackSnapshot(6, 1).entries, "playback-count", false, CONVERSATION_PLAYBACK_STAGES.slice(0, PLAYBACK_FOLLOW_UP_STAGE).reduce((sum, item) => sum + item.units * stepMs, 0)), [firstResponse, stepMs]);
-  const secondSettled = useMemo(() => ended ? settledPreviewReply(secondResponse, snapshot.entries, "conversation-playback", false, CONVERSATION_PLAYBACK_STAGES.slice(PLAYBACK_FOLLOW_UP_STAGE).reduce((sum, item) => sum + item.units * stepMs, 0)) : [], [ended, secondResponse, snapshot.entries, stepMs]);
-  const followUpMessage = useMemo((): TaskChatMessageItem[] => [{ id: "playback-follow-up", kind: "message", author: "human", isCurrentUser: true, text: PLAYBACK_FOLLOW_UP, timestamp: "10:12 AM" }], []);
+  const firstSnapshot = useMemo(() => followUp ? conversationPlaybackSnapshot(6, 1) : snapshot, [followUp, snapshot, translateShell]);
+  const firstItems = useMemo(() => followUp ? transcriptToTaskChatItems(firstSnapshot.entries, { runId: "playback-count", agentName, running: false }) : parsed, [followUp, firstSnapshot, parsed, agentName, translateShell]);
+  const firstResponse = useMemo((): TaskChatMessageItem => ({ id: "playback-response", kind: "message", author: "agent", authorName: agentName, agent, channel: "final", text: SYNTHETIC_FINAL, timestamp: "10:11 AM" }), [agentName, agent, translateShell]);
+  const secondResponse = useMemo((): TaskChatMessageItem => ({ id: "playback-verification", kind: "message", author: "agent", authorName: agentName, agent, channel: "final", text: PLAYBACK_VERIFICATION_FINAL, timestamp: "10:13 AM" }), [agentName, agent, translateShell]);
+  const firstSettled = useMemo(() => settledPreviewReply(firstResponse, conversationPlaybackSnapshot(6, 1).entries, "playback-count", false, CONVERSATION_PLAYBACK_STAGES.slice(0, PLAYBACK_FOLLOW_UP_STAGE).reduce((sum, item) => sum + item.units * stepMs, 0)), [firstResponse, stepMs, translateShell]);
+  const secondSettled = useMemo(() => ended ? settledPreviewReply(secondResponse, snapshot.entries, "conversation-playback", false, CONVERSATION_PLAYBACK_STAGES.slice(PLAYBACK_FOLLOW_UP_STAGE).reduce((sum, item) => sum + item.units * stepMs, 0)) : [], [ended, secondResponse, snapshot.entries, stepMs, translateShell]);
+  const followUpMessage = useMemo((): TaskChatMessageItem[] => [{ id: "playback-follow-up", kind: "message", author: "human", isCurrentUser: true, text: PLAYBACK_FOLLOW_UP, timestamp: "10:12 AM" }], [translateShell]);
   const restart = () => { setElapsed(0); setGeneration(value => value + 1); setStarted(true); setPlaying(true); };
 
   return <section className="flex min-h-0 flex-1 flex-col" data-testid="conversation-playback" data-playback-state={ended ? "complete" : playing ? "playing" : started ? "paused" : "idle"} data-playback-stage={stage}>
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-background py-2 text-xs">
       <Button size="sm" variant="outline" disabled={!stepMs} onClick={() => !started || ended ? restart() : setPlaying(value => !value)}>
         {ended ? <RotateCcw /> : playing ? <Pause /> : <Play />}
-        {ended ? "Replay conversation" : playing ? "Pause" : started ? "Resume conversation" : "Play conversation"}
+        {ended ? translateShell("shell:replay_conversation") : playing ? translateShell("shell:pause") : started ? translateShell("shell:resume_conversation") : translateShell("shell:play_conversation")}
       </Button>
-      {started && !ended ? <Button size="sm" variant="ghost" onClick={restart}><RotateCcw />Replay</Button> : null}
-      {onShowSavedThread ? <Button size="sm" variant="ghost" onClick={onShowSavedThread}>Show saved thread</Button> : null}
-      <span className="text-muted-foreground" role="status">{started ? ended ? "Conversation complete" : `${playing ? "" : "Paused · "}${CONVERSATION_PLAYBACK_STAGES[stage]?.label}` : "Watch a typical conversation · synthetic preview"}</span>
+      {started && !ended ? <Button size="sm" variant="ghost" onClick={restart}><RotateCcw />{translateShell("shell:replay")}</Button> : null}
+      {onShowSavedThread ? <Button size="sm" variant="ghost" onClick={onShowSavedThread}>{translateShell("shell:show_saved_thread")}</Button> : null}
+      <span className="text-muted-foreground" role="status">{started ? ended ? translateShell("shell:conversation_complete") : `${playing ? "" : translateShell("shell:paused")}${CONVERSATION_PLAYBACK_STAGES[stage]?.label}` : translateShell("shell:watch_a_typical_conversation_synthetic_preview")}</span>
     </div>
     <TaskChatThreadView key={generation} header={header} items={started ? [human] : []} contentKey={`${elapsed}:${generation}`} tail={started ? <div className="flex flex-col gap-8">
       <ConversationPlaybackTurn settled={followUp} snapshot={firstSnapshot} items={firstItems} response={firstResponse} settledItems={firstSettled} />

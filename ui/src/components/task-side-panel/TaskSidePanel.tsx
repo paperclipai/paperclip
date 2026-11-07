@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { CoordinatorConversationTasksPanel } from "@/components/coordinator/CoordinatorConversationTasksPanel";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
@@ -253,6 +254,7 @@ function useTaskSidePanelFileRouting() {
 }
 
 export function TaskSidePanel(props: TaskSidePanelProps) {
+  useTranslation("task-components");
   // Restoration happens once in the stateful host. A preference/account
   // change must replace that host before its persistence callback can write
   // the previous scope's tabs under the new scope's storage key.
@@ -296,6 +298,7 @@ function TaskSidePanelForScope({
   openSkillName,
   onSkillOpened,
 }: TaskSidePanelProps) {
+  useTranslation("task-components");
   const location = useLocation();
   const handleScroll = useScrollbarWhileScrolling();
   // Agent Chat: agent chats swap the conversation issue's own panels for
@@ -314,7 +317,7 @@ function TaskSidePanelForScope({
     readTaskSidePanelState(accountScope, issue.companyId, issue.id, fileTabsEnabled),
   );
   const taskCount = tasksTab?.count ?? childIssues.length;
-  const taskLabel = tasksTab ? "Tasks" : "Subtasks";
+  const taskLabel = tasksTab ? t("task-components:tasks_b3a60e61") : t("task-components:subtasks_7eff0a19");
   const initialSubtasksAvailableRef = useRef(showRelatedTasks && (taskCount > 0 || tasksTab?.hasError === true));
   const subtasksDismissedRef = useRef(
     restoredRef.current?.userInteracted === true
@@ -482,7 +485,7 @@ function TaskSidePanelForScope({
       planDocument === null && !target?.revisionId && !documentIssueId
     ) return;
     const document = documentIssueId ? undefined : documents.find((candidate) => candidate.key === documentDeepLink.documentKey);
-    const label = document ? documentDisplayTitle(document) : documentDeepLink.documentKey === "plan" ? "Plan" : documentDeepLink.documentKey;
+    const label = document ? documentDisplayTitle(document) : documentDeepLink.documentKey === "plan" ? t("final-components-a:plan_fa8ed0bd") : documentDeepLink.documentKey;
     // A refresh must not replay a link after the user selects another tab.
     handledDocumentRequestRef.current = documentDeepLink.requestId;
     if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
@@ -585,7 +588,7 @@ function TaskSidePanelForScope({
   useEffect(() => {
     if (activeTab) return;
     window.requestAnimationFrame(() => {
-      bodyRef.current?.querySelector<HTMLInputElement>('input[aria-label="Search tabs and resources…"]')?.focus();
+      bodyRef.current?.querySelector<HTMLInputElement>('input[role="combobox"]')?.focus();
     });
   }, [activeTab]);
 
@@ -632,40 +635,40 @@ function TaskSidePanelForScope({
   const visualTabs = useMemo<SidePanelTabItem[]>(() => controller.tabs.map((tab) => {
     const document = tab.payload.kind === "issue-document" && (!tab.payload.documentIssueId || tab.payload.documentIssueId === issue.id) ? documentByKey.get(tab.payload.documentKey) : null;
     const browserIndex = browsersQuery.data?.findIndex((browser) => tab.payload.kind === "browser" && (browser.id === tab.payload.browserId || browser.sessionId === tab.payload.browserId)) ?? -1;
-    const browserLabel = browserIndex >= 0 && (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${browserIndex + 1}` : null;
+    const browserLabel = browserIndex >= 0 && (browsersQuery.data?.length ?? 0) > 1 ? t("final-components-a:browserNumber_ccbe39c6", { number: browserIndex + 1 }) : null;
     return {
       id: tab.id,
       type: tab.type,
-      label: browserLabel ?? (tab.payload.kind === "subtasks" && tasksTab ? "Tasks" : document ? documentDisplayTitle(document) : tab.label),
+      label: browserLabel ?? (tab.payload.kind === "subtasks" && tasksTab ? t("task-components:tasks_b3a60e61") : document ? documentDisplayTitle(document) : tab.label),
       ariaLabel: tab.payload.kind === "subtasks" ? taskLabel : tab.ariaLabel,
       closable: true,
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
     };
-  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, browsersQuery.data, issue.id]);
+  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, browsersQuery.data, issue.id, i18n.language]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = conversationAgentId ? [
-      { id: "agent-tasks", label: "Tasks", description: "Tasks this agent worked on", icon: <ListChecks />, alreadyOpen: controller.tabs.some((tab) => tab.id === "agent-tasks") },
-      { id: "artifacts", label: "Artifacts", description: "Files this agent produced", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
-      { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
+      { id: "agent-tasks", label: t("task-components:tasks_b3a60e61"), description: t("task-components:tasksThisAgentWorkedOn_41adcf92"), icon: <ListChecks />, alreadyOpen: controller.tabs.some((tab) => tab.id === "agent-tasks") },
+      { id: "artifacts", label: t("task-components:artifacts_314ae71b"), description: t("task-components:filesThisAgentProduced_1f34ff83"), icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
+      { id: "properties", label: t("task-components:properties_ae43692b"), icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
     ] : [
-      { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
-      ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? "Could not load all tasks" : `${taskCount} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
-      { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
+      { id: "properties", label: t("task-components:properties_ae43692b"), icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
+      ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? t("final-components-a:couldNotLoadAllTasks_09c55579") : t("final-components-a:countTotal_1b8c8258", { count: taskCount }), icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
+      { id: "artifacts", label: t("task-components:artifacts_314ae71b"), icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
     for (const [index, browser] of (browsersQuery.data ?? []).entries()) {
-      primary.push({ id: `browser:${browser.id}`, label: (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${index + 1}` : "Browser", description: browser.status, icon: <Globe />, alreadyOpen: controller.tabs.some(tab => tab.id === `browser:${browser.id}`) });
+      primary.push({ id: `browser:${browser.id}`, label: (browsersQuery.data?.length ?? 0) > 1 ? t("final-components-a:browserNumber_ccbe39c6", { number: index + 1 }) : t("task-components:browser_d31de1a5"), description: t(`final-components-a:metadataStatus_${browser.status}`, { defaultValue: browser.status }), icon: <Globe />, alreadyOpen: controller.tabs.some(tab => tab.id === `browser:${browser.id}`) });
     }
     for (const panel of pluginPanels) primary.push({ id: taskPluginPanelId(panel), label: panel.slot.displayName, icon: <AppWindow />, alreadyOpen: controller.tabs.some(tab => tab.id === taskPluginPanelId(panel)) });
     if (fileTabsEnabled) {
-      primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
+      primary.push({ id: "files", label: t("task-components:files_abc7e989"), icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
     const documentItems: SidePanelLauncherItem[] = [
       ...(planDocument ? [{
         id: "document:plan",
         label: documentDisplayTitle(planDocument),
-        description: `Revision ${planDocument.latestRevisionNumber ?? 1}`,
+        description: t("task-components:revision_a0d7e8c6", { value1: planDocument.latestRevisionNumber ?? 1 }),
         icon: <Lightbulb />,
         alreadyOpen: controller.tabs.some((tab) => tab.id === "document:plan"),
       }] : []),
@@ -675,16 +678,16 @@ function TaskSidePanelForScope({
         .map((document) => ({
           id: `document:${document.key}`,
           label: documentDisplayTitle(document),
-          description: `Revision ${document.latestRevisionNumber ?? 1}`,
+          description: t("task-components:revision_a0d7e8c6", { value1: document.latestRevisionNumber ?? 1 }),
           icon: <FileText />,
           alreadyOpen: controller.tabs.some((tab) => tab.id === `document:${document.key}`),
         })),
     ];
     const sections: SidePanelLauncherSection[] = [
-      { id: "open", label: "Open", items: primary },
+      { id: "open", label: t("task-components:open_ed077f3d"), items: primary },
     ];
     if (documentItems.length > 0) {
-      sections.push({ id: "documents", label: "Task documents", items: documentItems });
+      sections.push({ id: "documents", label: t("task-components:taskDocuments_96355829"), items: documentItems });
     }
     if (fileTabsEnabled) {
       const recentItems = recentFilesQuery.data?.state === "available"
@@ -698,14 +701,14 @@ function TaskSidePanelForScope({
         : [];
       sections.push({
         id: "recent-files",
-        label: "Recent workspace files",
+        label: t("task-components:recentWorkspaceFiles_e214a7aa"),
         items: recentItems,
         loading: recentFilesQuery.isLoading,
-        error: recentFilesView.kind === "error" ? "Recent files are temporarily unavailable." : null,
+        error: recentFilesView.kind === "error" ? t("final-components-a:recentFilesAreTemporarilyUnavailable_8915221c") : null,
       });
     }
     return sections;
-  }, [pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable, i18n.language]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -768,7 +771,7 @@ function TaskSidePanelForScope({
               ? "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-md"
               : "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-(--side-panel-control-radius)",
           )}
-          aria-label="Open a new tab"
+          aria-label={t("task-components:openANewTab_2b75279f")}
         >
           <Plus aria-hidden />
         </Button>
@@ -844,7 +847,7 @@ function TaskSidePanelForScope({
   } else if (activeTab.payload.kind === "artifacts" && conversationAgentId) {
     content = (
       <div className="space-y-4">
-        <section aria-label="Conversation documents">
+        <section aria-label={t("final-components-a:conversationDocuments_434e1fce")}>
           <TaskGeneralDocuments issue={issue} documentEditor={documentEditor ?? {}} />
         </section>
         <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />
@@ -934,7 +937,7 @@ function TaskSidePanelForScope({
           {header}
           {onRequestClose ? (
             mobile ? (
-              <Button variant="ghost" size="icon" className="size-(--sz-44px) shrink-0" aria-label="Close side panel" onClick={onRequestClose}>
+              <Button variant="ghost" size="icon" className="size-(--sz-44px) shrink-0" aria-label={t("task-components:closeSidePanel_95221826")} onClick={onRequestClose}>
                 <X aria-hidden />
               </Button>
             ) : <SidePanelToggleButton open onToggle={onRequestClose} />

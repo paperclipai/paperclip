@@ -1,3 +1,5 @@
+import { displayStatusLabel } from "../StatusBadge";
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useMemo, useState } from "react";
 import {
@@ -36,58 +38,57 @@ import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipa
 const concurrencyPolicyOptions = [
   {
     value: "coalesce_if_active",
-    title: "Coalesce if active",
-    description: "Keep one follow-up run queued while an active run is still working.",
+    get title() { return t("task-components:coalesceIfActive_ee3319ab"); },
+    get description() { return t("task-components:keepOneFollowUpRunQueuedWhile_f81f576d"); },
   },
   {
     value: "always_enqueue",
-    title: "Always enqueue",
-    description: "Queue every trigger occurrence, even if several runs stack up.",
+    get title() { return t("task-components:alwaysEnqueue_14769882"); },
+    get description() { return t("task-components:queueEveryTriggerOccurrenceEvenIfSeveral_1d894457"); },
   },
   {
     value: "skip_if_active",
-    title: "Skip if active",
-    description: "Drop overlapping trigger occurrences while the routine is already active.",
+    get title() { return t("task-components:skipIfActive_128f844b"); },
+    get description() { return t("task-components:dropOverlappingTriggerOccurrencesWhileTheRoutine_ca321654"); },
   },
 ];
 
 const catchUpPolicyOptions = [
   {
     value: "skip_missed",
-    title: "Skip missed",
-    description: "Ignore schedule windows that were missed while paused.",
+    get title() { return t("task-components:skipMissed_23ab424e"); },
+    get description() { return t("task-components:ignoreScheduleWindowsThatWereMissedWhile_403c69b0"); },
   },
   {
     value: "enqueue_missed_with_cap",
-    title: "Enqueue missed with cap",
-    description: "Catch up missed schedule windows after recovery; sub-hourly schedules are combined into one catch-up run, slower schedules replay each missed window up to a cap.",
+    get title() { return t("task-components:enqueueMissedWithCap_97c8825e"); },
+    get description() { return t("task-components:catchUpMissedScheduleWindowsAfterRecovery_5137b633"); },
   },
 ];
 
 const activityGatePolicyOptions = [
   {
     value: "always",
-    title: "Run on every scheduled tick",
-    description: "Fire on the schedule no matter what — the default behavior.",
+    get title() { return t("task-components:runOnEveryScheduledTick_6fa83c63"); },
+    get description() { return t("task-components:fireOnTheScheduleNoMatterWhat_4412186d"); },
   },
   {
     value: "require_external_activity",
-    title: "Skip when there's been no activity since the last run",
-    description:
-      "On a scheduled tick, only run if something happened since the last run that finished. Lets a watcher-style routine stay asleep while the system is settled instead of burning tokens.",
+    get title() { return t("task-components:skipWhenThereSBeenNoActivity_e3bb529a"); },
+    get description() { return t("task-components:onAScheduledTickOnlyRunIf_ca39b27c"); },
   },
 ];
 
 const activityGateScopeOptions = [
   {
     value: "company",
-    title: "Organization-wide",
-    description: "Any activity across the organization counts as a reason to run.",
+    get title() { return t("task-components:organizationWide_4b115f61"); },
+    get description() { return t("task-components:anyActivityAcrossTheOrganizationCountsAs_a601b680"); },
   },
   {
     value: "project",
-    title: "This project",
-    description: "Only activity in the routine's project counts as a reason to run.",
+    get title() { return t("task-components:thisProject_d0f62545"); },
+    get description() { return t("task-components:onlyActivityInTheRoutineSProject_bd022132"); },
   },
 ];
 
@@ -96,6 +97,7 @@ export function OverviewSection({
 }: {
   defaultDescriptionAnnotationsOpen?: boolean;
 } = {}) {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const {
     routine,
@@ -138,16 +140,16 @@ export function OverviewSection({
       {/* Assignment row */}
       <div className="overflow-x-auto overscroll-x-contain">
         <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-          <span>For</span>
+          <span>{t("task-components:for_ca15ebc0")}</span>
           <InlineEntitySelector
             ref={assigneeSelectorRef}
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
             recentOptionIds={recentAssigneeIds}
-            placeholder="Responsible"
-            noneLabel="No responsible"
-            searchPlaceholder="Search responsible..."
-            emptyMessage="No responsible found."
+            placeholder={t("task-components:responsible_bc110a6d")}
+            noneLabel={t("final-components-b:routine-sections.editable-sections.No_responsible_15abde")}
+            searchPlaceholder={t("task-components:searchResponsible_9cb8d79f")}
+            emptyMessage={t("task-components:noResponsibleFound_045a8ffe")}
             onChange={(assigneeAgentId) =>
               setEditDraft((current) => ({ ...current, assigneeAgentId }))
             }
@@ -169,7 +171,7 @@ export function OverviewSection({
                   <span className="truncate">{option.label}</span>
                 )
               ) : (
-                <span className="text-muted-foreground">Responsible</span>
+                <span className="text-muted-foreground">{t("task-components:responsible_bc110a6d")}</span>
               )
             }
             renderOption={(option) => {
@@ -185,16 +187,16 @@ export function OverviewSection({
               );
             }}
           />
-          <span>in</span>
+          <span>{t("task-components:in_58296753")}</span>
           <InlineEntitySelector
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
             recentOptionIds={recentProjectIds}
-            placeholder="Project"
-            noneLabel="No project"
-            searchPlaceholder="Search projects..."
-            emptyMessage="No projects found."
+            placeholder={t("task-components:project_98595978")}
+            noneLabel={t("final-components-b:routine-sections.editable-sections.No_project_f34c2b")}
+            searchPlaceholder={t("task-components:searchProjects_c59dd5a3")}
+            emptyMessage={t("task-components:noProjectsFound_26e92309")}
             onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
             onConfirm={() => descriptionEditorRef.current?.focus()}
             renderTriggerValue={(option) =>
@@ -207,7 +209,7 @@ export function OverviewSection({
                   <span className="truncate">{option.label}</span>
                 </>
               ) : (
-                <span className="text-muted-foreground">Project</span>
+                <span className="text-muted-foreground">{t("task-components:project_98595978")}</span>
               )
             }
             renderOption={(option) => {
@@ -228,10 +230,7 @@ export function OverviewSection({
       </div>
 
       {!routine.assigneeAgentId ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
-          Default agent required. This routine can stay as a draft and still run manually, but
-          automation stays paused until you assign a default agent.
-        </div>
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">{t("task-components:defaultAgentRequiredThisRoutineCanStay_07c2de4a")}</div>
       ) : null}
 
       {/* Instructions */}
@@ -264,7 +263,7 @@ export function OverviewSection({
               ref={descriptionEditorRef}
               value={editDraft.description}
               onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-              placeholder="Add instructions..."
+              placeholder={t("task-components:addInstructions_d49e19c5")}
               bordered={false}
               contentClassName="min-h-(--sz-120px) text-sm leading-7"
               mentions={mentionOptions}
@@ -280,7 +279,7 @@ export function OverviewSection({
             ref={descriptionEditorRef}
             value={editDraft.description}
             onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-            placeholder="Add instructions..."
+            placeholder={t("task-components:addInstructions_d49e19c5")}
             bordered={false}
             contentClassName="min-h-(--sz-120px) text-sm leading-7"
             mentions={mentionOptions}
@@ -308,29 +307,27 @@ export function OverviewSection({
       <div className="grid gap-3 sm:grid-cols-2">
         <SummaryCard
           icon={Clock3}
-          label="Triggers"
-          value={activeTriggers === 0 ? "None" : `${activeTriggers} active`}
-          hint={nextFire ? `Next fire ${nextFire}` : "No schedule"}
+          label={t("task-components:triggers_e62f2148")}
+          value={activeTriggers === 0 ? t("final-components-b:routine-sections.editable-sections.None_dc937b") : t("final-components-b:count_active_480255", { count: activeTriggers })}
+          hint={nextFire ? t("final-components-b:Next_fire_time_5e8799", { time: nextFire }) : t("final-components-b:routine-sections.editable-sections.No_schedule_449040")}
           to={() => navigateToSection("triggers")}
-          ariaLabel={`${activeTriggers} triggers. Open triggers.`}
+          ariaLabel={t("final-components-b:count_triggers_Open_triggers_8624e8", { count: activeTriggers })}
         />
         <SummaryCard
           icon={Play}
-          label="Last run"
-          value={lastRun ? lastRun.status.replaceAll("_", " ") : "No runs"}
-          hint={lastRun ? timeAgo(lastRun.triggeredAt) : "Trigger a run"}
+          label={t("task-components:lastRun_512a4821")}
+          value={lastRun ? displayStatusLabel(lastRun.status) : t("final-components-b:routine-sections.editable-sections.No_runs_26735e")}
+          hint={lastRun ? timeAgo(lastRun.triggeredAt) : t("final-components-b:routine-sections.editable-sections.Trigger_a_run_177f8d")}
           to={() => navigateToSection("runs")}
-          ariaLabel={lastRun ? `Last run ${lastRun.status}. Open runs.` : "No runs. Open runs."}
+          ariaLabel={lastRun ? t("final-components-b:Last_run_status_Open_runs_e9d2db", { status: displayStatusLabel(lastRun.status) }) : t("final-components-b:routine-sections.editable-sections.No_runs_Open_runs_b60042")}
         />
       </div>
 
       {/* Recent activity */}
       <div className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Recent activity
-        </p>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("task-components:recentActivity_6cb44b56")}</p>
         {recentActivity.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No activity yet.</p>
+          <p className="text-xs text-muted-foreground">{t("task-components:noActivityYet_a288d2d0")}</p>
         ) : (
           <div className="divide-y divide-border/60">
             {recentActivity.map((event) => (
@@ -350,8 +347,7 @@ export function OverviewSection({
               type="button"
               onClick={() => navigateToSection("activity")}
               className="flex items-center gap-1 pt-2 text-xs text-muted-foreground hover:text-foreground"
-            >
-              View all activity <ArrowRight className="h-3 w-3" />
+            >{t("task-components:viewAllActivity_b9db058f")}{" "}<ArrowRight className="h-3 w-3" />
             </button>
           </div>
         )}
@@ -375,6 +371,7 @@ function SummaryCard({
   to: () => void;
   ariaLabel: string;
 }) {
+  useTranslation("task-components");
   return (
     <button type="button" onClick={to} aria-label={ariaLabel} className="text-left">
       <Card className="gap-2 p-4 transition-colors hover:border-border hover:bg-accent/30">
@@ -395,6 +392,7 @@ function SummaryCard({
 export { RoutineTriggers as TriggersSection } from "../routine-triggers/RoutineTriggers";
 
 export function VariablesSection() {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, navigateToSection } = ctx;
   const hasVariables = editDraft.variables.length > 0;
@@ -402,15 +400,9 @@ export function VariablesSection() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 rounded-md border border-border bg-muted/20 px-4 py-3 text-xs">
-        <span className="flex-1 text-muted-foreground">
-          Variables are auto-detected from <code className="font-mono">{"{{placeholders}}"}</code> in
-          the title &amp; instructions. The variable name is read-only — rename by editing the
-          placeholder.
-        </span>
+        <span className="flex-1 text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_92762a386eb5" components={{ part1: <>{<code className="font-mono">{"{{placeholders}}"}</code>}</> }} /></span>
         <Button variant="secondary" size="sm" onClick={() => navigateToSection("overview")}>
-          <Edit3 className="mr-1.5 h-3.5 w-3.5" />
-          Edit instructions
-        </Button>
+          <Edit3 className="mr-1.5 h-3.5 w-3.5" />{t("task-components:editInstructions_23e27511")}</Button>
       </div>
 
       {hasVariables ? (
@@ -423,8 +415,8 @@ export function VariablesSection() {
       ) : (
         <EmptyState
           icon={Braces}
-          message="No variables yet. Add a {{placeholder}} in the title or instructions to create one."
-          action="Edit instructions"
+          message={t("final-components-b:No_variables_yet_Add_a_placeholder_in_the_title_or_instructions_to_cre_56192d", { placeholder: "{{placeholder}}" })}
+          action={t("final-components-b:routine-sections.editable-sections.Edit_instructions_23e275")}
           onAction={() => navigateToSection("overview")}
         />
       )}
@@ -433,6 +425,7 @@ export function VariablesSection() {
 }
 
 export function SecretsSection() {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, availableSecrets, createSecret } = ctx;
 
@@ -453,10 +446,7 @@ export function SecretsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-md border border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
-        Routine secrets apply to every task this routine creates. They override matching keys in
-        project and agent env. <span className="font-mono">PAPERCLIP_*</span> names are reserved.
-      </div>
+      <div className="rounded-md border border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_cff8174eeb18" components={{ part1: <>{<span className="font-mono">PAPERCLIP_*</span>}</> }} /></div>
 
 
       <EnvironmentVariablesEditor
@@ -471,6 +461,7 @@ export function SecretsSection() {
 }
 
 export function DeliverySection() {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, routine } = ctx;
 
@@ -484,11 +475,9 @@ export function DeliverySection() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Concurrency
-        </p>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:concurrency_8708492f")}</p>
         <RadioCardGroup
-          ariaLabel="Concurrency policy"
+          ariaLabel={t("final-components-b:routine-sections.editable-sections.Concurrency_policy_a8ac65")}
           value={editDraft.concurrencyPolicy}
           onValueChange={(concurrencyPolicy) =>
             setEditDraft((current) => ({ ...current, concurrencyPolicy }))
@@ -497,11 +486,9 @@ export function DeliverySection() {
         />
       </div>
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Catch-up
-        </p>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:catchUp_1c2d0f8e")}</p>
         <RadioCardGroup
-          ariaLabel="Catch-up policy"
+          ariaLabel={t("final-components-b:routine-sections.editable-sections.Catch_up_policy_7e194d")}
           value={editDraft.catchUpPolicy}
           onValueChange={(catchUpPolicy) =>
             setEditDraft((current) => ({ ...current, catchUpPolicy }))
@@ -510,11 +497,9 @@ export function DeliverySection() {
         />
       </div>
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Advanced run policy
-        </p>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:advancedRunPolicy_02eb5cf7")}</p>
         <RadioCardGroup
-          ariaLabel="Advanced run policy"
+          ariaLabel={t("final-components-b:routine-sections.editable-sections.Advanced_run_policy_02eb5c")}
           value={editDraft.activityGatePolicy}
           onValueChange={(activityGatePolicy) =>
             setEditDraft((current) => ({ ...current, activityGatePolicy }))
@@ -523,15 +508,12 @@ export function DeliverySection() {
           disabled={!hasScheduleTrigger}
         />
         {!hasScheduleTrigger ? (
-          <p className="text-xs text-muted-foreground">
-            Add a schedule trigger to gate runs on activity. Webhook, manual, and API fires always
-            run.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("task-components:addAScheduleTriggerToGateRuns_c62e42a1")}</p>
         ) : gateEnabled ? (
           <div className="space-y-2 rounded-lg border border-border p-3">
-            <Label className="text-xs font-medium">Activity scope</Label>
+            <Label className="text-xs font-medium">{t("task-components:activityScope_98a37b44")}</Label>
             <RadioCardGroup
-              ariaLabel="Activity gate scope"
+              ariaLabel={t("final-components-b:routine-sections.editable-sections.Activity_gate_scope_24e9df")}
               value={editDraft.activityGateScope}
               onValueChange={(activityGateScope) =>
                 setEditDraft((current) => ({ ...current, activityGateScope }))
@@ -568,6 +550,7 @@ function NextFiresPreview({
   triggers: RoutineDetailType["triggers"];
   concurrencyPolicy: string;
 }) {
+  useTranslation("task-components");
   const preview = useMemo(() => {
     const schedule = triggers
       .filter((trigger) => trigger.kind === "schedule" && trigger.enabled && trigger.cronExpression)
@@ -588,9 +571,7 @@ function NextFiresPreview({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-        Next 5 fires
-      </p>
+      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:next5Fires_10b02c89")}</p>
       {preview ? (
         <>
           <div className="space-y-1.5 rounded-lg border border-border p-3 font-mono text-xs">
@@ -608,16 +589,10 @@ function NextFiresPreview({
               </div>
             ))}
           </div>
-          <p className="text-(length:--text-micro) text-muted-foreground/60">
-            Preview assumes the previous run is still in flight when the next fires. Times shown in{" "}
-            {preview.timeZone}.
-          </p>
+          <p className="text-(length:--text-micro) text-muted-foreground/60"><Trans ns="task-components" i18nKey="sentence_66441a6f9242" components={{ part1: <>{preview.timeZone}</> }} /></p>
         </>
       ) : (
-        <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-          No enabled schedule trigger to preview. Add a schedule in Triggers to see how this policy
-          treats upcoming fires.
-        </p>
+        <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">{t("task-components:noEnabledScheduleTriggerToPreviewAdd_54271cad")}</p>
       )}
     </div>
   );

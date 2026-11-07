@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { withLiveToastPresentation } from "../lib/live-update-toast";
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
@@ -266,15 +268,15 @@ function resolveActorLabel(
   if (actorType === "agent" && actorId) {
     return (
       resolveAgentName(queryClient, companyId, actorId) ??
-      `Agent ${shortId(actorId)}`
+      t("final-configuration:actorAgent", { id: shortId(actorId) })
     );
   }
-  if (actorType === "system") return "System";
+  if (actorType === "system") return t("final-configuration:actorSystem");
   if (actorType === "user" && actorId) {
     return resolveUserName(queryClient, companyId, actorId) ??
-      (actorId === "board" || actorId === "local-board" ? "Board" : `User ${shortId(actorId)}`);
+      (actorId === "board" || actorId === "local-board" ? t("final-configuration:actorBoard") : t("final-configuration:actorUser", { id: shortId(actorId) }));
   }
-  return actorType === "plugin" ? "Plugin" : "Unknown actor";
+  return actorType === "plugin" ? t("final-configuration:actorPlugin") : t("final-configuration:actorUnknown");
 }
 
 interface IssueToastContext {
@@ -379,16 +381,16 @@ function resolveIssueToastContext(
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??
     cachedIssue?.identifier;
-  const ref = identifier ?? "Task";
+  const ref = () => identifier ?? t("final-configuration:taskFallback");
   const title =
     readString(details?.title) ??
     readString(details?.issueTitle) ??
     cachedIssue?.title ??
     null;
   return {
-    ref,
+    get ref() { return ref(); },
     title,
-    label: title ? `${ref} - ${truncate(title, 72)}` : ref,
+    get label() { return title ? `${ref()} - ${truncate(title, 72)}` : ref(); },
     href: `/issues/${identifier ?? issueId}`,
   };
 }
@@ -1005,36 +1007,50 @@ const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
+function liveStatusLabel(status: string): string {
+  switch (status) {
+    case "backlog": return t("final-configuration:taskStatus_backlog");
+    case "todo": return t("final-configuration:taskStatus_todo");
+    case "in_progress": return t("final-configuration:taskStatus_in_progress");
+    case "in_review": return t("final-configuration:taskStatus_in_review");
+    case "done": return t("final-configuration:taskStatus_done");
+    case "blocked": return t("final-configuration:taskStatus_blocked");
+    case "cancelled": return t("final-configuration:taskStatus_cancelled");
+    case "monitoring": return t("final-configuration:taskStatus_monitoring");
+    default: return status;
+  }
+}
+
 function describeIssueUpdate(
   details: Record<string, unknown> | null,
 ): string | null {
   if (!details) return null;
   const changes: string[] = [];
   if (typeof details.status === "string")
-    changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
+    changes.push(t("final-configuration:statusChanged", { status: liveStatusLabel(details.status) }));
   if (typeof details.priority === "string")
-    changes.push(`priority -> ${details.priority}`);
+    changes.push(t("final-configuration:priorityChanged", { priority: ["critical", "high", "medium", "low"].includes(details.priority) ? t(`final-configuration:priority_${details.priority}`) : details.priority }));
   if (
     typeof details.assigneeAgentId === "string" ||
     typeof details.assigneeUserId === "string"
   ) {
-    changes.push("reassigned");
+    changes.push(t("final-configuration:reassigned"));
   } else if (
     details.assigneeAgentId === null ||
     details.assigneeUserId === null
   ) {
-    changes.push("unassigned");
+    changes.push(t("final-configuration:unassigned"));
   }
   if (details.reopened === true) {
     const from = readString(details.reopenedFrom);
     changes.push(
-      from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened",
+      from ? t("final-configuration:reopenedFrom", { status: liveStatusLabel(from) }) : t("final-configuration:reopened"),
     );
   }
-  if (typeof details.title === "string") changes.push("title changed");
+  if (typeof details.title === "string") changes.push(t("final-configuration:titleChanged"));
   if (typeof details.description === "string")
-    changes.push("description changed");
-  if (changes.length > 0) return changes.join(", ");
+    changes.push(t("final-configuration:descriptionChanged"));
+  if (changes.length > 0) return changes.join(t("final-configuration:changesSeparator"));
   return null;
 }
 
@@ -1069,7 +1085,7 @@ function buildActivityToast(
       identifier: readString(payload.issueIdentifier) ?? readString(details?.identifier),
     },
   );
-  const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const actor = () => readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
   const cachedAgent = actorType === "agent" && actorId
     ? queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId))?.find((a) => a.id === actorId)
       ?? queryClient.getQueryData<Agent>(queryKeys.agents.detail(actorId))
@@ -1079,7 +1095,7 @@ function buildActivityToast(
       ?.users.find((u) => u.principalId === actorId)?.user
     : undefined;
   const toastActor: ToastActor | undefined = actorId && (actorType === "user" || actorType === "agent")
-    ? { type: actorType, id: actorId, name: actor,
+    ? { type: actorType, id: actorId, get name() { return actor(); },
       image: payload.actorImage !== undefined ? readString(payload.actorImage) : cachedUser?.image,
       appearance: actorType === "agent"
         ? resolveAgentAppearance(payload.actorAppearance !== undefined ? payload.actorAppearance : cachedAgent?.appearance, actorId) : undefined }
@@ -1094,14 +1110,14 @@ function buildActivityToast(
   if (isSelfActivity) return null;
 
   if (action === "issue.created") {
-    return {
+    return withLiveToastPresentation({
       actor: toastActor,
-      title: `${actor} created ${issue.ref}`,
+      get title() { return t("final-configuration:issueCreated", { actor: actor(), ref: issue.ref }); },
       body: issue.title ? truncate(issue.title, 96) : undefined,
       tone: "success",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: { get label() { return t("final-configuration:viewIssue", { ref: issue.ref }); }, href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
-    };
+    });
   }
 
   if (action === "issue.updated") {
@@ -1109,22 +1125,21 @@ function buildActivityToast(
       // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
       return null;
     }
-    const changeDesc = describeIssueUpdate(details);
-    const body = changeDesc
+    const body = () => { const changeDesc = describeIssueUpdate(details); return changeDesc
       ? issue.title
         ? `${truncate(issue.title, 64)} - ${changeDesc}`
         : changeDesc
       : issue.title
         ? truncate(issue.title, 96)
-        : issue.label;
-    return {
+        : issue.label; };
+    return withLiveToastPresentation({
       actor: toastActor,
-      title: `${actor} updated ${issue.ref}`,
-      body: truncate(body, 100),
+      get title() { return t("final-configuration:issueUpdated", { actor: actor(), ref: issue.ref }); },
+      get body() { return truncate(body(), 100); },
       tone: "info",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: { get label() { return t("final-configuration:viewIssue", { ref: issue.ref }); }, href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
-    };
+    });
   }
 
   const commentId = readString(details?.commentId);
@@ -1132,33 +1147,33 @@ function buildActivityToast(
   const reopened = details?.reopened === true;
   const updated = details?.updated === true;
   const reopenedFrom = readString(details?.reopenedFrom);
-  const reopenedLabel = reopened
+  const reopenedLabel = () => reopened
     ? reopenedFrom
-      ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
+      ? t("final-configuration:reopenedFrom", { status: liveStatusLabel(reopenedFrom) })
+      : t("final-configuration:reopened")
     : null;
-  const title = reopened
-    ? `${actor} reopened and commented on ${issue.ref}`
+  const title = () => reopened
+    ? t("final-configuration:issueReopenedComment", { actor: actor(), ref: issue.ref })
     : updated
-      ? `${actor} commented and updated ${issue.ref}`
-      : `${actor} commented on ${issue.ref}`;
-  const body = bodySnippet
-    ? reopenedLabel
-      ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
+      ? t("final-configuration:issueCommentUpdate", { actor: actor(), ref: issue.ref })
+      : t("final-configuration:issueComment", { actor: actor(), ref: issue.ref });
+  const body = () => bodySnippet
+    ? reopenedLabel()
+      ? `${reopenedLabel()} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
       : bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")
-    : reopenedLabel
+    : reopenedLabel()
       ? issue.title
-        ? `${reopenedLabel} - ${issue.title}`
-        : reopenedLabel
+        ? `${reopenedLabel()} - ${issue.title}`
+        : reopenedLabel()
       : (issue.title ?? undefined);
-  return {
+  return withLiveToastPresentation({
     actor: toastActor,
-    title,
-    body: body ? truncate(body, 96) : undefined,
+    get title() { return title(); },
+    get body() { return body() ? truncate(body()!, 96) : undefined; },
     tone: "info",
-    action: { label: `View ${issue.ref}`, href: issue.href },
+    action: { get label() { return t("final-configuration:viewIssue", { ref: issue.ref }); }, href: issue.href },
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
-  };
+  });
 }
 
 function buildJoinRequestToast(
@@ -1174,15 +1189,14 @@ function buildJoinRequestToast(
     return null;
 
   const requestType = readString(details?.requestType);
-  const label = requestType === "agent" ? "Agent" : "Someone";
 
-  return {
-    title: `${label} wants to join`,
-    body: "A new join request is waiting for approval.",
+  return withLiveToastPresentation({
+    get title() { return t(requestType === "agent" ? "final-configuration:joinAgent" : "final-configuration:joinHuman"); },
+    get body() { return t("final-configuration:joinWaiting"); },
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/mine" },
+    action: { get label() { return t("final-configuration:viewInbox"); }, href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
-  };
+  });
 }
 
 function buildAgentStatusToast(
@@ -1196,8 +1210,8 @@ function buildAgentStatusToast(
   if (!agentId || !status || !AGENT_TOAST_STATUSES.has(status)) return null;
 
   const tone = status === "error" ? "error" : "info";
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
-  const title = status === "running" ? `${name} started` : `${name} errored`;
+  const name = () => nameOf(agentId) ?? t("final-configuration:actorAgent", { id: shortId(agentId) });
+  const title = () => t(status === "running" ? "final-configuration:agentStarted" : "final-configuration:agentErrored", { name: name() });
 
   const agents = queryClient.getQueryData<Agent[]>(
     queryKeys.agents.list(companyId),
@@ -1205,13 +1219,13 @@ function buildAgentStatusToast(
   const agent = agents?.find((a) => a.id === agentId);
   const body = agent?.title ?? undefined;
 
-  return {
-    title,
+  return withLiveToastPresentation({
+    get title() { return title(); },
     body,
     tone,
-    action: { label: "View agent", href: `/agents/${agentId}` },
+    action: { get label() { return t("final-configuration:viewAgent"); }, href: `/agents/${agentId}` },
     dedupeKey: `agent-status:${agentId}:${status}`,
-  };
+  });
 }
 
 function buildRunStatusToast(
@@ -1233,20 +1247,20 @@ function buildRunStatusToast(
   if (errorCode === "workspace_busy") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
-  const name = nameOf(agentId) ?? "Agent";
+  const name = () => nameOf(agentId) ?? t("final-configuration:agentFallback");
   if (
     status === "failed" &&
     errorCode === "low_trust_isolation_unavailable" &&
     contextSource?.startsWith("chat:")
   ) {
-    return {
-      title: `${name} couldn't start this chat`,
-      body: "This external chat identity isn't linked, and isolated guest workspaces are disabled. Link the identity in Connectors or enable isolated workspaces, then start a new task.",
+    return withLiveToastPresentation({
+      get title() { return t("final-configuration:chatStartFailed", { name: name() }); },
+      get body() { return t("final-configuration:chatIdentityUnavailable"); },
       tone: "warn",
       ttlMs: 10_000,
-      action: { label: "Open chat connections", href: "/apps" },
+      action: { get label() { return t("final-configuration:openChatConnections"); }, href: "/apps" },
       dedupeKey: `run-status:${runId}:${status}`,
-    };
+    });
   }
   const tone =
     status === "succeeded"
@@ -1254,31 +1268,18 @@ function buildRunStatusToast(
       : status === "cancelled"
         ? "info"
         : "error";
-  const statusLabel =
-    status === "succeeded"
-      ? "succeeded"
-      : status === "failed"
-        ? "failed"
-        : status === "timed_out"
-          ? "timed out"
-          : "cancelled";
-  const title = `${name} run ${statusLabel}`;
+  const title = () => t(`final-configuration:run_${status}`, { name: name() });
 
-  let body: string | undefined;
-  if (error) {
-    body = truncate(error, 100);
-  } else if (triggerDetail) {
-    body = `Trigger: ${triggerDetail}`;
-  }
+  const body = () => error ? truncate(error, 100) : triggerDetail ? t("final-configuration:runTrigger", { detail: triggerDetail }) : undefined;
 
-  return {
-    title,
-    body,
+  return withLiveToastPresentation({
+    get title() { return title(); },
+    get body() { return body(); },
     tone,
     ttlMs: status === "succeeded" ? 5000 : 7000,
-    action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
+    action: { get label() { return t("final-configuration:viewRun"); }, href: `/agents/${agentId}/runs/${runId}` },
     dedupeKey: `run-status:${runId}:${status}`,
-  };
+  });
 }
 
 /**

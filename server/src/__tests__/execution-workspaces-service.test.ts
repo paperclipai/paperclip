@@ -728,6 +728,65 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     } finally { unsubscribe(); }
   });
 
+  it("tags readiness reasons at first-party branches, not injected diagnostic text, with raw values and read-only guards intact", async () => {
+    const seeded = await seedTerminalWorkspace();
+    const collision = "The workspace has 2 modified tracked files.";
+    const inspect = vi.fn(async () => ({ statusInspectionSucceeded: false, warnings: [collision, "provider RAW /diagnostic"], git: {
+      repoRoot: seeded.repoRoot, workspacePath: seeded.worktreePath, branchName: "RAW/branch", baseRef: "RAW/base",
+      hasDirtyTrackedFiles: true, hasUntrackedFiles: true, dirtyEntryCount: 2, untrackedEntryCount: 1,
+      aheadCount: 2, behindCount: 1, isMergedIntoBase: false, createdByRuntime: false,
+    } }));
+    const service = executionWorkspaceService(db, { inspectGitCloseReadiness: inspect });
+    const [before] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const value = await service.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(value?.warnings).toEqual([collision, "provider RAW /diagnostic", collision, "The workspace has 1 untracked file.",
+      "This workspace is 2 commits ahead of RAW/base and is not merged.", "This workspace is 1 commit behind RAW/base."]);
+    expect(value?.presentation?.warnings).toEqual({ 2: { code: "dirty_tracked_files", params: { count: 2 } },
+      3: { code: "untracked_files", params: { count: 1 } }, 4: { code: "ahead_of_base", params: { count: 2, baseRef: "RAW/base" } },
+      5: { code: "behind_base", params: { count: 1, baseRef: "RAW/base" } } });
+    expect(value?.blockingReasons).toEqual(["Paperclip could not verify the workspace git status. Retry before destructive cleanup."]);
+    expect(value?.presentation?.blockingReasons).toEqual({ 0: { code: "git_status_unverified" } });
+    expect(value?.state).toBe("blocked");
+    expect(value?.isDestructiveCloseAllowed).toBe(false);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))).toEqual([before]);
+  }, 20_000);
+
+  it("emits presentation variants only from the four close-action producer branches without changing raw actions or inspecting mutations", async () => {
+    const seeded = await seedTerminalWorkspace();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId: seeded.companyId, projectId: seeded.projectId,
+      name: "RAW source", cwd: seeded.repoRoot, isPrimary: true, cleanupCommand: "echo project" });
+    await db.update(executionWorkspaces).set({ projectWorkspaceId, metadata: { config: { cleanupCommand: "echo workspace", teardownCommand: "echo teardown" } } })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const read = () => db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const before = await read();
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.plannedActions.filter(action => action.kind === "cleanup_command")).toEqual([
+      { kind: "cleanup_command", label: "Run workspace cleanup command", description: "Workspace-specific cleanup runs before teardown.", command: "echo workspace", presentation: { variant: "workspace_cleanup" } },
+      { kind: "cleanup_command", label: "Run project workspace cleanup command", description: "Project workspace cleanup runs before execution workspace teardown.", command: "echo project", presentation: { variant: "project_workspace_cleanup" } },
+    ]);
+    expect(readiness?.plannedActions.find(action => action.kind === "teardown_command")?.command).toBe("echo teardown");
+    expect(await read()).toEqual(before);
+    await db.update(executionWorkspaces).set({ providerType: "plugin" }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const plugin = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(plugin?.plannedActions.find(action => action.kind === "remove_provider_workspace")).toEqual({ kind: "remove_provider_workspace",
+      label: "Remove provider workspace", description: "The storage plugin will verify remote recovery and remove the workspace.", command: null,
+      presentation: { variant: "plugin_storage_removal" } });
+    expect(plugin?.plannedActions.some(action => action.kind === "cleanup_command" || action.kind === "teardown_command")).toBe(false);
+    await db.update(executionWorkspaces).set({ providerType: "local_fs", metadata: { config: { cleanupCommand: "echo workspace" }, remoteWorkspace: {
+      schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null, source: { kind: "empty" }, location: null, writerRunId: null, dirty: true,
+    } } }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const remoteBefore = await read();
+    const remote = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(remote?.plannedActions.find(action => action.kind === "remove_provider_workspace")).toEqual({ kind: "remove_provider_workspace",
+      label: "Release remote workspace compute", description: "Release the sandbox and keep the saved workspace files.", command: null,
+      presentation: { variant: "remote_compute_release" } });
+    expect(remote?.blockingReasons).toContain("Remote workspace close does not support custom cleanup or teardown commands.");
+    expect(remote?.isDestructiveCloseAllowed).toBe(false);
+    expect(remote?.plannedActions.some(action => action.kind === "cleanup_command" || action.kind === "teardown_command")).toBe(false);
+    expect(await read()).toEqual(remoteBefore);
+  }, 20_000);
+
   it("reports a squash cross-branch delivery as merged_via_pr and suppresses the ancestry warning", async () => {
     const seeded = await seedTerminalWorkspace();
     await db.update(executionWorkspaces).set({

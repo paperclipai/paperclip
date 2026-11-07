@@ -1,3 +1,6 @@
+import { t as finalPagesT } from "@/i18n";
+import { getPageValueLabel } from "@/pages/tools/shared";
+import { useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -54,10 +57,11 @@ function serviceTone(status: string): "success" | "warn" | "error" | "muted" {
 }
 
 function CellGlyph({ status }: { status: CellStatus }) {
-  if (status === "pass") return <Check className="mx-auto h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-label="pass" />;
-  if (status === "fail") return <X className="mx-auto h-4 w-4 text-destructive" aria-label="fail" />;
-  if (status === "skipped") return <Minus className="mx-auto h-4 w-4 text-amber-500" aria-label="skipped" />;
-  return <span className="mx-auto block h-1.5 w-1.5 rounded-full bg-muted-foreground/30" aria-label="not run" />;
+  const { t: translateAgentPage } = useTranslation("agents");
+  if (status === "pass") return <Check className="mx-auto h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-label={translateAgentPage("agents:pass")} />;
+  if (status === "fail") return <X className="mx-auto h-4 w-4 text-destructive" aria-label={translateAgentPage("agents:fail")} />;
+  if (status === "skipped") return <Minus className="mx-auto h-4 w-4 text-amber-500" aria-label={translateAgentPage("agents:skipped")} />;
+  return <span className="mx-auto block h-1.5 w-1.5 rounded-full bg-muted-foreground/30" aria-label={translateAgentPage("agents:not_run")} />;
 }
 
 const HEALTH_STYLES: Record<string, string> = {
@@ -68,6 +72,7 @@ const HEALTH_STYLES: Record<string, string> = {
 };
 
 export function SmokeLabTab({ companyId }: { companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { enabled, loaded } = useSmokeLabEnabled();
   const qc = useQueryClient();
   const { pushToast } = useToast();
@@ -110,55 +115,55 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
   const startMutation = useMutation({
     mutationFn: () => smokeLabApi.startServices(companyId),
     onSuccess: () => {
-      pushToast({ title: "Smoke services started", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:smoke_services_started"), tone: "success" });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't start services", body: describeError(e).body, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: translateAgentPage("agents:couldn_t_start_services"), body: describeError(e).body, tone: "error" }),
   });
 
   const stopMutation = useMutation({
     mutationFn: () => smokeLabApi.stopServices(companyId),
     onSuccess: () => {
-      pushToast({ title: "Smoke services stopped", tone: "info" });
+      pushToast({ title: translateAgentPage("agents:smoke_services_stopped"), tone: "info" });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't stop services", body: describeError(e).body, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: translateAgentPage("agents:couldn_t_stop_services"), body: describeError(e).body, tone: "error" }),
   });
 
   const installMutation = useMutation({
     mutationFn: () => smokeLabApi.installFixtures(companyId),
     onSuccess: (r) => {
       pushToast({
-        title: r.created ? "Fixture apps installed" : "Fixture apps already present",
+        title: r.created ? translateAgentPage("agents:fixture_apps_installed") : translateAgentPage("agents:fixture_apps_already_present"),
         tone: "success",
       });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't install fixtures", body: describeError(e).body, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: translateAgentPage("agents:couldn_t_install_fixtures"), body: describeError(e).body, tone: "error" }),
   });
 
   const resetMutation = useMutation({
     mutationFn: () => smokeLabApi.reset(companyId),
     onSuccess: () => {
-      pushToast({ title: "Smoke Lab reset", tone: "info" });
+      pushToast({ title: translateAgentPage("agents:smoke_lab_reset"), tone: "info" });
       setSelectedRunId(null);
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't reset", body: describeError(e).body, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: translateAgentPage("agents:couldn_t_reset"), body: describeError(e).body, tone: "error" }),
   });
 
   const runSmokeMutation = useMutation({
     mutationFn: () => smokeLabApi.createRun(companyId, { trigger: "manual", summary: {} }),
     onSuccess: (r) => {
       pushToast({
-        title: "Smoke run started",
-        body: "The browser runner records each step as it completes.",
+        title: translateAgentPage("agents:smoke_run_started"),
+        body: translateAgentPage("agents:the_browser_runner_records_each_step_as_it"),
         tone: "success",
       });
       setSelectedRunId(r.run.id);
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't start a run", body: describeError(e).body, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: translateAgentPage("agents:couldn_t_start_a_run"), body: describeError(e).body, tone: "error" }),
   });
 
   const anyMutating =
@@ -174,19 +179,15 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       <div className="rounded-lg border border-border bg-card p-6">
         <div className="flex items-center gap-2 text-foreground">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Smoke Lab is turned off</h2>
+          <h2 className="text-base font-semibold">{translateAgentPage("agents:smoke_lab_is_turned_off")}</h2>
         </div>
-        <p className="mt-1.5 max-w-xl text-sm text-muted-foreground">
-          The Smoke Lab is an experimental developer surface for exercising the integration paths
-          against deterministic local fixtures. Turn on <code className="rounded bg-muted px-1 py-0.5 text-xs">Smoke Lab</code>{" "}
-          under Settings → Experimental to enable it.
-        </p>
+        <p className="mt-1.5 max-w-xl text-sm text-muted-foreground">{translateAgentPage("agents:the_smoke_lab_is_an_experimental_developer_surface")}{" "}<code className="rounded bg-muted px-1 py-0.5 text-xs">{finalPagesT("final-pages:Smoke_Lab_876bad")}</code>{" "}{translateAgentPage("agents:under_settings_experimental_to_enable_it")}</p>
       </div>
     );
   }
 
   if (!loaded) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading Smoke Lab…</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{translateAgentPage("agents:loading_smoke_lab")}</div>;
   }
 
   const services = servicesQuery.data?.services ?? [];
@@ -198,30 +199,23 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       <header>
         <div className="flex flex-wrap items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-xl font-bold text-foreground">Smoke Lab</h1>
-          <Badge variant="outline">Experimental</Badge>
+          <h1 className="text-xl font-bold text-foreground">{translateAgentPage("agents:smoke_lab")}</h1>
+          <Badge variant="outline">{translateAgentPage("agents:experimental")}</Badge>
           <a
             href="https://github.com/paperclipai/paperclip/blob/master/doc/connections/SMOKE-LAB-TUTORIAL.md"
             target="_blank"
             rel="noreferrer"
             className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
           >
-            <BookOpen className="h-4 w-4" /> Hands-on tutorial
-          </a>
+            <BookOpen className="h-4 w-4" />{" "}{translateAgentPage("agents:hands_on_tutorial")}</a>
         </div>
-        <p className="mt-1.5 max-w-3xl text-sm text-muted-foreground">
-          Exercise every integration path (P1–P7) end-to-end against deterministic local fixtures —
-          a fake OAuth provider and loopback MCP servers. Nothing here touches a real vendor or a
-          real credential. Start the services, install the fixture apps, then drive the governed
-          lifecycle from a browser smoke run. New here? Follow the{" "}
+        <p className="mt-1.5 max-w-3xl text-sm text-muted-foreground">{translateAgentPage("agents:exercise_every_integration_path_p1_p7_end_to")}{" "}
           <a
             href="https://github.com/paperclipai/paperclip/blob/master/doc/connections/SMOKE-LAB-TUTORIAL.md"
             target="_blank"
             rel="noreferrer"
             className="font-medium text-primary hover:underline"
-          >
-            hands-on tutorial
-          </a>
+          >{translateAgentPage("agents:hands_on_tutorial_5731f6")}</a>
           .
         </p>
       </header>
@@ -231,7 +225,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <ServerCog className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-foreground">Fixture services</h2>
+            <h2 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:fixture_services")}</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -239,32 +233,26 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
               onClick={() => startMutation.mutate()}
               disabled={anyMutating}
             >
-              <Power className="h-4 w-4" /> Start services
-            </Button>
+              <Power className="h-4 w-4" />{" "}{translateAgentPage("agents:start_services")}</Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => stopMutation.mutate()}
               disabled={anyMutating}
-            >
-              Stop
-            </Button>
+            >{translateAgentPage("agents:stop")}</Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => installMutation.mutate()}
               disabled={anyMutating}
-            >
-              Install fixture apps
-            </Button>
+            >{translateAgentPage("agents:install_fixture_apps")}</Button>
             <Button
               size="sm"
               variant="ghost"
               onClick={() => resetMutation.mutate()}
               disabled={anyMutating}
             >
-              <RotateCcw className="h-4 w-4" /> Reset
-            </Button>
+              <RotateCcw className="h-4 w-4" />{" "}{translateAgentPage("agents:reset")}</Button>
           </div>
         </div>
 
@@ -294,7 +282,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                       serviceTone(service.status) === "muted" && "text-muted-foreground",
                     )}
                   >
-                    {service.status}
+                    {getPageValueLabel(service.status)}
                   </span>
                 </span>
               </div>
@@ -302,27 +290,24 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                 <div className="flex items-baseline gap-2">
                   <dt className="w-16 shrink-0 text-muted-foreground">URL</dt>
                   <dd className="min-w-0 break-all font-mono text-foreground">
-                    {service.url ?? <span className="text-muted-foreground">not running</span>}
+                    {service.url ?? <span className="text-muted-foreground">{translateAgentPage("agents:not_running")}</span>}
                   </dd>
                 </div>
               </dl>
             </div>
           ))}
           {services.length === 0 && (
-            <p className="text-sm text-muted-foreground">No services reported. Start the fixture services above.</p>
+            <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_services_reported_start_the_fixture_services_above")}</p>
           )}
         </div>
 
         {/* Demo credentials for the fake OAuth login */}
         <div className="rounded-lg border border-dashed border-border bg-muted/30 p-3">
-          <p className="text-xs font-semibold text-foreground">Fake OAuth demo credentials</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Type these into the fake provider's real consent page during a P1 (OAuth) smoke. Fixed
-            fixture values — safe to show.
-          </p>
+          <p className="text-xs font-semibold text-foreground">{translateAgentPage("agents:fake_oauth_demo_credentials")}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:type_these_into_the_fake_provider_s_real")}</p>
           <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs text-foreground">
-            <span>email: {DEMO_EMAIL}</span>
-            <span>password: {DEMO_PASSWORD}</span>
+            <span>{translateAgentPage("agents:email")}{" "}{DEMO_EMAIL}</span>
+            <span>{translateAgentPage("agents:password")}{" "}{DEMO_PASSWORD}</span>
           </div>
         </div>
       </section>
@@ -330,19 +315,19 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       {/* Results matrix */}
       <section className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-foreground">Integration matrix</h2>
+          <h2 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:integration_matrix")}</h2>
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1"><Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> pass</span>
-            <span className="inline-flex items-center gap-1"><X className="h-3.5 w-3.5 text-destructive" /> fail</span>
-            <span className="inline-flex items-center gap-1"><Minus className="h-3.5 w-3.5 text-amber-500" /> skipped</span>
-            <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" /> not run</span>
+            <span className="inline-flex items-center gap-1"><Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />{" "}{translateAgentPage("agents:pass")}</span>
+            <span className="inline-flex items-center gap-1"><X className="h-3.5 w-3.5 text-destructive" />{" "}{translateAgentPage("agents:fail")}</span>
+            <span className="inline-flex items-center gap-1"><Minus className="h-3.5 w-3.5 text-amber-500" />{" "}{translateAgentPage("agents:skipped")}</span>
+            <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />{" "}{translateAgentPage("agents:not_run")}</span>
           </div>
         </div>
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse text-xs">
             <thead>
               <tr className="border-b border-border bg-muted/40">
-                <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 text-left font-semibold text-foreground">Path</th>
+                <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 text-left font-semibold text-foreground">{translateAgentPage("agents:path")}</th>
                 {LIFECYCLE_STAGES.map((stage) => (
                   <th key={stage.key} className="px-2 py-2 text-center font-medium text-muted-foreground">
                     {stage.label}
@@ -374,9 +359,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
           </table>
         </div>
         {steps.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            No steps recorded for the selected run yet. Run a browser smoke to populate the matrix.
-          </p>
+          <p className="text-xs text-muted-foreground">{translateAgentPage("agents:no_steps_recorded_for_the_selected_run_yet")}</p>
         )}
       </section>
 
@@ -384,11 +367,11 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       <section className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-foreground">Runs</h2>
+            <h2 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:runs")}</h2>
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className={cn("h-2 w-2 rounded-full", HEALTH_STYLES[health])} />
-              {health === "unknown" ? "no runs yet" : health}
-              {failing.length > 0 && ` · failing: ${failing.join(", ")}`}
+              {health === "unknown" ? translateAgentPage("agents:no_runs_yet_17925a") : health}
+              {failing.length > 0 && translateAgentPage("agents:failing", { value1: failing.join(", ") })}
             </span>
           </div>
           <Button size="sm" onClick={() => runSmokeMutation.mutate()} disabled={anyMutating}>
@@ -396,15 +379,13 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <Play className="h-4 w-4" />
-            )}
-            Run browser smoke now
-          </Button>
+            )}{translateAgentPage("agents:run_browser_smoke_now")}</Button>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-(--gtc-64)">
           <div className="rounded-lg border border-border">
             {runs.length === 0 && (
-              <p className="p-4 text-sm text-muted-foreground">No runs recorded yet.</p>
+              <p className="p-4 text-sm text-muted-foreground">{translateAgentPage("agents:no_runs_recorded_yet")}</p>
             )}
             <ul className="divide-y divide-border">
               {runs.map((run: SmokeRun) => {
@@ -433,18 +414,17 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
 
           <div className="min-w-0 rounded-lg border border-border">
             {!activeRun && (
-              <p className="p-4 text-sm text-muted-foreground">Select a run to see its steps.</p>
+              <p className="p-4 text-sm text-muted-foreground">{translateAgentPage("agents:select_a_run_to_see_its_steps")}</p>
             )}
             {activeRun && (
               <div className="flex flex-col">
                 <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2.5">
-                  <span className="text-xs text-muted-foreground">
-                    Started {formatTime(activeRun.startedAt)} · finished {formatTime(activeRun.finishedAt)}
+                  <span className="text-xs text-muted-foreground">{translateAgentPage("agents:started")}{" "}{formatTime(activeRun.startedAt)}{" "}{translateAgentPage("agents:finished_e593d0")}{" "}{formatTime(activeRun.finishedAt)}
                   </span>
                   <StatusBadge status={activeRun.status} />
                 </div>
                 {steps.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground">No steps recorded for this run.</p>
+                  <p className="p-4 text-sm text-muted-foreground">{translateAgentPage("agents:no_steps_recorded_for_this_run")}</p>
                 ) : (
                   <ul className="divide-y divide-border">
                     {steps.map((step) => (
@@ -471,15 +451,12 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                               target="_blank"
                               rel="noreferrer"
                               className="mt-1 inline-block text-(length:--text-micro) font-medium text-primary hover:underline"
-                            >
-                              View screenshot
-                            </a>
+                            >{translateAgentPage("agents:view_screenshot")}</a>
                           )}
                         </div>
                         {typeof step.durationMs === "number" && (
                           <span className="shrink-0 text-(length:--text-micro) tabular-nums text-muted-foreground">
-                            {step.durationMs}ms
-                          </span>
+                            {step.durationMs}{translateAgentPage("agents:ms_26cc32")}</span>
                         )}
                       </li>
                     ))}
