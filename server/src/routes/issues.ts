@@ -7161,11 +7161,20 @@ export function issueRoutes(
 
   async function requireRecoveryActionAuthority(
     req: Request,
-    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
     activeRecoveryAction: Awaited<
       ReturnType<typeof recoveryActionsSvc.getActiveForIssue>
     >,
-    input: { source: "issue_update" | "recovery_action_resolution" },
+    input: {
+      source: "issue_update" | "recovery_action_resolution";
+      existingBlockedByIssueIds?: string[];
+    },
   ) {
     if (req.actor.type !== "agent") return true;
     if (!activeRecoveryAction) return true;
@@ -7195,6 +7204,44 @@ export function issueRoutes(
       ))
     ) {
       return true;
+    }
+    if (
+      input.source === "issue_update" &&
+      issue.status === "blocked" &&
+      issue.assigneeAgentId == null &&
+      issue.assigneeUserId == null &&
+      activeRecoveryAction.ownerType === "board" &&
+      activeRecoveryAction.ownerAgentId == null &&
+      req.actor.runId != null &&
+      Object.keys(req.body).every((key) => key === "blockedByIssueIds") &&
+      Array.isArray(req.body.blockedByIssueIds)
+    ) {
+      const currentBlockerIds = new Set(
+        input.existingBlockedByIssueIds ?? [],
+      );
+      const requestedBlockerIds = [
+        ...new Set(req.body.blockedByIssueIds as string[]),
+      ];
+      const preservesCurrentBlockers = [...currentBlockerIds].every((id) =>
+        requestedBlockerIds.includes(id),
+      );
+      const addedBlockerIds = requestedBlockerIds.filter(
+        (id) => !currentBlockerIds.has(id),
+      );
+      if (preservesCurrentBlockers && addedBlockerIds.length > 0) {
+        const addedBlockers = await Promise.all(
+          addedBlockerIds.map((id) => svc.getById(id)),
+        );
+        if (
+          addedBlockers.every(
+            (blocker) =>
+              blocker?.companyId === issue.companyId &&
+              !isClosedIssueStatus(blocker.status),
+          )
+        ) {
+          return true;
+        }
+      }
     }
 
     throw forbidden("Agent cannot resolve another owner's recovery action", {
@@ -14557,7 +14604,12 @@ export function issueRoutes(
           req,
           existing,
           activeRecoveryActionBeforeUpdate,
-          { source: "issue_update" },
+          {
+            source: "issue_update",
+            existingBlockedByIssueIds: (existingRelations?.blockedBy ?? []).map(
+              (relation) => relation.id,
+            ),
+          },
         );
         const recoveryRestrictedSourceMutationRequested =
           activeRecoveryActionBeforeUpdate != null &&
