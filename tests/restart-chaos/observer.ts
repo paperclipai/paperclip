@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,6 +10,7 @@ import type { Timeline } from "./timeline.js";
 import type {
   InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
+import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
@@ -60,6 +62,43 @@ export function toRunSample(run: Json): RunSample {
   };
 }
 
+interface RunEventCursor {
+  seq: number;
+  lastAt: string | null;
+  /** Tool starts minus tool ends. PRP item ids are not unique per tool call, so this counts. */
+  openTools: number;
+  /** The run's latest recorded local runner process, until recovery reports it stopped. */
+  process: { pid: number; startedAt: string } | null;
+}
+
+/** R5 liveness: a tool in flight, or a recorded local runner process. */
+export function noteLivenessEvent(cursor: RunEventCursor, event: Json) {
+  const payload = (event.payload ?? {}) as Json;
+  switch (event.eventType) {
+    case "tool.execution.started": cursor.openTools += 1; break;
+    case "tool.execution.completed": cursor.openTools = Math.max(0, cursor.openTools - 1); break;
+    case "native.process_identity_recorded":
+      if (payload.targetKind === "local" && Number.isSafeInteger(payload.processPid) && typeof payload.processStartedAt === "string") {
+        // A replacement runner cannot finish a tool its predecessor started.
+        if (cursor.process && cursor.process.pid !== payload.processPid) cursor.openTools = 0;
+        cursor.process = { pid: payload.processPid, startedAt: payload.processStartedAt };
+      }
+      break;
+    case "native.local_process_stopped":
+      // A stopped runner's in-flight tools can never send their completion.
+      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; }
+      break;
+  }
+}
+
+/** Alive only when the PID still runs with the recorded start time, so a recycled PID never counts. */
+export function localProcessAlive(pid: number, startedAt: string): boolean {
+  if (process.platform === "win32") return false;
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeout: 5_000 });
+  const started = Date.parse(result.stdout?.trim() ?? "");
+  return Number.isFinite(started) && restartProcessStartMatches(new Date(started).toISOString(), startedAt);
+}
+
 export function latestIso(values: ReadonlyArray<unknown>): string | null {
   let best: number | null = null;
   for (const value of values) {
@@ -103,6 +142,9 @@ export class TaskObserver {
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
+
+  /** Replaceable in tests. A Daytona run's process is remote, so only local runs are checked. */
+  processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
     private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean },
@@ -193,6 +235,11 @@ export class TaskObserver {
   /** A `result` fault outside the accepted-but-unsettled window would test a different boundary. */
   private resultRunStillRunning(runs: readonly RunSample[]): boolean {
     return runs.some(run => run.id === this.record.resultRunId && run.status === "running");
+  }
+
+  /** A due fault the wave decided not to fire (for example, the storm ended during its checks). */
+  markTriggerMissed(fault: ScheduledFault) {
+    if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {
@@ -309,11 +356,11 @@ export class TaskObserver {
     }
   }
 
-  private readonly runEventCursors = new Map<string, { seq: number; lastAt: string | null }>();
+  private readonly runEventCursors = new Map<string, RunEventCursor>();
 
   private async runEvidence(run: RunSample): Promise<RunSample> {
     if (run.status !== "running") return run;
-    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null };
+    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null, openTools: 0, process: null };
     for (let page = 0; page < 3; page += 1) {
       const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
       if (!events?.length) break;
@@ -324,11 +371,14 @@ export class TaskObserver {
           this.record.resultRunId = run.id;
         }
         cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
+        noteLivenessEvent(cursor, event);
       }
       if (events.length < RUN_EVENT_PAGE) break;
     }
     this.runEventCursors.set(run.id, cursor);
-    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]) };
+    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]),
+      ...(cursor.openTools > 0 ? { toolInFlight: true } : {}),
+      ...(cursor.process && this.processAlive(cursor.process.pid, cursor.process.startedAt) ? { processAlive: true } : {}) };
   }
 
   private async sample(now: number): Promise<TaskSample> {

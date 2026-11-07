@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
+import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -378,6 +378,30 @@ describe("durable sandbox creation through the runtime entry point", () => {
       await runtime().flushDeferredOrphanCleanups();
       expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup",
         providerLeaseId: resources.get(operation.id) })]);
+    });
+    it("reclaims an issue-bound creation after its run failed and the issue finished on a later run", async () => {
+      // Mirrors a kept chaos database: the server was SIGKILLed 0.5 s after the
+      // intent committed, the run ended process_lost, and a later run finished
+      // the task. The intent stayed pending with no lease.
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Restart-crossing task", status: "done" });
+      await db.update(sandboxCreationOperations).set({ issueId }).where(eq(sandboxCreationOperations.id, operation.id));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRuns).values({ ...run!, id: randomUUID(), status: "succeeded", finishedAt: new Date() });
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([
+        expect.objectContaining({ state: "pending", leaseId: null, issueId, runId }),
+      ]);
+
+      await runtime().flushDeferredOrphanCleanups();
+
+      const [lease] = await db.select().from(environmentLeases);
+      expect(lease).toMatchObject({ status: "pending_cleanup", companyId, providerLeaseId: resources.get(operation.id) });
+      await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
+      expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
     });
     it("treats a restarted server that reused the creator PID as a different process", async () => {
       await interruptedCreation(async current => ({ ...current, bootId: randomUUID(),

@@ -1884,7 +1884,8 @@ to block budget admission.
 After native recovery reaches terminal failure, an incomplete receipt holds new
 work as recovering accounting; it does not open a hard-stop incident. When the
 run no longer records a provider process (recovery clears it only after a
-verified stop), no producer can deliver the receipt. A remote run reaches the
+verified stop), no producer can deliver the receipt. The same holds after the
+run's result was accepted. A remote run reaches the
 same point when every sandbox allocation it used carries a provider
 termination receipt (stopped or destroyed); a sandbox that may still run keeps
 the debt pending. Accounting then records
@@ -1947,8 +1948,12 @@ prices require no cleanup and must not be presented as zero-cost receipts.
 board cost reader with a non-viewer membership, and uses the existing audited,
 idempotent accounting service. It never executes an agent. The UI offers retry
 only when the saved run is eligible to record costs. Missing final usage changes
-its display label after fifteen minutes; elapsed time never settles the debt or
-discards a late receipt. Raw provider errors and credentials are excluded from
+its display label after fifteen minutes. Elapsed time never discards a late
+receipt. It settles the debt only for a native run whose recovery has ended
+(terminal failure or an accepted result) and whose closure evidence has not
+arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
+provenance saying closure evidence never arrived, an activity entry names the
+run, and the blocking unpriced-usage policy keeps counting that charge. Raw provider errors and credentials are excluded from
 cost details. ACP usage retains the runtime-selected model, including defaults;
 conflicting before/after model IDs do not authorize a single-model estimate.
 Remote OpenCode billing uses only credentials forwarded to the execution target.

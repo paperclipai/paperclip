@@ -424,6 +424,7 @@ import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
+  stopStaleRemoteRunnerBeforeBootstrap,
   readRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
   resolveRemoteProviderPackSource,
@@ -596,6 +597,46 @@ describe("remote controller restart adoption", () => {
     } });
     execute.mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 45, timedOut: false });
     expect(await adopted.isAlive()).toBe(false);
+  });
+  describe("stale runner stop before a same-run remote bootstrap", () => {
+    const execution = { binding: { runId: "run" }, session: { normalizedSessionId: "session" } } as never;
+    const signalled = (execute: ReturnType<typeof fixture>["execute"]) => execute.mock.calls
+      .map(([request]) => request.args.at(-1)).filter(signal => signal === "TERM" || signal === "KILL");
+    it("stops the interrupted runner with this run's identity before relaunch", async () => {
+      const { execute, target } = fixture();
+      // The runner exits on SIGTERM: every later process check finds it gone.
+      const live = execute.getMockImplementation()!;
+      let terminated = false;
+      execute.mockImplementation(async request => {
+        if (terminated && request.args[1]!.includes("expected_pid")) return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+        if (request.args.at(-1) === "TERM") terminated = true;
+        return live(request);
+      });
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 1_000, pollMs: 1 })).resolves.toBe("stopped");
+      expect(signalled(execute)).toEqual(["TERM"]);
+    });
+    it("escalates to SIGKILL when the runner ignores SIGTERM", async () => {
+      const { execute, target } = fixture();
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 20, pollMs: 1 })).resolves.toBe("killed");
+      expect(signalled(execute)).toEqual(["TERM", "KILL"]);
+    });
+    it("signals nothing when the sandbox runner belongs to another identity", async () => {
+      const { execute, target } = fixture({ runnerInstanceId: "different" });
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 20, pollMs: 1 })).resolves.toBe("no_prior_runner");
+      expect(signalled(execute)).toEqual([]);
+    });
+    it("signals nothing when no prior runner is alive", async () => {
+      const { execute, target } = fixture();
+      const live = execute.getMockImplementation()!;
+      execute.mockImplementation(async request => request.args[1]!.includes("expected_pid")
+        ? { stdout: "", stderr: "", exitCode: 45, timedOut: false } : live(request));
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 20, pollMs: 1 })).resolves.toBe("no_prior_runner");
+      expect(signalled(execute)).toEqual([]);
+    });
   });
   it.each([
     "runId",

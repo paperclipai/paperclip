@@ -796,6 +796,7 @@ export async function createApp(
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,
+      retryPendingEnvironmentCleanup: input => connectionIntentHeartbeat.sweepPendingCleanupLeases({ environmentRetry: input }),
       recoverMissingPluginWorker: recoverManagedBundledPluginWorker
         ? {
             pluginKeys: managedBundledPluginKeys,

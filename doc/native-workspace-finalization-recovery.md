@@ -602,3 +602,18 @@ task's queue through current admission checks. Each saved request still advances
 its recovery cursor. Rejected attempts, changed source runs, and updated source evidence remain eligible,
 and the next pass checks current state again. Legacy per-request handling stays
 unchanged. Pending work is awaited before a source is marked checked.
+
+Retained saved-work recovery for a finished run uses the same owner receipt.
+When the receipt names a controller that a restart killed and no automatic proof
+can release it, the recovery worker does not spend an attempt on each recheck.
+It records the exact receipt on the retained recovery action as
+`workspaceOwnerRecovery.state = "operator_required"` and keeps rechecking within
+the bounded recovery window. A task Retry waiting on that saved result reports
+`workspace_owner_stop_required` and does not offer another Retry, because another
+click cannot release the receipt. The board confirms the stop through the same
+`resume-workspace-finalization` route. The confirmation must name the receipt that
+is still on the run. It clears only that receipt and returns the existing recovery
+to the worker (a spent budget gets one new generation). It accepts no result and
+starts no agent turn. The waiting Retry then continues through its normal path.
+If the recovery window ends first, the board handoff names the same confirmation
+instead of advising another Retry.

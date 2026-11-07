@@ -48,6 +48,36 @@ describe("queued dependency wait presentation", () => {
   });
 });
 
+describe("never-started task refused by admission", () => {
+  const todo = { ...issue, status: "todo" };
+  const admissionWait = { id: "wake", status: "skipped", reason: "budget.blocked", agentId: "agent" };
+  it("names an accounting hold as an automatic wait without a Retry", () => {
+    expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false })).toMatchObject({
+      responsibility: "system", state: "working", canRetry: false,
+      retryWait: { reason: "budget.blocked", message: expect.stringContaining("starts automatically") } });
+  });
+  it("keeps pauses and budget stops as user actions instead of promising an automatic start", () => {
+    for (const [state, action] of [
+      [{ project: { pausedAt: new Date(), pauseReason: null } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ paused: true }, "resume"],
+      [{ agent: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "budget" } }, "budget"],
+      [{ approval: true }, "approval"],
+    ] as const) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false, ...state }))
+        .toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: action });
+    }
+  });
+  it("shows nothing for other refusals, started tasks or another assignee", () => {
+    for (const changed of [{ reason: "agent.not_invokable" }, { status: "queued" }, { agentId: "other" }]) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait: { ...admissionWait, ...changed }, paused: false, approval: false }))
+        .toBeNull();
+    }
+    expect(projectTaskInterruption({ ...todo, status: "cancelled" }, { agent, admissionWait, paused: false, approval: false })).toBeNull();
+  });
+});
+
 describe("unadmitted chat Retry presentation", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
