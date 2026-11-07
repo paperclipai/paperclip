@@ -438,7 +438,8 @@ export async function prepareRemoteWorkspace(input: {
         // A sandbox refusal that names its reason (an occupied folder, a changed
         // owner, a rejected archive) repeats on retry, so it goes to the board.
         let retryable = false;
-        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message);
+        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message)
+          && !(step === "sandbox_restore" && /; remote_workspace_restore_failed: stage=restore_lock reason=restore_lock_busy$/.test(error.message));
         if (step !== "snapshot_lookup" && !refused) {
           const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id)));

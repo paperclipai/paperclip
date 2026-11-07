@@ -482,6 +482,23 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
     } finally { release?.(); await delayed?.catch(() => undefined); await captured.cleanup(); }
   });
 
+  it.each(["fence", "receipt"] as const)("refuses malformed restore %s JSON with a closed diagnosis", async record => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained saved work");
+    const { remote } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "corrupt-record-root");
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "4".repeat(64), restorationEpoch: 1 };
+      await restoreRemoteWorkspaceDirectory(input);
+      const file = record === "receipt" ? path.join(root, ".paperclip-runtime", "workspace-restored.json")
+        : path.join(scratch, ".paperclip-runtime", "workspace-restore-locks", createHash("sha256").update(root).digest("hex") + ".fence.json");
+      await fs.writeFile(file, "{");
+      await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/reason=unsafe_restore_fence$/);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("retained saved work");
+      expect(await fs.readFile(file, "utf8")).toBe("{");
+    } finally { await captured.cleanup(); }
+  });
+
   it("does not poison the authority fence after malformed restore input", async () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "valid saved work");
     const { remote } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });

@@ -1235,6 +1235,9 @@ is never unlinked to recover ownership. A lost reply does not release it. The OS
 releases it when the command exits or dies. Contenders wait only for this active
 operation, for at most 120 seconds, without blocking the command event loop.
 This reuses the `node:sqlite` locking dependency of the qualified Node runtime.
+An expired lock wait remains retryable only while the caller still owns the same
+clean epoch and saved snapshot. It does not clear the predecessor's lock. A corrupt
+fence or receipt instead reports a closed refusal reason and is not retried.
 
 The caller supplies its existing workspace authority epoch. While holding the
 operation lock, the command atomically writes and syncs a private epoch fence

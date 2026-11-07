@@ -619,6 +619,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    if(new Set(files.map(file=>file.relativePath)).size!==files.length)throw Error('invalid_allocation');
    const stat=async p=>fs.lstat(p).catch(e=>{if(e.code==='ENOENT')return null;throw e});
    const directory=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_root')};
+   const readJson=async(file,reason)=>{const body=await fs.readFile(file,'utf8');try{return JSON.parse(body)}catch{throw Error(reason)}};
    const allocation=async p=>{
     await directory(p);const names=await fs.readdir(p);
     if(names.length===0&&files.length===0)return [];
@@ -637,7 +638,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     for(const [name,key] of [['workspace-restored.json','identity'],['workspace-ready.json','preparationIdentity']]){
      const file=path.join(runtime,name),s=await stat(file);if(!s)continue;
      if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384)throw Error('unsafe_receipt');
-     if(/^[a-f0-9]{64}$/.test(String(JSON.parse(await fs.readFile(file,'utf8'))?.[key])))return true;}
+     if(/^[a-f0-9]{64}$/.test(String((await readJson(file,'unsafe_receipt'))?.[key])))return true;}
     return false;
    };
    const parked=root+'.allocation-'+identity,retired=root+'.retired-'+identity;
@@ -699,7 +700,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    stage='restore_fence';const fencePath=lockPath.slice(0,-7)+'.fence.json';
    const checkedJson=async file=>{const s=await stat(file);if(!s)return null;
     if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid()||s.size>16384)throw Error('unsafe_restore_fence');
-    const value=JSON.parse(await fs.readFile(file,'utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error('unsafe_restore_fence');return value;};
+    const value=await readJson(file,'unsafe_restore_fence');if(!value||typeof value!=='object'||Array.isArray(value))throw Error('unsafe_restore_fence');return value;};
    const validFence=value=>value.schema==='paperclip.workspace-restore-fence.v1'&&value.root===root&&validEpoch(value.epoch)
     &&typeof value.identity==='string'&&/^[a-f0-9]{64}$/.test(value.identity)
     &&typeof value.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(value.manifestDigest);
@@ -733,7 +734,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    if(prior&&await stat(marker)){
     stage='existing_receipt';await directory(path.dirname(marker));const file=await fs.lstat(marker);
     if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
-    let receipt=JSON.parse(await fs.readFile(marker,'utf8'));
+    let receipt=await readJson(marker,'unsafe_receipt');
     if(receipt.schema==='paperclip.workspace-restore-pending.v1'){
      if(!pendingInPlace(receipt))throw Error('unsafe_receipt');
      if(receipt.pendingIdentity===identity?receipt.manifestDigest!==digest:replaceRetired!=='true')throw Error('workspace_owner_changed');
