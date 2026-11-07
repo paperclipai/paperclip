@@ -79,6 +79,21 @@ describePostgres("lifecycle events of committed status changes", () => {
     ]);
   });
 
+  it("logs a run transition once when the caller already holds the run row lock", async () => {
+    const runId = await createRun("queued");
+    let loggedBeforeCommit = -1;
+
+    await db.transaction(async (tx) => {
+      await transitionHeartbeatRunStatus(tx, runId, { toStatus: "running", locked: { status: "queued" } });
+      loggedBeforeCommit = lifecycleEvents("run_transition").length;
+    });
+
+    expect(loggedBeforeCommit).toBe(0);
+    expect(lifecycleEvents("run_transition")).toEqual([
+      expect.objectContaining({ runId, fromStatus: "queued", toStatus: "running", terminal: false }),
+    ]);
+  });
+
   it("logs nothing for a rolled-back or same-status run write", async () => {
     const runId = await createRun("running");
 
