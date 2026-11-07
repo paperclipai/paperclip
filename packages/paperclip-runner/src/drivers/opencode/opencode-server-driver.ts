@@ -172,6 +172,12 @@ type DynamicToolHandler = (call: {
   threadId: string;
   turnId: string;
   arguments: unknown;
+  /**
+   * Aborts when the MCP client abandons the call (cancel notification or a
+   * dropped connection). A handler that has not yet handed the call to its
+   * controller must not dispatch it after this fires.
+   */
+  signal?: AbortSignal;
 }) => Promise<unknown>;
 
 export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: {
@@ -179,6 +185,8 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
   callId: string;
   threadId: string;
   turnId: string;
+  /** Aborts when the MCP client abandons the completion call. */
+  signal?: AbortSignal;
 }) => Promise<string>;
 
 export interface OpenCodeServerDriverOptions {
@@ -1149,6 +1157,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     tool: string;
     callId: string;
     arguments: unknown;
+    signal?: AbortSignal;
   }): Promise<unknown> {
     this.#pendingToolCalls += 1;
     this.#clearEmptyResponseAckTimer();
@@ -1156,7 +1165,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     finally { this.#pendingToolCalls -= 1; }
   }
 
-  async #dispatchToolCall(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
+  async #dispatchToolCall(call: { tool: string; callId: string; arguments: unknown; signal?: AbortSignal }): Promise<unknown> {
     // The authenticated MCP bridge has resolved this against its closed
     // declared catalog. A second prefix strip changes legitimate operation IDs.
     const tool = call.tool;
@@ -1186,6 +1195,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
             tool: "get_task_context", callId: `${call.callId}:continuation`,
             threadId: this.#providerSessionId, turnId, arguments: {},
+            ...(call.signal ? { signal: call.signal } : {}),
           }) : undefined);
         if (this.#closed || this.#activeTurnId !== turnId)
           throw new Error("The turn ended while resolving completion");
@@ -1223,6 +1233,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         const feedback = this.#completionFeedback
           ? await this.#completionFeedback(validation.result, {
               tool, callId: call.callId, threadId: this.#providerSessionId, turnId,
+              ...(call.signal ? { signal: call.signal } : {}),
             })
           : "Semantic completion accepted.";
         if (typeof feedback !== "string" || !feedback.trim())
@@ -1279,6 +1290,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         threadId: this.#providerSessionId,
         turnId,
         arguments: call.arguments,
+        ...(call.signal ? { signal: call.signal } : {}),
       });
       this.#emit(
         "item.completed",
@@ -1972,6 +1984,11 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#activeTurnId = null;
         return;
       }
+      // OpenCode's provider errors (`APIError`) carry the message under `data`.
+      const providerMessage = redact(
+        text(providerError.message, text(providerErrorData.message, "OpenCode session failed.")),
+        this.#runtime.sensitiveValues,
+      ).slice(0, 4000);
       this.#emit(
         "provider.notice.recorded",
         {
@@ -1982,10 +1999,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           scope: "turn",
           recoverable: false,
           userActionable: true,
-          summary: redact(
-            text(record(properties.error).message, "OpenCode session failed."),
-            this.#runtime.sensitiveValues,
-          ).slice(0, 4000),
+          summary: providerMessage,
         },
         { turnId, itemId: `${turnId}:session-error` },
       );
@@ -2447,6 +2461,7 @@ async function startRuntime(input: {
     tool: string;
     callId: string;
     arguments: unknown;
+    signal?: AbortSignal;
   }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
   const taskEnvironment = configuredOpenCodeEnvironment(input.options.environment);

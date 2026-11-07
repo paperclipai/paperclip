@@ -94,7 +94,6 @@ export function tick() {
 }
 
 export type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
-export type InstanceSettingsSeam = NonNullable<ApplyManagedEnvironmentsOptions["instanceSettings"]>;
 
 export function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): EnvironmentsSeam {
   return {
@@ -102,10 +101,6 @@ export function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): Env
       overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(reconciliationResult()),
     archiveManagedSandboxEnvironment:
       overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
-    getById: overrides.getById ?? vi.fn().mockResolvedValue(null),
-    update: overrides.update ?? vi.fn().mockResolvedValue(environmentRow()),
-    findManagedSandboxEnvironment:
-      overrides.findManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
     ensureManagedPluginEnvironment:
       overrides.ensureManagedPluginEnvironment
       ?? vi.fn().mockResolvedValue({ environment: pluginEnvironmentRow(), action: "added" }),
@@ -127,13 +122,3 @@ export function pluginEnvironmentRow(overrides: Record<string, unknown> = {}) {
   }) as never;
 }
 
-export function instanceSettingsSeam(overrides: Partial<InstanceSettingsSeam> = {}): InstanceSettingsSeam {
-  return {
-    get:
-      overrides.get ??
-      (vi.fn().mockResolvedValue({ defaultEnvironmentId: null }) as InstanceSettingsSeam["get"]),
-    update:
-      overrides.update ??
-      (vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["update"]),
-  };
-}

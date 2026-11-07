@@ -355,6 +355,12 @@ unfinished `session.open`, with no committed or acknowledged event. The
 executor restores that checkpoint and checks the same proof before it
 bootstraps again. After three provider attempts it records
 `execution_recovery_budget_exhausted` instead.
+A claimed remote run whose previous controller is gone, with no
+`native.process_start_requested`, process identity, adapter invocation,
+runner-sourced event or controller checkpoint, records
+`remote_runner_never_launched` with the same disposition and budget. The
+executor records `native.process_start_requested` before a backend may spawn a
+runner, so its absence (with no checkpoint) proves nothing reached a runner.
 
 For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and

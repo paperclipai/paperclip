@@ -8,6 +8,7 @@ import { retryReporterEnabled, vitestRetryCount } from "../../scripts/ci/vitest-
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const ciReporters = [
+  ...(process.env.GITHUB_ACTIONS === "true" ? [resolve(packageRoot, "../../scripts/ci/oversized-test-files.mjs")] : []),
   ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? [resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] : []),
   ...(retryReporterEnabled() ? [resolve(packageRoot, "../../scripts/ci/retry-reporter.mjs")] : []),
 ];

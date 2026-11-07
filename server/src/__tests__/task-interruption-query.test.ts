@@ -90,6 +90,53 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .toMatchObject({ state: "failed", canRetry: true });
   });
 
+  it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
+    await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Researcher", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Creative brief",
+      status: "todo", assigneeAgentId: agentId }).returning();
+    // The message was queued well before the user clicked Interrupt.
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 60_000), payload: { issueId: issue.id },
+    }).returning();
+    const interrupt = async (requestedAt: Date) => {
+      await db.update(agentWakeupRequests).set({ payload: { issueId: issue.id,
+        queuedCommentInterrupt: { actorId: userId, requestedAt: requestedAt.toISOString() } } })
+        .where(eq(agentWakeupRequests.id, wake.id));
+    };
+    await interrupt(new Date(Date.now() - 20_000));
+    // Same resultJson the queued-comment Interrupt route passes to cancelRun.
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "cancelled", runtimeMode: "native", errorCode: "operator_interrupted",
+      startedAt: new Date(Date.now() - 42_000), finishedAt: new Date(Date.now() - 20_000),
+      resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt", interruptedIssueId: issue.id,
+        interruptedByActorType: "user", interruptedByActorId: userId, cancelledByActorType: "user", cancelledByUserId: userId,
+        queuedCommentInterruptQueueId: wake.id } });
+    captureTaskInterruptionFailure.mockClear();
+    for (const presentation of [(await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id),
+      await taskInterruptionPresentation(db, issue)]) {
+      expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
+    }
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    // A newer queued message does not hide the wake the run was stopped for.
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 30_000), payload: { issueId: issue.id },
+    });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
+    // A run stopped for a different queue is not this hand-off.
+    await db.update(heartbeatRuns).set({ resultJson: { operatorInterrupted: true, cancelledByActorType: "user",
+      cancelledByUserId: userId, queuedCommentInterruptQueueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(heartbeatRuns).set({ resultJson: { operatorInterrupted: true, cancelledByActorType: "user",
+      cancelledByUserId: userId, queuedCommentInterruptQueueId: wake.id } }).where(eq(heartbeatRuns.id, runId));
+    // A hand-off that never starts eventually offers one Retry.
+    await interrupt(new Date(Date.now() - 10 * 60_000));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
   it("decides several pending native resumes in one list read", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Resuming list", issuePrefix: `L${companyId.slice(0, 7)}` });

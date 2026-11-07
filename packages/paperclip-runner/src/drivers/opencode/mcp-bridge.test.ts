@@ -84,6 +84,42 @@ describe("OpenCode MCP bridge", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
+  it("abandons a call on disconnect only after every waiting connection is gone", async () => {
+    let started!: () => void;
+    const begun = new Promise<void>(resolve => { started = resolve; });
+    const aborted = vi.fn();
+    const handler = vi.fn(({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { aborted(); reject(new Error("abandoned")); }, { once: true });
+      started();
+    }));
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "documents.write", inputSchema: { type: "object" } }], timeoutMs: null, handler,
+    });
+    bridges.push(bridge);
+    const body = JSON.stringify({ jsonrpc: "2.0", id: "retried", method: "tools/call", params: { name: "documents.write", arguments: {} } });
+    const post = (signal: AbortSignal) => fetch(bridge.url, {
+      method: "POST", body, signal,
+      headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    });
+    const first = new AbortController();
+    const retry = new AbortController();
+    const firstResponse = post(first.signal).catch(() => "dropped");
+    await begun;
+    const retryResponse = post(retry.signal).catch(() => "dropped");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    first.abort();
+    expect(await firstResponse).toBe("dropped");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(aborted).not.toHaveBeenCalled();
+    retry.abort();
+    expect(await retryResponse).toBe("dropped");
+    for (let attempt = 0; attempt < 100 && !aborted.mock.calls.length; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it("binds to loopback, requires authentication, and exposes only its closed catalog", async () => {
     const bridge = await startOpenCodeMcpBridge({
       secret: "session-secret",

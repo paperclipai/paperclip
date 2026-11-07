@@ -20,11 +20,11 @@ import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
+import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
-import type { FaultReceipt, OracleArtifacts, WavePlan } from "./types.js";
+import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const resultsRoot = path.resolve(process.env.RESTART_CHAOS_RESULTS_DIR ?? path.join(import.meta.dirname, "results"));
@@ -104,7 +104,8 @@ async function main(): Promise<number> {
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
-    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`) });
+    tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`),
+    ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
   preflight(plan);
   const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
 
@@ -154,17 +155,42 @@ async function main(): Promise<number> {
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots));
     const pending = [...observers];
+    const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
     const lastPoll = new Map<TaskObserver, number>();
     let lastDoneAt = Date.now();
+    // K13: storm faults fire on their own clock while tasks keep launching; then the storm drains.
+    const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
+    if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
+    // Faults are serialized; each one hits every task in flight when it starts.
+    const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
+      trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void) => {
+      faultsQueued += 1;
+      faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
+        faults.push(receipt);
+        for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+      }, (error: Error & { receipt?: FaultReceipt }) => {
+        if (error.receipt) faults.push(error.receipt);
+        faultFailures += 1;
+        timeline.add("fault_error", { taskId: requestedBy, error: error.message });
+      }));
+    };
 
     while (!interrupted && (pending.length || active.length)) {
       const now = Date.now();
+      if (storm?.endIfDue(now)) {
+        // Unlaunched pool tasks are not part of the wave; the in-flight ones drain without new faults.
+        timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
+        pending.length = 0;
+      }
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
-      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress) {
+      // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
+      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+        && (!storm || storm.mayLaunch(Date.now()))) {
         const next = pending.shift()!;
+        launched.push(next);
         await next.launch();
         if (!next.done) active.push(next);
       }
@@ -182,15 +208,19 @@ async function main(): Promise<number> {
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
-        faultsQueued += 1;
-        faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).finally(() => { faultsQueued -= 1; }).then(receipt => {
-          faults.push(receipt);
-          for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
-        }, (error: Error & { receipt?: FaultReceipt }) => {
-          if (error.receipt) faults.push(error.receipt);
-          faultFailures += 1;
-          timeline.add("fault_error", { taskId: observer.plan.taskId, error: error.message });
-        }));
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger);
+      }
+      if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
+        const due = storm.due(Date.now());
+        if (due) {
+          const exposed = active.filter(candidate => !candidate.done);
+          await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+          // The snapshots take time; a storm that ended meanwhile is draining and gets no new fault.
+          if (storm.commit(due, Date.now())) {
+            timeline.add("storm_fault", { index: storm.state.fired, kind: due.kind, gapMs: due.gapMs, holdMs: due.holdMs, exposed: exposed.map(candidate => candidate.plan.taskId) });
+            fireFault(due.kind, due.holdMs, "storm", exposed, undefined, () => storm.settled(Date.now()));
+          }
+        }
       }
       for (let index = active.length - 1; index >= 0; index -= 1) {
         if (active[index]!.done) { active.splice(index, 1); lastDoneAt = Date.now(); }
@@ -198,6 +228,11 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
+    if (storm && !interrupted && storm.exhaustedEarly(Date.now())) {
+      timeline.add("storm_pool_exhausted", { faultsFired: storm.state.fired, launched: launched.length });
+      harnessError ??= new Error(`Storm task pool (--tasks ${plan.options.tasks}) ran out before the storm ended; raise --tasks`);
+    }
     // An injected fault that did not complete invalidates the wave, even when
     // bounded recovery brought the server back and the tasks passed.
     if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);
@@ -214,7 +249,7 @@ async function main(): Promise<number> {
     }
     const attributed = new Set<string>();
     const secrets = knownSecretValues();
-    for (const observer of observers) {
+    for (const observer of launched) {
       observer.record.sweep = await observer.sweep();
       if (sandboxSweep) {
         const runIds = new Set(observer.record.samples.flatMap(sample => (sample.runs ?? []).map(run => run.id)));

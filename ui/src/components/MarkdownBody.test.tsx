@@ -15,6 +15,9 @@ import {
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
+import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "../lib/task-status-presentation";
+import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { MarkdownWordStreaming } from "./MarkdownWordStreaming";
 import { queryKeys } from "../lib/queryKeys";
 import type { WorkspaceFileAvailabilityTarget } from "../lib/workspace-file-availability";
@@ -65,7 +68,7 @@ afterEach(() => {
 
 function renderMarkdown(
   children: string,
-  seededIssues: Array<{ identifier: string; status: string; title?: string; cacheKey?: string }> = [],
+  seededIssues: Array<{ identifier: string; status: string; title?: string; cacheKey?: string; blockerAttention?: IssueBlockerAttention }> = [],
   props: Partial<ComponentProps<typeof MarkdownBody>> = {},
   streaming = false,
 ) {
@@ -83,6 +86,7 @@ function renderMarkdown(
       identifier: issue.identifier,
       status: issue.status,
       title: issue.title,
+      ...(issue.blockerAttention ? { blockerAttention: issue.blockerAttention } : {}),
     });
   }
 
@@ -309,6 +313,33 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("draws a blocked task mention with the same glyph and colour token as the task list (BUG-07)", () => {
+    // A task blocked on active sub-tasks is "covered": the list, breadcrumb and
+    // sidebar draw the blue in-queue glyph. Inline mentions must match.
+    const blockerAttention: IssueBlockerAttention = {
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 4,
+      coveredBlockerCount: 4,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: null,
+      sampleStalledBlockerIdentifier: null,
+    };
+    const html = renderMarkdown("This stays open until all four are done (BRA-1).", [
+      { identifier: "BRA-1", status: "blocked", title: "Paperclip onboarding", blockerAttention },
+    ]);
+    const listGlyph = renderToStaticMarkup(
+      <StatusIcon {...taskStatusIconProps({ status: "blocked", blockerAttention })} />,
+    );
+
+    expect(listGlyph).toContain("var(--status-task-icon-in_queue)");
+    expect(html).toContain('href="/issues/BRA-1"');
+    expect(html).toContain("var(--status-task-icon-in_queue)");
+    expect(html).not.toContain("var(--status-task-icon-blocked)");
+    expect(html).toContain('aria-label="Blocked · waiting on 4 active sub-tasks"');
   });
 
   it("holds the quicklook preview until an issue mention is confirmed readable (PAP-16070)", () => {

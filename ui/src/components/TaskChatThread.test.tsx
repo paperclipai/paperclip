@@ -3919,6 +3919,56 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
   const props = { conversationMode, issueId: "issue-1", currentUserId: "user-board", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
   const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
   const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  it.each([false, true])("removes an old plan approval as soon as the newer document arrives (coordinator=%s)", coordinator => {
+    const review = planReviewInteraction();
+    planState.data = planDocument();
+    const show = (interactions = [review]) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} comments={[]} interactions={interactions} onAcceptInteraction={vi.fn()} />
+    </CoordinatorPresentation.Provider>);
+    show();
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+
+    const replacement = { ...planReviewInteraction("pending", "revision-4"), id: "new-review", createdAt: new Date("2026-08-23T10:04:00Z") };
+    show([review, replacement]);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    expect(review.status).toBe("pending");
+  });
+
+  it("keeps a new approval when its document query is still on an older revision", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-2", latestRevisionNumber: 2 });
+    render(<TaskChatThread {...props} comments={[]} interactions={[planReviewInteraction()]} />);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+  });
+
+  it.each(["id", "number"] as const)("removes an older plan review that has only a revision %s", reference => {
+    const review = {
+      ...planReviewInteraction(),
+      payload: {
+        version: 1,
+        prompt: "Approve this Plan?",
+        target: { type: "issue_document", key: "plan", ...(reference === "id" ? { revisionId: "revision-3" } : { revisionNumber: 3 }) },
+      },
+    } as IssueThreadInteraction;
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("keeps unrelated approvals and accepted plan history when a plan changes", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    const review = { ...planReviewInteraction(), payload: { version: 1, prompt: "Review another task", target: { type: "issue_document", issueId: "other-task", key: "plan", revisionId: "revision-3" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review, { ...planReviewInteraction("accepted"), id: "accepted-plan" }]} />);
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('#interaction-accepted-plan')).not.toBeNull();
+  });
   const dismiss = async () => {
     await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
   };
@@ -4406,13 +4456,15 @@ describe("TaskChatThread blocker links", () => {
           '[data-testid="task-chat-live-work-step"] a',
         ),
       ].map((link) => link.textContent);
+      // Each step leads with the shared task status glyph (its <title> is
+      // the status label), the same glyph the task list draws (BUG-07).
       expect(orderedLinks).toEqual([
-        "PAP-17424Run the guarded cutover",
-        "PAP-17425Verify the live projection",
-        "PAP-17427Verify the completed projection",
+        "DonePAP-17424Run the guarded cutover",
+        "In ProgressPAP-17425Verify the live projection",
+        "TodoPAP-17427Verify the completed projection",
       ]);
       expect(notice.textContent).toContain(
-        "Now runningPAP-17426Restore live alias projection",
+        "Now runningIn ProgressPAP-17426Restore live alias projection",
       );
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
@@ -5505,6 +5557,30 @@ describe("TaskChatThread live transcript", () => {
       ).toBeNull();
     },
   );
+
+  it("renders one Stopped row when an interrupted native turn settles without a reply", () => {
+    const runId = "native-interrupted";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-11-06T15:14:05Z", "INTERRUPTED-PROGRESS-LINE", "progress"),
+      { kind: "run_terminal", ts: "2026-11-06T15:14:26Z", turnState: "cancelled", runState: "cancelled", disposition: "blocked" },
+    ]);
+    const activeRun = {
+      id: runId, runtimeMode: "native" as const, status: "running", invocationSource: "issue" as const,
+      triggerDetail: null, startedAt: "2026-11-06T15:14:05Z", createdAt: "2026-11-06T15:14:05Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Researcher", adapterType: "paperclip_runner",
+    };
+    renderThread({ comments: [], onAdd: async () => {}, issueStatus: "in_progress", activeRun });
+    // Interrupt cancels the turn. A stopped turn posts no reply comment, so the
+    // settled turn alone owns it; the live tail must not render a second row.
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      linkedRuns: [{ ...activeRun, runId, status: "cancelled", finishedAt: "2026-11-06T15:14:26Z",
+        errorCode: "operator_interrupted", resultJson: { operatorInterrupted: true, cancelledByActorType: "user" } }],
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBeNull();
+    expect(container.textContent?.split("INTERRUPTED-PROGRESS-LINE")).toHaveLength(2);
+    expect(container.textContent?.match(/Stopped (for|after) /g)).toHaveLength(1);
+  });
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [
