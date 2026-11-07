@@ -10262,12 +10262,14 @@ async function executePaperclipNativeSessionWithinScope(
           ? eventAtMs
           : Date.now();
         // Restart recovery latency (invariant 8): control plane ready to this
-        // recovered run's first provider event. Checked once; run log only.
+        // recovered run's first committed provider event. Checked once; run log only.
         if (input.restartRecovery && RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has(event.eventType)) {
           const startup = getStartupRecoveryState();
           trace.checkRestartRecovery({
             readyAtMs: startup.phase === "ready" ? Date.parse(startup.updatedAt) : null,
-            eventAtMs: milestoneAtMs, disposition: input.restartRecovery.kind,
+            // Commit time, as the baseline measures to the run-log row's
+            // created_at: delivery delays after emission count against recovery.
+            eventAtMs: Date.now(), disposition: input.restartRecovery.kind,
           });
         }
         if (
