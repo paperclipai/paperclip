@@ -369,6 +369,97 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     }
   });
 
+  it.each(["recovery_action", "user_retry"] as const)("keeps the admitted remote workspace when the same native Retry run restarts (%s)", async receiptKind => {
+    const { input, issue, envOrchestrator } = await fixture();
+    configureRemotePersistence();
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.policy.requestedExecutionWorkspaceMode = "agent_default";
+    input.policy.useIsolatedTaskDirectory = true;
+    const reached = new Error("Reached the admitted remote lease");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    const bound = await readIssue(issue.id);
+    const [original] = await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
+    const location = { environmentId: input.environment.selectedEnvironmentId!, leaseId: randomUUID(),
+      providerLeaseId: randomUUID(), remoteCwd: original.cwd! };
+    const authority = readRemoteWorkspaceAuthority(original.metadata)!;
+    const [admitted] = await db.update(executionWorkspaces).set({ metadata: { ...original.metadata,
+      remoteWorkspace: { ...authority, location } } }).where(eq(executionWorkspaces.id, original.id)).returning();
+    await persistRecoveryInput(input, admitted.id, location.remoteCwd);
+    input.reuse.existingExecutionWorkspace = toExecutionWorkspace(admitted);
+    input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(admitted);
+    input.reuse.nativeRecoveryExecutionWorkspaceId = admitted.id;
+    input.reuse.requestedShouldReuseExisting = true;
+    input.task.issueRef = bound;
+    input.reuse.runOptions.nativeRestartRecovery = { kind: "reattach_remote_runner", runId: input.run.id,
+      leaseOwner: "replacement-controller", controllerGeneration: 2, providerAttempt: 1,
+      restartKind: "hard", recoveryRequestId: null,
+      remote: { providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd } };
+    const controller = await currentNativeControllerIdentity();
+    await db.insert(nativeRunFinalizations).values({ runId: input.run.id, companyId: issue.companyId,
+      issueId: issue.id, phase: "preparing", attempt: 1, controllerGeneration: 2,
+      leaseOwner: "replacement-controller", leaseExpiresAt: new Date(Date.now() + 300_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid,
+      controllerProcessStartedAt: controller.processStartedAt });
+    const sourceRunId = randomUUID(), retryIntentId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: issue.companyId,
+      agentId: input.agent.id, issueId: issue.id, status: "failed", finishedAt: new Date() });
+    input.run.contextSnapshot = { ...input.run.contextSnapshot, issueId: issue.id,
+      taskRetryRequestId: retryIntentId, previousRunId: sourceRunId };
+    await db.update(heartbeatRuns).set({ contextSnapshot: input.run.contextSnapshot }).where(eq(heartbeatRuns.id, input.run.id));
+    await db.insert(environmentLeases).values({ id: location.leaseId, companyId: issue.companyId,
+      environmentId: location.environmentId, executionWorkspaceId: admitted.id, heartbeatRunId: input.run.id,
+      issueId: issue.id, provider: "daytona", providerLeaseId: location.providerLeaseId,
+      leasePolicy: "retain_on_failure", metadata: { agentId: input.agent.id, remoteCwd: location.remoteCwd } });
+    await db.insert(agentWakeupRequests).values({ id: retryIntentId, companyId: issue.companyId,
+      agentId: input.agent.id, reason: "task_retry", source: "on_demand", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: "workspace-owner",
+      runId: input.run.id, payload: { issueId: issue.id, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: retryIntentId, sourceRunId, actorId: "workspace-owner", strategy: "fresh_isolated_workspace" } } });
+    const readiness = { mode: "fresh_isolated_workspace" as const, retryIntentId, sourceRunId, retainedSourceIds: [] };
+    if (receiptKind === "recovery_action") await db.insert(issueRecoveryActions).values({ companyId: issue.companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "system", nextAction: "Committed fresh admission",
+      cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(), evidence: { runId: sourceRunId,
+        explicitUserContinuation: { runId: input.run.id, readiness }, systemRecovery: {
+          ...createSystemRecovery(sourceRunId, retryIntentId), state: "exhausted", freshAttemptRunId: input.run.id } } });
+    input.task.freshWorkspace = await readFreshWorkspaceReadiness(db, input.run);
+    if (input.task.freshWorkspace?.mode === "fresh_isolated_workspace") {
+      input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+      input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+      input.task.issueRef = { ...bound, executionWorkspaceId: null, executionWorkspacePreference: "create_new" };
+    }
+    acquire.mockClear();
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      persistedExecutionWorkspace: expect.objectContaining({ id: admitted.id }), reattachRemoteLease: { leaseId: location.leaseId, providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd } }));
+    expect(input.task.freshWorkspace).toBeNull();
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(admitted.id);
+    const stored = await db.select().from(executionWorkspaces);
+    expect(stored).toHaveLength(1);
+    expect(await leases(input.run.id)).toMatchObject([{ id: location.leaseId, status: "active", executionWorkspaceId: admitted.id, providerLeaseId: location.providerLeaseId }]);
+    expect(readRemoteWorkspaceAuthority(stored[0].metadata)).toEqual({ ...authority, location });
+    const admittedInput = input.reuse.persistedNativeExecutionInput!;
+    for (const field of ["companyId", "runId", "agentId", "issueId"] as const) {
+      await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+        nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, [field]: randomUUID() } },
+      } })).rejects.toThrow("native_execution_workspace_admission_binding_mismatch");
+    }
+    await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+      nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, executionWorkspaceId: randomUUID() } },
+    } })).rejects.toThrow("native_execution_workspace_admission_missing");
+    expect(await readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+      nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, executionWorkspaceId: input.run.id } },
+    } })).toEqual(readiness);
+    await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+      nativeExecutionInput: { binding: admittedInput.binding },
+    } })).rejects.toThrow();
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(admitted.id);
+    expect(await db.select().from(executionWorkspaces)).toHaveLength(1);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   async function inheritedRemoteFixture(mode: "isolated_workspace" | "operator_branch") {
     const { input, issue, envOrchestrator } = await fixture();
     configureRemotePersistence();

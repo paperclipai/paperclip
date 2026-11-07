@@ -12,6 +12,7 @@ import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -152,9 +153,22 @@ async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbe
 
 /** Preparation trusts the committed admission receipt, not a raw wake payload. */
 export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot">): Promise<ContinuationReadiness | null> {
+  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot" | "runtimeMode" | "runnerProfileJson">): Promise<ContinuationReadiness | null> {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return null;
+  const admittedInput = run.runnerProfileJson?.nativeExecutionInput;
+  if (run.runtimeMode === "native" && admittedInput !== undefined) {
+    const admitted = parseNativeExecutionInput(admittedInput);
+    if (admitted.binding.companyId !== run.companyId || admitted.binding.runId !== run.id
+      || admitted.binding.agentId !== run.agentId || admitted.binding.issueId !== issueId) {
+      throw new Error("native_execution_workspace_admission_binding_mismatch");
+    }
+    const [workspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, admitted.binding.executionWorkspaceId),
+    )).limit(1);
+    if (workspace) return null;
+    if (admitted.binding.executionWorkspaceId !== run.id) throw new Error("native_execution_workspace_admission_missing");
+  }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
