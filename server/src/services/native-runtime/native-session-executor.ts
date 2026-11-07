@@ -10786,7 +10786,6 @@ async function executePaperclipNativeSessionWithinScope(
     const resolveWake = () => timeController("wake_binding", () => resolveCurrentWakeCommentsBinding(input.db, input.execution.binding));
     const expectedCurrentWakeComments = await (executionContext ? executionContext.wait(resolveWake) : resolveWake());
     let remoteWarmRecoveryPending = remoteWarmRecovery !== undefined;
-    // Reads the current reuse decision, so the unavailable-reuse fallback can rebuild it.
     const createExecutionBackend = () => createRunnerdBackend({
       ...input,
       onDiagnosticLease: ownDiagnosticLease,
@@ -10859,12 +10858,6 @@ async function executePaperclipNativeSessionWithinScope(
           )).then(rows => rows[0])
       : null;
     let remoteCleanupLease = await readRemoteCleanupLease();
-    // A retained Runner can retire between inspection and claim. A definite
-    // unavailable reply alone never authorizes replacement: the owner must have
-    // seen the exact task stopped with its session saved before local cleanup.
-    // Then repeat the ordinary inspection, which replaces a stopped task, and
-    // continue cold like an owner found stopped at inspection. Checkpoint
-    // admission still proves the suspended session.
     const continueAfterUnavailableReuse = async (error: unknown) => {
       const target = input.runnerExecutionTarget;
       if (!(error instanceof Error) || error.message !== "native_runner_reuse_unavailable" || !existingWarmSession
@@ -10872,8 +10865,6 @@ async function executePaperclipNativeSessionWithinScope(
         || remoteWarmRecovery || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
         || !target.runnerTask || runnerdBackend === null) return false;
       const retainedTaskId = target.sandboxLeaseAcquisition?.providerLeaseId;
-      // Attachment failure already quarantined the owner. Join its cleanup and
-      // checkpoint save before describe can replace the task on this lease.
       await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
       const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));

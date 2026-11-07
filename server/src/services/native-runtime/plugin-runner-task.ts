@@ -415,7 +415,6 @@ export function createPluginRunnerTaskOwner(input: {
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
     if (result.outcome === "unavailable") {
-      // Verify the refusal against the exact task before local cleanup can stop it.
       const state = await call({ kind: "status" }).catch(() => undefined);
       retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
     }
@@ -425,7 +424,6 @@ export function createPluginRunnerTaskOwner(input: {
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
-    /** A definite unavailable resume found the exact task already stopped with its session state saved. */
     retiredBeforeClaim: () => retiredBeforeClaim,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||

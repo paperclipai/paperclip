@@ -653,7 +653,6 @@ describe("plugin Runner release/resume facade", () => {
     const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
     expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
     await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
-    // A definite refusal is checked against the exact task before Core may continue elsewhere.
     expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume", "status"]);
     expect(owner.retiredBeforeClaim()).toBe(false); // stopped, but no saved session state
   });

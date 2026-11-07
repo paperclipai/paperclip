@@ -49,7 +49,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
-    // These modes inspect a live retained task, then the resume reply is a definite unavailable.
     const unavailableResume = mode === "after inspection" || mode === "bare unavailable";
     const reusesLease = mode === "reused lease" || unavailableResume;
     const instructionCopy = (id: string) => ({ runId: id, root: workspace, preparationKey: "unchanged-fixture-instructions", hasChanges: async () => false, collectStopped: async () => {} });
@@ -218,7 +217,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       if (operation.kind === "resume" && unavailableResume) {
         resumeAttempts++;
         expect(inspectedLive).toBe(true);
-        // Graceful eviction wins the claim window: stop and suspended state are verified before the reply.
         if (mode === "after inspection") await evictRetained!();
         expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(mode === "after inspection");
         return { kind: "resume", taskId, outcome: "unavailable" };
@@ -232,7 +230,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         return { kind: "resume", taskId, outcome: "resumed" };
       }
       if (operation.kind === "stop") {
-        // Old-owner cleanup outlasts the quarantine's short wait, so the fallback must join it before replacing the task.
         if (mode === "after inspection" && taskId === taskA) await new Promise(done => setTimeout(done, 300));
         await host.close();
       }
@@ -320,7 +317,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         if (mode === "prepared copy") expect(releasePreparation).toBeTypeOf("function");
         pendingFollowup = execute(next, leaseB);
         if (mode === "bare unavailable") {
-          // Without proof that the exact task stopped, the refusal stands and nothing is replaced.
           await expect(pendingFollowup).rejects.toThrow("native_runner_reuse_unavailable");
           expect({ resumeAttempts, acquisitions, submissions, claims }).toEqual({ resumeAttempts: 1, acquisitions: 0, submissions: 1, claims: [] });
           expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runB))).toHaveLength(0);
@@ -353,7 +349,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       expect(submissions).toBe(2);
-      // The refused claim continues once on the replacement, in the same provider session.
       if (mode === "after inspection") expect({ resumeAttempts, acquisitions }).toEqual({ resumeAttempts: 1, acquisitions: 1 });
       expect(releases[1]!.runId).toBe(runB);
       expect(claims).toEqual([]);
