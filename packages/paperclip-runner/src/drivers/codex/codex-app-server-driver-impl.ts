@@ -638,8 +638,8 @@ export class CodexAppServerDriver implements HarnessDriver {
       // before it checkpointed the turn or emitted turn.accepted. The provider
       // then keeps running that turn. Adopt it only when the runner's
       // authenticated command result for this run's latest turn.start names
-      // the single active turn; any other active turn stays foreign and fails
-      // closed when its notifications arrive.
+      // that turn and no other turn is active; any other active turn stays
+      // foreign and fails closed when its notifications arrive.
       let adoptedAcceptedTurnId: string | null = null;
       if (
         !recoveringAutonomousGoal &&
@@ -650,15 +650,18 @@ export class CodexAppServerDriver implements HarnessDriver {
         const turns = Array.isArray(existingThread.turns)
           ? existingThread.turns.map(record)
           : [];
+        const acceptedTurnId = transport.controllerAcceptedTurnId?.() ?? "";
         const active = turns.filter((turn) => text(turn.status) === "inProgress");
-        const activeTurnId = active.length === 1 ? text(active[0]?.id) : "";
+        // The accepted turn may still run, or it may have finished while no
+        // controller was attached. Either way it must be the only live turn.
         if (
-          activeTurnId.length > 0 &&
-          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === activeTurnId) &&
-          transport.controllerAcceptedTurnId?.() === activeTurnId
+          acceptedTurnId.length > 0 &&
+          turns.some((turn) => text(turn.id) === acceptedTurnId) &&
+          active.every((turn) => text(turn.id) === acceptedTurnId) &&
+          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === acceptedTurnId)
         ) {
-          recoveredActiveTurnId = activeTurnId;
-          adoptedAcceptedTurnId = activeTurnId;
+          recoveredActiveTurnId = acceptedTurnId;
+          adoptedAcceptedTurnId = acceptedTurnId;
         }
       }
       if (opened.context.liveConsole)

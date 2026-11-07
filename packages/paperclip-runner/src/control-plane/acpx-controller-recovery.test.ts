@@ -323,7 +323,7 @@ it("adopts the live ACPX execution through the production native transport",asyn
   }
 },60000);
 
-it("adopts the turn the runner accepted for a controller that died before checkpointing it (RC-59)",async()=>{
+it.each(["running","finished"] as const)("adopts the %s turn the runner accepted for a controller that died before checkpointing it (RC-59)",async(phase)=>{
   const run=await fixture();
   let adopted:ReturnType<typeof createCapabilityRunnerdCodexTransport>|undefined;
   try{
@@ -337,6 +337,11 @@ it("adopts the turn the runner accepted for a controller that died before checkp
     await run.stopController();run.restoreCheckpoint();
     writeFileSync(resolve(run.root,"release-turn-start"),"1");
     await vi.waitFor(()=>expect(existsSync(resolve(run.root,"turn-start-receipt"))).toBe(true),{timeout:5000});
+    if(phase==="finished"){
+      // The provider also finishes the turn before any controller returns.
+      writeFileSync(resolve(run.root,"action"),"complete");
+      await vi.waitFor(()=>expect(existsSync(resolve(run.root,"complete-receipt"))).toBe(true),{timeout:5000});
+    }
     const options:Parameters<typeof createCapabilityRunnerdCodexTransport>[0]={
       provider:"acpx",acpxAgent:"claude",stateDirectory:run.root,
       runnerBinary:binary,runnerArtifact:{version:expectedRunnerVersion,digest:expectedRunnerDigest},prpIdentity:identity,
@@ -358,8 +363,10 @@ it("adopts the turn the runner accepted for a controller that died before checkp
     expect(recovery.recovered,recovery.reason).toBe(true);
     const session=recovery.session!;
     expect(adopted.transport.controllerAcceptedTurnId?.()).toBe("provider-turn-1");
-    expect((await session.snapshot()).activeTurnId).toBe("provider-turn-1");
-    writeFileSync(resolve(run.root,"action"),"complete");
+    if(phase==="running"){
+      expect((await session.snapshot()).activeTurnId).toBe("provider-turn-1");
+      writeFileSync(resolve(run.root,"action"),"complete");
+    }
     const events:PrpEvent[]=[];
     for await(const event of session.events()){
       events.push(event);
@@ -368,6 +375,15 @@ it("adopts the turn the runner accepted for a controller that died before checkp
     expect(events.filter(event=>event.eventType.startsWith("turn.")).map(event=>[event.eventType,event.turnId])).toEqual([
       ["turn.accepted","provider-turn-1"],["turn.started","provider-turn-1"],["turn.completed","provider-turn-1"]]);
     expect(events.some(event=>event.eventType==="session.failed")).toBe(false);
+    // Neither the turn's replayed notifications nor its terminal fail the session afterwards.
+    await new Promise(settle=>setTimeout(settle,500));
+    const settled=await session.snapshot();
+    expect(settled.terminalTurns?.map(turn=>turn.turnId)).toEqual(["provider-turn-1"]);
+    expect(settled.activeTurnId??null).toBeNull();
+    // The session passed protocol validation, so the next turn reaches the
+    // Runner. (The scripted sidecar has no second-turn suspension support.)
+    const next=await session.startTurn({message:{role:"user",text:"Next turn"}}).then(()=>null,(error:unknown)=>String(error));
+    expect(next??"").not.toMatch(/unexpected turn|turn_binding_mismatch|session cannot start/);
     expect(run.launches()).toHaveLength(1);
     expect(readFileSync(resolve(run.root,"commands.jsonl"),"utf8").split("\n").filter(command=>command==="turn.start")).toHaveLength(1);
   }finally{
