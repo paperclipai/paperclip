@@ -54,6 +54,22 @@ describe("describeRefusedExactResume", () => {
         + "exact checkpoint resume refused: Plugin Runner retained session is not authorized");
   });
 
+  it("keeps the refusal readable when both messages are long", () => {
+    const cause = interruptedExactResumeCause({ ...claimed, recoveryHistory: [{ ...interruption, stderrTail: "o".repeat(4_096) }] })!;
+    const refusal = `Plugin Runner retained session is not authorized: ${"r".repeat(600)}`;
+    const message = describeRefusedExactResume(cause, refusal);
+    expect(message).toHaveLength(2_000);
+    expect(message.startsWith("native_session_interrupted: ooo")).toBe(true);
+    expect(message.endsWith(`; exact checkpoint resume refused: ${refusal.slice(0, 480)}`)).toBe(true);
+  });
+
+  it("keeps a short refusal whole after a maximal original message", () => {
+    const cause = interruptedExactResumeCause({ ...claimed, recoveryHistory: [{ ...interruption, stderrTail: "o".repeat(4_096) }] })!;
+    const message = describeRefusedExactResume(cause, "Plugin Runner retained session is not authorized");
+    expect(message.length).toBeLessThanOrEqual(2_000);
+    expect(message.endsWith("; exact checkpoint resume refused: Plugin Runner retained session is not authorized")).toBe(true);
+  });
+
   it("keeps the original failure code when no message was persisted", () => {
     expect(describeRefusedExactResume({ originalFailureCode: "native_session_interrupted", originalMessage: "", interruptedAttempt: 1 }, "refused"))
       .toBe("native_session_interrupted; exact checkpoint resume refused: refused");

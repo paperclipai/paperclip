@@ -8,8 +8,13 @@ export type InterruptedExactResume = {
   interruptedAttempt: number;
 };
 
-/** Keeps the chained message inside the 2,000-character failure-detail bound. */
+/** Bounds the persisted original message before the chained message is built. */
 const ORIGINAL_MESSAGE_MAX_CHARS = 1_500;
+/** The coordinator failure detail keeps at most this many characters. */
+const FAILURE_DETAIL_MAX_CHARS = 2_000;
+/** Leaves the refusal readable however long the original message is. */
+const REFUSAL_MAX_CHARS = 480;
+const REFUSAL_SEPARATOR = "; exact checkpoint resume refused: ";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -51,8 +56,18 @@ export function interruptedExactResumeCause(coordinator: {
   };
 }
 
-/** Names the interrupted attempt first, then why its exact checkpoint could not resume. */
+/**
+ * Names the interrupted attempt first, then why its exact checkpoint could not
+ * resume. The refusal keeps its own budget, and the original message is cut to
+ * the room left, so the whole message fits the failure-detail bound.
+ */
 export function describeRefusedExactResume(cause: InterruptedExactResume, refusal: string): string {
-  const original = cause.originalMessage ? `${cause.originalFailureCode}: ${cause.originalMessage}` : cause.originalFailureCode;
-  return `${original}; exact checkpoint resume refused: ${refusal}`;
+  const refused = `${REFUSAL_SEPARATOR}${refusal.slice(0, REFUSAL_MAX_CHARS)}`;
+  const originalBudget = Math.max(0, FAILURE_DETAIL_MAX_CHARS - refused.length);
+  const code = cause.originalFailureCode.slice(0, originalBudget);
+  const messageBudget = originalBudget - code.length - 2;
+  const original = cause.originalMessage && messageBudget > 0
+    ? `${code}: ${cause.originalMessage.slice(0, messageBudget)}`
+    : code;
+  return `${original}${refused}`;
 }
