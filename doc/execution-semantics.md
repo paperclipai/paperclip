@@ -4033,6 +4033,20 @@ its bound recovery and finalization receipts prove completion. Unrelated holds,
 later task blocks, normal dispatch admission, and the three-attempt budget remain
 effective.
 
+A native run can also fail before its first coordinator claim, for example
+while it restores the previous harness backup. The claim is the only gate to
+provider dispatch, so a coordinator still at attempt 0 and controller generation
+0 proves that no provider process, turn or tool started. The failure path records
+`native_continuation_requires_reconciliation` with a no-replay file hold. Once
+that hold's file recovery completes, or the run had no workspace to save, the
+same safe-replacement worker schedules one fresh-session continuation and
+retires the hold and its task block. It requires no process identity, no
+provider, turn, item or tool events, no tool invocations, no recorded provider
+work, no Stop, no explicit user continuation and no later run for the task.
+Holds recorded by earlier releases take this path. The successor is marked
+`nativePreClaimContinuationOf`; if it also fails, it keeps the ordinary
+reconciliation hold instead of chaining another continuation.
+
 Historical replacement discovery reads at most 100 candidates per pass and
 keeps a cursor only for the remaining scan. A work notification preserves forward
 progress and requests a final rescan, so held earlier rows cannot hide a later

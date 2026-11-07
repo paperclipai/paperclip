@@ -15,6 +15,8 @@ import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
+import { restartRecoveryMeasurementFor, speedBudgetAdapter } from "./native-speed-budgets.js";
+import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
   restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
@@ -9540,6 +9542,11 @@ async function executePaperclipNativeSessionWithinScope(
     runId: input.execution.binding.runId,
     startedAtMs: preparationStarts.runStartedAtMs,
     onEvent: input.onEvent,
+    budget: {
+      adapter: speedBudgetAdapter(input.execution.provider),
+      environment: !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local" ? "local" : "remote",
+      restartRecovery: Boolean(input.restartRecovery),
+    },
   });
   await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
   if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
@@ -10321,6 +10328,13 @@ async function executePaperclipNativeSessionWithinScope(
         const milestoneAtMs = Number.isFinite(eventAtMs)
           ? eventAtMs
           : Date.now();
+        // Restart recovery latency (invariant 8): control plane ready to this
+        // recovered run's first committed provider event. Checked once; run log only.
+        if (input.restartRecovery) {
+          const measurement = restartRecoveryMeasurementFor({ event, startup: getStartupRecoveryState(),
+            committedAtMs: Date.now(), disposition: input.restartRecovery.kind });
+          if (measurement) trace.checkRestartRecovery(measurement);
+        }
         if (
           event.eventType === "session.started" &&
           sessionStartedAtMs === null
@@ -10328,6 +10342,7 @@ async function executePaperclipNativeSessionWithinScope(
           sessionStartedAtMs = milestoneAtMs;
           sessionStartupMode = "bootstrap";
           await emitStartupReuse(input.onEvent, "provider_session", { state: "fresh", reason: "created" });
+          trace.setBudgetStart("cold");
           await trace.record({
             name: "runner.session.bootstrap",
             parentName: "runner.session.startup",
@@ -10337,6 +10352,7 @@ async function executePaperclipNativeSessionWithinScope(
         }
         if (event.eventType === "session.resumed") {
           await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
+          trace.setBudgetStart("warm");
         }
         if (
           event.eventType === "turn.submitted" &&
@@ -10704,6 +10720,7 @@ async function executePaperclipNativeSessionWithinScope(
           await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
           executionContext?.assertOpen();
           await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
+          trace.setBudgetStart("warm");
         };
         try {
           if (executionContext) await executionContext.wait(emitReuse); else await emitReuse();
@@ -10901,6 +10918,7 @@ async function executePaperclipNativeSessionWithinScope(
         existingWarmSession = recovered.session;
         await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
         await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
+        trace.setBudgetStart("warm");
         persistedWarmSession = null;
       } else {
         await recovered.session.close({ reason: "recovered warm session requires current process configuration" });
