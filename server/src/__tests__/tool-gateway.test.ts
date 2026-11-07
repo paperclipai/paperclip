@@ -1192,6 +1192,97 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("stops reading an oversized context response that has no declared length", async () => {
+    const company = await createCompany(db);
+    const chunkBytes = 100_000;
+    const maxChunks = 50;
+    let chunksWritten = 0;
+    let responseClosedEarly = false;
+    let finishWriter: () => void = () => undefined;
+    const writerDone = new Promise<void>((resolve) => { finishWriter = resolve; });
+    const server = createServer((req, res) => {
+      const parts: Buffer[] = [];
+      req.on("data", (chunk) => parts.push(Buffer.from(chunk)));
+      req.on("end", async () => {
+        const body = JSON.parse(Buffer.concat(parts).toString("utf8") || "{}") as Record<string, unknown>;
+        if (body.method !== "resources/list") {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }));
+          return;
+        }
+        // No content-length: Node sends a chunked body. Write until the reader
+        // goes away, and wait for each chunk to drain so a written chunk is a
+        // consumed chunk.
+        res.setHeader("content-type", "application/json");
+        res.flushHeaders();
+        const chunk = "x".repeat(chunkBytes);
+        while (chunksWritten < maxChunks) {
+          if (res.destroyed || res.writableEnded) { responseClosedEarly = true; finishWriter(); return; }
+          const flushed = res.write(chunk);
+          chunksWritten += 1;
+          if (!flushed) {
+            await new Promise<void>((resolve) => {
+              res.once("drain", resolve);
+              res.once("close", resolve);
+            });
+          }
+        }
+        res.end();
+        finishWriter();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server address");
+    try {
+      const assigned = await createRemoteMcpTool(db, company.id, {
+        url: `http://127.0.0.1:${address.port}/mcp`,
+        applicationKey: "unbounded-context-app",
+        connectionName: "Unbounded context",
+        toolName: "search_notes",
+        riskLevel: "read",
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `unbounded-${randomUUID()}`,
+        name: `Unbounded ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "connection",
+        effect: "include",
+        connectionId: assigned.connection.id,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "Unbounded context gateway", profileId: profile.id },
+      });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Native runner", clientLabel: "Native runner", ownerNote: "" },
+      });
+      const app = createGatewayRouteApp(db, gateway);
+
+      const resources = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "resources/list" });
+      expect(JSON.stringify(resources.body)).toContain("mcp_remote_response_too_large");
+      // The limit is 1,000,000 bytes, so the reader must stop near the 11th
+      // chunk. Socket buffers can hold a few more chunks, but never the full body.
+      await writerDone;
+      expect(chunksWritten, `chunks of ${chunkBytes} bytes written: ${chunksWritten}`).toBeLessThan(maxChunks);
+      expect(responseClosedEarly).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("omits archived gateways from listNamedGateways", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
