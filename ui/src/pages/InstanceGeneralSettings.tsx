@@ -24,7 +24,7 @@ import { useTranslation } from "@/i18n";
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -95,9 +95,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
     ...(showBackupRetention ? [t("settings.instanceGeneral.backupRetentionTopic")] : []),
     ...(showFeedbackDataSharing ? [t("settings.instanceGeneral.dataSharingTopic")] : []),
   ];
-  const topicSummary = visibleTopics.length > 2
-    ? `${visibleTopics.slice(0, -1).join(", ")}, e ${visibleTopics[visibleTopics.length - 1]}`
-    : visibleTopics.join(" e ");
+  const topicSummary = new Intl.ListFormat(i18n.language, { style: "long", type: "conjunction" }).format(visibleTopics);
   const visibleActionError = signOutMutation.error
     ? describeError(signOutMutation.error).body
     : actionError;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { i18n, t } from ".";
 import en from "./locales/en.json";
 import { supportedLocales, loadLocaleMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
@@ -100,4 +100,11 @@ describe("locale validation", () => {
       "message is too long: 200 characters exceeds 133",
     ]);
   });
+});
+
+describe("on-demand locales", () => {
+  it("loads a non-English catalog through i18n", async () => {
+    await i18n.loadLanguages("pt-BR");
+    expect(t("app.noCompanies.title", { lng: "pt-BR" })).not.toBe(en.app.noCompanies.title);
+  }, 60_000);
 });
