@@ -1334,6 +1334,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "params": {"threadId": state.thread_id, "goal": state.goal}
                     }))?;
                 }
+                // Thread usage that predates this run's first turn, as a
+                // shared thread reports after an earlier run's work.
+                if args.iter().any(|arg| arg == "--usage-before-first-turn") {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "tokenUsage": {"total": {"inputTokens": 5, "outputTokens": 1}, "last": {"inputTokens": 5, "outputTokens": 1}}
+                    }}))?;
+                }
             }
             "thread/resume" => {
                 if reject_missing_resume_state {
