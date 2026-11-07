@@ -23,6 +23,14 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+## Get Company Agent
+
+```
+GET /api/companies/{companyId}/agents/{agentId}
+```
+
+Company-scoped variant of Get Agent. Returns the same agent details, or `404` if the agent does not belong to the company.
+
 ## Get Current Agent
 
 ```
