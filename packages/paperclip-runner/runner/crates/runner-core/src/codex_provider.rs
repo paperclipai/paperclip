@@ -1487,7 +1487,8 @@ impl CodexProvider {
         let contract_replaced = completion_contract.is_some() && self.completion_contract.is_some();
         if authorized_tools != self.authorized_tools
             || (contract_changed
-                && !(contract_replaced && matches!(self.config.provider.as_str(), "codex" | "opencode")))
+                && !(contract_replaced
+                    && matches!(self.config.provider.as_str(), "codex" | "opencode")))
         {
             return Ok(false);
         }
