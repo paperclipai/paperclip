@@ -115,7 +115,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   // pool that keeps `--concurrency` tasks in flight until the storm ends.
   const stormMinutes = values["storm-minutes"] === undefined ? undefined : integer(values["storm-minutes"], "storm-minutes", 60, 1, 240);
   const lifecycle = values.lifecycle;
-  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm") throw new Error("--lifecycle must be per_turn or warm");
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
