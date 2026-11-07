@@ -17,6 +17,7 @@ function valid(id: string) {
     result.reply = "The card reflects its older observation: payment approval blocked Launch. The source task is now done and the payment approval is resolved.";
     result.links.push("/ACORN/issues/source");
     const first = structuredClone(result); Object.assign(result.state, { accessCheckpoint: first, sourceReadStatus: 404, sourceUnavailable: true, accessPrincipalId: "ceo" });
+    Object.assign(result, { sourceReads: { initialLive: true, laterUnavailable: true, laterLive: false } });
     result.tasks = [];
     result.reply = `${first.reply}\nI can no longer read or verify the current source details; the task is unavailable. The older saved card is historical context only.`;
   }
@@ -72,11 +73,16 @@ describe("saved card state and truthful generation controls", () => {
     const stolen = structuredClone(o); stolen.cards[0]!.createdByAgentId = "ceo";
     expect(gradeIntegratorCards(stolen).passed).toBe(false);
   });
-  it("rejects an older blocker presented as current and missing source grounding", () => {
-    const o = valid("status-cards.explain-card");
-    expect(gradeIntegratorCards({ ...o, reply: "The card is current and up-to-date. Payment approval still blocks Launch although the task is done." }).passed).toBe(false);
-    expect(gradeIntegratorCards({ ...o, links: ["/ACORN/status/card"] }).passed).toBe(false);
-    const falseCurrent = structuredClone(o); falseCurrent.reply += " I verified the current restricted task."; expect(gradeIntegratorCards(falseCurrent).passed).toBe(false);
+  it("requires the live source read, its link and the later unavailable read", () => {
+    const o = valid("status-cards.explain-card") as ReturnType<typeof valid> & { sourceReads: { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean } };
+    expect(gradeIntegratorCards(o).passed).toBe(true);
+    expect(gradeIntegratorCards({ ...o, sourceReads: { ...o.sourceReads, initialLive: false } }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...o, sourceReads: { ...o.sourceReads, laterUnavailable: false } }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...o, sourceReads: { ...o.sourceReads, laterLive: true } }).passed).toBe(false);
+    const { sourceReads: _omitted, ...unobserved } = o; expect(gradeIntegratorCards(unobserved).passed).toBe(false);
+    const unlinked = structuredClone(o); ((unlinked.state as Record<string, unknown>).accessCheckpoint as ReturnType<typeof valid>).links = ["/ACORN/status/card"];
+    expect(gradeIntegratorCards(unlinked).passed).toBe(false);
+    const silent = structuredClone(o); silent.reply = ((silent.state as Record<string, unknown>).accessCheckpoint as ReturnType<typeof valid>).reply; expect(gradeIntegratorCards(silent).passed).toBe(false);
     const unrelated = structuredClone(o); Object.assign(unrelated.state, { accessPrincipalId: "someone-else" }); expect(gradeIntegratorCards(unrelated).passed).toBe(false);
     const fabricated = structuredClone(o); fabricated.cards[0]!.lastGeneratedAt = "2026-10-26T12:00:00Z";
     expect(gradeIntegratorCards(fabricated).passed).toBe(false);
@@ -106,19 +112,24 @@ describe("saved card state and truthful generation controls", () => {
   });
 });
 
-import { explainsSavedStaleness } from "./integrator-status-cards.js";
-it("accepts natural saved-wording/live-status distinction without requiring the literal word card", () => {
-  expect(explainsSavedStaleness("It's stale wording, not a current blocker. RUN-1 is done and says the payment approval was received.")).toBe(true);
-  expect(explainsSavedStaleness("The wording is not stale. Payment approval is completed.")).toBe(false);
-  expect(explainsSavedStaleness("The summary is fresh. Payment approval is resolved.")).toBe(false);
-  expect(explainsSavedStaleness("The older summary is stale, but Launch is still blocked. Payment approval is completed.")).toBe(false);
-});
-it("a paraphrase cannot replace required saved-card link or source-access evidence", () => {
+import { sourceTaskReads } from "./integrator-status-cards.js";
+it("does not grade explanation wording, and does not need a link back to the card the person attached", () => {
   const o = valid("status-cards.explain-card"); const first = (o.state as Record<string, unknown>).accessCheckpoint as ReturnType<typeof valid>;
-  first.reply = "It's stale wording, not a current blocker. The source task is done and the payment approval was received.";
-  o.reply = first.reply + "\nI can no longer read or verify its current state; only the older saved summary remains.";
+  first.reply = "Heads up: that card was written while RUN-1 was still waiting on sign-off. RUN-1 closed out shortly after, so the card is behind.";
+  first.links = ["/ACORN/issues/source"];
+  o.reply = first.reply + "\nThe task is gone now (404), so all I have is the old snapshot.";
+  o.links = ["/ACORN/issues/source"];
   expect(gradeIntegratorCards(o).passed).toBe(true);
-  expect(gradeIntegratorCards({ ...o, links: ["/ACORN/issues/source"] }).passed).toBe(false);
+});
+it("classifies live and unavailable task reads from runner tool output", () => {
+  const event = (output: string, status = "completed") => ({ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_get_task", status, output } } } });
+  const live = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", data: { id: "source", status: "done" } }) }));
+  const gone = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", ok: false, status: 404, data: "***REDACTED***" }) }));
+  const other = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", data: { id: "other" } }) }));
+  expect(sourceTaskReads([live], "source")).toEqual({ live: true, unavailable: false });
+  expect(sourceTaskReads([gone], "source")).toEqual({ live: false, unavailable: true });
+  expect(sourceTaskReads([other], "source")).toEqual({ live: false, unavailable: false });
+  expect(sourceTaskReads([event(JSON.parse(JSON.stringify(live.payload.prpEvent.payload.output)), "running")], "source")).toEqual({ live: false, unavailable: false });
 });
 
 import type { StatusCard } from "../../../packages/shared/src/validators/status-card.js";

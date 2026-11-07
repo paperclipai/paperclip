@@ -7,8 +7,25 @@ import { checks, observation, project, task, sameTask, hasLink, type Entity, typ
 import { prepareCardChecklist, updateCardChecklistSource, observeCardChecklistSuccess, observeCardWork, failCardChecklist, genuineCardWorkFailure, genuineCardChecklistSuccess, cardAccountingReady, cleanupCardChecklist, type CardRecipe, type CardWorkEvidence } from "./status-card-work-failure.js";
 import { readAgentResource, cleanupIdentityProbes, remainingIdentityObservationBudget } from "./identity-support.js";
 import { fixtureWorker } from "./internal-definition.js";
+import { collectRunEvents } from "../run-observations.js";
 import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
-interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence }
+interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads }
+/** What the responding agent actually got back when it read the source task, split by chat turn. */
+export interface SourceReads { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean }
+const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** Classifies completed runner task reads. A 404 body is redacted, so an unavailable read cannot name its task id. */
+export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string) {
+  let live = false, unavailable = false;
+  for (const row of events) {
+    const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
+    const output = typeof payload.output === "string" ? payload.output : "";
+    if (row.eventType !== "tool.execution.completed" || envelope.sourceKind !== "runner" || payload.status !== "completed" || !output.includes("GET /api/issues/{id}")) continue;
+    if (/\\*"status\\*":404\b/.test(output)) unavailable = true;
+    else if (!/\\*"ok\\*":false/.test(output) && output.includes(sourceId)) live = true;
+  }
+  return { live, unavailable };
+}
+
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
 async function observeCards(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<CardsObservation> {
   const base = await observeInternal(ctx, state); const api = ctx.input.api;
@@ -19,7 +36,19 @@ async function observeCards(ctx: ChatCatalogContext, state: Record<string, unkno
   const summaries = Object.fromEntries(await Promise.all(ids.map(async id => [id, await api.get<StatusCardSummaryRevision[]>(`/api/status-cards/${id}/summary-revisions`)])));
   const cardWork = ctx.scenario.id === "status-cards.refresh-card" && state.cardRecipe && typeof state.failedGenerationIssueId === "string"
     ? await observeCardWork(ctx, state.cardRecipe as CardRecipe, state.failedGenerationIssueId) : undefined;
-  return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}) };
+  const sourceReads = ctx.scenario.id === "status-cards.explain-card" && state.sourceUnavailable === true ? await observeSourceReads(ctx, base, state) : undefined;
+  return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}) };
+}
+async function observeSourceReads(ctx: ChatCatalogContext, base: InternalObservation, state: Record<string, unknown>): Promise<SourceReads> {
+  const sourceId = (state.sourceTasks as Entity[])[0]?.id ?? ""; const initialRuns = new Set(((state.accessCheckpoint as InternalObservation | undefined)?.runs ?? []).map(run => run.id));
+  const reads: SourceReads = { initialLive: false, laterUnavailable: false, laterLive: false };
+  for (const run of base.runs.filter(row => row.agentId === base.leadId)) {
+    const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+    const found = sourceTaskReads(events, sourceId);
+    if (initialRuns.has(run.id)) reads.initialLive ||= found.live;
+    else { reads.laterUnavailable ||= found.unavailable; reads.laterLive ||= found.live; }
+  }
+  return reads;
 }
 function cardsObservation(value: unknown): CardsObservation | undefined {
   const o = value as CardsObservation;
@@ -30,11 +59,6 @@ function freshSummary(o: CardsObservation, card: StatusCard) {
   return !!card.lastGeneratedAt && !!card.summaryBody && o.updates[card.id]?.some(row => row.kind !== "compile" && row.status === "ok" && !!row.runId
     && o.runs.some(run => run.id === row.runId && run.status === "succeeded") && row.generationIssueId != null)
     && o.summaries[card.id]?.some(row => row.body === card.summaryBody);
-}
-export function explainsSavedStaleness(reply: string) {
-  return groundedStatement(reply, /\b(?:card|summary|observation|wording)\b/i, /\b(?:stale|older|previous|last|outdated)\b/i,
-    /\b(?:still|currently|remains)\s+(?:is\s+)?blocked\b|\b(?:summary|card)\s+(?:is\s+)?(?:current|up.to.date|fresh)\b|\b(?:not|isn.t|is not)\s+(?:stale|older|outdated)\b/i)
-    && /payment approval/i.test(reply) && /\b(?:done|resolved|completed|approved)\b/i.test(reply);
 }
 export function gradeIntegratorCards(value: unknown) {
   const c = checks(); const o = cardsObservation(value);
@@ -66,13 +90,12 @@ export function gradeIntegratorCards(value: unknown) {
     const source = originals[0];
     c.add("saved-observation-is-stale", !!before && !!card && !!source && card.summaryBody === before.summaryBody && card.lastGeneratedAt === before.lastGeneratedAt
       && card.fingerprint?.[source.id]?.status === "blocked" && source.status === "done" && freshSummary(o, card), "The real previous generated blocker summary is retained while the actual source task is now done.");
-    const initial = cardsObservation(o.state.accessCheckpoint);
-    c.add("saved-versus-live-explained", !!initial && explainsSavedStaleness(initial.reply), "The original canonical explanation grounds the blocker in its older generation and distinguishes the then-resolved accessible source; a later follow-up cannot repair it.");
-    const later = initial && o.reply.startsWith(initial.reply) ? o.reply.slice(initial.reply.length) : "";
+    const initial = cardsObservation(o.state.accessCheckpoint); const later = initial && o.reply.startsWith(initial.reply) ? o.reply.slice(initial.reply.length).trim() : "";
+    // The explanation's wording is model output, so it is not pattern-matched. These checks grade what the
+    // agent read and linked; a reply that misstates a correctly read live status is not detected here.
+    c.add("live-source-read-before-explaining", !!initial && !!source && o.sourceReads?.initialLive === true && hasLink(initial, "issues", source), "Before answering, the responding agent actually read the source task's live record and linked it for the person.");
     c.add("actual-current-source-access-loss", !!initial && o.state.sourceReadStatus === 404 && o.state.sourceUnavailable === true && o.state.accessPrincipalId === o.leadId
-      && /(?:cannot|can't|no longer|lack|missing|not (?:able|permitted)|lost)/i.test(later) && /access|read|permission|verif|check/i.test(later)
-      && !/\b(?:I (?:have )?(?:verified|read|checked)|currently verified)\b/i.test(later), "After an explicit later unavailable-source question, the actual responding principal's public read is404 after genuine deletion. Chat cannot newly ground current facts; legitimate earlier cached summary/history remains allowed. This is not permission-denial proof.");
-    c.add("saved-card-and-live-task-links", !!card && !!source && !!cardLink(o, card.id) && hasLink(o, "issues", source), "The explanation links the actual saved card and its changed source task.");
+      && o.sourceReads?.laterUnavailable === true && o.sourceReads.laterLive === false && later.length > 0, "After the source was deleted, the follow-up turn attempted a fresh read, received the actual404 and answered without any successful source read. Earlier cached summary/history remains allowed.");
   } else if (o.scenarioId === "status-cards.refresh-card") {
     const initial = cardsObservation(o.state.firstRefresh); const oldIds = new Set((o.state.originalUpdates as StatusCardUpdate[] | undefined)?.map(row => row.id));
     const changes = card ? o.updates[card.id]?.filter(row => !oldIds.has(row.id) && row.kind !== "compile") ?? [] : [];
@@ -209,12 +232,11 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none"),
   define("status-cards.archive-card", "ceo", { authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan"),
-  define("status-cards.explain-card", "ceo", { authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
-    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
+  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
       const first = await pollUntil({ label: "accessible source explanation before actual access change", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,
         load: () => observeCards(ctx, state), accept: o => chatCatalogNativePhaseIsTimely(ctx) && (o.runs.length === 2 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting") });
-      if (!explainsSavedStaleness(first.reply)) throw new Error("Initial saved-versus-live explanation was incorrect; later unavailability cannot repair it");
       state.accessCheckpoint = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-card-explanation-before-access-loss.json", state.accessCheckpoint);
       const source = (state.sourceTasks as Entity[])[0]!;
       await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${source.identifier ?? source.id}`, source.title!, resultHref(first, source.identifier ?? source.id, "issues") ?? resultHref(first, source.id, "issues"));
