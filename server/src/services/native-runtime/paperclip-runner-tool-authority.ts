@@ -14,7 +14,7 @@ import { executeNativeWorkflowTool } from "./native-workflow-tools.js";
 import { assertNoCaseHandoffMutation } from "../heartbeat/case-handoff-lifecycle.js";
 import { handoffCaseSchema } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
-import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, executeSkillLibraryTool } from "./native-skill-library-tools.js";
+import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
 import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
@@ -314,7 +314,8 @@ function hireAgentResult(value: unknown, provider: unknown) {
 
 export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
-  close() { this.#taskAttachmentCache.close(); }
+  #skillLibraryCache = new SkillLibraryReadCache();
+  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
@@ -599,7 +600,7 @@ export class PaperclipRunnerToolAuthority {
     }
     if (SKILL_LIBRARY_SCHEMAS.has(call.tool)) {
       if (!this.definitions().some(definition => definition.name === call.tool)) throw forbidden("Tool is not available to this run");
-      return executeSkillLibraryTool({ db: this.db, companyId: this.binding.companyId, tool: call.tool, arguments: call.arguments,
+      return executeSkillLibraryTool({ db: this.db, companyId: this.binding.companyId, tool: call.tool, arguments: call.arguments, cache: this.#skillLibraryCache,
         authorize: async () => { const current = await this.#boundContext({ tool: call.tool }); return this.#privacyActor(current.run); } });
     }
     if (RUNNER_BRIDGE_SCHEMAS.has(call.tool)) {

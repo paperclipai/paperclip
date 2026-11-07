@@ -12,6 +12,33 @@ import { REPOSITORY_CONTENT_DIR } from "../skill-repository-package.js";
 import { settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 
 const MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024;
+type SkillText = { text: string; sha256: string; byteSize: number };
+/** Owned by one run authority. Retain at most 64 MiB of text and 64 entries. */
+export class SkillLibraryReadCache {
+  #entries = new Map<string, SkillText>();
+  #bytes = 0;
+  #closed = false;
+  #size(key: string, value: SkillText) { return (key.length + value.text.length) * 2 + 128; }
+  #assertOpen() { if (this.#closed) throw new Error("runner_skill_scope_closed"); }
+  close() { this.#closed = true; this.#entries.clear(); this.#bytes = 0; }
+  get(key: string) {
+    this.#assertOpen();
+    const value = this.#entries.get(key);
+    if (value) { this.#entries.delete(key); this.#entries.set(key, value); }
+    return value;
+  }
+  set(key: string, value: SkillText) {
+    this.#assertOpen();
+    const prior = this.#entries.get(key);
+    if (prior) { this.#bytes -= this.#size(key, prior); this.#entries.delete(key); }
+    const bytes = this.#size(key, value);
+    while (this.#entries.size && (this.#entries.size >= 64 || this.#bytes + bytes > 64 * 1024 * 1024)) {
+      const oldest = this.#entries.keys().next().value!;
+      this.#bytes -= this.#size(oldest, this.#entries.get(oldest)!); this.#entries.delete(oldest);
+    }
+    if (bytes <= 64 * 1024 * 1024) { this.#entries.set(key, value); this.#bytes += bytes; }
+  }
+}
 const relativePath = z.string().min(1).max(MAX_SKILL_PACKAGE_PATH_LENGTH + REPOSITORY_CONTENT_DIR.length + 1).refine(value => {
   try { assertSkillSnapshotPath(value); return true; } catch { return false; }
 }, "Use a relative skill file path without traversal");
@@ -45,7 +72,7 @@ const summaryColumns = {
 const fail = (code: string, message: string) => ({ outcome: "failed", code, message });
 
 export async function executeSkillLibraryTool(input: {
-  db: Db; companyId: string; tool: string; arguments: unknown;
+  db: Db; companyId: string; tool: string; arguments: unknown; cache: SkillLibraryReadCache;
   authorize: () => Promise<AuthorizationActor>;
 }) {
   const actor = await input.authorize();
@@ -87,24 +114,30 @@ export async function executeSkillLibraryTool(input: {
   const result = await settleRunnerBridgeRead(async () => {
     const runtime = skillPackageRuntime(input.db);
     const files = version.repositorySnapshotId ? await runtime.inventory(version) : await packages.versionInventory(version);
-    let file;
-    try {
-      file = version.repositorySnapshotId ? await runtime.readFile(version, args.path, MAX_TEXT_FILE_BYTES)
-        : await packages.readVersionFile(version, args.path, true, MAX_TEXT_FILE_BYTES);
-    } catch (error) {
-      if (error instanceof SkillPackageFileTooLarge) return fail("runner_skill_file_size_limit", "This tool reads text files up to 16 MiB. Use a smaller supporting file.");
-      throw error;
+    const cacheKey = JSON.stringify([input.companyId, versionId, args.path]);
+    let content = input.cache.get(cacheKey);
+    if (!content) {
+      let file;
+      try {
+        file = version.repositorySnapshotId ? await runtime.readFile(version, args.path, MAX_TEXT_FILE_BYTES)
+          : await packages.readVersionFile(version, args.path, true, MAX_TEXT_FILE_BYTES);
+      } catch (error) {
+        if (error instanceof SkillPackageFileTooLarge) return fail("runner_skill_file_size_limit", "This tool reads text files up to 16 MiB. Use a smaller supporting file.");
+        throw error;
+      }
+      if (!file) return fail("runner_skill_file_not_found", "The requested file is not in this skill version.");
+      if (file.encoding === "base64") return fail("runner_skill_binary_file", "This tool reads UTF-8 text. The requested skill file is binary.");
+      content = { text: file.content, sha256: createHash("sha256").update(file.content).digest("hex"), byteSize: Buffer.byteLength(file.content) };
+      input.cache.set(cacheKey, content);
     }
-    if (!file) return fail("runner_skill_file_not_found", "The requested file is not in this skill version.");
-    if (file.encoding === "base64") return fail("runner_skill_binary_file", "This tool reads UTF-8 text. The requested skill file is binary.");
-    const text = file.content;
+    const { text } = content;
     const splitsCharacter = (offset: number) => offset > 0 && offset < text.length
       && /[\uD800-\uDBFF]/u.test(text[offset - 1]!) && /[\uDC00-\uDFFF]/u.test(text[offset]!);
     if (args.offset > text.length || splitsCharacter(args.offset)) return fail("runner_skill_invalid_offset", "Use nextOffset from the previous page.");
     let end = Math.min(args.offset + 6000, text.length);
     if (splitsCharacter(end)) end--;
     return { ...skill, skillId: skill.id, versionId, path: args.path, text: text.slice(args.offset, end),
-      sha256: args.offset === 0 && args.fileOffset === 0 ? createHash("sha256").update(text).digest("hex") : null, byteSize: Buffer.byteLength(text),
+      sha256: args.offset === 0 && args.fileOffset === 0 ? content.sha256 : null, byteSize: content.byteSize,
       nextOffset: end < text.length ? end : null,
       files: files.slice(args.fileOffset, args.fileOffset + 50), fileCount: files.length,
       nextFileOffset: args.fileOffset + 50 < files.length ? args.fileOffset + 50 : null,

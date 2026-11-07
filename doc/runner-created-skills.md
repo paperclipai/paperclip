@@ -26,8 +26,11 @@ return an error instead of silently substituting different content.
 
 Loads use the existing saved package reader, including repository skill wrappers
 and supporting files. Text files above 16 MiB are rejected before body reads;
-accepted files are read in full for each page. Supporting paths use the saved
-package limit of 4,096 characters plus the generated repository prefix.
+accepted text is cached for the run with a 64 MiB budget and at most 64 files.
+Later pages reuse cached text and still check current access. Evicted files are
+read again. Repository reads use verified warm files or isolated recovery without
+holding the company startup lock. Supporting paths use the saved package limit
+of 4,096 characters plus the generated repository prefix.
 Binary files and unsafe paths are rejected. Access is
 checked against the current run and the existing company and project source
 boundaries, including after file I/O. Loaded content does not change persistent

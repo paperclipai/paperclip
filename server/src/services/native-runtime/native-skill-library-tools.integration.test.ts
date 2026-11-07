@@ -9,7 +9,8 @@ import { agents, companies, companySkills, companySkillVersions, companySkillSou
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createDb } from "@paperclipai/db";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
-import { skillPackageStore } from "../skill-package-store.js";
+import { skillPackagePaths, skillPackageStore } from "../skill-package-store.js";
+import { withSkillVersionCacheLock } from "../skill-version-cache.js";
 import { getStorageService } from "../../storage/index.js";
 
 describe("native company skill discovery", () => {
@@ -63,6 +64,16 @@ describe("native company skill discovery", () => {
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]?.adapterConfig).toEqual({ provider: "codex" });
   });
 
+  it("keeps default inline file reads compatible with existing callers", async () => {
+    const f = await fixture(), s = await skill(f.companyId);
+    const store = skillPackageStore(db);
+    const version = await store.version(f.companyId, s.id, s.versionId);
+    expect(version).toBeTruthy();
+    expect(await store.readVersionFile(version!, "SKILL.md")).toMatchObject({ content: s.text });
+    expect(await store.readVersionFile(version!, "references/checks.md", false))
+      .toMatchObject({ content: "Check CI and the review result." });
+  });
+
   it("bounds and paginates search results and treats SQL wildcard characters literally", async () => {
     const f = await fixture();
     await skill(f.companyId, "review-a"); await skill(f.companyId, "review-b"); await skill(f.companyId, "review-c");
@@ -106,6 +117,65 @@ describe("native company skill discovery", () => {
     });
     try { await expect(f.call("load_skill", { skill: s.id })).rejects.toThrow("Skill not found"); }
     finally { fault.mockRestore(); }
+  });
+
+  it.each([false, true])("reuses text between pages and still rechecks access (repository: %s)", async repository => {
+    const f = await fixture(), s = await skill(f.companyId);
+    const content = "x".repeat(16 * 1024 * 1024);
+    const packageId = await skillPackageStore(db).prepare(f.companyId, [
+      { path: "SKILL.md", kind: "skill", content: "---\nname: review\ndescription: Review.\n---\n\nRead checks." },
+      { path: "checks.md", kind: "reference", content },
+    ]);
+    await db.update(companySkillVersions).set({ fileInventory: [], ...(repository
+      ? { repositorySnapshotId: packageId, repositorySkillPath: "SKILL.md" }
+      : { packageSnapshotId: packageId }) }).where(eq(companySkillVersions.id, s.versionId));
+    const path = `${repository ? ".paperclip-repository/" : ""}checks.md`;
+    const open = vi.spyOn(fs, "open"), read = vi.spyOn(fs, "readFile");
+    const bodyReads = () => [...open.mock.calls, ...read.mock.calls].filter(args => String(args[0]).endsWith("/checks.md")).length;
+    try {
+      const first = await f.call("load_skill", { skill: s.id, path }) as any;
+      const reads = bodyReads();
+      expect(reads).toBeGreaterThan(0);
+      expect(first.byteSize).toBe(content.length);
+      expect(await f.call("load_skill", { skill: s.id, versionId: s.versionId, path, offset: first.nextOffset }))
+        .toMatchObject({ text: content.slice(6000, 12000), sha256: null });
+      expect(bodyReads()).toBe(reads);
+      const sourceId = randomUUID();
+      await db.insert(companySkillSources).values({ id: sourceId, companyId: f.companyId, repositoryUrl: "https://github.com/example/private", fullName: "example/private", trackingRef: "HEAD", accessScope: "projects" });
+      await db.update(companySkills).set({ accessSourceId: sourceId }).where(eq(companySkills.id, s.id));
+      expect(await f.call("load_skill", { skill: s.id, versionId: s.versionId, path, offset: 12000 }))
+        .toMatchObject({ outcome: "failed", code: "runner_skill_not_found" });
+    } finally { open.mockRestore(); read.mockRestore(); f.authority.close(); }
+  });
+
+  it.each([false, true])("reads repository files without waiting for the startup lock (cold: %s)", async cold => {
+    const f = await fixture(), s = await skill(f.companyId);
+    const store = skillPackageStore(db);
+    const packageId = await store.prepare(f.companyId, [
+      { path: "SKILL.md", kind: "skill", content: "---\nname: review\ndescription: Review.\n---\n\nRead checks." },
+      { path: "checks.md", kind: "reference", content: "Repository checks." },
+    ]);
+    await db.update(companySkillVersions).set({ fileInventory: [], repositorySnapshotId: packageId, repositorySkillPath: "SKILL.md" })
+      .where(eq(companySkillVersions.id, s.versionId));
+    if (cold) {
+      await rm(skillPackagePaths(f.companyId, packageId).directory, { recursive: true, force: true });
+    }
+    let release!: () => void, acquired!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const lock = withSkillVersionCacheLock(db, f.companyId, async () => { acquired(); await held; });
+    await ready;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => {
+          expect(await f.call("load_skill", { skill: s.id })).toMatchObject({ path: "SKILL.md" });
+          expect(await f.call("load_skill", { skill: s.id, versionId: s.versionId, path: ".paperclip-repository/checks.md" }))
+            .toMatchObject({ text: "Repository checks." });
+        })(),
+        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("Skill read waited for the startup lock")), 3000); }),
+      ]);
+    } finally { clearTimeout(timeout); release(); await lock; f.authority.close(); }
   });
 
   it.each(["inline", "package", "repository"])("rejects oversized text before reading its body (%s)", async storage => {

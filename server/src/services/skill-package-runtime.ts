@@ -37,6 +37,12 @@ function originalFiles(version: StoredSkillVersion, manifest: SkillPackageManife
 }
 export function skillPackageRuntime(db: Db) {
   const store = skillPackageStore(db);
+  function readOriginalFile(version: StoredSkillVersion, sourcePath: string, maxBytes?: number, projected?: ProjectedFile) {
+    // Use verified warm reads and isolated recovery, without the company-wide
+    // preparation lock. The projection has already resolved the source path.
+    return store.readVersionFile({ ...version, packageSnapshotId: version.repositorySnapshotId ?? version.packageSnapshotId,
+      packageFileMap: projected ? [{ path: sourcePath, sourcePath, kind: projected.kind, encoding: projected.encoding }] : null }, sourcePath, true, maxBytes);
+  }
   async function inventory(version: StoredSkillVersion) {
     const id = version.repositorySnapshotId ?? version.packageSnapshotId;
     if (!id) throw new Error("Skill version has no package");
@@ -63,13 +69,13 @@ export function skillPackageRuntime(db: Db) {
       if (!version.repositorySkillPath) throw new Error("Repository skill entrypoint is missing");
       const wanted = new Set([version.repositorySkillPath, path.posix.join(path.posix.dirname(version.repositorySkillPath), "agents/openai.yaml")]);
       for (const file of manifest.files.filter(file => wanted.has(file.path))) assertSkillPackageFileSize(file.size, maxBytes);
-      const generated = await store.withPackage(version.companyId, id, async (root, manifest) => {
-        const selected: CompanySkillVersionFileInventoryEntry[] = [];
-        for (const file of manifest.files.filter(file => wanted.has(file.path))) selected.push({
-          ...file, content: (await fs.readFile(path.join(root, file.path))).toString(file.encoding),
-        });
-        return repositorySkillProjection(selected, version.repositorySkillPath!).filter(file => !file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`));
-      });
+      const selected: CompanySkillVersionFileInventoryEntry[] = [];
+      for (const file of manifest.files.filter(file => wanted.has(file.path))) {
+        const original = await readOriginalFile(version, file.path, maxBytes);
+        if (!original) throw new Error("Repository skill file is missing");
+        selected.push(original);
+      }
+      const generated = repositorySkillProjection(selected, version.repositorySkillPath!).filter(file => !file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`));
       for (const file of generated) {
         const bytes = skillFileBytes(file);
         generatedFiles.push({ path: file.path, kind: file.kind, encoding: file.encoding ?? "utf8", executable: Boolean(file.executable),
@@ -118,9 +124,10 @@ export function skillPackageRuntime(db: Db) {
       ?? (await projection(version, maxBytes)).find(file => file.path === relative);
     if (!file) return null;
     assertSkillPackageFileSize(file.size, maxBytes);
-    const bytes = file.generated ?? await store.withPackage(version.companyId,
-      (version.repositorySnapshotId ?? version.packageSnapshotId)!, root => fs.readFile(path.join(root, file.sourcePath!)));
-    return { path: file.path, kind: file.kind, content: bytes.toString(file.encoding), encoding: file.encoding, executable: file.executable };
+    const content = file.generated ? file.generated.toString(file.encoding)
+      : (await readOriginalFile(version, file.sourcePath!, maxBytes, file))?.content;
+    if (content === undefined) return null;
+    return { path: file.path, kind: file.kind, content, encoding: file.encoding, executable: file.executable };
   }
   return { inventory, materialize, readFile };
 }

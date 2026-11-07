@@ -649,7 +649,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
       // an oversized inline body never crosses into the server process.
       const [row] = await db.select({ ...skillVersionMetadataColumns,
         file: sql<(CompanySkillVersionFileInventoryEntry & { tooLarge?: boolean }) | null>`(
-          select case when octet_length(f->>'content') > ${maxBytes}
+          select case when octet_length(f->>'content')::bigint > ${maxBytes}::bigint
             then jsonb_build_object('tooLarge', true) else f end
           from jsonb_array_elements(${companySkillVersions.fileInventory}) f
           where f->>'path' = ${relativePath} limit 1)` })
