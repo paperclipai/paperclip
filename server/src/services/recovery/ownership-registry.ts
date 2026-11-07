@@ -26,16 +26,21 @@ import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "../native-runtime/native-runner-ownership.js";
-import type { LocalOwnerStamp, RemoteFenceState, RemoteOwnerStamp } from "../owner-proof.js";
+import type { LocalOwnerStamp, OwnerProof, RemoteFenceState, RemoteOwnerStamp } from "../owner-proof.js";
+import {
+  requestNativeAcceptedResultLeaseOperatorAction,
+  settleNativeAcceptedResultLease,
+} from "../native-runtime/native-accepted-result-lease-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
  *
- * Each kind lists its in-progress records and says who owns each one. Phase 1
- * is report-only: no kind registers a `settle`, so the reconciler classifies
- * owners and runs invariant checks but never changes a record. Phase 2 adds a
- * compare-and-swap `settle` per kind, one PR at a time, and deletes the kind's
- * bespoke release path.
+ * Each kind lists its in-progress records and says who owns each one. A kind
+ * without a `settle` is report-only: the reconciler classifies its owners and
+ * runs invariant checks but never changes it. Phase 2 moves kinds onto the
+ * shared path one PR at a time: the kind registers a compare-and-swap
+ * `settle`, called only when `proveOwnerGone` returns gone, and its bespoke
+ * release path is deleted.
  *
  * The kinds are the section-C rows of doc/plans/2026-11-07-ownership-inventory.md.
  * Each kind names exactly one obligation; settling one never settles another.
@@ -68,6 +73,17 @@ export type InProgressRecord = {
 
 export type ListResult = { records: InProgressRecord[]; truncated: boolean };
 
+export type SettleOutcome = { settled: boolean; reason: string };
+
+/** Moves one record whose owner was just proven gone to its next state. It must
+ * compare-and-swap on the exact owner that was proven, so a record taken over
+ * since the proof is never released. It is called only with a `gone` proof. */
+export type SettleRecord = (db: Db, record: InProgressRecord, context: { now: Date; proof: OwnerProof }) => Promise<SettleOutcome>;
+
+/** Surfaces the operator action for a record whose owner is unprovable. It
+ * never releases the record. Idempotent. */
+export type UnprovableAction = (db: Db, record: InProgressRecord, context: { now: Date; proof: OwnerProof }) => Promise<void>;
+
 export type OwnableKind = {
   id: string;
   title: string;
@@ -77,8 +93,10 @@ export type OwnableKind = {
   /** Lists one page in a stable order; the report pages through the kind
    * within one pass. */
   listInProgress: ((db: Db, limit: number, offset: number) => Promise<ListResult>) | null;
-  /** Report-only in Phase 1. Phase 2 registers a compare-and-swap settle. */
-  settle: null;
+  /** Null while the kind is report-only. */
+  settle: SettleRecord | null;
+  /** Optional operator action for an unprovable owner of a settling kind. */
+  onUnprovable?: UnprovableAction;
   /** Plan invariants this kind is checked against (1–8). */
   invariantChecks: readonly number[];
   /** Why the kind cannot be listed, when `listInProgress` is null. */
@@ -117,6 +135,9 @@ function nrfStamp(row: NrfRow, scope: string): LocalOwnerStamp {
   return {
     kind: "local", scope, generation: row.controllerGeneration ?? null, host: null,
     processSpace: row.controllerHostHash ?? null,
+    // Rows saved before #19868 keep the one-release local proof on single-host
+    // servers (`legacy_host_unknown_dead_pid_proof`, #19883).
+    processSpaceUnrecorded: row.controllerHostHash == null,
     bootId: row.controllerBootId, pid: row.controllerPid,
     processStartedAt: row.controllerProcessStartedAt?.toISOString() ?? null, processGroupId: null,
   };
@@ -333,9 +354,16 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"])),
   nrfKind("native_awaiting_evidence", "\"Awaiting evidence\" wait", "ownership",
     eq(nativeRunFinalizations.recoveryState, "awaiting_evidence"), undefined, [1, 2, 7]),
-  nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
-    and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-      isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup)),
+  {
+    // Shared path since Phase 2: a hard kill after `run.result` is accepted
+    // leaves the result leased to the dead controller; settle expires that
+    // exact lease so finalization runs now (RC-41).
+    ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
+      and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup)),
+    settle: settleNativeAcceptedResultLease,
+    onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
+  },
   nrfKind("native_finalizer_lease", "Finalizer lease", "accepted_result",
     and(like(nativeRunFinalizations.leaseOwner, "native-finalizer:%"), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES)),
     row => nrfFenceOwner(row, "native_finalizer_lease")),

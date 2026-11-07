@@ -796,9 +796,11 @@ const OWNERSHIP_REPORT_WAKE_QUEUES = [
 export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
 
 /**
- * The ownership reconciliation pass of this reconciler (plan section C,
- * Phase 1). It is report-only: it classifies the owner of every registered
- * in-progress record and records invariant violations, and never settles.
+ * The ownership reconciliation pass of this reconciler (plan section C). It
+ * classifies the owner of every registered in-progress record and records
+ * invariant violations. Kinds moved to the shared path in Phase 2 register a
+ * `settle`, which the pass calls only when the owner is proven gone; every
+ * other kind is report-only and never changed.
  *
  * Trigger and quiet condition (rules/sleep-aware-background-work.mdc):
  * - one pass when the worker registers at startup, from durable truth;

@@ -129,11 +129,11 @@ describe("report-only ownership reconciliation", () => {
     };
   }
 
-  it("registers every section-C kind once, with no settle path", () => {
+  it("registers every section-C kind once; only kinds moved in Phase 2 settle", () => {
     const names = OWNABLE_KINDS.map(kind => kind.id);
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
-    expect(OWNABLE_KINDS.every(kind => kind.settle === null)).toBe(true);
+    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(["native_accepted_result_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -205,12 +205,19 @@ describe("report-only ownership reconciliation", () => {
       controllerProcessStartedAt: new Date("2026-11-07T09:00:00.000Z"), controllerGeneration: 1 };
     await db.insert(nativeRunFinalizations).values([
       { ...claim, runId, issueId, controllerHostHash: currentProcessSpaceHash() },
-      // Written before the PID space was stamped: never provable.
+      // Written before the PID space was stamped: the one-release local proof
+      // on a single-host server (#19883), never on an ephemeral one.
       { ...claim, runId: legacyRunId, issueId: legacyIssueId, controllerHostHash: null },
     ]);
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(kindReport(report, "native_executor_claim")).toMatchObject({ inProgress: 2,
-      verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, missing_identity: 1 } });
+      verdicts: { gone: 2, unprovable: 0 }, reasons: { pid_dead: 2 } });
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const ephemeral = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+      expect(kindReport(ephemeral, "native_executor_claim")).toMatchObject({ inProgress: 2,
+        verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, process_space_unrecorded: 1 } });
+    } finally { vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", ""); }
   });
 
   it("writes nothing when recording is off", async () => {
