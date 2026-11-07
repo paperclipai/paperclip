@@ -11,6 +11,7 @@ import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-nat
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
+import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -1417,6 +1418,49 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
   }
 
+  // A teardown claim fences other sweeps for 15 minutes. After a restart, a
+  // claim whose server process has exited cannot still be running, so its
+  // fence ends now. The saved process is bound to its own attempt: a later
+  // claim from another path that kept the old record is never released. A live
+  // or unidentified claimer keeps its fence. Pages pass every skipped claim.
+  async function releaseLostPendingCleanupClaims(): Promise<void> {
+    const nowMs = Date.now();
+    let after: string | null = null;
+    for (;;) {
+      const claimed: Array<{ id: string; metadata: Record<string, unknown> | null }> = await db
+        .select({ id: environmentLeases.id, metadata: environmentLeases.metadata })
+        .from(environmentLeases)
+        .where(and(
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+          sql`jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs') = 'number'`,
+          sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${environmentLeases.metadata}->>'pendingCleanupAttemptId'`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'bootId' is distinct from ${currentControllerBootId()}`,
+          after === null ? undefined : gt(environmentLeases.id, after),
+        ))
+        .orderBy(asc(environmentLeases.id))
+        .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+      for (const row of claimed) {
+        const metadata = row.metadata ?? {};
+        const saved = metadata.pendingCleanupController as Record<string, unknown> | undefined;
+        const controller = readControllerProcess(saved);
+        const attemptId = saved?.attemptId;
+        if (!controller || typeof attemptId !== "string" || !await controllerProcessExited(controller)) continue;
+        await db.update(environmentLeases)
+          .set({ metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint))` })
+          .where(and(
+            eq(environmentLeases.id, row.id),
+            eq(environmentLeases.status, "pending_cleanup"),
+            sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+            sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${attemptId}`,
+          ));
+      }
+      if (claimed.length < PENDING_CLEANUP_SWEEP_PAGE_SIZE) return;
+      after = claimed[claimed.length - 1]!.id;
+    }
+  }
+
   // Atomically claim one retry attempt on a pending_cleanup lease. The update
   // only matches when the lease is still pending_cleanup and its stored attempt
   // count still equals `expectedAttempts`. Two concurrent sweeps read the same
@@ -1436,13 +1480,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   ): Promise<string | null> {
     const now = new Date();
     const attemptId = randomUUID();
+    const controller = await currentControllerProcess();
     const claimed = await db
       .update(environmentLeases)
       .set({
         metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)
           || ${JSON.stringify({ ...(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {}),
             pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
-            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000, pendingCleanupController: { ...controller, attemptId },
           })}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
@@ -1690,6 +1735,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       logger.warn("orphan sandbox cleanup buffer flush failed; cleanup will retry");
       deferredFlushFailed = true;
     }
+
+    await releaseLostPendingCleanupClaims();
 
     const rows = await db
       .select()
