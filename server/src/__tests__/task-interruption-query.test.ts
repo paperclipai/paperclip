@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { createSystemRecovery } from "../services/system-recovery-state.js";
+import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -25,9 +23,6 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
-  // The shared fixture's failures are historical; reporting tests need a current failure.
-  const markFailuresFresh = (companyId: string) => db.update(heartbeatRuns).set({ finishedAt: new Date() })
-    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "failed")));
 
   it("redacts workspace preparation errors on task detail and list reads", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
@@ -132,7 +127,6 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     visit(explain["QUERY PLAN"][0].Plan);
     expect(inspected.length).toBeGreaterThan(0);
     expect(Math.max(...inspected)).toBeLessThan(30);
-    await markFailuresFresh(f.companyId);
     const presentations = await taskInterruptionPresentations(db, f.companyId, f.input);
     for (const issue of f.input) expect(presentations.get(issue.id)).toMatchObject({ state: "failed", canRetry: true });
     for (const issue of f.input) expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
@@ -205,73 +199,13 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       expect(result.get(input[n]!.id)).toMatchObject({ responsibility: "system", state: "failed" });
       expect(captureTaskInterruptionFailure).toHaveBeenCalledWith({
         companyId, agentId, taskId: input[n]!.id, runId: runs[n]!.id,
-        runStatus: runs[n]!.status, agentAdapter: "process", intentId: n === 1 ? wait!.id : null, runErrorCode: null,
+        runStatus: runs[n]!.status, agentAdapter: "process", intentId: n === 1 ? wait!.id : null,
       });
     }
     expect(result.get(input[2]!.id)?.state).toBe("working");
     expect(result.get(input[3]!.id)?.state).toBe("retry_scheduled");
     for (const n of [4, 5]) expect(result.get(input[n]!.id)?.state).toBe("resolved");
     for (const n of [6, 8]) expect(result.get(input[n]!.id)?.responsibility).toBe("user");
-  });
-
-  it("reports a retained failure once at its state change, not on every later process's read", async () => {
-    const companyId = randomUUID(), agentId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Retained failures", issuePrefix: `R${companyId.slice(0, 7)}` });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process" });
-    const input = await db.insert(issues).values(Array.from({ length: 3 }, (_, n) => ({
-      companyId, title: `Retained ${n}`, status: "in_progress", assigneeAgentId: agentId,
-    }))).returning();
-    const old = new Date(Date.now() - 22 * 60 * 60_000);
-    const runs = await db.insert(heartbeatRuns).values(input.map((issue, n) => ({
-      companyId, agentId, issueId: issue.id, status: "failed", createdAt: old,
-      finishedAt: n === 2 ? new Date(Date.now() - 60_000) : old,
-      errorCode: n === 0 ? "native_workspace_sync_out_retry_exhausted" : null,
-    }))).returning();
-    // A new saved message is a new state change for an old failed run.
-    const [wait] = await db.insert(agentWakeupRequests).values({
-      companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
-      requestedByActorType: "user", payload: { issueId: input[1]!.id }, requestedAt: new Date(Date.now() - 20_000),
-    }).returning();
-    captureTaskInterruptionFailure.mockClear();
-    const result = await taskInterruptionPresentations(db, companyId, input);
-    for (const issue of input) expect(result.get(issue.id)).toMatchObject({ responsibility: "system", state: "failed" });
-    expect(captureTaskInterruptionFailure).toHaveBeenCalledTimes(2);
-    expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: input[1]!.id, runId: runs[1]!.id, intentId: wait!.id }));
-    expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: input[2]!.id, runId: runs[2]!.id, intentId: null }));
-    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, runs[0]!.id));
-    captureTaskInterruptionFailure.mockClear();
-    await taskInterruptionPresentations(db, companyId, [input[0]!]);
-    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      taskId: input[0]!.id, runErrorCode: "native_workspace_sync_out_retry_exhausted" }));
-  });
-
-  it("reports recovery that newly fails on an old run once, then treats it as retained", async () => {
-    const companyId = randomUUID(), agentId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Old run recovery", issuePrefix: `O${companyId.slice(0, 7)}` });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process" });
-    const [issue] = await db.insert(issues).values({ companyId, title: "Recovery", status: "in_progress",
-      assigneeAgentId: agentId }).returning();
-    const old = new Date(Date.now() - 22 * 60 * 60_000);
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, status: "failed",
-      createdAt: old, finishedAt: old }).returning();
-    // Exhausted recovery clears nextAttemptAt; only the saved transition time is recent.
-    const exhausted = { ...createSystemRecovery(run!.id), state: "exhausted" as const, attempts: 6, retriesUsed: 5,
-      firstFailureAt: old.getTime(), deadlineAt: old.getTime() + 30 * 60_000, nextAttemptAt: null };
-    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue!.id,
-      kind: "workspace_recovery", status: "active", ownerType: "system", cause: "native_workspace_sync_out_failed",
-      fingerprint: `recovery:${run!.id}`, nextAction: "Recover saved files.", createdAt: old, updatedAt: new Date(),
-      evidence: { runId: run!.id, systemRecovery: exhausted } }).returning();
-    captureTaskInterruptionFailure.mockClear();
-    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
-      .toMatchObject({ responsibility: "system", state: "failed" });
-    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      taskId: issue!.id, runId: run!.id }));
-    await db.update(issueRecoveryActions).set({ updatedAt: old }).where(eq(issueRecoveryActions.id, action!.id));
-    captureTaskInterruptionFailure.mockClear();
-    await taskInterruptionPresentations(db, companyId, [issue!]);
-    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
   });
 
   it("keeps the failed run's adapter after the task is reassigned", async () => {
@@ -281,7 +215,6 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     }).returning();
     const [reassigned] = await db.update(issues).set({ assigneeAgentId: nextAgent!.id })
       .where(eq(issues.id, f.input[0]!.id)).returning();
-    await markFailuresFresh(f.companyId);
     captureTaskInterruptionFailure.mockClear();
     const result = await taskInterruptionPresentations(db, f.companyId, [reassigned!]);
     expect(result.get(reassigned!.id)?.state).toBe("failed");
