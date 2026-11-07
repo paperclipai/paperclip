@@ -34,7 +34,24 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   retry: [0, 2_000],
   queued: [0, 0],
   tool: [15_000, 60_000],
+  proposed: [0, 4_000],
+  terminal: [0, 4_000],
 };
+
+/** Triggers on a run's result events: the boundaries RC-30 and RC-33 needed. They may also join a K13 storm. */
+export const RESULT_EVENT_TRIGGERS = { proposed: "run.result.proposed", terminal: "run.terminal" } as const;
+/** Faults a result-event trigger may fire inside a storm: a fast restart lands on the boundary. */
+const STORM_TRIGGER_FAULTS: readonly FaultKind[] = ["K1", "K2"];
+
+function cellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes">, trigger: TriggerId): readonly TaskFaultKind[] {
+  if (!options.stormMinutes) return options.faults;
+  // A storm task has no fault of its own: the wave's storm crosses it.
+  if (trigger === "time") return ["K13"];
+  if (!(trigger in RESULT_EVENT_TRIGGERS)) throw new Error(`A K13 storm fires on its own clock; --triggers ${trigger} does not combine with it (use time, proposed or terminal)`);
+  const faults = options.faults.filter(fault => STORM_TRIGGER_FAULTS.includes(fault));
+  if (!faults.length) throw new Error(`--triggers ${trigger} in a storm needs K1 or K2 in --faults`);
+  return faults;
+}
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
   if (trigger === "comment") return workload === "C1";
@@ -49,17 +66,19 @@ export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): b
 export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
-  // A storm task has no fault of its own: the wave's storm crosses it.
-  const faults: readonly TaskFaultKind[] = options.stormMinutes ? ["K13"] : options.faults;
-  if (options.stormMinutes && triggers.some(trigger => trigger !== "time")) throw new Error("A K13 storm fires on its own clock; use --triggers time");
   for (const trigger of triggers) {
     if (!options.workloads.some(workload => triggerFitsWorkload(trigger, workload))) {
       throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" ? "C1" : "B5"} in --workloads`);
     }
   }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
+  // Same cell order as before storms and result triggers existed, so a seed keeps its plan.
+  const allowed = new Map(triggers.map(trigger => [trigger, cellFaults(options, trigger)]));
+  const faults = [...new Set([...allowed.values()].flat())];
   for (const workload of options.workloads) for (const adapter of options.adapters) for (const fault of faults) {
-    for (const trigger of triggers) if (triggerFitsWorkload(trigger, workload)) cells.push({ workload, adapter, fault, trigger });
+    for (const trigger of triggers) {
+      if (triggerFitsWorkload(trigger, workload) && allowed.get(trigger)!.includes(fault)) cells.push({ workload, adapter, fault, trigger });
+    }
   }
   const tasks: TaskPlan[] = [];
   let order = rng.shuffle(cells);

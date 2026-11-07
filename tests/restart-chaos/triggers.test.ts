@@ -25,9 +25,15 @@ const options: WaveOptions = { env: "local", adapters: ["codex", "claude", "open
   triggers: ["time", "comment", "retry", "queued", "tool"] };
 
 type Json = Record<string, unknown>;
-function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json }) {
+function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json; events?: Json[] }) {
   const api = {
-    async get(route: string) { return route.endsWith("/runs") ? state.runs : route.endsWith("/comments") ? [] : state.issue; },
+    async get(route: string) {
+      if (route.includes("/events?")) {
+        const after = Number(new URL(route, "http://x").searchParams.get("afterSeq") ?? 0);
+        return (state.events ?? []).filter(event => Number(event.seq) > after);
+      }
+      return route.endsWith("/runs") ? state.runs : route.endsWith("/comments") ? [] : state.issue;
+    },
     async post(route: string) {
       if (route.endsWith("/issues")) return { id: "i1", identifier: "CHA-1" };
       if (route.endsWith("/retry")) return state.retry ?? { accepted: true };
@@ -229,6 +235,76 @@ describe("trigger firing", () => {
     expect(observer.faultDue(start + 5_000)).toEqual({ kind: "K2", holdMs: 0, atMs: 5_000 });
     observer.record.benchFirstSeenAt = start + 6_000;
     expect(observer.faultDue(start + 6_000)).toMatchObject({ kind: "K1", trigger: "tool" });
+  });
+
+  it("proposed: fires its delay after the run's run.result.proposed event, timed by the event", async () => {
+    const proposedAt = Date.now() + 1_000;
+    const state = { runs: [{ runId: "r1", status: "running", startedAt: new Date().toISOString() }] as Json[],
+      issue: { id: "i1", status: "in_progress" },
+      events: [{ seq: 1, eventType: "item.completed", createdAt: new Date(proposedAt - 500).toISOString() },
+        { seq: 2, eventType: "run.result.proposed", createdAt: new Date(proposedAt).toISOString() }] as Json[] };
+    const observer = new TaskObserver({ ...base, fault: "K2", trigger: "proposed", triggerDelayMs: 3_000 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    expect(observer.faultDue(proposedAt)).toBeNull();
+    await observer.poll(proposedAt + 500);
+    expect(observer.record.resultEventsAt).toEqual({ proposed: proposedAt });
+    expect(observer.faultDue(proposedAt + 2_999)).toBeNull();
+    expect(observer.faultDue(proposedAt + 3_000)).toMatchObject({ kind: "K2", trigger: "proposed", delayMs: 3_000 });
+  });
+
+  it("terminal: a run seen running gets one last event read after it stops, so run.terminal still arms", async () => {
+    const terminalAt = Date.now() + 1_000;
+    const state = { runs: [{ runId: "r1", status: "running", startedAt: new Date().toISOString() }] as Json[],
+      issue: { id: "i1", status: "in_progress" }, events: [{ seq: 1, eventType: "item.started", createdAt: new Date().toISOString() }] as Json[] };
+    const observer = new TaskObserver({ ...base, trigger: "terminal", triggerDelayMs: 0 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(terminalAt - 500);
+    expect(observer.faultDue(terminalAt)).toBeNull();
+    // Between polls the run emitted run.terminal and finished.
+    state.events.push({ seq: 2, eventType: "run.terminal", createdAt: new Date(terminalAt).toISOString() });
+    state.runs = [{ runId: "r1", status: "succeeded", startedAt: new Date().toISOString(), finishedAt: new Date(terminalAt + 1_500).toISOString() }];
+    await observer.poll(terminalAt + 2_000);
+    expect(observer.record.resultEventsAt).toEqual({ terminal: terminalAt });
+    expect(observer.faultDue(terminalAt + 2_000)).toMatchObject({ kind: "K1", trigger: "terminal" });
+  });
+
+  it("terminal: an event seen too late is a missed trigger, not a late fault", async () => {
+    const terminalAt = Date.now();
+    const state = { runs: [{ runId: "r1", status: "running", startedAt: new Date().toISOString() }] as Json[],
+      issue: { id: "i1", status: "in_progress" }, events: [{ seq: 1, eventType: "run.terminal", createdAt: new Date(terminalAt).toISOString() }] as Json[] };
+    const observer = new TaskObserver({ ...base, trigger: "terminal", triggerDelayMs: 1_000 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(terminalAt + 100);
+    expect(observer.faultDue(terminalAt + 1_000 + TRIGGER_LATE_MS + 1)).toBeNull();
+    expect(observer.record.triggerMissed).toEqual(["terminal"]);
+  });
+});
+
+describe("result-event triggers in a storm", () => {
+  const storm = { ...options, faults: ["K1", "K2", "K4", "K6"] as WaveOptions["faults"], stormMinutes: 60, tasks: 48 };
+
+  it("plans 0–4 s delays and gives triggered storm cells their own K1 or K2 while time cells stay K13", () => {
+    const tasks = planTasks({ ...storm, triggers: ["time", "proposed", "terminal"] });
+    for (const task of tasks) {
+      if (task.trigger === "proposed" || task.trigger === "terminal") {
+        expect(["K1", "K2"]).toContain(task.fault);
+        expect(task.triggerDelayMs).toBeGreaterThanOrEqual(TRIGGER_DELAY_RANGE_MS[task.trigger][0]);
+        expect(task.triggerDelayMs).toBeLessThanOrEqual(4_000);
+        expect(taskFaultSchedule(task)).toEqual([{ kind: task.fault, holdMs: 0, atMs: task.fireAfterMs, trigger: task.trigger, delayMs: task.triggerDelayMs }]);
+      } else {
+        expect(task.fault).toBe("K13");
+        expect(taskFaultSchedule(task)).toEqual([]);
+      }
+    }
+    expect(new Set(tasks.map(task => task.trigger ?? "time"))).toEqual(new Set(["time", "proposed", "terminal"]));
+  });
+
+  it("keeps a plain wave's plan for a seed unchanged and rejects other triggers or no fast fault in a storm", () => {
+    expect(planTasks({ ...options, triggers: ["time"] }).map(task => `${task.workload}/${task.adapter}/${task.fault}`).slice(0, 4))
+      .toEqual(planTasks({ ...options, triggers: undefined }).map(task => `${task.workload}/${task.adapter}/${task.fault}`).slice(0, 4));
+    expect(() => planTasks({ ...storm, triggers: ["comment"] })).toThrow(/own clock/);
+    expect(() => planTasks({ ...storm, faults: ["K4", "K6"], triggers: ["proposed"] })).toThrow(/needs K1 or K2/);
+    expect(parseCommand(["--storm-minutes", "30", "--triggers", "time,proposed,terminal"])).toMatchObject({ options: { triggers: ["time", "proposed", "terminal"] } });
   });
 });
 

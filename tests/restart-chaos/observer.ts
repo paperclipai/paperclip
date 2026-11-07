@@ -10,7 +10,7 @@ import type {
   InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
-import { taskFaultSchedule } from "./scheduler.js";
+import { RESULT_EVENT_TRIGGERS, taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
@@ -206,6 +206,8 @@ export class TaskObserver {
         return queued && !started ? first.at : "missed";
       }
       case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "proposed": return this.record.resultEventsAt?.proposed ?? null;
+      case "terminal": return this.record.resultEventsAt?.terminal ?? null;
     }
   }
 
@@ -285,21 +287,37 @@ export class TaskObserver {
   }
 
   private readonly runEventCursors = new Map<string, { seq: number; lastAt: string | null }>();
+  private readonly runEventsSettled = new Set<string>();
 
   private async runEvidence(run: RunSample): Promise<RunSample> {
-    if (run.status !== "running") return run;
+    // A run seen running gets one last read after it stops, so its closing
+    // `run.terminal` (usually 1–5 s before it finishes) is not missed.
+    const known = this.runEventCursors.has(run.id);
+    if (run.status !== "running" && (!known || this.runEventsSettled.has(run.id))) return run;
     const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null };
     for (let page = 0; page < 3; page += 1) {
       const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
-      if (!events?.length) break;
+      if (!Array.isArray(events) || !events.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
         cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
+        this.noteResultEvent(event);
       }
       if (events.length < RUN_EVENT_PAGE) break;
     }
     this.runEventCursors.set(run.id, cursor);
+    if (run.status !== "running") this.runEventsSettled.add(run.id);
     return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]) };
+  }
+
+  /** proposed/terminal triggers arm at the server time of the task's first such event. */
+  private noteResultEvent(event: Json) {
+    for (const [trigger, eventType] of Object.entries(RESULT_EVENT_TRIGGERS) as Array<[keyof typeof RESULT_EVENT_TRIGGERS, string]>) {
+      if (event.eventType !== eventType) continue;
+      const at = typeof event.createdAt === "string" ? Date.parse(event.createdAt) : Number.NaN;
+      const seen = this.record.resultEventsAt ??= {};
+      seen[trigger] ??= Number.isFinite(at) ? at : Date.now();
+    }
   }
 
   private async sample(now: number): Promise<TaskSample> {

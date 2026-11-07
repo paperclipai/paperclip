@@ -200,15 +200,19 @@ async function main(): Promise<number> {
       }));
       for (const observer of active) {
         if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
+        // A storm's drain gets no new fault; an unfired trigger is recorded as missed at rest.
+        if (storm && !storm.mayLaunch(Date.now())) break;
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
+        if (storm && !storm.mayLaunch(Date.now())) { timeline.add("fault_skipped_storm_ended", { taskId: observer.plan.taskId, fault: due.kind }); break; }
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
-        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger);
+        // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
         const due = storm.due(Date.now());

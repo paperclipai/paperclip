@@ -52,7 +52,9 @@ new task or fault starts, the in-flight tasks drain to rest or their deadline,
 and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 `storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
 receipts are in `faults.json`. A replay of a storm task fires the faults that
-crossed it, without a new storm. Only `--triggers time` applies.
+crossed it, without a new storm. `--triggers time,proposed,terminal` may join a
+storm: a `proposed` or `terminal` task fires its own K1 or K2 (from `--faults`)
+on that boundary, and the next storm gap runs from its settle. Other triggers do not combine with a storm.
 
 ## Daytona (`--env daytona`)
 
@@ -140,6 +142,8 @@ the observer, after a seeded delay:
 | `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
 | `queued` | on the first poll whose run is still `queued` with no start | B1 |
 | `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
+| `proposed` | 0–4 s after the task's first `run.result.proposed` run event | B11 (RC-33) |
+| `terminal` | 0–4 s after the task's first `run.terminal` run event; a run seen running gets one last event read after it stops | B9/B11 (RC-30) |
 
 A trigger whose condition can no longer hold (comment posted at rest, run
 already started, no Retry offered) is recorded as `triggerMissed` in the
