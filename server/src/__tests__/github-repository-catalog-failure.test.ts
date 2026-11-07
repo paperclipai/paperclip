@@ -10,6 +10,12 @@ describe("GitHub repository discovery failure", () => {
     expect(readGitHubRepositoryCatalogFailure(new Response("private provider detail", { status }), now))
       .toMatchObject({ code: "repository_catalog_unavailable", retryAt: undefined });
   });
+  it("recognizes secondary rate limits without treating permission denials as temporary", () => {
+    expect(readGitHubRepositoryCatalogFailure(new Response(null, { status: 403,
+      headers: { "retry-after": "60", "x-ratelimit-remaining": "42" } }), now)?.retryAt).toBe(now + 60_000);
+    expect(readGitHubRepositoryCatalogFailure(new Response(null, { status: 403,
+      headers: { "retry-after": "invalid", "x-ratelimit-remaining": "42" } }), now)).toBeNull();
+  });
   it("respects both exhausted quota deadlines", () => {
     const response = new Response(null, { status: 403, headers: {
       "x-ratelimit-remaining": "0", "retry-after": "5", "x-ratelimit-reset": String((now + 60_000) / 1000),
