@@ -13,6 +13,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "./environment-selection.js";
+import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 
 const restoration = vi.hoisted(() => ({ removed: false }));
 vi.mock("../git-workspace-restoration.js", async importOriginal => {
@@ -96,6 +97,35 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(original.id);
   });
 
+  it.each(["bound", "issue_moved"] as const)(
+    "re-prepares a restarted fresh Retry attempt as its task directory, never as a git worktree base (RC-58, %s)", async binding => {
+      const { input, issue, workspace, recover } = await fixture();
+      // A project-less task's fresh Retry attempt directory, created and bound by the first preparation.
+      await db.update(issues).set({ projectId: null }).where(eq(issues.id, issue.id));
+      const attemptCwd = await materializeIsolatedTaskDirectory({ companyId: input.agent.companyId, issueId: issue.id, attemptId: input.run.id });
+      const created = await executionWorkspaceService(db).create({ companyId: input.agent.companyId, projectId: null,
+        sourceIssueId: issue.id, name: "Fresh attempt", mode: "isolated_workspace", strategyType: "project_primary",
+        providerType: "local_fs", cwd: attemptCwd });
+      if (!created) throw new Error("Attempt workspace fixture was not created");
+      await db.update(issues).set({ executionWorkspaceId: created.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+      const issueRef = { ...input.task.issueRef!, projectId: null, executionWorkspaceId: created.id,
+        executionWorkspacePreference: "reuse_existing" };
+      input.task.issueRef = issueRef;
+      input.task.executionProjectId = null;
+      input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+      input.policy.issueExecutionWorkspaceSettings = { mode: "isolated_workspace" };
+      if (binding === "issue_moved") issueRef.executionWorkspaceId = (await workspace()).id;
+      // The restart re-prepares from the admitted native input; readiness is no longer "fresh".
+      recover(created.id);
+      input.task.freshWorkspace = null;
+      const result = await selectHeartbeatEnvironment(db, input);
+      expect(result.nativeRecoveryExecutionWorkspaceId).toBe(created.id);
+      expect(result.reusableExistingExecutionWorkspace?.id).toBe(created.id);
+      // Only the task's current binding may resume as a task directory.
+      expect(result.useIsolatedTaskDirectory).toBe(binding === "bound");
+    });
+
   it("selects the saved execution workspace without inspecting live Git delivery state", async () => {
     const { input, workspace, recover } = await fixture();
     const saved = await workspace();
@@ -125,13 +155,15 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(input.run.id);
   });
 
-  it.each(["preserved", "changed_binding", "changed_cwd"])("pins the verified Retry workspace during environment selection (%s)", async mode => {
+  it.each((["resume_stopped_native_workspace", "reuse_issue_workspace"] as const).flatMap(retainedMode =>
+    ["preserved", "changed_binding", "changed_cwd"].map(mode => [retainedMode, mode] as const)))(
+    "pins the verified Retry workspace during environment selection (%s, %s)", async (retainedMode, mode) => {
     const { input, issue, workspace } = await fixture();
     const saved = await workspace();
     await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
     input.task.issueRef!.executionWorkspaceId = saved.id;
     input.task.issueRef!.executionWorkspacePreference = null;
-    input.task.freshWorkspace = { mode: "resume_stopped_native_workspace", retryIntentId: randomUUID(),
+    input.task.freshWorkspace = { mode: retainedMode, retryIntentId: randomUUID(),
       sourceRunId: randomUUID(), workspaceId: saved.id, cwd: home };
     if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
     if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });

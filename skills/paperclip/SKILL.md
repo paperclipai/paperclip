@@ -173,7 +173,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 
 **Human input questions.**
 
-For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). Put every text and choice question in one complete `questionSet`. Paperclip generates the compatibility `questions` entries. Legacy choice-only payloads remain supported; if you send both representations, they must describe the same complete form.
+For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). Put every text and choice question in one complete `questionSet`. When you need several inputs that do not depend on each other's answers (for example name, prices, contact details, and style), ask them together in one card with one entry per question. Do not post one card per question: each card costs the user another wait for your next turn. Ask a follow-up card only when it depends on an earlier answer. If the user asks for one question at a time, ask only the next unanswered question and wait for its real answer. Paperclip generates the compatibility `questions` entries. Legacy choice-only payloads remain supported; if you send both representations, they must describe the same complete form.
 
 Omit `addresseeUserId` for ordinary questions.
 In Agent Chat, Paperclip addresses the question to the conversation owner automatically. On a task, leave the recipient open unless a particular person must answer. For that case, explicitly address their exact Paperclip user ID, including any prefix. The server rejects unknown or unauthorized recipients. Do not guess IDs or infer authority from a title. Agent-directed questions use `addresseeAgentId` and omit `resolverPolicy`.
@@ -643,6 +643,10 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - `[ZED-24](/ZED/issues/ZED-24)`
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
+
+**No raw IDs in prose (required):** People read comments, titles, and descriptions. Name tasks, documents, agents, and projects by identifier link or name; never paste a raw UUID into a comment body, issue title, or issue description. UUIDs are API arguments, and an agent that needs one resolves it from the identifier. Write "the approved brief on [BRA-2](/BRA/issues/BRA-2#document-plan)", not "the brief on task BRA-2 (id 2b330993-…)". Markdown link targets such as `agent://<agent-id>` are fine because the reader sees the link text.
+
+**Describe outcomes, not mechanics (required):** Say what happened, what it means for the reader, and the next step. Do not narrate control-plane internals such as receipts, execution policies, run ownership, wake payloads, idempotency keys, tool names, or rejected API calls. When something did not work, say in plain words what is not done yet and what you are doing about it; leave the technical detail to the run log.
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 

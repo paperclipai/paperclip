@@ -1,5 +1,3 @@
-import { AgentAvatar } from "../components/AgentAvatar";
-import { CoordinatorAgentSwitcher } from "../components/CoordinatorAgentSwitcher";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
@@ -106,6 +104,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
+  acceptInteraction: vi.fn(),
   rejectInteraction: vi.fn(),
 }));
 
@@ -2077,29 +2076,13 @@ describe("IssueDetail", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    if (coordinator) {
-      expect(breadcrumbs[0].control.type).toBe(CoordinatorAgentSwitcher);
-      expect(breadcrumbs[0].control.props.agent).toEqual(agent);
-      expect(breadcrumbs[0].leading).toBeUndefined();
-      expect(breadcrumbs[0].trailing).toBeUndefined();
-    } else {
-      expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
-      expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
-    }
-    expect(breadcrumbs[0].leadingKey).toBe(`agent:${agent.id}:${JSON.stringify(agent.appearance)}`);
-    const updatedAgent = { ...agent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "deep-tide" } } as Agent;
+    expect(breadcrumbs).toEqual([{ label: "Chat" }]);
+    const updatedAgent = { ...agent, name: "Updated agent" };
     await act(async () => {
       renderIssueView(<TaskDetailSurface conversation={{ agent: updatedAgent, issue: canonical, ensureIssue: async () => canonical }} />);
     });
     await flushReact();
-    const [updatedBreadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    if (coordinator) {
-      expect(updatedBreadcrumbs[0].control.props.agent).toEqual(updatedAgent);
-      expect(updatedBreadcrumbs[0].controlKey).not.toBe(breadcrumbs[0].controlKey);
-    } else {
-      expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
-    }
-    expect(updatedBreadcrumbs[0].leadingKey).not.toBe(breadcrumbs[0].leadingKey);
+    expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "Chat" }]);
 
   });
 
@@ -3773,7 +3756,12 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it.each(["verified", "unverified", "stale", "denied"] as const)("keeps native export Retry closed with %s preservation access or source", async mode => {
+  it.each(["verified", "unverified", "unverified-plain-http", "stale", "denied"] as const)("offers exactly one native export recovery control with %s preservation access or source", async mode => {
+    // Plain-HTTP LAN and tailnet previews have no crypto.randomUUID.
+    const originalCrypto = globalThis.crypto;
+    if (mode === "unverified-plain-http")
+      vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
     const action = {
       id: "file-recovery", companyId: "company-1", sourceIssueId: "issue-1",
       kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
@@ -3782,9 +3770,11 @@ describe("IssueDetail", () => {
         stage: "restoring_files", requestIds: [], retryable: true,
       }, systemRecovery: { state: "exhausted", preservationOperationIds: [] } },
     } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
-    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action,
-      interruption: { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
-        canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run" },
+    const interruption: NonNullable<Issue["interruption"]> = { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
+      canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run",
+      retryWait: { reason: "saved_work_recovery_failed",
+        message: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work." } };
+    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action, interruption,
       executionBlocker: { runId: "stopped-run", cause: "native_workspace_sync_out_retry_exhausted", canRetry: false, workspaceRepairRequired: true,
         workspaceRecovery: { status: "blocked", stage: "restoring_files", canRetry: true } } as Issue["executionBlocker"],
     });
@@ -3796,16 +3786,33 @@ describe("IssueDetail", () => {
     });
     mockIssuesApi.recoveryActions.mockResolvedValue({ active: action, actions: [action], sourceInspection: {
       actionId: mode === "stale" ? "other-action" : action.id, runId: "stopped-run",
-      status: mode === "unverified" ? "blocked" : "verified", scope: "recorded_source_identity",
+      status: mode.startsWith("unverified") ? "blocked" : "verified", scope: "recorded_source_identity",
     } });
     mockIssuesApi.recoverWorkspace.mockResolvedValue({ actionId: action.id, status: "queued" });
+    mockIssuesApi.retryTask.mockResolvedValue({ requestId: "export-retry", accepted: true, stale: false, presentation: interruption });
     await act(async () => renderIssueView());
-    if (mode !== "verified") {
-      await waitForAssertion(() => expect(container.textContent).toContain(mode === "denied"
-        ? "A board member with task access" : "The recorded source is unavailable or has changed"));
-      expect([...container.querySelectorAll("button")].some(button => ["Recover saved files", "Retry"].includes(button.textContent ?? ""))).toBe(false);
+    const labels = () => [...container.querySelectorAll("button")].map(button => button.textContent ?? "");
+    if (mode === "denied") {
+      await waitForAssertion(() => expect(container.textContent).toContain("A board member with task access"));
+      expect(labels().some(label => ["Recover saved files", "Retry"].includes(label))).toBe(false);
       expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
       expect(mockIssuesApi.retryTask).not.toHaveBeenCalled();
+      return;
+    }
+    if (mode !== "verified") {
+      // The notice says "Retry to try again"; an unverifiable source must not
+      // leave it without a Retry. The server re-verifies the source.
+      await waitForAssertion(() => expect(labels()).toContain("Retry"));
+      expect(labels()).not.toContain("Recover saved files");
+      expect(container.textContent).not.toContain("Refresh the task");
+      const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
+      await act(async () => retry.click());
+      await waitForAssertion(() => expect(mockIssuesApi.retryTask).toHaveBeenCalledExactlyOnceWith(issue.id, {
+        idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+        observedRunId: "stopped-run",
+      }));
+      expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
+      expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
       return;
     }
     await waitForAssertion(() => expect([...container.querySelectorAll("button")]
@@ -3820,6 +3827,7 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     expect(issue.executionBlocker?.workspaceRepairRequired).toBe(true);
     expect(container.textContent).not.toContain("Saved files recovered");
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("keeps the existing Retry path for exhausted legacy workspace restoration", async () => {
@@ -3900,7 +3908,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
-  it.each(["success", "failure", "pending question"])("connects the inline disposition retry to current state (%s)", async outcome => {
+  it.each(["success", "failure", "pending question", "outdated plan", "current plan"])("connects the inline disposition retry to current state (%s)", async outcome => {
     const fail = outcome === "failure";
     const actionId = "recovery-action-inline";
     const snapshot: DispositionRecoverySnapshot = { kind: "disposition_repair_escalated", actionId, attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: "agent-1" };
@@ -3913,13 +3921,28 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.listComments.mockResolvedValue([{ id: "notice-inline", companyId: issue.companyId, issueId: issue.id, authorType: "system", body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(), metadata: { version: 1, sections: [], recovery: snapshot } }]);
     if (outcome === "pending question") mockIssuesApi.listInteractions.mockResolvedValue([{ id: "question-1", kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }]);
+    if (outcome.endsWith("plan")) {
+      mockIssuesApi.getDocument.mockResolvedValue({
+        id: "plan-document", companyId: issue.companyId, issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: "# Current plan",
+        latestRevisionId: "revision-4", latestRevisionNumber: 4,
+        createdAt: new Date("2026-11-01T10:00:00Z"), updatedAt: new Date("2026-11-01T10:03:00Z"),
+        createdByAgentId: "agent-1", createdByUserId: null, updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+      });
+      const fixture = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+      const revision = outcome === "outdated plan" ? 3 : 4;
+      mockIssuesApi.listInteractions.mockResolvedValue([{
+        ...fixture, companyId: issue.companyId, issueId: issue.id, createdAt: new Date("2026-11-01T10:01:00Z"),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: "plan-document", revisionId: `revision-${revision}`, revisionNumber: revision } },
+      }]);
+    }
     if (fail) mockIssuesApi.resolveRecoveryAction.mockRejectedValue(new Error("The task is now paused."));
     else mockIssuesApi.resolveRecoveryAction.mockResolvedValue({ issue: { ...issue, status: "todo", activeRecoveryAction: null }, recoveryAction: { ...issue.activeRecoveryAction, status: "resolved" } });
     await act(async () => renderIssueView());
     await flushReact(); await flushReact();
     const retry = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Retry agent");
     expect(retry).toBeDefined();
-    if (outcome === "pending question") {
+    if (outcome === "pending question" || outcome === "current plan") {
       expect(retry!.disabled).toBe(true);
       expect(container.textContent).toContain("Respond to the pending question or confirmation before retrying.");
       await act(async () => retry!.click());
@@ -6314,6 +6337,28 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
+  });
+
+  it.each(["accept", "reject"] as const)("refreshes the request after a superseded %s response", async action => {
+    const pending = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+    const expired = { ...pending, status: "expired", result: { version: 1, outcome: "superseded_by_newer_request" } };
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([pending]);
+    const error = new ApiError("Interaction has been superseded", 409, { details: { code: "interaction_superseded" } });
+    mockIssuesApi.acceptInteraction.mockRejectedValue(error);
+    mockIssuesApi.rejectInteraction.mockRejectedValue(error);
+    await act(async () => renderIssueView());
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    const reads = mockIssuesApi.listInteractions.mock.calls.length;
+    mockIssuesApi.listInteractions.mockResolvedValue([expired]);
+    await act(async () => {
+      const resolve = action === "accept" ? props.onAcceptInteraction : props.onRejectInteraction;
+      await expect(resolve(pending)).rejects.toBe(error);
+    });
+    await flushReact();
+    expect(mockIssuesApi.listInteractions.mock.calls.length).toBeGreaterThan(reads);
+    expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1"))).toEqual([expired]);
   });
 
   it("reports the selected continuation action after rejecting completion", async () => {

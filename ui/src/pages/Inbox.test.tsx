@@ -1663,7 +1663,8 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
+  it.each([true, false])("uses bold titles without unread dots (Streamlined UI=%s)", async streamlined => {
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -1700,33 +1701,17 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
-    // The canonical spacer reserves the disclosure column on every leaf row.
-    const hasLeadingSpacer = (row: Element) =>
-      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
-    // The overlay anchor is present on read AND unread Inbox rows without
-    // consuming a layout column.
-    const dotSlot = (row: Element) =>
-      row.querySelector('[data-testid="issue-row-unread-slot"]');
-
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
-
-    // Both rows share the canonical task-row geometry. The dot is absolutely
-    // positioned in the row gutter, so Inbox does not gain a column that Tasks
-    // lacks and unread state cannot shift status/title alignment.
-    const unreadSlot = dotSlot(unreadRow);
-    const readSlot = dotSlot(readRow);
-    expect(unreadSlot).not.toBeNull();
-    expect(readSlot).not.toBeNull();
-    expect(unreadSlot?.className).toContain("absolute");
-    // Only the unread row carries the dot button; the read slot is empty.
-    expect(markReadButton(unreadSlot!)).not.toBeNull();
-    expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
-    expect(hasLeadingSpacer(unreadRow)).toBe(true);
-
-    // Read rows keep the same spacer, so both rows line up.
-    expect(hasLeadingSpacer(readRow)).toBe(true);
+    expect(unreadRow.querySelector('[data-slot="task-row-title"]')?.className).toContain("font-semibold");
+    expect(readRow.querySelector('[data-slot="task-row-title"]')?.className).not.toContain("font-semibold");
+    expect(container.querySelector('[data-testid="issue-row-unread-slot"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    if (streamlined) {
+      for (const row of [unreadRow, readRow]) {
+        expect(row.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
+      }
+    }
 
     act(() => {
       root.unmount();

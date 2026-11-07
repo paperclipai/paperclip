@@ -68,10 +68,19 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an
 accepted run-result summary. Its
-`durationMs` starts at the native run trace's historical start (accepted ingress,
-otherwise queued run creation, or dispatch when history is absent) and ends at Core
-commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
-`reasoning`. It includes preparation and startup, but excludes browser
+`durationMs` starts at the earliest accepted input. The accepted comment or
+answered question is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run uses queued run creation. The durable wake request's `requested_at` replaces
+the start when it is earlier (deferred, coalesced and retried wakes). Without
+preparation history, the start is dispatch and the anchor is `run_created`. It ends at Core commit callback. `anchor` names the start:
+`comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
+zero, or negative when a wake request precedes the run trace. `eventKind` is
+`agentMessage` or `reasoning`. The wake request time is read after the first text,
+in detached diagnostic work bounded to 2 s (a
+transaction-local `statement_timeout`, so PostgreSQL cancels a stalled read), so the measurement adds no wait before
+`turn.start` and never delays event delivery. The span can appear after later
+run-log rows; the trace settles it before `task.provider_session.measured`. It includes preparation and startup, but excludes browser
 delivery/rendering. This measures text availability, not an exact model token.
 Empty text, item starts, tools, usage, result proposals, and duplicate replay do
 not qualify. No deliverable text means no timing sample. A recovered dispatch can
@@ -89,6 +98,30 @@ Harness startup also records `harness_state.inspect`, `harness_state.path_check`
 and `harness_state.launch_material` for remote state inspection and fresh launch
 material. These events retain the existing schema and carry no paths or exception strings.
 They also become native Observability spans only with an operator OTLP endpoint.
+
+## Local runner startup sub-steps
+
+`run.performance.span` splits a local Runner startup (`runner.session.bootstrap` or
+`runner.session.resume`) into three sequential children of `runner.session.startup`:
+
+- `runner.runtime.stage`: controller-side launch preparation before the Runner
+  process exists (runtime context, provider home, launch profiles; on resume, the
+  durable-state checks and authority rotation as well).
+- `runner.process.launch`: from spawning `paperclip-runnerd` until its first
+  authenticated connection to the PRP control plane. An exact adoption of a live
+  Runner records no launch, so this span keeps meaning a fresh Runner process
+  (see startup reuse above).
+- `provider.session.load`: from that authentication until the provider session
+  identity is confirmed. It covers `run.prepare` and `session.open`, or on resume
+  the `run.attach` that restores the provider and the recovery probe.
+
+Each carries `mode` (`bootstrap` or `resume`), `target: "local"`, and `outcome`
+(`failed` when startup fails inside the step). The Runner transport reports each
+milestone synchronously; the controller writes the row as deferred diagnostic
+work, so the run-log write never delays `turn.start`. Remote launchers keep their
+own `runner.runtime.stage` and `runner.process.launch` spans. These rows stay in
+the instance run log; with an operator OTLP endpoint they are also Observability
+spans. They are not Telemetry.
 
 ## Native PRP Run-Log Events
 
@@ -342,19 +375,61 @@ execution coordinator opens. Unavailable probes are retried within a shared
 an unreadable identity from a confirmed missing process and contains no command
 output or credentials. Saved-state read failures use `state_read_failed`; malformed
 saved JSON uses `state_invalid`. It does not itself authorize replacement or cleanup.
+For `process_not_running`, the event also records `runnerLifecycle` and
+`runnerSettled` from the exited runner's saved state. `runnerLifecycle` is a known
+runner lifecycle, `other` for an unknown value, or `unavailable` when the state has
+none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
+provider cleanup or warm transition is pending. These fields explain how the runner
+stopped. The event is not recorded when a scheduled retry resumes a runner that
+exited after a settled suspension; see `doc/execution-semantics.md`.
 
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
 classification; the executor increments it before starting provider work.
+A claimed remote bootstrap (the sandbox runner was launched and may have
+connected) records `remote_bootstrap_proven_incomplete` with the same
+disposition. Recovery admits it only after the previous controller lease has
+expired and the Postgres controller checkpoint holds just `run.prepare` and an
+unfinished `session.open`, with no committed or acknowledged event. The
+executor restores that checkpoint and checks the same proof before it
+bootstraps again. After three provider attempts it records
+`execution_recovery_budget_exhausted` instead.
+A claimed remote run whose previous controller is gone, with no
+`native.process_start_requested`, process identity, adapter invocation,
+runner-sourced event or controller checkpoint, records
+`remote_runner_never_launched` with the same disposition and budget. The
+executor records `native.process_start_requested` before a backend may spawn a
+runner, so its absence (with no checkpoint) proves nothing reached a runner.
+A remote run that a graceful drain suspended just after its runner opened the
+provider session records `remote_session_opened_without_turn` with the same
+disposition. Its Postgres controller record must hold only `run.prepare` and
+`session.open`, with every committed event a session-open event and no event
+missing. Before that same-run bootstrap relaunches in the reused sandbox, the
+executor stops the interrupted runner it can verify there, so the new runner
+does not fail with `runner_ingress_bind_conflict`.
+The same rule covers a remote run that its executor already settled as a
+same-run `bootstrap_retry` (for example when a shutdown closed the local
+runtime listener during startup) and that is due when the server restarts.
 
-For a local Codex turn lost while runnerd was stopped, the canonical `turn.failed`
+For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
 `error.recoverable: true`. It records the interrupted turn, not a final task
 outcome. There is no synthesized result for that interruption. An admitted
 same-session continuation emits its own `turn.submitted`, accepted turn ID, and
 terminal events; only the final outcome closes the run. Reconstructed thread
 history retains the original error so reconciliation and live delivery agree.
+An ACPX session records this only after the original provider lifetime loses
+its fence quorum and the same conversation is restored. Otherwise its
+`turn.failed` carries `error.code: "acpx_active_turn_recovery_closed"` with
+`error.recoverable: false`, and the run closes with an honest restart message.
+After an ACPX restore, the controller can still deliver results for semantic
+calls of the lost turn. Runnerd acknowledges each one as `retired` without
+sending it to the restored provider, so the calls settle and live semantic
+dispatch resumes for the continuation. A restored ACPX provider is a new process
+whose MCP request ids restart, so its semantic `callId` values carry a
+per-process prefix (`r<hex>:<id>`). They never reuse an earlier call's id in
+the same run.
 
 ## Native Local Process Stop Evidence
 
@@ -362,6 +437,15 @@ The server writes `native.local_process_stopped` in the same transaction that
 clears a local run's process identity, after it verifies that its PID and process
 group are absent. The payload contains only those process IDs. Remote process
 IDs are never checked against the control-plane host.
+
+A crash can land after `native.process_start_requested` and before the runner's
+process identity is recorded. Continuation admission then writes
+`native.local_process_stopped` with null process IDs and
+`basis: "unidentified_runner_absent"`. It does this only on the host named in
+the launch event's `hostname` payload, after it checks two things. First, no
+process carries the run's `--run-id` runner argument. Second, no
+saved runner control-plane state (canonical or quarantined) belongs to the run;
+a provider starts only after its runner connects and writes that state.
 
 The server writes `native.process_start_requested` before a backend can spawn,
 and `native.process_identity_recorded` when it stores a new native process

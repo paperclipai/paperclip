@@ -3,6 +3,7 @@ import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError } from "@paperclipai/plugin-sdk";
 
 const { runtimeProbe, claudeProbe, verifyKey, markAuthFailed } = vi.hoisted(() => ({
   runtimeProbe: vi.fn(), claudeProbe: vi.fn(), verifyKey: vi.fn(), markAuthFailed: vi.fn(),
@@ -11,6 +12,7 @@ vi.mock("../adapters/index.js", () => ({ requireServerAdapter: (type: string) =>
 vi.mock("./ai-api-key-test.js", () => ({ validateAiApiKey: verifyKey }));
 vi.mock("./ai-connections.js", async original => ({ ...await original<typeof import("./ai-connections.js")>(), aiConnectionService: () => ({ markAuthenticationFailed: markAuthFailed }) }));
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
+import { assertHarnessTestPassed } from "./agent-harness-verification.js";
 
 const checkedAt = new Date(0).toISOString();
 function readiness(): AdapterEnvironmentTestResult {
@@ -135,6 +137,37 @@ describe("managed Runner connection test status", () => {
     claudeProbe.mockResolvedValue({ adapterType: "claude_local", status: "warn", testedAt: checkedAt,
       checks: [{ code: "claude_hello_probe_passed", level: "info", message: "Hello completed with an unresolved warning." }] });
     expect((await testConnection()).status).toBe("warn");
+  });
+  it("reports a plugin task that cannot describe its Runner as a retryable failed check", async () => {
+    verifiedClaude();
+    const runnerTask = vi.fn().mockRejectedValue(new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"));
+    const result = await testConnection({ executionTarget: { ...context.executionTarget!, runnerTask } as AdapterEnvironmentTestContext["executionTarget"] });
+    expect(runnerTask).toHaveBeenCalledExactlyOnceWith({ kind: "describe" });
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual([expect.objectContaining({ code: "runner_environment_unavailable", level: "error", retryable: true })]);
+    expect(JSON.stringify(result)).not.toContain("reconcile the same task");
+    expect(() => assertHarnessTestPassed(result)).toThrow(expect.objectContaining({ code: "test_environment_unavailable" }));
+    expect(runtimeProbe).not.toHaveBeenCalled();
+    expect(claudeProbe).not.toHaveBeenCalled();
+    expect(markAuthFailed).not.toHaveBeenCalled();
+  });
+  it("still rejects a plugin task that describes no project authentication check", async () => {
+    verifiedClaude();
+    const runnerTask = vi.fn().mockResolvedValue({ kind: "description", taskId: "task-1", runner: { version: "1", digest: `sha256:${"0".repeat(64)}` } });
+    await expect(testConnection({ executionTarget: { ...context.executionTarget!, runnerTask } as AdapterEnvironmentTestContext["executionTarget"] }))
+      .rejects.toMatchObject({ status: 422, details: { code: "ai_connection_incompatible" } });
+    expect(runtimeProbe).not.toHaveBeenCalled();
+  });
+  it("keeps the stable Runner revision mismatch result when plugin description fails", async () => {
+    verifiedClaude();
+    const refusal = new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
+      data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
+    const runnerTask = vi.fn().mockRejectedValue(refusal);
+    const result = await testConnection({ executionTarget: { ...context.executionTarget!, runnerTask } as AdapterEnvironmentTestContext["executionTarget"] });
+    expect(result).toMatchObject({ status: "fail", checks: [{ code: "runner_revision_mismatch", level: "error", retryable: true }] });
+    expect(() => assertHarnessTestPassed(result)).toThrow(expect.objectContaining({ code: "runner_revision_mismatch" }));
+    expect(runtimeProbe).not.toHaveBeenCalled();
+    expect(markAuthFailed).not.toHaveBeenCalled();
   });
   it("keeps actionable warnings after a successful hello", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "managed-fixture"); verifiedClaude();

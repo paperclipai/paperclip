@@ -170,6 +170,8 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const runnerProviderLaunchRequirements = runner.runnerProviderLaunchRequirements;
+export const createRunnerProviderLaunch = runner.createRunnerProviderLaunch;
 export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;
@@ -187,10 +189,15 @@ export const validatePrpStructuredRunResult =
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
 export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
+export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
+export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
+export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
+export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;
 
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;

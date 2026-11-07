@@ -1,8 +1,9 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, statfs } from "node:fs/promises";
+import { mkdtemp, readFile, rm, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -24,9 +25,10 @@ import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-pres
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { readRemoteWorkspaceWriterHold, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
 import { persistActivity } from "./activity-log.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
+  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
   type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
@@ -36,6 +38,7 @@ import {
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
+import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -179,6 +182,9 @@ export async function reserveRemoteWorkspace(input: {
 }) {
   assertRemoteWorkspacePersistence(input.storage ?? getStorageService());
   const source = remoteWorkspaceSourceSchema.parse(input.source);
+  // Provisioning rows proven settled commit even when a later reservation
+  // check (such as a live writer hold) rejects this attempt.
+  const provenProvisions: string[] = [];
   return input.db.transaction(async tx => {
     await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).for("key share");
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -215,12 +221,21 @@ export async function reserveRemoteWorkspace(input: {
           : { issueId: input.issueId, workspaceId: existing.id });
         await assertExecutionWorkspaceRecordAccess(tx, actor, input.companyId, existing.id);
       }
-      const [uncertain] = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+      const uncertain = await tx.select().from(workspaceOperations).where(and(
         eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, existing.id),
         eq(workspaceOperations.phase, "remote_workspace_provision"), sql`${workspaceOperations.metadata}->>'uncertain' = 'true'`,
         sql`${workspaceOperations.heartbeatRunId} is distinct from ${input.runId}::uuid`,
-      )).limit(1);
-      if (uncertain) throw conflict("The prior provisioning operation needs verification before this workspace can run again.", { code: "remote_workspace_provision_unverified" });
+      )).for("update");
+      for (const operation of uncertain) {
+        if (!await provisionOwnerProvenStopped(tx as unknown as Db, operation)) {
+          throw conflict("A provisioning command from an earlier run may still be running in its sandbox, so this workspace cannot "
+            + "run again until that sandbox is stopped. Stop the earlier run's sandbox, or set the task's Workspace to "
+            + "\"New isolated workspace\" to continue in a fresh one.",
+          { code: "remote_workspace_provision_unverified", operationId: operation.id, runId: operation.heartbeatRunId });
+        }
+        await settleUnverifiedProvision(tx as unknown as Db, operation, input.runId);
+        provenProvisions.push(operation.id);
+      }
       const hold = await readRemoteWorkspaceWriterHold(tx as unknown as Db, { companyId: input.companyId, authority, runId: input.runId });
       if (hold.kind === "held") throw new RemoteWorkspaceWriterActiveError(existing.id, hold.writer);
       if (hold.kind === "unattributed") throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
@@ -253,6 +268,9 @@ export async function reserveRemoteWorkspace(input: {
       action: "workspace.remote_created", entityType: "execution_workspace", entityId: id, runId: input.runId,
       issueId: input.issueId, details: { authority: "sandbox", epoch: initial.epoch } });
     return workspace!;
+  }).catch(async (error: unknown) => {
+    if (provenProvisions.length > 0) await settleProvenProvisions(input.db, input.companyId, provenProvisions, input.runId);
+    throw error;
   });
 }
 
@@ -420,7 +438,7 @@ export async function prepareRemoteWorkspace(input: {
           await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
           step = "sandbox_restore";
           restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-            restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+            restorationIdentity: preparationIdentity, restorationEpoch: initial.epoch, allowEmptyRoot: migration !== null,
             allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [],
             replaceRetiredRoot });
         } finally { await rm(scratch, { recursive: true, force: true }); }
@@ -436,7 +454,8 @@ export async function prepareRemoteWorkspace(input: {
         // A sandbox refusal that names its reason (an occupied folder, a changed
         // owner, a rejected archive) repeats on retry, so it goes to the board.
         let retryable = false;
-        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message);
+        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message)
+          && !(step === "sandbox_restore" && /; remote_workspace_restore_failed: stage=restore_lock reason=restore_lock_busy$/.test(error.message));
         if (step !== "snapshot_lookup" && !refused) {
           const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id)));
@@ -476,30 +495,47 @@ export async function prepareRemoteWorkspace(input: {
       savedArchive: isSavedWorkspaceRepository(input.workspace, initial, repository),
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
-  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string }> = [];
-  const recoverySourceRunIds = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
-  if (!sameAllocation && Array.isArray(recoverySourceRunIds) && recoverySourceRunIds.length) {
+  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
+  if (!sameAllocation) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
     // preserved files recorded during migration of an ancestor's workspace.
     const [run] = await input.db.select({ nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
-      contextIssueId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'issueId'` }).from(heartbeatRuns)
+      context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
-    const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextIssueId;
+    const retainedSources = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
+    const recoverySourceRunIds = [...new Set([
+      ...(Array.isArray(retainedSources) ? retainedSources.filter((id): id is string => typeof id === "string") : []),
+      ...(typeof run?.context?.taskRetryRequestId === "string" || run?.context?.explicitUserContinuation
+        ? [input.runId] : []),
+    ])];
+    const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.context?.issueId;
     if (typeof issueId !== "string") throw new Error("remote_workspace_recovery_task_missing");
-    const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
-    try {
-      const recovered = await attachPreservedWorkspaceSnapshots({ db: input.db, companyId: input.workspace.companyId,
-        issueId, sourceRunIds: recoverySourceRunIds as string[], cwd: scratch });
-      for (const item of recovered) {
-        const relative = `.paperclip-recovered/${item.operationId}`;
-        await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
-          kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
-        }] }]);
-        recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative });
-      }
-    } finally { await rm(scratch, { recursive: true, force: true }); }
+    if (recoverySourceRunIds.length) {
+      const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
+      try {
+        const scope = { db: input.db, companyId: input.workspace.companyId, issueId, sourceRunIds: recoverySourceRunIds,
+          cwd: scratch, storage: input.storage };
+        const recovered = [
+          ...await attachPreservedWorkspaceSnapshots(scope),
+          ...await attachPreservedRemoteWorkspaceSnapshots({ ...scope, runId: input.runId, workspaceId: input.workspace.id }),
+        ];
+        for (const item of recovered) {
+          const relative = `.paperclip-recovered/${item.operationId}`;
+          await input.assertOwned?.();
+          const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
+          const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
+            provenance });
+          if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
+              kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
+            }] }]);
+          recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
+        }
+      } finally { await removeTaskDirectoryTree(scratch); }
+    }
   }
+  await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,
+    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned, storage: input.storage });
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
     await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
@@ -522,7 +558,8 @@ export async function prepareRemoteWorkspace(input: {
       .where(eq(environmentLeases.id, lease.id)).returning();
     const [savedWorkspace] = await tx.update(executionWorkspaces).set({ cwd: remoteRoot, providerRef: remoteRoot,
       metadata: { ...workspace.metadata, remoteWorkspace: authority,
-        ...(recoveredFiles.length ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+        ...(recoveredFiles.length || workspace.metadata?.remoteWorkspaceRecoveredFiles !== undefined
+          ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
     const runReference = reference(workspace.id, authority, "prepared");
     const issueId = await persistRunReference(tx, workspace.companyId, input.runId, runReference);
     if (restoredExport) {
@@ -763,7 +800,10 @@ export async function saveRemoteWorkspace(input: {
         eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
       if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
-      if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+      if (boundary === "final") {
+        await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+      }
       const receipt = object(workspace.metadata?.remoteWorkspaceSnapshotRepositories);
       const priorRepositories = receipt.snapshotId === current.snapshotId && Array.isArray(receipt.repositories)
         ? remoteWorkspaceSourceSchema.parse({ kind: "empty", repositories: receipt.repositories }).repositories ?? [] : [];
@@ -922,6 +962,58 @@ export async function createRemoteWorkspaceGitAuth(db: Db, companyId: string, ru
     responsibleUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId });
 }
 
+const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+
+/**
+ * True only with proof that an uncertain provisioning command can no longer
+ * run: its run is terminal, and every sandbox allocation of that run carries a
+ * provider stop or destroy receipt bound to that lease and run. Run status,
+ * age, or a dead server process alone never proves it, because the command
+ * runs in the sandbox, not in the server.
+ */
+async function provisionOwnerProvenStopped(db: Db, operation: typeof workspaceOperations.$inferSelect): Promise<boolean> {
+  if (!operation.heartbeatRunId) return false;
+  const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, operation.companyId), eq(heartbeatRuns.id, operation.heartbeatRunId)));
+  if (!run || !TERMINAL_RUN_STATUSES.includes(run.status)) return false;
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, operation.companyId), eq(environmentLeases.heartbeatRunId, operation.heartbeatRunId)));
+  return leases.length > 0 && leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease));
+}
+
+/** The command's effect is still unknown, so the row is settled as failed,
+ * never as succeeded. The next writer provisions in its own epoch. */
+async function settleUnverifiedProvision(db: Db, operation: typeof workspaceOperations.$inferSelect, reservingRunId: string) {
+  const now = new Date();
+  await db.update(workspaceOperations).set({ status: "failed", finishedAt: now, updatedAt: now,
+    metadata: { ...operation.metadata, uncertain: false, settledBy: "owner_sandbox_stopped" } })
+    .where(eq(workspaceOperations.id, operation.id));
+  await persistActivity(db, { companyId: operation.companyId, actorType: "system", actorId: "remote-workspaces",
+    action: "workspace.remote_provision_settled", entityType: "execution_workspace",
+    entityId: operation.executionWorkspaceId ?? operation.id, runId: reservingRunId, issueId: operation.issueId ?? undefined,
+    details: { operationId: operation.id, ownerRunId: operation.heartbeatRunId,
+      reason: "The earlier run ended and its sandbox was stopped, so its provisioning command cannot still be running. Its effect is unknown." } });
+}
+
+/** Re-proves and settles provisioning rows after the reservation that found
+ * them rolled back, so a proven row never blocks again. */
+async function settleProvenProvisions(db: Db, companyId: string, operationIds: string[], reservingRunId: string) {
+  try {
+    await db.transaction(async tx => {
+      const rows = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.id, operationIds), sql`${workspaceOperations.metadata}->>'uncertain' = 'true'`)).for("update");
+      for (const operation of rows) {
+        if (await provisionOwnerProvenStopped(tx as unknown as Db, operation)) {
+          await settleUnverifiedProvision(tx as unknown as Db, operation, reservingRunId);
+        }
+      }
+    });
+  } catch (error) {
+    // The next reservation proves and settles them again.
+    logger.warn({ err: error, companyId, operationIds }, "remote workspace provisioning settlement will retry");
+  }
+}
+
 /** Arbitrary provisioning commands cannot be replayed after an ambiguous reply. */
 export async function provisionRemoteWorkspace(input: {
   db: Db; companyId: string; workspaceId: string; runId: string; epoch: number;
@@ -955,7 +1047,14 @@ export async function provisionRemoteWorkspace(input: {
     await input.assertOwned?.();
     const result = await input.target.runner!.execute({ command: "bash", args: ["-lc", command], cwd: input.remoteCwd,
       timeoutMs: 300_000, bypassSession: true });
-    if (result.exitCode !== 0 || result.timedOut) throw new Error("remote_workspace_provision_unverified");
+    if (result.exitCode !== 0 || result.timedOut) {
+      // A reported non-zero exit is a finished command, not an ambiguous one.
+      // A timeout stays uncertain: the runner may not have stopped it.
+      if (!result.timedOut) await input.db.update(workspaceOperations).set({ status: "failed", finishedAt: new Date(),
+        updatedAt: new Date(), metadata: { ...operation.metadata, uncertain: false, exitCode: result.exitCode } })
+        .where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, "running")));
+      throw new Error("remote_workspace_provision_unverified");
+    }
     await input.assertOwned?.();
     await input.db.transaction(async tx => {
       const [workspace] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)

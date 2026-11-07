@@ -43,6 +43,7 @@ function normalizePath(url: string): string {
  * Labels come from this closed list, never from the request URL.
  */
 export type SecretSensitiveRouteFamily =
+  | "ephemeral_enrollment"
   | "provider_webhook"
   | "muse"
   | "mcp_files"
@@ -114,6 +115,24 @@ export function isPrivateWebhookHttpRequest(
   return /^\/api\/(?:chat-webhooks|voice-webhooks|routine-triggers\/public)(?:\/|$)/i.test(pathname);
 }
 
+export function isPrivateDotPrincipalHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  let pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  for (let depth = 0; depth < 4; depth++) {
+    if (/^\/mcp\/runner\/oauth\/cloud-principal(?:[/%\\]|$)/i.test(pathname)) {
+      return true;
+    }
+    try {
+      const decoded = decodeURIComponent(pathname);
+      if (decoded === pathname) break;
+      pathname = decoded;
+    } catch {
+      break;
+    }
+  }
+  return false;
+}
+
 /**
  * These routes accept or create one-time connector credentials. A provider or
  * validation error can echo credential material in its message even after the
@@ -133,8 +152,10 @@ export function secretSensitiveRouteFamily(
   method: string | undefined,
   url: string | undefined,
 ): SecretSensitiveRouteFamily | null {
+  if (url && /^\/api\/instance\/ephemeral-enrollment(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "ephemeral_enrollment";
   if (isPrivateWebhookHttpRequest(method, url)) return "provider_webhook";
   if (isPrivateMuseHttpRequest(url)) return "muse";
+  if (isPrivateDotPrincipalHttpRequest(url)) return "mcp_runner";
   if (url && normalizePath(url).startsWith("/mcp/files/")) return "mcp_files";
   if (isPrivateAgentCommentaryHttpRequest(url)) return "agent_commentary";
   // Custom OTLP header values are arbitrary credentials, including on rejected

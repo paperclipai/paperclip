@@ -77,6 +77,7 @@ export interface IssueRowProps {
   checklistDependencyChips?: ReactNode;
   checklistRowId?: string;
   unreadState?: IssueRowUnreadState | null;
+  showUnreadIndicator?: boolean;
   onMarkRead?: () => void;
   onArchive?: () => void;
   archiveDisabled?: boolean;
@@ -160,6 +161,7 @@ export function IssueRow({
   checklistDependencyChips,
   checklistRowId,
   unreadState = null,
+  showUnreadIndicator = true,
   onMarkRead,
   onArchive,
   archiveDisabled,
@@ -175,10 +177,9 @@ export function IssueRow({
 
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  // Refreshed task rows communicate unread state through title typography alone.
-  // Existing presentations retain their unread control and its reserved space.
-  const showUnreadSlot = unreadState != null && !(presentation === "task" && appearance === "refreshed");
-  const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+  const isUnread = unreadState === "visible" || unreadState === "fading";
+  const showUnreadSlot = showUnreadIndicator && unreadState != null && !(presentation === "task" && appearance === "refreshed");
+  const showUnreadDot = showUnreadIndicator && isUnread;
   const unreadDotButton = (
     <button
       type="button"
@@ -238,7 +239,6 @@ export function IssueRow({
   ) : null;
 
   if (presentation === "task") {
-    const isUnread = unreadState === "visible" || unreadState === "fading";
     const refreshed = appearance === "refreshed";
     const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention, issue.displayStatus);
     const statusIcon = <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />;
@@ -381,7 +381,7 @@ export function IssueRow({
               >
                 {issue.title}{titleSuffix}
               </span>}
-              {stableLayout ? (
+              {stableLayout && recoveryIndicator ? (
                 <span data-slot="task-row-recovery">
                   <span className="hidden sm:inline">{recoveryIndicator}</span>
                   {recoveryIndicator ? (
@@ -495,7 +495,7 @@ export function IssueRow({
         <span data-slot="task-row-title-cluster" className="flex min-w-0 items-start gap-1.5 sm:order-2 sm:flex-1 sm:items-center">
           <span
             data-slot="task-row-title"
-            className={cn("min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none", titleClassName)}
+            className={cn("min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none", isUnread && "font-semibold", titleClassName)}
           >
             {issue.title}{titleSuffix}
           </span>

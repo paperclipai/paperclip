@@ -1,3 +1,4 @@
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -5,7 +6,47 @@ import {
   evaluateNativeControllerTakeover,
   evaluateNativeProviderProcesses,
   nextNativeProviderAttempt,
+  proveNativeLocalRunnerStopped,
 } from "./native-restart-recovery.js";
+
+describe("local runner stop proof", () => {
+  const startedAt = new Date("2026-11-06T17:58:54.000Z");
+  const base = { processPid: 72454, processGroupId: 72454, processStartedAt: startedAt };
+  const probe = (alive: number[], starts: Record<number, Date | null>, groups: number[] = []) => ({
+    isProcessAlive: (pid: number) => alive.includes(pid),
+    isProcessGroupAlive: (group: number) => groups.includes(group),
+    readProcessStartedAt: async (pid: number) => starts[pid] ?? null,
+  });
+
+  it.each([
+    ["the runner and its group exited", base, probe([], {}), { stopped: true }],
+    ["the runner PID now belongs to another process", base,
+      probe([72454], { 72454: new Date(startedAt.getTime() + 60_000) }), { stopped: true }],
+    ["the recorded runner is alive", base, probe([72454], { 72454: startedAt }),
+      { stopped: false, reason: "runner_process_alive" }],
+    ["the live PID start time is unknown", base, probe([72454], {}),
+      { stopped: false, reason: "runner_process_identity_unverifiable" }],
+    ["the runner group is alive", base, probe([], {}, [72454]),
+      { stopped: false, reason: "runner_process_group_alive" }],
+    ["no runner PID was recorded", { ...base, processPid: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["no runner start time was recorded", { ...base, processStartedAt: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["no runner process group was recorded", { ...base, processGroupId: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["a stop receipt proved the runner absent", { ...base, processStartedAt: null, runnerStopRecorded: true },
+      probe([], {}), { stopped: true }],
+  ] as const)("decides when %s", async (_case, identity, checks, expected) => {
+    await expect(proveNativeLocalRunnerStopped({ ...identity, ...checks })).resolves.toEqual(expected);
+  });
+
+  it("refuses while a recorded provider process is alive", async () => {
+    const providerStartedAt = new Date("2026-11-06T17:58:56.000Z");
+    await expect(proveNativeLocalRunnerStopped({ ...base,
+      providerProcesses: [{ pid: 72460, processStartedAt: providerStartedAt }],
+      ...probe([72460], { 72460: providerStartedAt }) })).resolves.toEqual({ stopped: false, reason: "provider_process_alive" });
+  });
+});
 
 describe("native restart recovery classification", () => {
   it.each([false, true])("recognizes verified staged remote evidence with target snapshot=%s", hasCheckpoint => {
@@ -227,6 +268,25 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space"],
+    ["an unreadable PID space", "unknown"],
+  ])("never treats a dead or recycled local PID as proof for a controller on %s", async (_name, controllerHostHash) => {
+    for (const probe of [{ isProcessAlive: () => false }, { isProcessAlive: () => true,
+      readProcessStartedAt: async () => new Date("2026-09-04T11:30:00.000Z") }]) {
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash }, now, ...probe }))
+        .resolves.toEqual({ allowed: false, reason: "controller_host_unprovable" });
+    }
+  });
+
+  it("proves a controller gone only in its own recorded PID space", async () => {
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: currentProcessSpaceHash() },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    // A row saved before the PID space was recorded keeps the previous local proof for one release.
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: null },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
   });
 
   it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
