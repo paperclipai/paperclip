@@ -11,7 +11,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { recoverRetainedWorkspace } from "./workspace-recovery.js";
 import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
-import { boardRecoveryApp, db, failedRemotePreparation, run, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
+import { boardRecoveryApp, db, failedRemotePreparation, receiptOnlyRecoveryApp, run, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -73,7 +73,7 @@ describe("recovered scheduled preparation", () => {
   it.each(["attempt", "due", "reason", "context", "parent", "foreign", "provider", "extra", "controller", "stop"] as const)(
     "retains the saved Retry when scheduled preparation proof changes: %s", async gate => {
       const f = await scheduledPreparation(), source = await run(f.runId);
-      const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+      const receipt = (await request(receiptOnlyRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
       if (["attempt", "due", "reason", "extra"].includes(gate)) await db.update(heartbeatRunEvents).set({ payload: {
         scheduledRetryAt: (source.scheduledRetryAt!).toISOString(), scheduledRetryAttempt: 1,
