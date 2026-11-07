@@ -35,12 +35,21 @@ function originalLocalSource(workspace: Workspace, sourcePath: string) {
   return Boolean(workspace.repoUrl && /^file:/i.test(workspace.repoUrl) && localRepositoryPath(workspace.repoUrl) === sourcePath
     && !managedSourcePaths(workspace).includes(sourcePath) && recordedIsolatedRemoteSource(workspace) !== sourcePath);
 }
+function originalRecordedCommit(workspace: Workspace) {
+  const snapshot = workspace.metadata?.baseRefSnapshot, legacy = workspace.metadata?.baseRefSha;
+  if (snapshot != null) {
+    if (typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+    const canonical = (snapshot as Record<string, unknown>).resolvedSha;
+    return typeof canonical === "string" && /^[a-f0-9]{40}$/.test(canonical) && (legacy == null || legacy === canonical) ? canonical : null;
+  }
+  return typeof legacy === "string" && /^[a-f0-9]{40}$/.test(legacy) ? legacy : null;
+}
 function originalDeletionReceipt(workspace: Workspace, operation: typeof workspaceOperations.$inferSelect | undefined) {
   return Boolean(operation && workspace.closedAt && operation.phase === "worktree_cleanup" && operation.status === "succeeded"
     && operation.exitCode === 0 && operation.finishedAt && operation.finishedAt >= operation.startedAt && operation.startedAt >= workspace.closedAt
     && operation.companyId === workspace.companyId && operation.executionWorkspaceId === workspace.id
     && (!operation.issueId || operation.issueId === workspace.sourceIssueId)
-    && operation.command === `git branch -d ${workspace.branchName}` && operation.metadata?.cleanupAction === "branch_delete"
+    && operation.metadata?.cleanupAction === "branch_delete"
     && operation.metadata.workspaceId === workspace.id && operation.metadata.workspacePath === (workspace.providerRef ?? workspace.cwd)
     && operation.metadata.branchName === workspace.branchName);
 }
@@ -56,7 +65,7 @@ async function verifiedOriginalLocalSource(workspace: Workspace, sourcePath: str
     const present = await fs.lstat(primary).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
     if (present || await physicalPath(primary) !== primary) throw unavailable();
   }
-  const root = resolvePaperclipInstanceRoot(), relative = path.relative(root, sourcePath), full = workspace.metadata?.baseRefSha;
+  const root = resolvePaperclipInstanceRoot(), relative = path.relative(root, sourcePath), full = originalRecordedCommit(workspace);
   if (!originalLocalSource(workspace, sourcePath) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`)
     || path.isAbsolute(relative) || path.resolve(sourcePath) !== sourcePath || await fs.realpath(root) !== root
     || typeof full !== "string" || !/^[a-f0-9]{40}$/.test(full)) throw unavailable();
@@ -238,7 +247,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
     || !originalDeletionReceipt(workspace, operation))) throw unavailable();
   await verifiedReceiptObjectSource(workspace, sourcePath, projectWorkspace?.cwd);
   const commit = await (originalLocalSource(workspace, sourcePath) ? localGit : git)(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
-  if (!/^[a-f0-9]{40}$/.test(commit) || originalLocalSource(workspace, sourcePath) && commit !== workspace.metadata?.baseRefSha) throw unavailable();
+  if (!/^[a-f0-9]{40}$/.test(commit) || originalLocalSource(workspace, sourcePath) && commit !== originalRecordedCommit(workspace)) throw unavailable();
   return { commit, sourcePath, cleanupOperationId: operation.id, recipe: null };
 }
 
@@ -262,7 +271,7 @@ export async function lockArchivedGitMigrationSources(db: Pick<Db, "select">, wo
     const [receipt] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
       eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.id, source.cleanupOperationId!))).for("share", { noWait: true });
     if (!configured || configured.repoUrl !== workspace.repoUrl || !receipt || !originalDeletionReceipt(workspace, receipt)
-      || source.commit !== workspace.metadata?.baseRefSha) throw unavailable();
+      || source.commit !== originalRecordedCommit(workspace)) throw unavailable();
     const prefix = `Deleted branch ${workspace.branchName} (was `, output = receipt.stdoutExcerpt?.trim();
     if (!output?.startsWith(prefix) || !output.endsWith(").") || !/^[a-f0-9]{7,40}$/.test(output.slice(prefix.length, -2))
       || !source.commit.startsWith(output.slice(prefix.length, -2))) throw unavailable();
@@ -279,7 +288,7 @@ export async function materializeArchivedGitMigrationSource(input: {
   const { workspace, source } = input, cwd = path.join(input.scratch, "retained-git");
   if (!workspace.sourceIssueId || !workspace.repoUrl || !workspace.branchName) throw unavailable();
   const original = originalLocalSource(workspace, source.sourcePath), runGit = original ? localGit : git;
-  if (original && (source.recipe || !source.cleanupOperationId || source.retainedBranch || source.commit !== workspace.metadata?.baseRefSha)) throw unavailable();
+  if (original && (source.recipe || !source.cleanupOperationId || source.retainedBranch || source.commit !== originalRecordedCommit(workspace))) throw unavailable();
   const resolveGitAuth = original ? async () => { throw unavailable(); } : createIssueGitRemoteAuthProvider(input.db, workspace.companyId, workspace.sourceIssueId);
   const present = await fs.lstat(source.sourcePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;

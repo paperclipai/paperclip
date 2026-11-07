@@ -22,6 +22,7 @@ import { workspaceOperationService } from "./workspace-operations.js";
 import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
 import { managedSourcePaths } from "./git-workspace-restoration.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { mergeExecutionWorkspaceMetadataForPersistence } from "./heartbeat/workspaces.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -45,7 +46,7 @@ async function manifest(base: string, prefix = ""): Promise<Array<{ path: string
   }
   return entries;
 }
-async function fixture() {
+async function fixture(options: { legacy?: boolean; verifiedCleanup?: boolean } = {}) {
   const companyId = randomUUID(), projectId = randomUUID(), projectWorkspaceId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
   const seed = path.join(root, "seed"), original = path.join(resolvePaperclipInstanceRoot(), "acceptance", "original", "main.git");
   await fs.mkdir(seed, { recursive: true }); await fs.mkdir(path.dirname(original), { recursive: true });
@@ -64,16 +65,24 @@ async function fixture() {
   await db.insert(issues).values({ id: issueId, companyId, title: "Closed task", status: "done" });
   const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, projectWorkspaceId, sourceIssueId: issueId,
     mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree", name: "Closed checkout", status: "archived", closedAt: new Date(),
-    cwd, providerRef: cwd, branchName, repoUrl, baseRef: "main", metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1, baseRefSha: commit,
-      lifecycleGeneration: 1, isolatedRemoteSource: { schema: "paperclip.isolated-remote-source.v1", companyId, issueId, repoUrl } } }).returning();
+    cwd, providerRef: cwd, branchName, repoUrl, baseRef: "main", metadata: options.legacy
+      ? { createdByRuntime: true, gitBranchOwnershipVersion: 1, baseRefSha: commit, lifecycleGeneration: 1,
+        isolatedRemoteSource: { schema: "paperclip.isolated-remote-source.v1", companyId, issueId, repoUrl } }
+      : mergeExecutionWorkspaceMetadataForPersistence({ existingMetadata: { lifecycleGeneration: 1,
+        isolatedRemoteSource: { schema: "paperclip.isolated-remote-source.v1", companyId, issueId, repoUrl } },
+        source: "heartbeat", createdByRuntime: true, strategyType: "git_worktree", configSnapshot: null, shouldReuseExisting: false,
+        baseRef: "main", baseRefSha: commit }) }).returning();
   const cleaned = await cleanupExecutionWorkspaceArtifacts({ workspace: workspace!, projectWorkspace: { cwd: base, cleanupCommand: null }, runCleanupCommands: false,
-    recorder: workspaceOperationService(db).createRecorder({ companyId, executionWorkspaceId: workspaceId, issueId }) });
+    recorder: workspaceOperationService(db).createRecorder({ companyId, executionWorkspaceId: workspaceId, issueId }),
+    expectedBranchHeadSha: options.verifiedCleanup ? commit : undefined });
   expect(cleaned.warnings).toEqual([]); await fs.rm(base, { recursive: true }); await fs.rm(seed, { recursive: true });
   expect((await git(original, "rev-list", "--objects", "--no-object-names", "--all")).split("\n")).toHaveLength(4);
   return { companyId, projectId, projectWorkspaceId, issueId, workspaceId, original, base, cwd, branchName, repoUrl, commit, workspace: workspace! };
 }
-it("imports the exact deleted commit from its surviving recorded original bare source and cold-restores its encrypted files", async () => {
-  const f = await fixture(), before = await manifest(f.original);
+it.each([{ label: "canonical metadata ordinary cleanup" }, { label: "legacy metadata ordinary cleanup", legacy: true },
+  { label: "legacy metadata verified cleanup", legacy: true, verifiedCleanup: true }, { label: "canonical metadata verified cleanup", verifiedCleanup: true }])
+("imports the exact deleted commit with $label and cold-restores its encrypted files", async options => {
+  const f = await fixture(options), before = await manifest(f.original);
   expect((await inspectArchivedGitMigrationSource(db, f.workspace))?.commit).toBe(f.commit);
   expect((await inventoryRemoteWorkspaceMigration(db, f)).eligible).toBe(true);
   await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
@@ -99,9 +108,10 @@ it("imports the exact deleted commit from its surviving recorded original bare s
   expect(await manifest(f.original)).toEqual(before); expect(await fs.lstat(f.cwd).catch(() => null)).toBeNull();
 });
 
-it.each(["wrong-full-tip", "wrong-project-source", "missing-receipt", "wrong-receipt", "wrong-receipt-path", "reopened", "active-writer", "source-alias", "object-alias", "unsafe-config", "outside-instance", "present-primary", "unknown-primary"])("refuses %s without publishing", async kind => {
+it.each(["wrong-full-tip", "malformed-base-snapshot", "wrong-project-source", "missing-receipt", "wrong-receipt", "wrong-receipt-path", "reopened", "active-writer", "source-alias", "object-alias", "unsafe-config", "outside-instance", "present-primary", "unknown-primary"])("refuses %s without publishing", async kind => {
   const f = await fixture();
   if (kind === "wrong-full-tip") await db.update(executionWorkspaces).set({ metadata: { ...f.workspace.metadata, baseRefSha: "f".repeat(40) } }).where(eq(executionWorkspaces.id, f.workspaceId));
+  if (kind === "malformed-base-snapshot") await db.update(executionWorkspaces).set({ metadata: { ...f.workspace.metadata, baseRefSnapshot: { resolvedSha: "invalid" }, baseRefSha: f.commit } }).where(eq(executionWorkspaces.id, f.workspaceId));
   if (kind === "wrong-project-source") await db.update(projectWorkspaces).set({ repoUrl: "https://example.invalid/other.git" }).where(eq(projectWorkspaces.id, f.projectWorkspaceId));
   const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId));
   const deletion = operations.find(row => row.metadata?.cleanupAction === "branch_delete")!;

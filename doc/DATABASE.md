@@ -134,8 +134,9 @@ the canonical private/project cache is definitively absent. A present, corrupt,
 foreign or unreadable primary source never falls through to this path.
 
 This fallback requires the matching company/project source record, a real bare
-repository under the same instance root, and the exact full `baseRefSha` matching
-the deleted tip. It accepts self-contained SHA-1 storage with a bounded standard
+repository under the same instance root, and the exact full saved base SHA matching
+the deleted tip (`baseRefSnapshot.resolvedSha`, with the legacy `baseRefSha` form
+accepted when no canonical snapshot exists). Conflicting records fail closed. It accepts self-contained SHA-1 storage with a bounded standard
 configuration and at most 10,000 metadata entries. Aliases, special files,
 alternates, replacement/graft/shallow state and execution hooks fail closed.
 Every retained branch or lightweight tag must still name that full base commit.
