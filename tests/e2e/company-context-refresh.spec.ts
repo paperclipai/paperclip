@@ -18,8 +18,8 @@ test.beforeAll(async () => {
     server: { host: "127.0.0.1", port: 0 },
     plugins: [{
       name: "company-context-regression",
-      resolveId(id) { if (id === "/src/__company_context_probe.tsx") return probePath; },
-      load(id) {
+      resolveId(id: string) { if (id === "/src/__company_context_probe.tsx") return probePath; },
+      load(id: string) {
         if (id !== probePath) return;
         return `
           import React from "react";
@@ -39,7 +39,7 @@ test.beforeAll(async () => {
           };
         `;
       },
-      configureServer(vite) {
+      configureServer(vite: ViteDevServer) {
         vite.middlewares.use((req, res, next) => {
           if (req.url !== "/") return next();
           res.setHeader("Content-Type", "text/html");
@@ -63,7 +63,7 @@ test("a refreshed company consumer reads the retained provider", async ({ page }
     const body = pathname === "/api/auth/get-session"
       ? { user: { id: "test-user" }, session: { userId: "test-user" } }
       : pathname === "/api/companies"
-        ? [{ id: "test-company", name: "Test company", status: "active" }]
+        ? [{ id: "test-company", name: "Test company", issuePrefix: "TST", status: "active" }]
         : [];
     await route.fulfill({ json: body });
   });

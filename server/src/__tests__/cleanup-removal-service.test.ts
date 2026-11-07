@@ -1,8 +1,18 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyPendingMigrations,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  chatEndpoints,
+  chatConversations,
+  chatPublications,
+  chatDiscordCommandOwners,
+  toolApplications,
+  toolConnections,
   activityLog,
   agents,
   companies,
@@ -26,7 +36,8 @@ import {
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CLEANUP_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -40,12 +51,18 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? tempDb!.connectionString);
     configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    await db.delete(chatEndpoints);
+    await db.delete(chatDiscordCommandOwners);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
@@ -62,6 +79,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -230,6 +248,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.id).toBe(companyId);
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(documents).where(eq(documents.id, documentId))).resolves.toHaveLength(0);
     await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
@@ -282,4 +301,55 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
+  async function seedEndpoint(companyId: string, agentId: string, issueId: string) {
+    const [app] = await db.insert(toolApplications).values({ companyId, name: "Discord", type: "chat" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: app.id, uid: randomUUID(), name: "Discord", transport: "chat_sdk", connectionPurpose: "channel",
+    }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({
+      companyId, connectionId: connection.id, provider: "discord", publicId: randomUUID(), assignedAgentId: agentId,
+    }).returning();
+    const [conversation] = await db.insert(chatConversations).values({
+      companyId, endpointId: endpoint.id, issueId, externalConversationId: randomUUID(), externalLabel: "Saved chat",
+    }).returning();
+    await db.insert(chatPublications).values({
+      companyId, endpointId: endpoint.id, conversationId: conversation.id, issueId,
+      idempotencyKey: randomUUID(), payload: { text: "Saved response" }, state: "published",
+    });
+    return endpoint;
+  }
+
+  it("deletes company endpoints before their agents while preserving other companies and ownership tombstones", async () => {
+    const first = await seedFixture(), second = await seedFixture();
+    const endpoint = await seedEndpoint(first.companyId, first.agentId, first.issueId);
+    const other = await seedEndpoint(second.companyId, second.agentId, second.issueId);
+    const [owner] = await db.insert(chatDiscordCommandOwners).values({
+      applicationId: String(1_400_000_000_000_000_000n + BigInt("0x" + randomUUID().replaceAll("-", "").slice(0, 12))),
+      companyId: first.companyId, endpointId: endpoint.id, actionId: randomUUID(),
+    }).returning();
+    await companyService(db).remove(first.companyId);
+    expect(await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id))).toEqual([]);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.companyId, first.companyId))).toEqual([]);
+    expect(await db.select().from(chatPublications).where(eq(chatPublications.companyId, first.companyId))).toEqual([]);
+    expect(await db.select().from(agents).where(eq(agents.companyId, first.companyId))).toEqual([]);
+    expect(await db.select().from(companies).where(eq(companies.id, first.companyId))).toEqual([]);
+    expect(await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, other.id))).toEqual([other]);
+    expect(await db.select().from(chatDiscordCommandOwners).where(eq(chatDiscordCommandOwners.applicationId, owner.applicationId))).toEqual([owner]);
+  });
+
+  it("rolls back endpoint cleanup when the later agent deletion fails", async () => {
+    const f = await seedFixture();
+    const endpoint = await seedEndpoint(f.companyId, f.agentId, f.issueId);
+    vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementationOnce(async tx => {
+      expect(await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id))).toEqual([]);
+      throw new Error("agent deletion failed");
+    });
+    await expect(companyService(db).remove(f.companyId)).rejects.toThrow("agent deletion failed");
+    expect(await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id))).toEqual([endpoint]);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(1);
+    expect(await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).toHaveLength(1);
+    expect(await db.select().from(companies).where(eq(companies.id, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agents).where(eq(agents.id, f.agentId))).toHaveLength(1);
+  });
+
 });

@@ -1,3 +1,9 @@
+import { hasMigratedLegacyWorkspaceSource } from "../legacy-workspace-recovery-migration.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { measureRunPhase } from "../execution-preparation-timing.js";
+import { emitStartupReuse, type StartupReuseReason } from "@paperclipai/adapter-utils/startup-reuse";
+import type { AdapterRuntimeEvent } from "@paperclipai/adapter-utils";
 import type { WorkspaceCheckpointMetrics } from "@paperclipai/adapter-utils/workspace-checkpoint";
 import type { RuntimeSpanRunner } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import fs from "node:fs/promises";
@@ -147,12 +153,12 @@ function requireSafeSegment(value: string, label: string): string {
   return value;
 }
 
+export function nativeWorkspaceSyncStateRoot(): string {
+  return path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME);
+}
+
 function descriptorDirectory(runId: string): string {
-  return path.join(
-    resolvePaperclipInstanceRoot(),
-    STATE_ROOT_NAME,
-    requireSafeSegment(runId, "run_id"),
-  );
+  return path.join(nativeWorkspaceSyncStateRoot(), requireSafeSegment(runId, "run_id"));
 }
 
 function descriptorPath(runId: string, descriptorSha256: string): string {
@@ -181,13 +187,13 @@ function durableSeedPaths(runId: string): {
 }
 
 async function sha256File(filePath: string): Promise<string> {
-  return await new Promise((resolveDigest, rejectDigest) => {
+  return measureRunPhase("workspace_sync.archive_hash", () => new Promise((resolveDigest, rejectDigest) => {
     const digest = createHash("sha256");
     const stream = createReadStream(filePath);
     stream.on("data", (chunk) => digest.update(chunk));
     stream.on("error", rejectDigest);
     stream.on("end", () => resolveDigest(digest.digest("hex")));
-  });
+  }));
 }
 
 async function verifiedDurableSeed(input: {
@@ -246,11 +252,26 @@ async function ensurePrivateDirectory(dir: string): Promise<void> {
   }
 }
 
+const runDirectoryListeners = new Set<() => void>();
+
+export function onNativeWorkspaceSyncRunDirectory(listener: () => void): () => void {
+  runDirectoryListeners.add(listener);
+  return () => {
+    runDirectoryListeners.delete(listener);
+  };
+}
+
+async function ensureRunDirectory(runId: string): Promise<string> {
+  const dir = descriptorDirectory(runId);
+  await ensurePrivateDirectory(dir);
+  for (const listener of runDirectoryListeners) listener();
+  return dir;
+}
+
 async function writeDescriptor(
   descriptor: NativeWorkspaceSyncDescriptor,
 ): Promise<NativeWorkspaceSyncReference> {
-  const dir = descriptorDirectory(descriptor.binding.runId);
-  await ensurePrivateDirectory(dir);
+  const dir = await ensureRunDirectory(descriptor.binding.runId);
   const body = `${canonicalJson(descriptor)}\n`;
   const descriptorSha256 = createHash("sha256").update(body).digest("hex");
   const finalPath = descriptorPath(descriptor.binding.runId, descriptorSha256);
@@ -595,13 +616,14 @@ async function persistRunReference(
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const run = await tx
-      .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+      .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run) throw new Error("native_workspace_sync_run_missing");
+    await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId });
     await tx
       .update(heartbeatRuns)
       .set({
@@ -622,13 +644,14 @@ async function persistLeaseStamp(input: {
 }): Promise<void> {
   await input.db.transaction(async (tx) => {
     const lease = await tx
-      .select({ metadata: environmentLeases.metadata })
+      .select({ metadata: environmentLeases.metadata, companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, input.leaseId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!lease) throw new Error("native_workspace_sync_lease_missing");
+    await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
     await tx
       .update(environmentLeases)
       .set({
@@ -791,10 +814,16 @@ async function prepareRuntime(input: {
   durableSeed?: WorkspaceDurableSeedPaths;
   seedCacheDirectory?: string;
   seedCacheCompanyDirectory?: string;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
-  return prepareAdapterExecutionTargetRuntime({
+  const phase = {
+    host_current: "workspace_sync.prepare_host_current",
+    durable_seed: "workspace_sync.prepare_durable_seed",
+    adopt_remote: "workspace_sync.prepare_adopt_remote",
+  } as const;
+  return measureRunPhase(phase[input.mode], () => prepareAdapterExecutionTargetRuntime({
     runId: input.runId,
     target: input.target,
     adapterKey: "paperclip-runner",
@@ -802,6 +831,7 @@ async function prepareRuntime(input: {
     workspaceRemoteDir: input.target.remoteCwd,
     workspaceInboundMode: input.mode,
     workspaceSnapshotIsolation: "worker",
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.durableSeed,
     workspaceBaseline: input.baseline,
     workspaceGitSnapshot: input.gitSnapshot,
@@ -810,8 +840,9 @@ async function prepareRuntime(input: {
     onWorkspaceCheckpoint: input.onCheckpoint,
     workspaceSeedCacheDirectory: input.seedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
+    workspaceSeedCacheScope: "company",
     runtimeSpan: input.onPhase,
-  });
+  }));
 }
 
 async function finalizePreparedRuntime(input: {
@@ -826,38 +857,40 @@ async function finalizePreparedRuntime(input: {
 }): Promise<NativeWorkspaceSyncReference> {
   if (input.onPhase) await input.onPhase("workspace.restore", () => input.runtime.restoreWorkspace());
   else await input.runtime.restoreWorkspace();
-  await input.assertOwnership?.();
-  const finalSnapshot =
-    await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
-      ({ captureDirectorySnapshotOffThread: captureDirectorySnapshot }) =>
-        captureDirectorySnapshot(input.descriptor.binding.localCwd, {
-          exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],
-          ignoredPaths: input.runtime.workspaceSyncSnapshot?.baseline.ignoredPaths,
-          diskBacked: true,
-        }),
-    );
-  const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
-  await disposeDirectorySnapshot(finalSnapshot);
-  const stamp = finalizedWorkspaceStamp({
-    descriptor: input.descriptor,
-    hostSha256: finalHostSha256,
+  return measureRunPhase("execution.workspace_commit", async () => {
+    await input.assertOwnership?.();
+    const finalSnapshot =
+      await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
+        ({ captureDirectorySnapshotOffThread: captureDirectorySnapshot }) =>
+          captureDirectorySnapshot(input.descriptor.binding.localCwd, {
+            exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],
+            ignoredPaths: input.runtime.workspaceSyncSnapshot?.baseline.ignoredPaths,
+            diskBacked: true,
+          }),
+      );
+    const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
+    await disposeDirectorySnapshot(finalSnapshot);
+    const stamp = finalizedWorkspaceStamp({
+      descriptor: input.descriptor,
+      hostSha256: finalHostSha256,
+    });
+    await writeRemoteStamp({ target: input.target, stamp });
+    const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
+      ...input.descriptor,
+      state: "finalized",
+      finalizedAt: new Date().toISOString(),
+      finalHostSha256,
+    };
+    await input.assertOwnership?.();
+    const reference = await writeDescriptor(finalizedDescriptor);
+    await persistRunReference(input.db, input.runId, reference);
+    await persistLeaseStamp({
+      db: input.db,
+      leaseId: input.descriptor.binding.leaseId,
+      stamp,
+    });
+    return reference;
   });
-  await writeRemoteStamp({ target: input.target, stamp });
-  const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
-    ...input.descriptor,
-    state: "finalized",
-    finalizedAt: new Date().toISOString(),
-    finalHostSha256,
-  };
-  await input.assertOwnership?.();
-  const reference = await writeDescriptor(finalizedDescriptor);
-  await persistRunReference(input.db, input.runId, reference);
-  await persistLeaseStamp({
-    db: input.db,
-    leaseId: input.descriptor.binding.leaseId,
-    stamp,
-  });
-  return reference;
 }
 
 export async function prepareNativeWorkspaceSync(input: {
@@ -871,27 +904,29 @@ export async function prepareNativeWorkspaceSync(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
 }): Promise<PreparedNativeWorkspaceSync | null> {
-  if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (input.target?.kind !== "remote" || input.target.transport !== "sandbox" || input.target.runnerTask) {
     return null;
   }
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
   // Reattachment may never seed a replacement sandbox over a still-live run.
   if (input.restartRecovery?.kind === "reattach_remote_runner" &&
-      (input.restartRecovery.runId !== input.runId ||
+      (input.restartRecovery.remote.kind === "plugin_task" || input.restartRecovery.runId !== input.runId ||
        input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
        input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
     throw new Error("native_remote_recovery_lease_mismatch");
   }
-  const run = await input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+  const run = await measureRunPhase("workspace_sync.run_read", () => input.db
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
-    .then((rows) => rows[0] ?? null);
+    .then((rows) => rows[0] ?? null));
   if (!run) throw new Error("native_workspace_sync_run_missing");
   const existingReference = readNativeWorkspaceSyncReference(
     parseObject(run.runnerProfileJson).nativeWorkspaceSync,
@@ -900,15 +935,16 @@ export async function prepareNativeWorkspaceSync(input: {
   let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
   let descriptor: NativeWorkspaceSyncDescriptor;
   let mode: WorkspaceInboundMode = "host_current";
+  let reuseReason: StartupReuseReason = "created";
   const seedPaths = durableSeedPaths(input.runId);
-  await ensurePrivateDirectory(descriptorDirectory(input.runId));
+  await measureRunPhase("workspace_sync.descriptor_directory", () => ensureRunDirectory(input.runId));
 
   try {
   if (existingReference) {
-    const existing = await readDescriptor({
+    const existing = await measureRunPhase("workspace_sync.descriptor_read", () => readDescriptor({
       runId: input.runId,
       reference: existingReference,
-    });
+    }));
     if (
       existing.descriptor.binding.companyId !== input.companyId ||
       existing.descriptor.binding.workspaceId !== input.workspaceId ||
@@ -926,15 +962,16 @@ export async function prepareNativeWorkspaceSync(input: {
       sameRunRecovery: input.sameRunRecovery,
       sameProviderLease,
     });
+    reuseReason = sameProviderLease ? "verified_reuse" : "replacement";
     const durableSeed =
       mode === "durable_seed"
         ? existing.descriptor.seed
-          ? await verifiedDurableSeed({
+          ? await measureRunPhase("workspace_sync.durable_seed_verify", () => verifiedDurableSeed({
               runId: input.runId,
-              seed: existing.descriptor.seed,
+              seed: existing.descriptor.seed!,
               gitSnapshot: existing.descriptor.gitSnapshot,
               repositories: existing.descriptor.repositories,
-            })
+            }))
           : (() => {
               throw new Error("workspace_sync_out_unrecoverable");
             })()
@@ -961,6 +998,7 @@ export async function prepareNativeWorkspaceSync(input: {
     };
   } else {
     const acquisition = target.sandboxLeaseAcquisition?.outcome ?? null;
+    reuseReason = acquisition === "resumed" ? "cache_miss" : acquisition === "replacement" ? "replacement" : "created";
     const priorStamp = leaseStamp({
       lease: input.lease,
       workspaceId: input.workspaceId,
@@ -973,7 +1011,7 @@ export async function prepareNativeWorkspaceSync(input: {
       hasPriorStamp: priorStamp !== null,
     });
     const seedCacheCompanyDirectory = path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"));
-    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, requireSafeSegment(input.workspaceId, "workspace_id"));
+    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, "shared-v1");
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
@@ -983,6 +1021,9 @@ export async function prepareNativeWorkspaceSync(input: {
       mode,
       seedCacheCompanyDirectory,
       seedCacheDirectory,
+      workspaceGitIndexRefresh: input.workspaceGitIndexRefresh === true
+        && acquisition === "created" && mode === "host_current"
+        && !input.restartRecovery && !input.sameRunRecovery,
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,
         gitArchivePath: seedPaths.gitArchivePath,
@@ -1002,16 +1043,18 @@ export async function prepareNativeWorkspaceSync(input: {
       );
       const verifiedWarmAdoption =
         priorStamp.hostSha256 === currentHostSha256 &&
-        (await remoteStampMatches({ target, expected: priorStamp, gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories }));
+        (await measureRunPhase("workspace_sync.warm_stamp", () => remoteStampMatches({ target, expected: priorStamp, gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories })));
       if (verifiedWarmAdoption) {
         mode = "adopt_remote";
+        reuseReason = "verified_reuse";
       } else {
         mode = "host_current";
+        reuseReason = "workspace_changed";
         let preparedSeed: WorkspaceDurableSeedPaths | undefined;
         try {
-          preparedSeed = await verifiedDurableSeed({ runId: input.runId,
+          preparedSeed = await measureRunPhase("workspace_sync.durable_seed_verify", () => verifiedDurableSeed({ runId: input.runId,
             seed: { workspaceArchiveSha256, gitArchiveSha256 },
-            gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories });
+            gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories }));
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "workspace_sync_out_unrecoverable") throw error;
         }
@@ -1038,7 +1081,7 @@ export async function prepareNativeWorkspaceSync(input: {
     }
     const snapshot = runtime.workspaceSyncSnapshot;
     if (!snapshot) throw new Error("native_workspace_sync_snapshot_missing");
-    await persistSnapshotManifests(input.runId, snapshot);
+    await measureRunPhase("workspace_sync.manifests_persist", () => persistSnapshotManifests(input.runId, snapshot));
     const now = new Date().toISOString();
     descriptor = {
       schema: DESCRIPTOR_SCHEMA,
@@ -1065,8 +1108,12 @@ export async function prepareNativeWorkspaceSync(input: {
   }
 
   const preparedRuntime = runtime;
-  let reference = await writeDescriptor(descriptor);
-  await persistRunReference(input.db, input.runId, reference);
+  let reference = await measureRunPhase("workspace_sync.descriptor_write", () => writeDescriptor(descriptor));
+  await measureRunPhase("workspace_sync.reference_write", () => persistRunReference(input.db, input.runId, reference));
+  await emitStartupReuse(input.onEvent, "workspace", {
+    state: mode === "adopt_remote" ? "reused" : "fresh",
+    reason: reuseReason,
+  });
   let restorePromise: Promise<void> | null = null;
   return {
     mode,
@@ -1138,7 +1185,7 @@ export async function resumeNativeWorkspaceSync(input: {
     throw new Error("workspace_sync_out_unrecoverable");
   }
   const run = await input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -1147,6 +1194,8 @@ export async function resumeNativeWorkspaceSync(input: {
     parseObject(run?.runnerProfileJson).nativeWorkspaceSync,
   );
   if (!reference) return false;
+  if (run && await hasMigratedLegacyWorkspaceSource(input.db, { companyId: run.companyId, runId: input.runId, reference }))
+    throw new Error("native_workspace_sync_source_migrated");
   const existing = await readDescriptor({ runId: input.runId, reference });
   const providerLeaseId =
     input.target.sandboxLeaseAcquisition?.providerLeaseId ??

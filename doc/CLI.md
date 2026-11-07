@@ -6,6 +6,40 @@ Paperclip CLI now supports both:
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
 
+## Browser-approved Board authentication
+
+`npx paperclipai auth login --api-base <instance-url>` creates a ten-minute
+challenge and prints a browser approval link. Sign in to the instance, review
+the requesting command and full Board access, then approve. The pending token
+cannot authenticate before approval. The CLI verifies its resulting identity
+before storing its credential in its private auth store. The default Board key
+expires after thirty days; `npx paperclipai auth logout` attempts server-side revocation and removes the
+local credential; check its `revoked` result.
+
+A requested company supplies audit context, not a restriction on the key's
+access. Approval requires current access to that company (active membership or
+instance-admin authority). A different person cannot take over an approved
+challenge. Cancellation and approval serialize on the same challenge; cancelling
+an already approved challenge does not revoke its key.
+
+The instance limits challenge creation to twenty requests per minute per client
+IP, and polling to 120, using separate process-local budgets. The normal
+one-second poll interval remains supported. HTTP 429 includes `Retry-After`.
+Operators behind a proxy must configure `TRUST_PROXY` for their actual trusted
+proxy boundary; client-supplied forwarding headers alone never mint a budget.
+These limits are per instance process, not a distributed denial-of-service or
+historical-record retention guarantee.
+
+The browser approval page retries only rate-limited challenge reads, up to
+three times. It honors the server delay, or waits sixty seconds when no valid
+delay is provided. Scheduling stops at ten minutes or a known earlier
+challenge expiry. Browser suspension can delay a queued read. The server still
+enforces the original expiry. Approval is never resubmitted automatically.
+
+Cloud front doors must preserve only anonymous challenge creation and
+capability-bound status polling. Approval uses the normal signed-in browser;
+no Cloud user identity is synthesized for the CLI's unauthenticated requests.
+
 ## Security: safe invocation for content-bearing arguments
 
 Use `npx paperclipai` for any command whose argument can hold untrusted or
@@ -566,7 +600,7 @@ npx paperclipai agent instructions-bundle <agent-id>
 npx paperclipai agent instructions-bundle:update <agent-id> --payload-json '{"mode":"managed"}'
 npx paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
 npx paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
-npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md
+npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md --yes
 ```
 
 Agent config, instructions, skills, project env, environment, secret, and workspace edits affect the next run. Active runs finish with the config they started with. When a saved session, reused workspace, or sandbox lease no longer matches the effective next-run config, Paperclip may start fresh execution and records non-sensitive freshness categories in run result JSON and workspace operation logs.
@@ -1172,3 +1206,18 @@ Supported providers:
 
 - `local_disk` (default; local single-user installs)
 - `s3` (S3-compatible object storage)
+
+When a challenge poll receives HTTP 429, the CLI waits for `Retry-After` and
+continues the same challenge. A missing or invalid value uses the normal poll
+interval. The wait never extends the original challenge deadline and never
+creates another challenge or key. This allows concurrent logins on a shared IP
+to complete after the process-local limit clears.
+
+Revocation records use the current key owner and trusted original creation or
+approved-challenge company context. Removing a company membership does not
+remove that audit history. Revocation and its audit records commit together;
+an audit failure leaves the key unchanged so the operation can be retried.
+Historical creation rows with a NULL responsible user do not provide trusted
+revocation context. The original approved challenge or current authorized
+company context can still provide that destination. Client-supplied activity
+rows cannot establish key ownership or a revocation audit destination.

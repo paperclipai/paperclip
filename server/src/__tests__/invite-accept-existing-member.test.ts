@@ -168,7 +168,7 @@ function createAppWithActor(db: Record<string, unknown>, actor: Record<string, u
   return app;
 }
 
-function createDirectHumanInviteDbStub() {
+function createDirectHumanInviteDbStub(defaultsPayload: Record<string, unknown> = { human: { role: "owner" } }) {
   const insertedValues: unknown[] = [];
   const updateValues: unknown[] = [];
   const invite = {
@@ -177,7 +177,7 @@ function createDirectHumanInviteDbStub() {
     inviteType: "company_join",
     allowedJoinTypes: "human",
     tokenHash: "hash",
-    defaultsPayload: { human: { role: "owner" } },
+    defaultsPayload,
     expiresAt: new Date("2027-03-10T00:00:00.000Z"),
     invitedByUserId: "inviter-user",
     revokedAt: null,
@@ -424,6 +424,23 @@ describe("POST /invites/:token/accept", () => {
         entityId: "join-1",
         details: expect.objectContaining({ source: "human_invite_accept" }),
       }),
+    );
+  });
+
+  it("grants commentary when accepting a pre-upgrade operator invite without widening its saved scopes", async () => {
+    const legacyGrants = [
+      { permissionKey: "tasks:assign", scope: { projectId: "project-1" } },
+      { permissionKey: "audit:view_agent_actions", scope: null },
+    ];
+    const { db } = createDirectHumanInviteDbStub({ human: { role: "operator", grants: legacyGrants } });
+    const app = createAppWithActor(db, {
+      type: "board", source: "session", userId: "invitee-user", companyIds: [], memberships: [],
+    });
+    const res = await request(app).post("/api/invites/pcp_invite_test/accept").send({ requestType: "human" }).expect(202);
+    expect(res.body.status).toBe("approved");
+    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith("company-1", "user", "invitee-user", "operator", "active");
+    expect(accessServiceMock.setPrincipalGrants).toHaveBeenCalledWith(
+      "company-1", "user", "invitee-user", [...legacyGrants, { permissionKey: "commentary:view", scope: null }], "inviter-user",
     );
   });
 

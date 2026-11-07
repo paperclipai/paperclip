@@ -453,3 +453,54 @@ it.each(["full_root", "full_special"] as const)("rejects unsafe %s data before h
   expect(await fs.readFile(f.outside, "utf8")).toBe("private");
   await f.prepared.cleanupWorkspaceSnapshot();
 }, 30000);
+
+// RC-50b: models the Daytona provider. Every transfer stages its own
+// `.paperclip-upload-*` scratch at the workspace root, and a SIGKILL during a
+// transfer leaves it there. An ordinary export drops `._*` and
+// `.paperclip-upload*` names at any depth and extracts under the host umask;
+// a preserveSourceEntries export copies the source exactly.
+it("restores a sparse checkpoint after a killed transfer left provider scratch, keeping exact entries", async () => {
+  const { prepareSandboxManagedRuntime } = await import("./sandbox-managed-runtime.js");
+  const f = await fixture(); await disposeDirectorySnapshot(f.baseline);
+  const remote = path.join(f.temp, "remote");
+  const reserved = /^(\._|\.paperclip-upload)/;
+  const run = async (command: string) => { await execute("sh", ["-c", command]); };
+  type Operations = import("./sandbox-managed-runtime.js").SandboxSyncOperation[];
+  const stripUmask = async (directory: string): Promise<void> => {
+    for (const child of await fs.readdir(directory, { withFileTypes: true })) {
+      const full = path.join(directory, child.name);
+      if (child.isDirectory()) await stripUmask(full);
+      else if (child.isFile()) await fs.chmod(full, (await fs.stat(full)).mode & 0o7777 & ~0o022);
+    }
+  };
+  const transfer = (outbound: boolean) => async (operations: Operations) => {
+    for (const operation of operations) {
+      for (const file of operation.files) {
+        const ordinaryExport = outbound && file.preserveSourceEntries !== true;
+        await fs.mkdir(path.dirname(file.targetPath), { recursive: true });
+        await fs.cp(file.sourcePath, file.targetPath, { recursive: true, verbatimSymlinks: true,
+          filter: (source) => !file.exclude?.some((exclude) => path.relative(file.sourcePath, source) === exclude)
+            && !(ordinaryExport && reserved.test(path.basename(source))) });
+        if (ordinaryExport && (await fs.lstat(file.targetPath)).isDirectory()) await stripUmask(file.targetPath);
+      }
+      for (const command of operation.postUploadCommands ?? []) await run(command.command);
+    }
+    return { operations: operations.map((op) => ({ operationId: op.operationId, filesTransferred: 0, bytesTransferred: 0 })) };
+  };
+  const client = { makeDir: (dir: string) => fs.mkdir(dir, { recursive: true }).then(() => {}),
+    writeFile: (file: string, data: ArrayBuffer) => fs.writeFile(file, Buffer.from(data)), readFile: (file: string) => fs.readFile(file),
+    listFiles: (dir: string) => fs.readdir(dir), remove: (file: string) => fs.rm(file, { force: true, recursive: true }), run,
+    syncIn: transfer(false), syncOut: transfer(true) };
+  const prepared = await prepareSandboxManagedRuntime({ spec: { provider: "test", sandboxId: "test", remoteCwd: remote, timeoutMs: 30000, apiKey: null, transport: "sandbox" },
+    adapterKey: "test", client, workspaceLocalDir: f.root, workspaceCheckpoint: true });
+  // The s14 sandbox kept this exact file; its mtime equals the SIGKILL.
+  await fs.writeFile(path.join(remote, ".paperclip-upload-d99fe36b-5acc-437b-96ad-85d5ff9e79c4.tar"), Buffer.alloc(2048, 1));
+  await fs.writeFile(path.join(remote, "new"), "agent work");
+  await fs.writeFile(path.join(remote, "._summary"), "user summary");
+  await fs.writeFile(path.join(remote, "build.sh"), "#!/bin/sh\n"); await fs.chmod(path.join(remote, "build.sh"), 0o775);
+  await prepared.restoreWorkspace();
+  expect(await fs.readFile(path.join(f.root, "new"), "utf8")).toBe("agent work");
+  expect(await fs.readFile(path.join(f.root, "._summary"), "utf8")).toBe("user summary");
+  expect((await fs.stat(path.join(f.root, "build.sh"))).mode & 0o777).toBe(0o775);
+  expect((await fs.readdir(f.root)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+}, 30000);

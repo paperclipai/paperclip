@@ -1,5 +1,6 @@
+import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
-import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
+import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -19,6 +20,7 @@ import type {
   IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
+  IssueDisplayStatus,
   IssueReviewPolicy,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
@@ -141,8 +143,25 @@ export interface IssueCreationSource {
     title: string;
     status: string;
   };
-  run: { id: string; agentId: string };
+  /** The run that created the task, when one did and the viewer may see it. */
+  run: { id: string; agentId: string } | null;
   agent: { id: string; name: string } | null;
+}
+
+/**
+ * Why a create or move did not use the requested parent. `max_agent_depth`:
+ * agents may only build parent → child trees, so the task was placed as a
+ * sibling of the requested parent. `has_children`: an agent tried to move a task
+ * that has its own children under a parent; the move was skipped.
+ */
+export type IssueParentAdjustmentReason = "max_agent_depth" | "has_children";
+
+export interface IssueParentAdjustment {
+  reason: IssueParentAdjustmentReason;
+  /** Whether the parent change was applied, with `effectiveParent` in place of the request. */
+  applied: boolean;
+  requestedParent: { id: string; identifier: string | null } | null;
+  effectiveParent: { id: string; identifier: string | null } | null;
 }
 
 export interface IssueAssigneeAdapterOverrides {
@@ -190,6 +209,8 @@ export interface DocumentRevision {
   changeSummary: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Writer provenance; reading a revision does not grant access to the run. */
+  createdByRunId?: string | null;
   createdAt: Date;
 }
 
@@ -267,6 +288,7 @@ export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposit
 }
 
 export interface IssueRelationIssueSummary {
+  displayStatus?: IssueDisplayStatus;
   id: string;
   identifier: string | null;
   title: string;
@@ -490,6 +512,7 @@ export type IssueReviewAttentionPathKind =
   | "interaction"
   | "approval"
   | "monitor"
+  | "external_response"
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
@@ -728,8 +751,21 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface RequiredQualityReview {
+  version: 1;
+  /** Named outputs whose exact versions require a human quality verdict. */
+  deliverables: Array<{ key: string; label: string }>;
+}
+
+export interface QualityReviewBinding {
+  key: string;
+  /** Server-stamped fingerprint; input values are never trusted. */
+  requirementHash?: string;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
+  requiredQualityReview?: RequiredQualityReview;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
@@ -831,7 +867,21 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+export type IssueSummary = Pick<
+  Issue,
+  "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "updatedAt"
+> & {
+  externalConversationState: "active" | "waiting" | null;
+  /** Present for blocked tasks so summary views resolve the same status glyph as detail views. */
+  blockerAttention?: IssueBlockerAttention;
+};
+
 export interface Issue {
+  /** Read-only status for task presentation; never use it for execution admission. */
+  displayStatus?: IssueDisplayStatus;
+  /** Collection projections omit task bodies and cannot seed the detail cache. */
+  listProjection?: "index" | "rows";
+  statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
@@ -858,6 +908,8 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   /** Detail responses only: access-checked creation provenance, or null. */
   createdFrom?: IssueCreationSource | null;
+  /** Create/update responses only: present when the requested parent was not used as-is. */
+  parentAdjusted?: IssueParentAdjustment | null;
   title: string;
   description: string | null;
   descriptionTruncated?: boolean;
@@ -879,6 +931,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  /** Audit-only: the task whose work created this one. Set by the server; not hierarchy. */
+  originIssueId?: string | null;
   originIdentityContextId?: string | null;
   continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
@@ -916,6 +970,7 @@ export interface Issue {
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
+  interruption?: TaskInterruptionPresentation | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
@@ -935,6 +990,7 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;
@@ -945,6 +1001,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "listProjection"
   | "externalConversationState"
   | "id"
   | "companyId"
@@ -956,6 +1013,7 @@ export type CompactIssue = Pick<
   | "privacyRootIssueId"
   | "title"
   | "description"
+  | "displayStatus"
   | "status"
   | "workMode"
   | "priority"
@@ -982,6 +1040,7 @@ export type CompactIssue = Pick<
   | "createdAt"
   | "updatedAt"
 > & {
+  interruption?: TaskInterruptionPresentation | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -1064,6 +1123,8 @@ export interface IssueQueuedCommentEntry {
     interactionId: string;
     interactionKind: string;
     requiresFreshSession?: boolean;
+    /** Readable one-line status, such as "Declined: Slack connection". */
+    summary?: string;
   };
   comment: IssueComment;
   position: number;
@@ -1148,8 +1209,18 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  chatMessage?: {
+    sourceTaskId: string;
+    sourceTaskIdentifier: string;
+    sourceRunId: string;
+    contentHash: string;
+  };
+  /** Producer-classified diagnostics; task interruption UI owns system repair. */
+  recoveryResponsibility?: "system" | "user";
+  /** Generated file-preparation receipt; presentation only, never authorization. */
+  attachmentPreparation?: { attachmentId: string };
   /** Inbound channel attribution; never an authorization input. */
-  sourceChannel?: "imessage-photon";
+  sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
@@ -1187,6 +1258,9 @@ export interface SuggestedTaskDraft {
   parentId?: string | null;
   title: string;
   description?: string | null;
+  /** Persisted atomically as the new task's initial plan after acceptance. */
+  initialPlan?: string | null;
+  requiredQualityReview?: RequiredQualityReview;
   priority?: IssuePriority | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
@@ -1220,6 +1294,25 @@ export interface SuggestTasksResult {
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
+}
+
+/** Server-recorded task creation in a standing chat's current session. */
+export interface ConversationTaskHandoff {
+  id: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  createdAt: string;
+  /** Durable creation provenance; null for older or human-created handoffs. */
+  sourceRunId: string | null;
+  /** When present, the accepted suggestion already renders this task card. */
+  suggestionInteractionId: string | null;
+}
+
+export interface ConversationTaskHandoffPage {
+  items: ConversationTaskHandoff[];
+  nextCursor: string | null;
 }
 
 export interface AskUserQuestionsQuestionOption {
@@ -1346,8 +1439,20 @@ export interface RequestConfirmationCustomTarget {
   href?: string | null;
 }
 
+/** An uploaded artifact's immutable bytes, independent of its display name. */
+export interface RequestConfirmationIssueAttachmentTarget {
+  type: "issue_attachment";
+  issueId?: string | null;
+  attachmentId: string;
+  assetId: string;
+  sha256: string;
+  label?: string | null;
+  href?: string | null;
+}
+
 export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationIssueAttachmentTarget
   | RequestConfirmationCustomTarget;
 
 /**
@@ -1432,6 +1537,10 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Human-selected audience for this OAuth draft; applied only at completion. */
+  setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
+  /** Existing chat setup; the server derives the destination from these IDs. */
+  savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;
   /** Server-authored consent to a fixed set of tools on an existing connection. */
   accessRequest?: {
@@ -1467,6 +1576,7 @@ export interface ConnectionIntentResult {
 }
 
 export interface RequestConfirmationPayload {
+  qualityReview?: QualityReviewBinding;
   version: 1;
   prompt: string;
   acceptLabel?: string | null;
@@ -1510,6 +1620,8 @@ export interface RequestCheckboxConfirmationPayload {
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";
 
 export interface RequestItemVerdictsItem {
+  qualityReview?: QualityReviewBinding;
+  target?: RequestConfirmationTarget | null;
   id: string;
   label: string;
   description?: string | null;
@@ -1604,6 +1716,9 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
   /** Read-time acceptance gate; omitted when no workspace preparation is pending. */
   acceptanceBlocker?: "workspace_sync_pending";
+  /** Deferred to conversation history by a human; never an approval or answer. */
+  dismissedAt?: Date | string | null;
+  dismissedByUserId?: string | null;
   /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
   resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
   requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
@@ -1700,4 +1815,12 @@ export interface IssueAttachment {
   contentPath: string;
   openPath?: string;
   downloadPath?: string;
+}
+
+/** Bounded cold-open window; the complete chronological feed stays paginated. */
+export interface IssueRecentComments {
+  latestCommentId: string | null;
+  oldestCommentId?: string | null;
+  comments: IssueComment[];
+  hasMore: boolean;
 }

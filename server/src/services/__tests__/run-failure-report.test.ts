@@ -29,7 +29,7 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
   return { ...actual, redactCurrentUserText: mockRedactCurrentUserText };
 });
 
-import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { controllerLeaseLossCancellation } from "../run-cancellation.js";
 import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
@@ -55,9 +55,8 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   }, 20_000);
 
   beforeEach(() => {
-    // Unknown host values intentionally count as secrets, including short values
-    // such as "1". Keep these fixtures independent of the developer/CI environment
-    // and add secret values explicitly in the tests that exercise redaction.
+    // Keep fixtures independent of host credentials. Add credential values
+    // explicitly in the tests that exercise redaction.
     inheritedEnv = process.env;
     process.env = Object.fromEntries(
       ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
@@ -430,6 +429,127 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
   });
 
+  /** The persisted shape after the native finalizer commits a capacity decision. */
+  async function nativeCapacityFailure(input: {
+    run?: Partial<typeof heartbeatRuns.$inferSelect>;
+    resultJson?: Record<string, unknown>;
+    retry?: Partial<typeof heartbeatRuns.$inferInsert> | null;
+  } = {}) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    const run = buildRun({
+      error: "Selected model is at capacity. Please try a different model.",
+      errorCode: "native_provider_overloaded", runtimeMode: "native", nativePhase: "committed",
+      executionStage: "preparing", exitCode: null, signal: null,
+      resultJson: {
+        nativeProviderFailure: { provider: "codex", category: "server_overloaded" },
+        finalizationPhase: "committed", finalizationReasonCode: "native_provider_overloaded",
+        ...input.resultJson,
+      },
+      ...input.run,
+    });
+    const [stored] = await db.insert(heartbeatRuns).values(run).returning();
+    if (input.retry !== null) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry",
+        retryOfRunId: run.id, scheduledRetryReason: "native_provider_overloaded", scheduledRetryAttempt: 1,
+        scheduledRetryAt: new Date(Date.now() + 60_000), errorCode: "native_provider_overloaded",
+        contextSnapshot: { issueId: run.nativeIssueId, retryOfRunId: run.id }, ...input.retry,
+      });
+    }
+    return stored!;
+  }
+
+  it("keeps a native model capacity failure local once its automatic retry is scheduled", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no finalization fields", { finalizationPhase: undefined, finalizationReasonCode: undefined }],
+    ["an earlier finalization phase", { finalizationPhase: "retryable_failure", finalizationReasonCode: undefined }],
+    ["only the adapter's resultJson", { nativeProviderFailure: undefined, finalizationPhase: undefined, finalizationReasonCode: undefined }],
+  ] as const)("keeps a scheduled native capacity retry local when the run row has %s", async (_label, resultJson) => {
+    // The live heartbeat's failed-status write replaces the finalizer's
+    // resultJson with the adapter's copy. The successor created by the
+    // committed decision still proves the scheduled retry.
+    const run = await nativeCapacityFailure({ resultJson });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the retries are exhausted", { resultJson: { finalizationReasonCode: "native_provider_overloaded_exhausted" }, retry: null }],
+    ["the task holds the retry", { resultJson: { finalizationReasonCode: "native_provider_overloaded_held" }, retry: null }],
+    ["no retry run exists", { retry: null }],
+    ["the successor belongs to another retry lane", { retry: { scheduledRetryReason: "native_safe_replacement" } }],
+    ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
+    ["the run has no native task", { run: { nativeIssueId: null } }],
+    ["finalization has no fields and no retry run exists", { resultJson: { finalizationPhase: undefined, finalizationReasonCode: undefined }, retry: null }],
+    ["the diagnostic is missing and no retry run exists", { resultJson: { nativeProviderFailure: undefined }, retry: null }],
+    ["the run is legacy", { run: { runtimeMode: "legacy" } }],
+    ["the run has a signal", { run: { signal: "SIGTERM" } }],
+    ["the run timed out", { run: { status: "timed_out" } }],
+  ] as const)("reports a native capacity failure when %s", async (_label, input) => {
+    const run = await nativeCapacityFailure(input as Parameters<typeof nativeCapacityFailure>[0]);
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a native capacity retry during setup, in all mode, or when its retry cannot be read", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run, { phase: "setup" });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the retry read fails.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture retry read failed"); });
+    try {
+      await reportRunFailure(db, run);
+    } finally {
+      spy.mockRestore();
+    }
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
+  });
+
+  function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",
+      errorCode: "claude_auth_required", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "access", title: "Invalid API key · Fix external API key" },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["claude_auth_required", "acpx_auth_required"])("keeps a typed ACP provider access failure (%s) local", async (errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, providerAccessRun({ errorCode }), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" }, { errorCode: "adapter_failed" },
+    { resultJson: {} }, { resultJson: null }, { resultJson: { terminalSessionFailure: { category: "service" } } },
+    { resultJson: { terminalSessionFailure: "access" } },
+  ])("reports a provider auth outcome without typed ACP access evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a typed ACP provider access failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, providerAccessRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
   function restartInterruptedSetupRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       error: "Process lost -- server may have restarted; retrying once",
@@ -738,6 +858,67 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
+  function restrictedWorkspaceSourceRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "workspace_source_restricted", issueId: randomUUID() },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a restricted shared workspace source actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" }, { exitCode: 1 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" } } },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports restricted-source markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports restricted-source markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function aiConnectionRequiredRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "ai_connection_required", actionUrl: "/agents/fixture/runtime" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a plugin Runner-task run without a managed AI connection actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { executionStage: "executing" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_required" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports AI-connection-required markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiConnectionRequiredRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "workspace_validation_failed",
@@ -937,14 +1118,67 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(captured).not.toHaveProperty("secretValues");
   });
 
-  it("still redacts short values from unknown host settings", async () => {
+  it("masks an inherited Bedrock credential from every failure projection", async () => {
     await seedCompanyAndAgent();
-    vi.stubEnv("FIXTURE_CUSTOM_VALUE", "1");
+    const token = "opaque-bedrock-credential";
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", token);
+    const text = `upstream rejected ${token}`;
+    await reportRunFailure(db, buildRun({ error: text, resultJson: { terminalSessionFailure: { details: text } } }), {
+      error: new Error(text), adapterErrorMeta: { causeMessage: text },
+    });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.errorMessage).toBe("upstream rejected ***REDACTED***");
+    expect(captured.diagnostics.provider.details).toBe("upstream rejected ***REDACTED***");
+    expect(JSON.stringify(captured)).not.toContain(token);
+  });
 
-    await reportRunFailure(db, buildRun());
+  it("keeps run metadata and prose readable with short non-secret host settings", async () => {
+    await seedCompanyAndAgent();
+    vi.stubEnv("FIXTURE_FLAG", "1");
+    vi.stubEnv("FIXTURE_WORKERS", "2");
+    vi.stubEnv("FIXTURE_MODE", "safe");
+    vi.stubEnv("SORT_KEY", "created_at");
+    const error = "Column created_at is missing. Reconcile any uncertain external action before safely continuing this task.";
+    const run = buildRun({ error, runtimeMode: "native", driverKind: "codex_app_server", driverVersion: "phase6-v2",
+      startedAt: new Date("2026-10-19T19:18:20.617Z"), finishedAt: new Date("2026-10-19T19:21:20.385Z"),
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "gpt-6.1-sol" } } },
+    });
 
+    await reportRunFailure(db, run);
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.errorMessage).toBe(error);
+    expect(captured.diagnostics.execution).toMatchObject({ driverVersion: "phase6-v2", model: "gpt-6.1-sol",
+      startedAt: "2026-10-19T19:18:20.617Z", finishedAt: "2026-10-19T19:21:20.385Z" });
+  });
+
+  it("still masks a short declared runtime secret", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun(), { secretValues: ["1"] });
     expect(mockCaptureRunFailure.mock.calls[0][0].errorMessage)
       .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("waits for the terminal write when a native run is failed pending a same-run retry", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "retryable_failure" }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "terminal_failure" }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("treats leaving a pending native retry as a new terminal failure", () => {
+    const pending = { status: "failed", runtimeMode: "native", nativePhase: "retryable_failure" } as const;
+    expect(isNewTerminalRunFailure({ ...pending, status: "running", nativePhase: "observed" }, pending)).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "terminal_failure" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "committed" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, pending)).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, nativePhase: null }, { ...pending, nativePhase: "terminal_failure" })).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, runtimeMode: "legacy" }, { ...pending, runtimeMode: "legacy", nativePhase: null }))
+      .toBe(false);
   });
 
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {

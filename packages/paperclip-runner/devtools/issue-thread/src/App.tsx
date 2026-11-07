@@ -55,11 +55,11 @@ const CHAT_HARNESS_KEY = "paperclip-runner.capability.chat.harness.v1";
 const MODEL_PRESETS = {
   codex: ["gpt-5.4-mini", "gpt-5.4"],
   opencode: ["openrouter/deepseek/deepseek-v4-flash-0731"],
-  acpx: ["openrouter/deepseek/deepseek-v4-flash-0731", "claude-sonnet-5", "gpt-5.6-sol"],
+  acpx: ["openrouter/deepseek/deepseek-v4-flash-0731", "claude-sonnet-5", "gpt-6.1-sol"],
 } as const;
 const ACPX_DEFAULT_MODELS = {
   claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
+  codex: "gpt-6.1-sol",
 } as const;
 
 function acpxLabel(configuration: CapabilityHarnessConfiguration | null | undefined): string {

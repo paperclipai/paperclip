@@ -3,6 +3,66 @@
   "evidenceLevel": "Official documentation and public MCP metadata; no account-bound read/write proof. Runtime discovery never expands this allowlist.",
   "methods": [
     {
+      "app": "google-workspace",
+      "method": "paperclip-workspace",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-workspace",
+      "method": "customer-workspace-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
       "app": "airtable",
       "method": "mcp-oauth",
       "auth": "oauth",
@@ -393,6 +453,45 @@
       "evidenceLimit": "Live proof covers anonymous MCP initialize/discovery and one narrow public React documentation lookup through Paperclip's actual Apps connection and Test dialog, including a successful repeat after reload. It does not prove elevated API-key rate limits, private-repository access, or any non-public provider content."
     },
     {
+      "app": "ditto",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "write",
+      "supportedActions": "Read style guide rules and check text against them; search, create, update, translate and permanently delete text items; create, update, translate and publish library components and link or unlink text items to them (linking replaces a text item's developer ID); link synced Figma text nodes; manage component folders, projects, project blocks, variables, variants, style guides and style guide rules; read statuses and workspace tags. The connection acts as the Ditto user who signs in.",
+      "evidence": [
+        "https://developer.dittowords.com/guides/connect-the-mcp",
+        "https://developer.dittowords.com/mcp-reference/tools",
+        "https://api.dittowords.com/.well-known/oauth-protected-resource",
+        "https://login.dittowords.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-10",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "ditto",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Read style guide rules and check text against them; search, create, update, translate and permanently delete text items; create, update, translate and publish library components and link or unlink text items to them (linking replaces a text item's developer ID); link synced Figma text nodes; manage component folders, projects, project blocks, variables, variants, style guides and style guide rules; read statuses and workspace tags.",
+      "evidence": [
+        "https://developer.dittowords.com/guides/connect-the-mcp",
+        "https://developer.dittowords.com/mcp-reference/tools",
+        "https://developer.dittowords.com/api-reference/authentication"
+      ],
+      "reviewedAt": "2026-10-10",
+      "liveProof": "not-run",
+      "keyPermissions": "Ditto API keys are not scoped: a key reaches all data in its workspace, including permanent deletes, and actions are attributed to the user who created the key. Create a separate key for Paperclip so it can be removed independently, and set delete and link actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
+    },
+    {
       "app": "egnyte",
       "method": "mcp-oauth",
       "auth": "oauth",
@@ -649,6 +748,42 @@
         "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
       ],
       "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "paperclip-archive",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and archive a thread by removing only the INBOX label.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp/tools_list/unlabel_thread",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-10-14",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "customer-archive-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and archive a thread by removing only the INBOX label.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp/tools_list/unlabel_thread",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-10-14",
       "liveProof": "not-run"
     },
     {
@@ -2027,13 +2162,13 @@
         "storage:write"
       ],
       "capability": "write",
-      "supportedActions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative.",
+      "supportedActions": "Unpinned connections can list/create/pause/restore projects and use account cost tools. Hosted MCP supports SQL/migrations, Edge Function deployment, branches and opt-in storage configuration. A project_ref disables account tools. Read-only mode and token permissions remain authoritative. Auth and Data API configuration use the separate Management API method.",
       "evidence": [
         "https://supabase.com/docs/guides/ai-tools/mcp",
         "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp"
       ],
-      "reviewedAt": "2026-09-30",
-      "liveProof": "not-run"
+      "reviewedAt": "2026-10-22",
+      "liveProof": "2026-10-22: Real browser OAuth in an isolated Paperclip instance discovered 29 MCP tools. An actual process-agent gateway run listed organizations, obtained a zero-monthly-cost quote and confirmation, and created one disposable project that reached ACTIVE_HEALTHY. A read-only reconciliation found exactly one proof project. Dashboard cleanup deleted that project. Earlier harness parsing/duplicate-wake failures are documented in SUPABASE.md. MCP token authentication and all SQL/branch/storage capabilities were not live-tested."
     },
     {
       "app": "supabase",
@@ -2042,14 +2177,14 @@
       "policy": "provider-key",
       "requestedScopes": [],
       "capability": "provider-controlled",
-      "supportedActions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative.",
+      "supportedActions": "Unpinned connections can list/create/pause/restore projects and use account cost tools. Hosted MCP supports SQL/migrations, Edge Function deployment, branches and opt-in storage configuration. A project_ref disables account tools. Read-only mode and token permissions remain authoritative. Auth and Data API configuration use the separate Management API method.",
       "evidence": [
         "https://supabase.com/docs/guides/ai-tools/mcp",
         "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp"
       ],
-      "reviewedAt": "2026-09-30",
+      "reviewedAt": "2026-10-22",
       "liveProof": "not-run",
-      "keyPermissions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Use a scoped personal access token (sbp_...) with permissions for the enabled MCP tools and selected projects. Project publishable, anon, service_role and secret API keys are not supported. Project creation needs account access; Paperclip cannot increase an issued token\u2019s permissions."
     },
     {
       "app": "superagent",
@@ -2152,23 +2287,6 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run"
-    },
-    {
-      "app": "vercel",
-      "method": "mcp-oauth",
-      "auth": "oauth",
-      "policy": "explicit",
-      "requestedScopes": [
-        "openid"
-      ],
-      "capability": "provider-controlled",
-      "supportedActions": "Account/team-authorized project and deployment actions; identity scope is not an admin permission.",
-      "evidence": [
-        "https://mcp.vercel.com/.well-known/oauth-protected-resource"
-      ],
-      "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
-      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
       "app": "webflow",
@@ -2632,6 +2750,198 @@
       "reviewedAt": "2026-10-09",
       "liveProof": "Paperclip Apps qualification passed: connected the public-mcp method from the natural Connectors catalog; initialization/discovery showed exactly 4 Read actions and 0 Write actions. Restricted agent access to Just agents I pick with 0 selected; the public method requires no identity. A bounded hf_fs search of hf://docs for MCP with limit 3 succeeded (3 public doc entries; UI preview reported one successful result row) in 0.7s. After reload, the page still showed Connected, 4 actions, Read 4, Write 0, and no agents can use this connection; the same query succeeded again in 0.8s. The Test dialog reported the direct call ran as Connector Tester; no heartbeat/agent execution or other provider tool call occurred.",
       "evidenceLimit": "Qualification used only public documentation and did not use a Hugging Face account, OAuth, API key, private repo, write, inference, Space execution, or job. Anonymous endpoint was directly probed separately and returned 4 read tools, matching Paperclip discovery. The setup flow says no identity required; a one-member human audience was saved before reload, but human identity controls were not shown after reload. A root browser inspection confirmed four read actions and zero agents selected; a privacy-safe permissions screenshot was saved. Rate limits and later provider catalog changes remain outside this proof."
+    },
+    {
+      "app": "daytona",
+      "method": "workspace-diagnostics",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "All published Daytona HTTP API and Toolbox operations: account and organization resources, sandbox lifecycle, files, Git, commands, sessions, snapshots, volumes, computer use, and telemetry reads. Provider permissions still apply.",
+      "evidence": [
+        "https://www.daytona.io/docs/en/api-keys/",
+        "https://www.daytona.io/docs/openapi.json",
+        "https://www.daytona.io/docs/toolbox-openapi.json",
+        "https://github.com/daytona/clients/tree/main/cli/mcp"
+      ],
+      "reviewedAt": "2026-10-15",
+      "liveProof": "not-run",
+      "keyPermissions": "Create an organization key with the read, write, and delete permissions for the resources you intend to manage. Daytona toolbox access is available to every valid organization key, even without selected scopes. Some user or administration endpoints require provider user authentication and will reject an API key."
+    },
+    {
+      "app": "paperclip-notebook",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "notebook:read",
+        "notebook:write",
+        "notebook:share",
+        "notebook:delete"
+      ],
+      "capability": "write",
+      "supportedActions": "Read available pages; create and update owned pages; change sharing including public discovery; manage versions; delete and restore owned pages.",
+      "evidence": [
+        "doc/connections/PAPERCLIP-NOTEBOOK.md"
+      ],
+      "reviewedAt": "2026-10-20",
+      "liveProof": "not-run",
+      "evidenceLimit": "First-party implementation contract; canonical service availability and live OAuth qualification are deployment prerequisites. Uses the existing personal OAuth flow with default connection labels; automatic remote revocation and custom keyed refresh recovery are deferred."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "2026-10-21 US OAuth: temporary personal connection authorized in an isolated instance; 49 tools discovered (17 reads, 32 non-reads). Real process-agent runs completed bounded retrieval and synthetic dataset insert/readback through run-scoped gateway sessions. Catalog refresh and OAuth reconnect retained the connection, region and quarantine; subsequent read passed. Synthetic row and dataset removed. Local removal revoked 2 secrets and 1 grant and denied further calls. Structural API/log redaction checked. Token expiry/refresh, provider-side revocation and native CLI capability delivery remain unqualified. See BRAINTRUST.md and braintrust-qualification-2026-10-21.json.",
+      "evidenceLimit": "Live proof covers a temporary personal US OAuth grant, bounded retrieval, one synthetic dataset insert/readback, real process-agent gateway calls, catalog refresh, OAuth reconnect, local removal and structural redaction. Live token expiry/refresh, remote OAuth revocation, native CLI automatic capability delivery and exact decrypted-token scanning remain unqualified. The other three methods need separate live accounts/keys."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method.",
+      "keyPermissions": "Create a Braintrust API key in Settings \u2192 API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-eu-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-eu-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method.",
+      "keyPermissions": "Create a Braintrust API key in Settings \u2192 API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+    },
+    {
+      "app": "unikraft",
+      "method": "api-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "All published Unikraft Cloud platform API operations (instances, checkpoints, templates, service groups, autoscale, volumes, images, certificates, and quotas) and sandbox plugin operations (commands and files) in every published metro. The audit event stream is not exposed.",
+      "evidence": [
+        "https://unikraft.com/docs/sdks/overview#authentication",
+        "https://unikraft.com/docs/platform/metros",
+        "https://raw.githubusercontent.com/unikraft-cloud/openapi/5dd107ea1cd8716b83cb86a83ed2a6ee46f99b5b/platform.json",
+        "https://raw.githubusercontent.com/unikraft-cloud/openapi/5dd107ea1cd8716b83cb86a83ed2a6ee46f99b5b/plugins/sandbox.json"
+      ],
+      "reviewedAt": "2026-10-15",
+      "liveProof": "not-run",
+      "keyPermissions": "Create an API token in the Unikraft Cloud console. A token acts for its whole organization in every metro, including running sandbox commands and deleting resources. Unikraft does not offer narrower token permissions, so choose trusted agents and use action permissions to limit what they can do."
+    },
+    {
+      "app": "supabase",
+      "method": "management-api",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Project-scoped project metadata, Edge Function list/get/deploy/delete, Edge Function secret name inventory and write-only secret upsert, selected non-secret Auth configuration and Data API configuration. No project creation, raw SQL, secret-value export, database credentials, OAuth client secrets or SMTP password actions. All requests use the saved project reference.",
+      "evidence": [
+        "https://supabase.com/docs/reference/api/v1-get-project",
+        "https://supabase.com/docs/reference/api/v1-deploy-a-function",
+        "https://supabase.com/docs/reference/api/v1-list-all-functions",
+        "https://supabase.com/docs/reference/api/v1-get-auth-service-config",
+        "https://supabase.com/docs/reference/api/v1-update-auth-service-config",
+        "https://supabase.com/docs/reference/api/v1-get-postgrest-service-config",
+        "https://supabase.com/docs/reference/api/v1-update-postgrest-service-config",
+        "https://supabase.com/docs/reference/api/v1-bulk-create-secrets",
+        "https://supabase.com/docs/reference/api/v1-list-all-secrets",
+        "https://supabase.com/docs/guides/platform/personal-access-tokens"
+      ],
+      "reviewedAt": "2026-10-22",
+      "liveProof": "2026-10-22: Approved 24-hour project-scoped PAT connected through the real Apps UI and discovered 11 native actions. Actual process-agent gateway calls changed and read back Auth and Data API settings, wrote a synthetic function secret with redacted responses, deployed an ACTIVE Edge Function, and received HTTP200 with the expected marker and secretConfigured:true. A failed cleanup response was preserved; read-only reconciliation confirmed restored original settings, then a successful cleanup run deleted the function and confirmed absence. Dashboard project deletion removed its secret; the temporary PAT and local connections were removed. Forced refresh/reconnect were not live-tested.",
+      "keyPermissions": "Create a scoped Supabase personal access token for the selected project. Set Project Settings, Auth Config, Data API Config, Edge Functions, and Edge Function Secrets to Read-write. Leave API Key Secrets, Auth Signing Keys, and Data API JWT Secret at None. Use a short expiration. Project API keys are not supported; Paperclip cannot increase an issued token\u2019s permissions."
+    },
+    {
+      "app": "vercel",
+      "method": "rest-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Create and deploy projects from inline files, GitHub repositories or existing deployments; inspect status; configure build settings, environment variables and owned domains; governed project/deployment/environment/domain cleanup.",
+      "keyPermissions": "Create a Vercel access token scoped to the configured team. The token owner role must allow project/deployment reads and requested writes, environment variables and domain management; deletion requires matching provider rights. Paperclip cannot increase existing token permissions.",
+      "evidence": [
+        "https://vercel.com/docs/rest-api",
+        "https://vercel.com/docs/rest-api/deployments/create-a-new-deployment",
+        "https://vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables",
+        "https://openapi.vercel.sh"
+      ],
+      "reviewedAt": "2026-10-22",
+      "liveProof": "2026-10-22: Approved one-hour team token connected in an isolated Paperclip instance with 17 actions. Actual process-agent gateway runs listed and created disposable projects, wrote a synthetic preview environment secret, read metadata without its value, and deployed a preview that reached READY. The signed-in browser displayed the exact deployed marker; anonymous access retained the existing protection redirect. Gateway cleanup deleted both disposable projects and confirmed absence. The temporary provider token and local connection were removed; a fresh agent saw no tools and an old-name call returned404. Production, GitHub-source deployments, domains, forced refresh, and all account plans were not live-tested.",
+      "evidenceLimit": "Official documentation/OpenAPI plus local fixtures. No authenticated account-bound deployment/configuration/revocation proof; no disposable project credential supplied."
+    },
+    {
+      "app": "1password",
+      "method": "service-account",
+      "auth": "api_key",
+      "policy": "explicit",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "List authorized vaults and items; read items and op:// references; create, update, archive and delete items. No vault administration, sharing, file export, desktop authorization or arbitrary commands.",
+      "keyPermissions": "Create a service account with access only to the required vaults. Grant Read Items and Write Items for reading and managing items. Service-account vault access and permissions are fixed at creation; create a new token and reconnect to change them. Read-only tokens can connect, but writes will be denied by 1Password.",
+      "providerRestrictions": "Requires a 1Password subscription and permission to create service accounts. Built-in Personal, Private, Employee and default Shared vaults cannot be granted. The official SDK handles regional accounts. Token rotation requires reconnecting.",
+      "evidence": [
+        "https://www.1password.dev/service-accounts/get-started",
+        "https://www.1password.dev/sdks/manage-items",
+        "https://github.com/1Password/onepassword-sdk-js"
+      ],
+      "reviewedAt": "2026-10-22",
+      "liveProof": "read-write-verified",
+      "evidenceLimit": "2026-10-23: a replacement token passed all eight actions through a real run-scoped gateway for personal and shared credentials, including create/list/read/update/secret resolution/archive/delete on synthetic items. Both test items were deleted and absent from subsequent listings. Catalog refresh, reconnect preserving identity, removal, retained-session denial and credential absence passed. The 2026-10-22 token denied creation; the first 2026-10-23 attempt stopped before provider calls due to host PostgreSQL semaphore exhaustion. A temporary ten-connection test profile allowed the complete live retry to pass without changing shared services."
     }
   ]
 }

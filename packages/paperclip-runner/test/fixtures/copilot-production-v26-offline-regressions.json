@@ -1,0 +1,23 @@
+{
+  "schema": "paperclip.copilot.offline-regression-evidence/v1",
+  "profileVersion": 26,
+  "profileDigest": "sha256:1a2a0c35764105e9a85112d05187fee0862af23eeb82a75569b5198e52eaba4f",
+  "priorSourceRevision": "6f424f0f042639631dd6c74053c4a339f6a6ef93",
+  "runtimeVersion": "1.0.88",
+  "corrections": [
+    "Preserve sensitive ancestor names when flattening native notice fields",
+    "Bind Copilot native event normalization and notice projection in the source identity",
+    "Assert expiry notification while forbidding stale permission callbacks",
+    "Mock installed provider registries independently of host assets"
+  ],
+  "testFiles": 7,
+  "testsPassed": 154,
+  "providerCalls": 0,
+  "qualification": "pending",
+  "liveQualificationPasses": 0,
+  "priorProtocolPassesHistorical": 7,
+  "fullWorkspaceChecksPending": true,
+  "assertionsOrDeadlinesRelaxed": false,
+  "otherProviderProfilesChanged": false,
+  "originalFailuresRetained": true
+}

@@ -1,3 +1,6 @@
+import { teamsAttemptRecoveryWork } from "./attempt-recovery-work.js";
+import { teamsConsentExpiryWork } from "./consent-expiry-work.js";
+import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { createOutboundAttachments } from "../outbound-attachments.js";
 
 import { createTeamsFileAuthority } from "./file-transfer-authority.js";
@@ -12,9 +15,6 @@ import { chatCredentialMutationLease, type CredentialMutationLeaseGuard } from "
 import {
   and,
   eq,
-  inArray,
-  lte,
-  or,
 } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -36,7 +36,6 @@ import {
   HttpError,
   conflict,
 } from "../../../errors.js";
-import { logger } from "../../../middleware/logger.js";
 
 import {
   type ChatSdkCallbackEvent,
@@ -375,60 +374,13 @@ export function createTeamsFileDelivery(db: Db, options: TeamsFileDeliveryOption
     }
   }
 
-  let teamsMaintenancePending = false;
-  let teamsMaintenanceAfter = 0;
-  function scheduleTeamsFileMaintenance() {
-    if (
-      teamsMaintenancePending ||
-      Date.now() < teamsMaintenanceAfter ||
-      isShuttingDown()
-    )
-      return;
-    teamsMaintenancePending = true;
-    teamsMaintenanceAfter = Date.now() + 30_000;
-    scheduleMessageProcessing(async () => {
-      try {
-        const scopes = await db
-          .selectDistinct({ companyId: chatTeamsFileTransfers.companyId })
-          .from(chatTeamsFileTransfers)
-          .where(
-            or(
-              and(
-                inArray(chatTeamsFileTransfers.phase, [
-                  "consent_pending",
-                  "awaiting_consent",
-                  "upload_pending",
-                ]),
-                lte(chatTeamsFileTransfers.expiresAt, new Date()),
-              ),
-              and(
-                inArray(chatTeamsFileTransfers.phase, [
-                  "consent_sending",
-                  "uploading",
-                  "file_info_sending",
-                  "conflict",
-                ]),
-                lte(chatTeamsFileTransfers.attemptExpiresAt, new Date()),
-              ),
-            ),
-          );
-        const protocol = teamsTransferProtocol();
-        // Separate from the ordinary message queue. Each company sweep bounds
-        // its row count and lock waits and performs no provider I/O.
-        for (const scope of scopes) {
-          if (isShuttingDown()) break;
-          await protocol.expireAndRecover(scope.companyId, 100);
-        }
-      } catch {
-        // Selection errors are closed here too; private transfer envelopes and
-        // SQL parameters must not escape through the generic background logger.
-        logger.warn(
-          "Teams file maintenance will retry after a temporary failure",
-        );
-      } finally {
-        teamsMaintenancePending = false;
-      }
-    });
+  function registerTeamsConsentExpiryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return teamsConsentExpiryWork(db, (companyId, id) => teamsTransferProtocol().expireUnusedConsent(companyId, id))
+      .register(coordinator, () => !isShuttingDown() && canRun());
   }
-  return { teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication, scheduleTeamsFileMaintenance };
+  function registerTeamsAttemptRecoveryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return teamsAttemptRecoveryWork(db, (companyId, id) => teamsTransferProtocol().recoverAbandonedAttempt(companyId, id))
+      .register(coordinator, () => !isShuttingDown() && canRun());
+  }
+  return { registerTeamsAttemptRecoveryWork, registerTeamsConsentExpiryWork, teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication };
 }

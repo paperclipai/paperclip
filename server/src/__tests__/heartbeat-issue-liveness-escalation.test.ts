@@ -130,7 +130,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(companyMemberships);
     await db.delete(companySkills);
     await db.delete(companies);
-    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -247,6 +247,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
+    // The responsible-user intersection requires both the account and its
+    // active membership; a membership pointing at a nonexistent user is denied.
+    await db.insert(authUsers).values({ id: ownerUserId, name: "Fixture owner", email: `${ownerUserId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({
       companyId,
       principalType: "user",
@@ -550,6 +554,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const issueId = randomUUID();
     const wakeId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Repair finalized before restart", status: "in_review", assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
     await db.insert(agentWakeupRequests).values({

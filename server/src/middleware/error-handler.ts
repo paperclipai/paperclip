@@ -8,14 +8,20 @@ import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
-import { isSecretSensitiveHttpRequest } from "./http-log-policy.js";
+import {
+  isSecretSensitiveHttpRequest,
+  secretSensitiveRouteFamily,
+} from "./http-log-policy.js";
+import { SecretSensitiveRequestError } from "./secret-sensitive-request-error.js";
 import {
   collectSensitiveStringValues,
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isEndedDbPoolError } from "../database-retry.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 export interface ErrorContext {
   error: {
@@ -68,12 +74,13 @@ function attachErrorContext(
 }
 
 function sanitizeSecretSensitiveError(req: Request, error: Error): Error {
-  if (!isSecretSensitiveHttpRequest(req.method, req.originalUrl)) return error;
-  const sanitized = new Error("Secret-sensitive request failed");
-  // Both `name` and `message` are attacker/provider-controlled properties on
-  // JavaScript errors. Do not preserve either on a credential-bearing route.
-  sanitized.name = "Error";
-  return sanitized;
+  const routeFamily = secretSensitiveRouteFamily(req.method, req.originalUrl);
+  if (!routeFamily) return error;
+  return new SecretSensitiveRequestError(error, {
+    routeFamily,
+    method: req.method,
+    routePath: (req.route as { path?: unknown } | undefined)?.path,
+  });
 }
 
 function sanitizeSecretSensitiveResponse(
@@ -88,10 +95,14 @@ function sanitizeSecretSensitiveResponse(
 }
 
 /** Report a server-side crash to every error sink. */
-function reportCrash(error: Error, reportToSentry = true): void {
+function reportCrash(error: Error, req: Request, reportToSentry = true): void {
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
-  if (reportToSentry) captureException(error);
+  if (reportToSentry) {
+    if (req.actor?.type === "agent" && req.actor.runId && req.actor.companyId && req.actor.agentId) {
+      captureException(error, { runId: req.actor.runId, companyId: req.actor.companyId, agentId: req.actor.agentId });
+    } else captureException(error);
+  }
 }
 
 /** Set by the orderly shutdown just before it ends the database pools. */
@@ -131,12 +142,27 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+/**
+ * The tool gateway rejects requests with its own error type. A route that lets
+ * one reach this handler (such as approving a tool review from a task card)
+ * would otherwise turn an expected rejection, for example a 409 asking for a
+ * new review, into a 500 crash report. Gateway server failures stay on the
+ * crash path so their provider text is not exposed.
+ */
+function clientToolGatewayErrorAsHttpError(err: unknown): unknown {
+  if (!(err instanceof ToolGatewayHttpError) || err.status < 400 || err.status >= 500) return err;
+  const mapped = new HttpError(err.status, err.message, { ...err.details, code: err.reasonCode });
+  mapped.stack = err.stack;
+  return mapped;
+}
+
 export function errorHandler(
-  err: unknown,
+  thrown: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  const err = clientToolGatewayErrorAsHttpError(thrown);
   if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
     const details =
@@ -186,7 +212,7 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError, !isExpectedMcpConnectionFailure(err));
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&
@@ -273,6 +299,16 @@ export function errorHandler(
     return;
   }
 
+  // A route that cancels its work when the response closes (for example a
+  // storage read) rejects with AbortError after the client has gone. That
+  // rejection is the cancellation, not a server fault. An AbortError while
+  // the client is still connected is still reported.
+  if (rootError.name === "AbortError" && res.destroyed && !res.writableFinished) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
   // Shutdown drains the HTTP listener before it ends the pool, but a handler
   // whose client already disconnected (or whose socket the drain timeout
   // closed) keeps running. Its next query then fails with CONNECTION_ENDED
@@ -282,6 +318,16 @@ export function errorHandler(
   if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
     if (!res.headersSent) {
       res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
     } else {
       res.end();
     }
@@ -305,7 +351,7 @@ export function errorHandler(
     reportableError,
   );
 
-  reportCrash(reportableError);
+  reportCrash(reportableError, req);
 
   res.status(500).json({
     error: "Internal server error",

@@ -4,6 +4,9 @@ summary: Local disk vs S3-compatible storage
 ---
 
 Paperclip stores uploaded files (issue attachments, images) using a configurable storage provider.
+New run logs and explicitly requested provider traces reuse the same settings.
+S3 instances store these under `run-logs/` and `provider-traces/` within the
+existing prefix. Local-disk instances keep them local.
 
 ## Local Disk (Default)
 
