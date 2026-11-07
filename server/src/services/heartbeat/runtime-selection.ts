@@ -84,6 +84,7 @@ import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
+import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -929,6 +930,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             ? "destroy"
             : undefined;
     onProviderResourceDisposition(providerResourceDispositionForRun);
+    const stagedRuntimeSkills = await measureRunPhase("runtime_selection.skill_assets", () => stageNativeRuntimeSkillAssets(db, {
+      companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueRef.id, execution: nativeExecution!,
+    }));
     await beforeNativeRuntimeSelection?.(run.id);
     const nativeSelected = await measureRunTransaction(db, "runtime_selection", async (tx) => {
       const lockedRun = await measureRunPhase("runtime_selection.row_lock", () => tx
@@ -958,6 +962,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         throw new Error("native_runtime_mode_conflict");
       }
       const lockedProfile = parseObject(lockedRun.runnerProfileJson);
+      const runtimeSkillPreservation = await bindStagedNativeRuntimeSkillAssets(tx as unknown as Db, {
+        companyId: lockedRun.companyId, agentId: lockedRun.agentId, runId: lockedRun.id, issueId: issueRef.id,
+        execution: (lockedProfile.nativeExecutionInput ?? nativeExecution) as NativeExecutionInput, staged: stagedRuntimeSkills,
+      });
       const persistedNativeSessionId =
         await measureRunPhase("runtime_selection.bootstrap", () => prepareNativeSessionBootstrapPersistence(tx, {
           run: lockedRun,
@@ -983,6 +991,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            ...(runtimeSkillPreservation ? { nativeRuntimeSkillPreservation: runtimeSkillPreservation } : {}),
             ...(nativeExecution?.provider.kind === "cursor_cloud" ? { executionPlacement: resolveProviderApiPlacement({ agent, run }) } : {}),
             nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
               ? NATIVE_PREPARATION_FENCING_VERSION

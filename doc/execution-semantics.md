@@ -3660,6 +3660,12 @@ Runner command and receipt size limits remain unchanged.
 Sparse remote workspace checkpoints capture at most eight regular files at once.
 Each file retains the content hash and mutation checks. A failed capture settles
 its active readers before closing the manifest and publishes no success receipt.
+A capture never records provider transfer scratch (`.paperclip-upload-*` at the
+workspace root). A control-plane kill during a transfer can leave that scratch
+behind, and providers never export it. The checkpoint export requests an exact
+copy (`preserveSourceEntries`), so file modes and names such as `._*` arrive as
+recorded. A mismatch error names the entry and its recorded, baseline and
+received forms; it never includes file contents.
 
 ### Warm sandbox continuity
 
