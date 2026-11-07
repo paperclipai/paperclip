@@ -152,7 +152,7 @@ import {
 } from "./tool-access.js";
 import { assertGoogleChatToolArgumentsSupported, googleChatToolDescription } from "./google-chat-tool-policy.js";
 import { assertGmailArchiveToolArgumentsSupported, gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
-import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
+import { parseRemoteHttpEndpoint, readRemoteHttpProxy } from "./remote-http-endpoint-guard.js";
 import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
@@ -3598,9 +3598,10 @@ export function createToolGatewayService(
    * it directly. Splitting validation from dispatch is what created the
    * DNS-rebinding TOCTOU in PAP-17098.
    */
-  function remoteHttpFetchOptions(): GuardedRemoteHttpFetchOptions {
+  function remoteHttpFetchOptions(proxy?: string | null): GuardedRemoteHttpFetchOptions {
     return {
       allowPrivateNetwork: allowPrivateRemoteEndpoints(),
+      proxy: proxy ?? null,
       error: (message, code) => new ToolGatewayHttpError(422, message, code),
     };
   }
@@ -5544,6 +5545,7 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
+    const proxy = readRemoteHttpProxy(asRecord(input.connection.config));
     const response = await guardedRemoteHttpFetch(
       endpoint,
       {
@@ -5557,7 +5559,7 @@ export function createToolGatewayService(
           params: input.params,
         }),
       },
-      remoteHttpFetchOptions(),
+      remoteHttpFetchOptions(proxy),
     );
     const body = await readBoundedRemoteResponse(response);
     if (!response.ok) {
@@ -6287,6 +6289,7 @@ export function createToolGatewayService(
     // identity's session and leaves other agents on the connection alone.
     let mcpSession: { scope: string; headers: Record<string, string>; sessionId: string } | undefined;
     try {
+      const proxy = readRemoteHttpProxy(asRecord(connection.config));
       const dispatchRemote = async (target: string, init: RequestInit) => {
         // Refresh can reduce consent. Recheck the selected grant after refreshing
         // credentials and before every dispatch (including an authorization retry).
@@ -6302,7 +6305,7 @@ export function createToolGatewayService(
         return options.remoteHttpRequest
           ? options.remoteHttpRequest(target, init)
           : guardedRemoteHttpFetch(target, init, {
-              ...remoteHttpFetchOptions(),
+              ...remoteHttpFetchOptions(proxy),
               // This call site owns a caller-set budget that can exceed the
               // transport's default response deadline, so hand it down rather than
               // letting the tighter default cut a legitimately slow tool short.

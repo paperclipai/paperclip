@@ -2,7 +2,13 @@ import { assertConfiguredTokenBrokerEndpointsAllowed } from "./token-broker/endp
 import { remoteEndpoint } from "./connection-methods.js";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { badRequest, HttpError } from "../../errors.js";
-import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint, type RemoteHttpEndpointLookup } from "../remote-http-endpoint-guard.js";
+import {
+  assertProxiedRemoteHttpEndpoint,
+  assertPublicRemoteHttpEndpoint,
+  parseRemoteHttpEndpoint,
+  parseRemoteHttpProxy,
+  type RemoteHttpEndpointLookup,
+} from "../remote-http-endpoint-guard.js";
 import { guardedRemoteHttpFetch, type GuardedRemoteHttpFetchOptions } from "../remote-http-fetch.js";
 
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -39,10 +45,11 @@ export function createToolRemoteHttp(options: RemoteHttpOptions) {
     return endpoint.toString();
   }
 
-  function remoteHttpFetchOptions(): GuardedRemoteHttpFetchOptions {
+  function remoteHttpFetchOptions(proxy?: string | null): GuardedRemoteHttpFetchOptions {
     return {
       allowPrivateNetwork: allowPrivateRemoteEndpoints(),
       lookup: options.remoteHttpEndpointLookup,
+      proxy: proxy ?? null,
       error: (message, code) => badRequest(message, { code }),
     };
   }
@@ -50,13 +57,14 @@ export function createToolRemoteHttp(options: RemoteHttpOptions) {
   async function requestRemoteHttpEndpoint(
     endpoint: URL,
     init: RequestInit,
+    proxy?: string | null,
   ): Promise<Response> {
     return options.remoteHttpRequest
       ? options.remoteHttpRequest(endpoint.toString(), {
           ...init,
           redirect: "manual",
         })
-      : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
+      : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions(proxy));
   }
 
   /**
@@ -69,9 +77,10 @@ export function createToolRemoteHttp(options: RemoteHttpOptions) {
    * (PAP-17098). Redirects stay manual and run the full guard again on the next
    * hop, because a `Location` is just as attacker-controlled as the first URL.
    */
-async function fetchRemoteHttpUrl(
+  async function fetchRemoteHttpUrl(
     value: string,
     init: RequestInit = {},
+    proxy?: string | null,
   ): Promise<Response> {
     let currentUrl = value;
     const method = (init.method ?? "GET").toUpperCase();
@@ -83,7 +92,7 @@ async function fetchRemoteHttpUrl(
       const endpoint = parseRemoteHttpEndpoint(currentUrl, (message, code) =>
         badRequest(message, { code }),
       );
-      const response = await requestRemoteHttpEndpoint(endpoint, init);
+      const response = await requestRemoteHttpEndpoint(endpoint, init, proxy);
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? (response.headers?.get?.("location") ?? null)
         : null;
@@ -114,7 +123,17 @@ async function fetchRemoteHttpUrl(
   async function assertRemoteEndpointAllowed(
     config: Record<string, unknown>,
   ): Promise<string> {
-    return assertRemoteHttpUrlAllowed(remoteEndpoint(config));
+    const error = (message: string, code: string) => badRequest(message, { code });
+    const proxy = parseRemoteHttpProxy(config.proxy, error);
+    if (!proxy) return assertRemoteHttpUrlAllowed(remoteEndpoint(config));
+    const guard = {
+      allowPrivateNetwork: allowPrivateRemoteEndpoints(),
+      lookup: options.remoteHttpEndpointLookup,
+    };
+    const endpoint = parseRemoteHttpEndpoint(remoteEndpoint(config), error);
+    await assertProxiedRemoteHttpEndpoint(endpoint, guard, error);
+    await assertPublicRemoteHttpEndpoint(proxy, guard, error);
+    return endpoint.toString();
   }
 
   async function assertRemoteConnectionEndpointsAllowed(
