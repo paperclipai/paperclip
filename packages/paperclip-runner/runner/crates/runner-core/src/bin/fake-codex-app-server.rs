@@ -1781,6 +1781,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"turn": {"id": provider_turn_id, "status": "inProgress"}}
                 }))?;
+                // A loaded host can accept a turn long before it starts it.
+                if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
+                // An accepted turn can be lost before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--exit-before-turn-started")
+                {
+                    return Err("configured exit before turn started".into());
+                }
                 send(json!({
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
