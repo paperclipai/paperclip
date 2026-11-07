@@ -94,8 +94,9 @@ The temporary cache contains public code and source provenance only. It uses
 private, process-account-owned directories and exact manifest keys. An empty
 host can reconstruct the cache from the registry. A cached source is checked
 again before upload. Imports stream data with a four-GiB code limit and a
-three-minute deadline, allow two active imports, and bound queued distinct
-sources to 32. Import waits and downloads respond to cancellation; one cancelled
+three-minute deadline, allow two active imports or cache verifications, and bound queued distinct
+sources to 32. Concurrent callers share verification of the same cached pack.
+Import waits and downloads respond to cancellation; one cancelled
 caller does not cancel a shared import still needed by another caller. Inactive
 instances perform no registry reads or cache scans. Each import requires disk
 headroom before writing; completed cached code remains until temporary storage

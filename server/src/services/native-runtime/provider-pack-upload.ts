@@ -4,6 +4,7 @@ import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pa
 import type { ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { resolveProviderPackUploadSource } from "./retained-provider-pack-source.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
+import { providerPackLayersArgument } from "./provider-pack-layers.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -40,9 +41,12 @@ export async function uploadVerifiedProviderPack(input: {
   // Hash the directory only when it is actually the upload source. The
   // installed pack still passes full verification against the selected identity.
   const archive = await measure("provider_pack.archive.verify", () =>
-    readProviderPackArchive(source.root, input.expectedDigest));
+    readProviderPackArchive(source.root, input.expectedDigest, input.signal));
   if (source.archiveOnly) {
     if (!archive) throw Error("runner_remote_provider_source_invalid");
+    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots) === null) {
+      throw Error("runner_remote_provider_archive_transport_unavailable");
+    }
     const capability = await measure("provider_pack.archive.probe", () => input.runner.execute({
       command: "sh", args: ["-c", `${providerPackExtractionProbe}${"kind" in archive ? " && node -e 'process.exit(Number(process.versions.node.split(\".\")[0])>=18?0:1)'" : ""}`],
       bypassSession: true, timeoutMs: 10_000,

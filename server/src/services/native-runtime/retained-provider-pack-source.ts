@@ -76,7 +76,7 @@ async function selectedArchive(root: string, manifest: ProviderPackIdentity, sig
   signal.throwIfAborted();
   const value = JSON.parse((await readStable(join(root, "provider-pack.json"))).toString()) as ProviderPackIdentity;
   if (canonicalProviderPackJson(value) !== canonicalProviderPackJson(manifest)) fail();
-  const archive = await readProviderPackArchive(root, manifest.digest);
+  const archive = await readProviderPackArchive(root, manifest.digest, signal);
   if (!archive || !("kind" in archive)) fail();
   const names = ["overlay.tar.zst", ...archive.files.map((_file, index) => `${index}.tar.zst`)];
   if (canonicalProviderPackJson((await readdir(archive.sourceRoot)).sort()) !== canonicalProviderPackJson(names.sort())) fail();
@@ -92,7 +92,7 @@ async function selectedArchive(root: string, manifest: ProviderPackIdentity, sig
 }
 
 async function extractManifest(root: string, manifest: ProviderPackIdentity, signal: AbortSignal) {
-  const source = await readProviderPackArchive(root, manifest.digest);
+  const source = await readProviderPackArchive(root, manifest.digest, signal);
   if (!source || !("kind" in source)) fail();
   const regular = new Set(source.files.map(file => file.path));
   const archive = tar.extract();
@@ -281,8 +281,6 @@ export async function resolveProviderPackUploadSource(input: {
   await privateDirectory(cache);
   const signal = input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
   const pointer = join(cache, manifest.digest.slice(7) + ".json");
-  const retained = await cached(cache, pointer, manifest, signal);
-  if (retained) return retained;
   const key = `${cache}:${manifest.digest}`;
   let job = pending.get(key);
   if (!job || job.controller.signal.aborted) {
@@ -292,7 +290,7 @@ export async function resolveProviderPackUploadSource(input: {
     let created!: ImportJob;
     const operation = (async () => {
       const release = await importSlot(sharedSignal);
-      try { return await importSource(cache, pointer, manifest, sharedSignal); }
+      try { return await cached(cache, pointer, manifest, sharedSignal) ?? await importSource(cache, pointer, manifest, sharedSignal); }
       finally { release(); }
     })().finally(() => { if (pending.get(key) === created) pending.delete(key); });
     job = created = { operation, controller, waiters: 0 };

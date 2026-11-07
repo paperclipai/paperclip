@@ -11,6 +11,8 @@ import tar from "tar-stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
+import * as archiveOwner from "./provider-pack-archive.js";
+import { resolveProviderPackUploadSource } from "./retained-provider-pack-source.js";
 const archiveScript = pathToFileURL(path.resolve(import.meta.dirname, "../../../../scripts/create-provider-pack-archive.mjs")).href;
 const { createProviderPackLayers } = await import(archiveScript);
 
@@ -40,8 +42,9 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
   const makePack = async (name: string, tool: string, source: string) => {
     const pack = path.join(root, name);
     await fs.mkdir(path.join(pack, "bin"), { recursive: true });
+    const artifact = { path: "bin/tool", sha256: `sha256:${hash(tool)}` };
     const payload = { pins: { opencode: "1.18.34" }, target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: source,
-      contractDigest: `sha256:${hash(tool)}`, artifacts: { opencodeProxy: { path: "bin/tool", sha256: `sha256:${hash(tool)}` } } };
+      contractDigest: `sha256:${hash(tool)}`, artifacts: { nodeCommand: artifact, opencodeCommand: artifact, opencodeProxy: artifact } };
     const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload, digest: `sha256:${hash(canonicalProviderPackJson(payload))}` };
     await fs.writeFile(path.join(pack, "provider-pack.json"), JSON.stringify(manifest));
     await fs.writeFile(path.join(pack, "bin/tool"), tool, { mode: 0o755 });
@@ -276,6 +279,58 @@ it("reuses a verified derived cache without registry reads and reconstructs it a
   expect(await fs.readFile(path.join(input.targetPath + "-empty", "bin/tool"), "utf8")).toBe("retained provider code");
 });
 
+it("shares warm-cache verification while a stopped caller leaves another waiter active", async () => {
+  const input = await fixture();
+  await upload(input);
+  const requests = input.requests.length;
+  const firstController = new AbortController(), secondController = new AbortController();
+  let enter!: () => void, release!: () => void, joined!: () => void, duplicate!: () => void;
+  const entered = new Promise<void>(done => { enter = done; });
+  const gate = new Promise<void>(done => { release = done; });
+  const secondJoined = new Promise<void>(done => { joined = done; });
+  const repeated = new Promise<void>(done => { duplicate = done; });
+  const originalRead = archiveOwner.readProviderPackArchive;
+  const verification = vi.spyOn(archiveOwner, "readProviderPackArchive").mockImplementation(async (...args) => {
+    enter();
+    if (verification.mock.calls.length > 1) duplicate();
+    await gate;
+    return originalRead(...args);
+  });
+  const originalAny = AbortSignal.any;
+  vi.spyOn(AbortSignal, "any").mockImplementation(signals => {
+    const combined = originalAny(signals);
+    if (signals.includes(secondController.signal)) {
+      const add = combined.addEventListener.bind(combined);
+      vi.spyOn(combined, "addEventListener").mockImplementation((type, listener, options) => {
+        const result = add(type, listener, options);
+        if (type === "abort") joined();
+        return result;
+      });
+    }
+    return combined;
+  });
+  const source = { root: input.current.pack, sourceDigest: input.current.manifest.digest, manifest: input.selected.manifest };
+  const first = resolveProviderPackUploadSource({ ...source, signal: firstController.signal });
+  const firstStopped = expect(first).rejects.toThrow("owned shared-cache waiter stopped");
+  await entered;
+  const second = resolveProviderPackUploadSource({ ...source, signal: secondController.signal });
+  try {
+    await Promise.race([secondJoined, repeated.then(() => { throw Error("warm-cache verification repeated"); })]);
+    expect(verification).toHaveBeenCalledOnce();
+    firstController.abort(new Error("owned shared-cache waiter stopped"));
+    await firstStopped;
+    expect(verification.mock.calls[0]?.[2]?.aborted).toBe(false);
+    release();
+    expect(await second).toMatchObject({ archiveOnly: true });
+    expect(input.requests).toHaveLength(requests);
+  } finally {
+    firstController.abort(new Error("owned shared-cache waiter stopped"));
+    secondController.abort(new Error("owned shared-cache fixture cleanup"));
+    release();
+    await Promise.allSettled([first, second, firstStopped]);
+  }
+});
+
 it("rejects a changed cached archive before any remote command or transfer", async () => {
   const input = await fixture();
   await upload(input);
@@ -309,6 +364,17 @@ it("leaves a target intact when its archive transport cannot install the verifie
   await expect(upload(input)).rejects.toThrow("runner_remote_provider_archive_transport_unavailable");
   expect(input.runner.execute).toHaveBeenCalledOnce();
   expect(input.runner.execute.mock.calls[0]?.[0].args?.join(" ")).not.toContain("rm -rf");
+  expect(input.runner.syncIn).not.toHaveBeenCalled();
+  expect(await fs.readFile(path.join(input.targetPath, "marker"), "utf8")).toBe("untouched");
+});
+
+it("refuses an oversized historical layer specification before any target effects", async () => {
+  const input = await fixture();
+  await fs.mkdir(input.targetPath);
+  await fs.writeFile(path.join(input.targetPath, "marker"), "untouched");
+  const reuseRoots = Array.from({ length: 2000 }, (_, index) => `/qualified-image-${index}/` + "a".repeat(64));
+  await expect(upload(input, { reuseRoots })).rejects.toThrow("runner_remote_provider_archive_transport_unavailable");
+  expect(input.runner.execute).not.toHaveBeenCalled();
   expect(input.runner.syncIn).not.toHaveBeenCalled();
   expect(await fs.readFile(path.join(input.targetPath, "marker"), "utf8")).toBe("untouched");
 });
