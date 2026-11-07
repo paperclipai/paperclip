@@ -473,6 +473,14 @@ describePostgres("heartbeat recovery module ownership", () => {
     }
   }, 30_000);
 
+  it("keeps the existing recovery path for a non-transient retirement error", async () => {
+    const failing = { transaction: async () => { throw new Error("unexpected retirement fault"); } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(failing, randomUUID())).toBe("not_applicable");
+    const lockTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("lock timeout"), { code: "55P03" }) });
+    const contended = { transaction: async () => { throw lockTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(contended, randomUUID())).toBe("transient");
+  });
+
   it.each(["own_turn", "own_launch", "own_checkpoint", "no_predecessor", "pending_side_effect", "legacy_detail"] as const)(
     "keeps verified reattachment when the run's own runner may hold work or the proof is incomplete: %s", async condition => {
       const child = await ownedProcess();

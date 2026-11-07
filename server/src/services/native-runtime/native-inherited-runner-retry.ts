@@ -34,6 +34,19 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** Lock unavailable, serialization failure, deadlock, admin shutdown, or a connection class error. */
+const TRANSIENT_SQLSTATES = new Set(["55P03", "40001", "40P01", "57P01", "57P03"]);
+
+function isTransientDatabaseError(error: unknown): boolean {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 5;
+    current = (current as { cause?: unknown }).cause, depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && (TRANSIENT_SQLSTATES.has(code) || code.startsWith("08"))) return true;
+    if (typeof code === "string" && ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "CONNECTION_CLOSED", "CONNECTION_ENDED"].includes(code)) return true;
+  }
+  return false;
+}
+
 function sameTime(left: Date | null, right: Date | null) {
   return (left?.getTime() ?? null) === (right?.getTime() ?? null);
 }
@@ -150,8 +163,10 @@ export async function retireInheritedRemoteRunnerIdentity(db: Db, runId: string)
     });
     return "retired" as const;
   }).catch((error): InheritedRunnerRetirement => {
-    // A busy lock or a database error proves nothing. Keep the run for the next sweep.
     logger.warn({ err: error, runId }, "failed to retire an inherited remote runner identity");
-    return "transient";
+    // A busy lock, a serialization conflict or a lost connection proves
+    // nothing: keep the run for the next sweep. Any other error keeps the
+    // existing recovery path, which reports its own cause.
+    return isTransientDatabaseError(error) ? "transient" : "not_applicable";
   });
 }
