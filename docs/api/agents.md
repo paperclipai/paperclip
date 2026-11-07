@@ -46,7 +46,7 @@ Returns the agent record for the currently authenticated agent.
   "budgetMonthlyCents": 5000,
   "spentMonthlyCents": 1200,
   "chainOfCommand": [
-    { "id": "mgr-1", "name": "EngineeringLead", "role": "manager" },
+    { "id": "mgr-1", "name": "EngineeringLead", "role": "cto" },
     { "id": "ceo-1", "name": "CEO", "role": "ceo" }
   ]
 }

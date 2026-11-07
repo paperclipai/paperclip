@@ -817,7 +817,11 @@ export function registerOwnershipReconciliationWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   canRun: () => boolean,
-  options: { onReport?: (report: OwnershipReport) => void } = {},
+  options: {
+    onReport?: (report: OwnershipReport) => void;
+    /** False while heartbeat scheduling is suppressed for this instance. */
+    enabled?: () => Promise<boolean>;
+  } = {},
 ) {
   const state = createOwnershipReportState();
   let nextRunAt: number | null = null;
@@ -826,13 +830,32 @@ export function registerOwnershipReconciliationWork(
   // A wake is consumed only by a pass that actually ran, so a wake that lands
   // during idle drain survives until dispatch reopens.
   let pendingWake = true;
+  // While scheduling is suppressed the worker parks with no deadline and runs
+  // no SQL; the next producer signal re-checks suppression.
+  let parked = false;
+  let lastPassAt: number | null = null;
   const unsubscribers: Array<() => void> = [];
   const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
     retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
-    coalesceMs: OWNERSHIP_REPORT_INTERVAL_MS,
+    // A wake is handled at once, so a suppressed instance parks immediately;
+    // full passes are throttled below without SQL.
+    coalesceMs: 0,
     pausePassiveMaintenance: true,
     run: async () => {
       if (!canRun()) return;
+      if (options.enabled && !(await options.enabled())) {
+        parked = true;
+        nextRunAt = null;
+        return;
+      }
+      parked = false;
+      // At most one full pass per interval; a wake inside it waits for the
+      // interval's end (in memory, no SQL).
+      if (lastPassAt !== null && Date.now() - lastPassAt < OWNERSHIP_REPORT_INTERVAL_MS) {
+        nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
+        return;
+      }
+      lastPassAt = Date.now();
       pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
       const fingerprint = ownershipReportFingerprint(report);
@@ -857,7 +880,7 @@ export function registerOwnershipReconciliationWork(
       lastReport = report;
       options.onReport?.(report);
     },
-    hasPending: async () => pendingWake,
+    hasPending: async () => pendingWake && !parked,
     nextRunAt: () => nextRunAt,
     onStop: () => { for (const unsubscribe of unsubscribers.splice(0)) unsubscribe(); },
   });
@@ -865,7 +888,7 @@ export function registerOwnershipReconciliationWork(
   // signals. Kinds whose writers publish none are read on any of these
   // wakes and at startup (named in the report's coverage gaps).
   for (const queue of OWNERSHIP_REPORT_WAKE_QUEUES) {
-    unsubscribers.push(subscribeDeliveryWork(db, queue, () => { pendingWake = true; worker.wake(); }));
+    unsubscribers.push(subscribeDeliveryWork(db, queue, () => { pendingWake = true; parked = false; worker.wake(); }));
   }
   return {
     ready: worker.ready,

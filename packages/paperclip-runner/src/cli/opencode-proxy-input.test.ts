@@ -152,7 +152,11 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
         { result: { content: [{ text: expect.stringContaining(feedback) }] } },
       ]);
       await expect.poll(() => bodies.length, { timeout: 5_000 }).toBe(1);
-      send({ id: 5, method: "turn/start", params: { paperclipRunId: "current-run-2", input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "completion-feedback" }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
+      // The warm second run has its own contract revision. Runnerd sends it with
+      // the run identity; the proxy's launch parameters still name proxy-v1.
+      send({ id: 5, method: "turn/start", params: { paperclipRunId: "current-run-2",
+        paperclipCompletionContract: { revision: "proxy-v2", criterionIds: ["objective"] },
+        input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "completion-feedback" }, completionContract: { revision: "proxy-v2", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
       await response(5);
       await expect.poll(() => messages.find(message => message.method === "item/tool/call" && message.id !== call.id), { timeout: 5_000 }).toBeDefined();
       const warmCall = messages.find(message => message.method === "item/tool/call" && message.id !== call.id)!;
@@ -164,7 +168,9 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
     }
     await expect.poll(() => exited, { timeout: 5_000 }).toBe(true);
     await exit;
-    expect(messages.filter(message => message.method === "paperclip/runResult")).toHaveLength(respond ? 2 : 0);
+    const results = messages.filter(message => message.method === "paperclip/runResult");
+    expect(results).toHaveLength(respond ? 2 : 0);
+    if (respond) expect(JSON.stringify(results[1])).toContain("proxy-v2");
   } finally {
     child.kill("SIGTERM");
     if (!exited) {

@@ -75,7 +75,7 @@ export type OwnershipReport = {
   /** Earliest time a record inside a grace window becomes checkable, if any. */
   nextDueAt: Date | null;
   /** Work left for a later pass: failed listings or checks, unsaved
-   * violations, and kinds with more pages. The worker keeps a retry due. */
+   * violations, and an unfinished I4 window. The worker keeps a retry due. */
   retryNeeded: boolean;
 };
 
@@ -84,6 +84,7 @@ const COVERAGE_GAPS: Record<string, string> = {
   I6_generation_fencing: "Runner events carry no generation stamp until section G lands.",
   I8_fast_turns: "Measured per run by the speed-budget check in the run log, not by this pass.",
   I7_scope: "I7 measures agent-assigned in_progress issues. todo, in_review and blocked issues are not measured yet.",
+  record_cap: "Each kind, and the I3 and I7 checks, read at most 2,000 records per pass; a larger kind is reported as truncated.",
   wake_coverage: "Writers of workspace runtime services, remote workspace operations, snapshots, restore points, "
     + "git cache intents, provider artifacts and harness backups publish no work signal. Those kinds are read at "
     + "startup and on any other report wake. Phase 2 adds a signal when each kind moves to the shared settle path.",
@@ -97,12 +98,15 @@ export type OwnershipReportState = {
   reported: Set<string>;
   /** Keyset cursor of the wake-request scan of rule I4 (updated_at, id). */
   intentCursor: { at: string; id: string } | null;
-  /** Violations whose activity row failed to save; retried on the next pass. */
-  unwritten: Map<string, InvariantViolation>;
+  /** Violations whose activity row failed to save, with failed attempts;
+   * retried on later passes and dropped after `MAX_WRITE_ATTEMPTS`. */
+  unwritten: Map<string, { violation: InvariantViolation; attempts: number }>;
+  /** True when the I4 scan stopped with more rows to read. */
+  intentBacklog: boolean;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
-  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map() };
+  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map(), intentBacklog: false };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -111,8 +115,11 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const ACCOUNTING_CLOSURE_MS = 10 * 60_000;
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
-/** Records read per kind per pass; beyond this the kind is reported truncated. */
+/** Records read per kind (and per I3/I7 check) per pass; beyond this the
+ * kind is reported truncated (a named coverage gap). */
 const MAX_RECORDS_PER_KIND = 2_000;
+/** Failed activity writes of one violation before it is dropped. */
+const MAX_WRITE_ATTEMPTS = 5;
 /** First I4 scan after boot looks back this far. */
 const INTENT_LOOKBACK_MS = 60 * 60_000;
 /** Refusal texts that name a temporary condition (invariant 4), as a
@@ -153,37 +160,43 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
 
 /** Admission still waits on accounting (inventory finding 3). This mirrors
- * the `waitingRunCount` gate of budget-exposure.ts (late-receipt debt is not
- * counted here): a terminal run with
+ * the `waitingRunCount` gate of budget-exposure.ts, including late-receipt
+ * debt: a terminal run with
  * pending accounting holds its company's new work unless it is a succeeded
  * run with observed cost, or a native run whose coordinator is still
  * recovering. Only companies with an active budget policy have the gate, and
  * only runs past the accounting closure deadline are reported. */
 async function checkAdmissionIndependence(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
   const usage = heartbeatRuns.usageJson;
+  const lateReceiptDebt = sql`coalesce(${usage}->>'accountingLateReceiptPending', 'false') = 'true'`;
   const boundedSucceeded = sql`(${heartbeatRuns.status} = 'succeeded' and ${usage}->'budgetExposure'->>'costCents' is not null)`;
   const closingReceipt = sql`${usage}->>'accountingReceiptReady' = 'false' and ${usage}->>'accountingCaptureFailed' is distinct from 'true'`;
-  const recovering = sql`(${heartbeatRuns.runtimeMode} = 'native' and exists (select 1 from ${nativeRunFinalizations}
+  const recovering = sql`(${heartbeatRuns.runtimeMode} = 'native' and not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
     where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id} and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
       and ${nativeRunFinalizations.resultId} is null
       and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt}))))`;
-  // A run holds only the policies whose scope and window include it, as in
-  // computeObservedSpends: company, the run's agent, or its ledger project;
-  // a calendar-month policy counts runs finished in the current UTC month.
   const gated = sql`exists (select 1 from ${budgetPolicies} where ${budgetPolicies.companyId} = ${heartbeatRuns.companyId}
     and ${budgetPolicies.isActive} = true
     and (${budgetPolicies.scopeType} = 'company'
       or (${budgetPolicies.scopeType} = 'agent' and ${budgetPolicies.scopeId} = ${heartbeatRuns.agentId})
       or (${budgetPolicies.scopeType} = 'project' and ${usage}->'ledgerScope'->>'projectId' = ${budgetPolicies.scopeId}::text))
-    and (${budgetPolicies.windowKind} <> 'calendar_month_utc'
+    and (${budgetPolicies.windowKind} <> 'calendar_month_utc' or (${lateReceiptDebt})
       or ${heartbeatRuns.finishedAt} >= (date_trunc('month', ${now.toISOString()}::timestamptz at time zone 'UTC') at time zone 'UTC')))`;
-  const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true),
-      inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
-      lt(heartbeatRuns.finishedAt, new Date(now.getTime() - ACCOUNTING_CLOSURE_MS)),
-      sql`not ${boundedSucceeded}`, sql`not ${recovering}`, gated)).limit(limit);
-  return rows.map(row => ({ rule: "I3_admission_independent", kind: "run_accounting_debt", recordId: row.id,
-    companyId: row.companyId, runId: row.id, issueId: row.issueId, reason: "accounting_debt_holds_admission" }));
+  const violations: InvariantViolation[] = [];
+  for (let offset = 0; offset < MAX_RECORDS_PER_KIND; offset += limit) {
+    const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId })
+      .from(heartbeatRuns).where(and(or(eq(heartbeatRuns.costAccountingPending, true), lateReceiptDebt),
+        inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
+        lt(heartbeatRuns.finishedAt, new Date(now.getTime() - ACCOUNTING_CLOSURE_MS)),
+        sql`not ${boundedSucceeded}`, sql`not ${recovering}`, gated))
+      .orderBy(asc(heartbeatRuns.id)).limit(limit).offset(offset);
+    for (const row of rows) {
+      violations.push({ rule: "I3_admission_independent", kind: "run_accounting_debt", recordId: row.id,
+        companyId: row.companyId, runId: row.id, issueId: row.issueId, reason: "accounting_debt_holds_admission" });
+    }
+    if (rows.length < limit) break;
+  }
+  return violations;
 }
 
 /** A wake request that ended terminally on a refusal that names a temporary
@@ -209,7 +222,9 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
         runId: row.runId, issueId: null, reason: "terminal_on_temporary_refusal" });
     }
     if (rows.length > 0) position = { at: rows[rows.length - 1]!.updatedAt, id: rows[rows.length - 1]!.id };
-    if (rows.length < limit) break;
+    if (rows.length < limit) { state.intentBacklog = false; break; }
+    // Ten full pages: the rest of a busy window waits for the next pass.
+    state.intentBacklog = page === 9;
   }
   state.intentCursor = position;
   return violations;
@@ -219,7 +234,9 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
  * no open recovery action has no next action (invariant 7). Issues still in
  * their grace window return the time they become checkable. */
 async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
-  const rows = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
+  const rows: Array<{ id: string; companyId: string; executionRunId: string | null; updatedAt: Date }> = [];
+  for (let offset = 0; offset < MAX_RECORDS_PER_KIND; offset += limit) {
+    const page = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
       // A saved monitor deadline is a first-class wait path (SPEC-implementation).
@@ -234,7 +251,10 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
       notExists(db.select({ one: sql`1` }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         isNull(issueRecoveryActions.resolvedAt)))),
-    )).orderBy(asc(issues.updatedAt)).limit(limit);
+    )).orderBy(asc(issues.updatedAt), asc(issues.id)).limit(limit).offset(offset);
+    rows.push(...page);
+    if (page.length < limit) break;
+  }
   const cutoff = now.getTime() - NEXT_ACTION_GRACE_MS;
   const violations: InvariantViolation[] = [];
   let nextDueAt: Date | null = null;
@@ -291,9 +311,11 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       retryNeeded = true;
       continue;
     }
-    report.inProgress = records.length;
-    const runProofs = await classifyRunOwners(db, records);
-    for (const record of records) {
+    // Offset pages can repeat a row when a lower id is inserted between pages.
+    const unique = [...new Map(records.map(record => [record.recordId, record])).values()];
+    report.inProgress = unique.length;
+    const runProofs = await classifyRunOwners(db, unique);
+    for (const record of unique) {
       const proof = await classify(record.owner, runProofs, options.probe, now);
       report.verdicts[proof.verdict] += 1;
       report.reasons[proof.reason] = (report.reasons[proof.reason] ?? 0) + 1;
@@ -331,12 +353,15 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
 
   // Only a first proof needs a second pass; a record already reported for I2
   // is not a reason to keep scanning.
+  if (state.intentBacklog) retryNeeded = true;
   const awaitingSecondProof = [...goneThisPass].filter(key => !state.goneLastPass.has(key)).length;
   state.goneLastPass = goneThisPass;
   // Violations whose activity row failed last time are written again, even
   // when a cursor-based check (I4) does not read them a second time.
-  const seen = new Set(violations.map(violationKey));
-  for (const [key, violation] of state.unwritten) if (!seen.has(key)) violations.push(violation);
+  const byKey = new Map(violations.map(violation => [violationKey(violation), violation]));
+  for (const [key, entry] of state.unwritten) if (!byKey.has(key)) byKey.set(key, entry.violation);
+  violations.length = 0;
+  violations.push(...byKey.values());
   const newViolations = violations.filter(violation => !state.reported.has(violationKey(violation)));
   if (options.record !== false) {
     for (const violation of newViolations) {
@@ -350,8 +375,17 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         });
       } catch (error) {
         logger.warn({ err: error, rule: violation.rule, kind: violation.kind }, "failed to record ownership invariant violation");
-        state.unwritten.set(violationKey(violation), violation);
-        retryNeeded = true;
+        const key = violationKey(violation);
+        const attempts = (state.unwritten.get(key)?.attempts ?? 0) + 1;
+        if (attempts >= MAX_WRITE_ATTEMPTS) {
+          // A poison row (for example a company that no longer exists) must
+          // not keep the report retrying for the life of the process.
+          state.unwritten.delete(key);
+          state.reported.add(key);
+        } else {
+          state.unwritten.set(key, { violation, attempts });
+          retryNeeded = true;
+        }
         continue;
       }
       state.unwritten.delete(violationKey(violation));

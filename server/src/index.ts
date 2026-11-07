@@ -1735,7 +1735,8 @@ async function startServerWithDatabaseTeardown(
     // Report-only ownership reconciliation (durable ownership plan, Phase 1).
     // Its first pass runs in the background so it never delays readiness.
     if (config.heartbeatSchedulerEnabled) void registerOwnershipReconciliationWork(db as any, deliveryWork,
-      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      { enabled: async () => !(await heartbeat.resolveSchedulingSuppression()).suppressed }).ready
       .catch(err => logger.warn({ err }, "ownership reconciliation report pass failed"));
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;

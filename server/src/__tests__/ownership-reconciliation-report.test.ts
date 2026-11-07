@@ -165,7 +165,7 @@ describe("report-only ownership reconciliation", () => {
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
     expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns",
-      "I7_scope", "wake_coverage"]);
+      "I7_scope", "record_cap", "wake_coverage"]);
 
     expect(first.awaitingSecondProof).toBe(1);
     const second = await runOwnershipReconciliationPass(db, { state });
@@ -296,6 +296,24 @@ describe("report-only ownership reconciliation", () => {
     expect(second.retryNeeded).toBe(false);
     expect(await db.select({ entityId: activityLog.entityId, companyId: activityLog.companyId }).from(activityLog))
       .toEqual([{ entityId: "orphan-2", companyId: laterCompany }]);
+  });
+
+  it("drops a violation whose activity row keeps failing after five attempts", async () => {
+    await mkdir(orphanSpool, { recursive: true });
+    await writeFile(join(orphanSpool, "orphan-3.json"), JSON.stringify({ companyId: randomUUID() }));
+    const state = createOwnershipReportState();
+    const passes: boolean[] = [];
+    for (let pass = 0; pass < 6; pass++) passes.push((await runOwnershipReconciliationPass(db, { state })).retryNeeded);
+    expect(passes).toEqual([true, true, true, true, false, false]);
+  });
+
+  it("counts late-receipt debt as an admission hold, as the gate does", async () => {
+    await seed();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false, usageJson: { accountingLateReceiptPending: true } })
+      .where(eq(heartbeatRuns.id, ids.debtRun));
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
+      .toEqual([ids.debtRun]);
   });
 
   it("reads a kind larger than one page in a single pass, so second proofs compare the same records", async () => {
