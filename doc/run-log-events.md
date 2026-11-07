@@ -391,8 +391,9 @@ IDs are never checked against the control-plane host.
 A crash can land after `native.process_start_requested` and before the runner's
 process identity is recorded. Continuation admission then writes
 `native.local_process_stopped` with null process IDs and
-`basis: "unidentified_runner_absent"`, only after it checks two things on this
-host. First, no process carries the run's `--run-id` runner argument. Second, no
+`basis: "unidentified_runner_absent"`. It does this only on the host named in
+the launch event's `hostname` payload, after it checks two things. First, no
+process carries the run's `--run-id` runner argument. Second, no
 saved runner control-plane state (canonical or quarantined) belongs to the run;
 a provider starts only after its runner connects and writes that state.
 
