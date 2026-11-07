@@ -11,10 +11,25 @@ interface AttentionFeed { companyId?: string; items?: Array<{ subject?: { id?: s
 function approvalLink(o: InternalObservation, id: string) {
   return o.links.some(href => { try { const u = new URL(href, o.origin); return u.origin === o.origin && u.pathname.split("/").slice(-2).join("/") === `approvals/${id}`; } catch { return false; } });
 }
+/**
+ * The reply's statement about one source: every sentence or list item that names it, read together with the
+ * list heading that introduces it ("Waiting on you:"), so meaning carried by the heading is not lost. `sections`
+ * identifies which heading or sentence each mention sits under, so the grader can check separation structurally.
+ */
 function statement(o: InternalObservation, source: Entity) {
   const names = [source.title, source.identifier, source.id].filter((name): name is string => !!name);
-  return o.reply.split(/\n|(?<=[.!?])\s+/).filter(part => names.some(name => part.includes(name))).join(" ");
+  const units: Array<{ own: string; text: string; section: string }> = []; let lead: { text: string; section: string } | undefined;
+  o.reply.split("\n").forEach((line, index) => {
+    if (!line.trim()) return;
+    if (/^\s*(?:[-*+]|\d+[.)])\s/.test(line)) { units.push({ own: line, text: `${lead?.text ?? ""}\n${line}`, section: lead?.section ?? `line-${index}` }); return; }
+    line.split(/(?<=[.!?])\s+/).forEach((part, n) => units.push({ own: part, text: part, section: `line-${index}-${n}` }));
+    lead = { text: line, section: `lead-${index}` };
+  });
+  const hits = units.filter(unit => names.some(name => unit.own.includes(name)));
+  return { text: hits.map(unit => unit.text).join("\n"), sections: new Set(hits.map(unit => unit.section)) };
 }
+function apart(a: Set<string>, b: Set<string>) { return a.size > 0 && b.size > 0 && [...a].every(section => !b.has(section)); }
+function without(text: string, literals: readonly (string | undefined)[]) { return literals.reduce<string>((rest, literal) => literal ? rest.split(literal).join(" ") : rest, text); }
 export function gradeDecisionSearch(value: unknown) {
   const c = checks(); const o = observation(value) as DecisionObservation | undefined;
   c.add("actual-source-decision-state", !!o && !!o.hiring && !!o.pendingQuestion && !!o.completedQuestion && o.visibleAttention !== undefined, "Actual hiring, addressed question, answered history and human-visible attention records are required.");
@@ -36,17 +51,19 @@ export function gradeDecisionSearch(value: unknown) {
     && [t, history].every(before => !!before && sameTask(before, o.tasks.find(row => row.id === before.id)))
     && !o.activity.some(row => row.agentId === o.leadId && /approval\.(?:approved|rejected)|issue\.interaction_(?:answered|accepted|rejected|cancelled)/.test(row.action ?? "")),
     "Listing preserves the pending hiring decision, Riley's pending question and the actual already-answered human history.");
-  const hiringText = statement(o, { id: hire.id, title: "Launch designer" }); const questionText = statement(o, t); const historyText = statement(o, history);
-  c.add("pending-hire-source-and-human-resolver", approvalLink(o, hire.id) && /\b(?:pending|await|approv|decision)\b/i.test(hiringText)
-    && /\b(?:you|human|board|operator|Alex)\b/i.test(hiringText), "The hiring decision links its exact approval and identifies the current human/operator approval step.");
-  c.add("addressed-question-is-not-everyones-decision", !!t && hasLink(o, "issues", t) && /\bRiley\b/.test(questionText)
-    && /\b(?:answer|respond|resolver|addressed|waiting|pending)\b/i.test(questionText)
-    && !/\b(?:you|Alex)\s+(?:can|should|must)\s+(?:answer|resolve|approve)\b/i.test(questionText),
-    "The visible question links its actual task and identifies Riley, without offering Alex permission to resolve it.");
-  c.add("completed-request-separated-from-pending", !!history && hasLink(o, "issues", history)
-    && /\b(?:answered|completed|resolved|history|no action|nothing.*waiting)\b/i.test(historyText)
-    && !/\b(?:still|currently)\s+(?:pending|waiting|unanswered)\b/i.test(historyText),
-    "The informational completed request is linked as actual history, not another unresolved decision.");
+  const hiring = statement(o, { id: hire.id, title: "Launch designer" }); const question = statement(o, t); const historyStatement = statement(o, history);
+  const ownTitles = [t.title, t.identifier, pending.title];
+  c.add("pending-hire-source-and-human-resolver", approvalLink(o, hire.id) && hiring.sections.size > 0
+    && !/\bRiley\b/.test(hiring.text) && !/\b(?:was|been|is|has)\s+(?:already\s+)?(?:approved|rejected)\b/i.test(hiring.text),
+    "The hiring decision links its exact approval, is not attributed to Riley and is not reported as already decided.");
+  c.add("addressed-question-is-not-everyones-decision", !!t && hasLink(o, "issues", t) && /\bRiley\b/.test(without(question.text, ownTitles))
+    && apart(question.sections, hiring.sections)
+    && !/\b(?:you|Alex)\s+(?:can|should|must)\s+(?:answer|resolve|approve)\b/i.test(question.text),
+    "The visible question links its actual task, names Riley as its resolver beyond the setup titles, is listed apart from the person's own decision and is not offered to Alex.");
+  c.add("completed-request-separated-from-pending", !!history && hasLink(o, "issues", history) && apart(historyStatement.sections, hiring.sections)
+    && !/\b(?:still|currently)\s+(?:pending|waiting|unanswered)\b/i.test(historyStatement.text)
+    && !/\b(?:needs?|awaits?|awaiting|requires?)\s+your\s+(?:answer|response|decision|input|approval)\b/i.test(historyStatement.text),
+    "The informational completed request is linked and kept apart from the person's pending decision, without being described as awaiting them.");
   c.add("board-feed-permission-boundary", o.permissionStatus === 403 && !/\b(?:you can|you may|you should)\s+(?:approve|resolve|answer)\s+(?:all|every)\b/i.test(o.reply),
     "The independent agent cannot read the board-only attention aggregation, and the reply does not grant universal resolver authority.");
   return c.result();
@@ -74,7 +91,7 @@ function showDecisions(): ChatCatalogCase {
       return { project: p, task: t, historyTask: history, ownerId, rileyId: riley.id, pendingQuestion, completedQuestion, hiring };
     } catch (error) { await riley.dispose(); riley = undefined; throw error; }
   }, gradeDecisionSearch);
-  return { ...base, authentication: "human-session", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-decision-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "../../packages/shared/src/validators/issue.ts"],
+  return { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.decision-search.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-decision-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "../../packages/shared/src/validators/issue.ts"],
     async observe(ctx, state): Promise<DecisionObservation> {
       if (!key || !riley || riley.id !== state.rileyId || riley.id === state.ownerId) throw new Error("Missing distinct authenticated decision resolver or attempt-private probe");
       const o = await observeInternal(ctx, state); const root = `/api/companies/${o.companyId}`;
