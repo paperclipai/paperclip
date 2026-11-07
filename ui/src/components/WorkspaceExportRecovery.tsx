@@ -60,7 +60,7 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   const automatic = queued || (ownerRecovery && asObject(action.evidence.workspaceOwnerRecovery).state === "resuming");
   return <><ReportRecoveryControl owns={false} onChange={onRecoveryControlChange} />
     <p role="status" className={cn("text-sm text-muted-foreground", className)}>
-      {automatic ? "Restoring saved work…" : "Workspace recovery needs operator assistance. The agent’s result is saved."}
+      {automatic ? "Restoring saved work…" : "Saved work is not recovered yet. The agent’s result is saved."}
     </p></>;
 }
 
@@ -115,7 +115,7 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
       : "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
     {confirm.isSuccess ? null : !canConfirm
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
-        ? "Checking access…" : "A company owner or administrator can confirm that the previous server stopped."}</p>
+        ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
         Confirm the previous server stopped</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
@@ -299,10 +299,9 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
         {notice ?? (checkError instanceof Error ? checkError.message : "File recovery could not be inspected. Check its status again.")}
       </p> : null}
       {current && recovery.status === "blocked" && (serverAcknowledged || recovery.retryable !== true)
-        ? <p role="alert">File recovery has not finished. The saved source remains protected; service assistance is needed.</p> : null}
+        ? <p role="alert">File recovery has not finished. The saved files remain protected and are not applied.</p> : null}
       {unverified ? <p role="status" className="text-muted-foreground">
-        {unverifiedSourceText(source.data?.sourceInspection)} Recovery checks the source again on each attempt.
-        If it still can’t be verified, a company owner or administrator needs to inspect the failed run’s sandbox environment.
+        {unverifiedSourceText(source.data?.sourceInspection)} Paperclip does not apply files it can’t verify.
       </p> : null}
       {sourceReady && !current ? <p role="alert">This file recovery was replaced. Check its status to show the task’s current recovery.</p> : null}
     </> : accessView.kind === "error" ? <p role="alert" className="text-sm text-destructive">Task access could not be checked. Refresh before requesting file recovery.</p>

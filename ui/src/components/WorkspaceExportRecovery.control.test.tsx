@@ -187,7 +187,6 @@ describe("governed retained-file recovery", () => {
     expect(button("Check file recovery status")).toBeUndefined();
     expect(container.textContent).not.toContain("has changed");
     expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
-    expect(container.textContent).toContain("company owner or administrator");
     expect(api.recover).not.toHaveBeenCalled();
   });
 
@@ -212,7 +211,6 @@ describe("governed retained-file recovery", () => {
     await mount(failed);
     expect(container.textContent).toContain("File recovery has not finished");
     expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
-    expect(container.textContent).toContain("company owner or administrator");
     // While recovery is running, the panel shows progress instead of the reason.
     const running = { ...failed, evidence: { ...failed.evidence, workspaceRecovery: {
       ...(failed.evidence.workspaceRecovery as object), status: "recovering" } } } as IssueRecoveryAction;
@@ -390,6 +388,37 @@ describe("governed retained-file recovery", () => {
     expect(api.recover).not.toHaveBeenCalled();
   });
 
+  // Recovery is automatic. No recovery state may tell a person to fix or inspect
+  // a sandbox, or name an owner or administrator as the one who must act.
+  const manualCopy = /administrator|\bowner\b|operator assistance|service assistance|service attention|inspect the (run|failed run)|environment/i;
+  const withRecovery = (value: IssueRecoveryAction, patch: Record<string, unknown>, system?: Record<string, unknown>) => ({
+    ...value, evidence: { ...value.evidence, workspaceRecovery: { ...(value.evidence.workspaceRecovery as object), ...patch },
+      ...(system ? { systemRecovery: { ...(value.evidence.systemRecovery as object), ...system } } : {}) } }) as IssueRecoveryAction;
+  const operatorAccess = { userId: "board-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false,
+    memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }] };
+  const viewerAccess = { ...operatorAccess, memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active" }] };
+  it.each([
+    ["verified and retryable", action, inspection(action), operatorAccess],
+    ["unverified ownership", legacyHold, blockedInspection(legacyHold), operatorAccess],
+    ["unverified binding", legacyHold, blockedInspection(legacyHold, "source_binding_invalid"), operatorAccess],
+    ["not inspected", legacyHold, { ...blockedInspection(legacyHold), sourceInspection: { ...blockedInspection(legacyHold).sourceInspection,
+      status: "not_inspected", reason: "source_limit" } }, operatorAccess],
+    ["queued", withRecovery(legacyHold, { status: "queued" }), blockedInspection(withRecovery(legacyHold, { status: "queued" })), operatorAccess],
+    ["not retryable", withRecovery(legacyHold, { retryable: false }), blockedInspection(withRecovery(legacyHold, { retryable: false })), operatorAccess],
+    ["recovered", withRecovery(legacyHold, { status: "recovered" }, { state: "complete", preservationOperationIds: ["op-1"] }),
+      blockedInspection(withRecovery(legacyHold, { status: "recovered" }, { state: "complete", preservationOperationIds: ["op-1"] })), operatorAccess],
+    ["viewer", legacyHold, blockedInspection(legacyHold), viewerAccess],
+    ["copyback owner hold for an operator", { ...action, evidence: { ...action.evidence,
+      workspaceOwnerRecovery: { state: "operator_required", owner: { token: "token" } } } } as IssueRecoveryAction, inspection(action), operatorAccess],
+    ["board-owned status", { ...action, cause: "native_workspace_finalization_owner_unverified", ownerType: "board",
+      evidence: { runId: "run-1" } } as unknown as IssueRecoveryAction, inspection(action), operatorAccess],
+  ] as const)("renders no manual sandbox or administrator copy: %s", async (_name, value, response, access) => {
+    client.setQueryData(queryKeys.access.currentBoardAccess, access);
+    api.inspect.mockResolvedValue(response);
+    await mount(value);
+    expect(container.textContent).not.toMatch(manualCopy);
+  });
+
   describe("previous server stop confirmation", () => {
     const ownerAction = { ...action, cause: "native_workspace_finalization_owner_unverified", ownerType: "board", status: "escalated",
       evidence: { runId: "run-1", owner: { token: "owner-token", hostname: "secret-host", pid: 2 },
@@ -452,7 +481,7 @@ describe("governed retained-file recovery", () => {
         companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }] });
       await mount(ownerAction);
       expect(button("Confirm the previous server stopped")).toBeUndefined();
-      expect(container.textContent).toContain("owner or administrator can confirm");
+      expect(container.textContent).toContain("waiting to confirm that the previous server stopped");
       expect(api.resume).not.toHaveBeenCalled();
     });
   });
