@@ -25,6 +25,14 @@ function ReportRecoveryControl({ owns, onChange }: { owns: boolean; onChange?: (
   return null;
 }
 
+const CONTROLLER_HOST_UNVERIFIED = "native_controller_host_unverified";
+
+/** Causes whose one action is the board's previous-server stop confirmation;
+ * the generic recovery card must not offer other resolutions for them. */
+export function isPreviousServerStopCause(cause: string | null | undefined) {
+  return cause === "native_workspace_finalization_owner_unverified" || cause === CONTROLLER_HOST_UNVERIFIED;
+}
+
 /** Requests preservation; the existing worker owns stop, copyback and verification. */
 export function WorkspaceExportRecovery({ action, className, issueId, companyId, showStatus = true, onRecoveryControlChange }: {
   className?: string; action: IssueRecoveryAction | null; issueId?: string; companyId?: string; showStatus?: boolean;
@@ -43,6 +51,19 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
     return <RetainedFilesRecovery key={`${companyId}:${issueId}:${action.id}:${action.evidence.runId}`}
       action={action} issueId={issueId} companyId={companyId} className={className}
       onRecoveryControlChange={onRecoveryControlChange} />;
+  }
+  // An ephemeral server cannot judge a pre-upgrade controller row by PID.
+  if (action?.cause === CONTROLLER_HOST_UNVERIFIED && issueId && companyId
+    && isControllerStopRequired(action, issueId, companyId)) {
+    return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}`}
+        action={action} issueId={issueId} companyId={companyId} className={className}
+        confirmStop={stopEvidence => issuesApi.confirmControllerStopped(issueId, {
+          actionId: action.id, runId: action.evidence.runId as string, stopEvidence })}
+        copy={{ waiting: "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
+          question: "How did you confirm that the previous server stopped?",
+          placeholder: "For example: the old server container was replaced and is no longer running.",
+          resuming: "Controller stop recorded. Checking recovery…" }} /></>;
   }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.
@@ -72,6 +93,12 @@ function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyI
     && typeof action.evidence.runId === "string" && action.evidence.runId.length > 0;
 }
 
+function isControllerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
+  return action.companyId === companyId && action.sourceIssueId === issueId
+    && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
+    && typeof action.evidence.runId === "string" && !action.evidence.controllerStop;
+}
+
 function isOwnerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
   return action.companyId === companyId && action.sourceIssueId === issueId
     && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
@@ -89,8 +116,12 @@ function retainedOwnerStopToken(action: IssueRecoveryAction): string | null {
 
 /** A previous server that can no longer report cannot confirm its own stop.
  * The board confirms it once; the saved result then finishes without another agent turn. */
-function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className }: {
-  action: IssueRecoveryAction; ownerToken: string; issueId: string; companyId: string; className?: string;
+function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className, confirmStop, copy }: {
+  action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
+  /** Saved-work copyback owner; used when no custom confirmation is given. */
+  ownerToken?: string;
+  confirmStop?: (stopEvidence: string) => Promise<unknown>;
+  copy?: { waiting: string; question: string; placeholder: string; resuming: string };
 }) {
   const runId = action.evidence.runId as string;
   const client = useQueryClient();
@@ -101,8 +132,9 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
   const accessView = useQueryView(access);
   const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardConfirmOwnerStop(companyId, access.data);
   const confirm = useMutation({ retry: false, // query-error-ok: an explicit board confirmation; the error is shown below.
-    mutationFn: () => issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken,
-      controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
+    mutationFn: () => confirmStop ? confirmStop(evidence.trim())
+      : issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken: ownerToken!,
+        controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
     onSuccess: () => {
       setOpen(false);
       void client.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
@@ -111,8 +143,8 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
     } });
   const ready = evidence.trim().length >= 20;
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="previous-server-stop">
-    <p role="status">{confirm.isSuccess ? "Restoring saved work…"
-      : "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
+    <p role="status">{confirm.isSuccess ? copy?.resuming ?? "Restoring saved work…"
+      : copy?.waiting ?? "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
     {confirm.isSuccess ? null : !canConfirm
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
         ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
@@ -120,9 +152,9 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
         Confirm the previous server stopped</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
         <label htmlFor={`previous-server-stop-${action.id}`} className="text-xs text-muted-foreground">
-          How did you confirm that the previous server and its file copy stopped?</label>
+          {copy?.question ?? "How did you confirm that the previous server and its file copy stopped?"}</label>
         <Textarea id={`previous-server-stop-${action.id}`} value={evidence} onChange={event => setEvidence(event.target.value)}
-          placeholder="For example: the old server process exited and was not restarted." maxLength={12000} rows={3} />
+          placeholder={copy?.placeholder ?? "For example: the old server process exited and was not restarted."} maxLength={12000} rows={3} />
         <div className="flex items-center justify-between gap-2">
           <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>Cancel</Button>
           <Button type="submit" size="sm" disabled={!ready || confirm.isPending}>

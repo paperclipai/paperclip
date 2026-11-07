@@ -9,9 +9,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { writePendingSend } from "../lib/pending-send";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
-const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn() }));
+const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn(), confirmController: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover,
-  resumeWorkspaceFinalization: api.resume } }));
+  resumeWorkspaceFinalization: api.resume, confirmControllerStopped: api.confirmController } }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const action = {
@@ -471,6 +471,28 @@ describe("governed retained-file recovery", () => {
       await mount({ ...held, evidence: { ...held.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);
       expect(button("Confirm the previous server stopped")).toBeUndefined();
       expect(container.querySelector('[data-testid="retained-file-recovery"]')).not.toBeNull();
+    });
+
+    it("confirms a pre-upgrade controller an ephemeral server cannot verify", async () => {
+      api.confirmController.mockResolvedValue({ runId: "run-1", status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      const controllerAction = { ...action, cause: "native_controller_host_unverified", ownerType: "board",
+        evidence: { runId: "run-1", controller: { bootId: "boot", pid: 7 } } } as unknown as IssueRecoveryAction;
+      await mount(controllerAction);
+      expect(container.textContent).toContain("before Paperclip stored which host it ran on");
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server container was replaced and is not running.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.confirmController).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+        stopEvidence: "The old server container was replaced and is not running." });
+      expect(api.resume).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Resuming the run…");
     });
 
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {

@@ -1846,6 +1846,28 @@ mixed effects remain in the continuation context and never authorize automatic
 replay. A later successful ordinary recovery claim resolves only its exact prior
 namespace attention.
 
+A recorded process is judged only in the PID space that recorded it. Native
+controller rows store `controller_host_hash` and run processes store
+`process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
+never proves that a process on another host, in another PID namespace, or in a
+sandbox is gone; such a record keeps its lease, fence or staleness TTL.
+
+Rows saved before those columns existed have no recorded host. The legacy
+compatibility helper and run-process sweep retain one-release single-host local
+proof where their existing owners permit it. Each use
+writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
+removes this fallback can confirm that no rows still depend on it. An ephemeral
+server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
+controller rows with no recorded host wait as `controller_host_unrecorded`, with
+a board recovery action to confirm that the previous server stopped. Its run
+processes with no recorded host are left to the run's Stop control. The next
+release removes that compatibility fallback. The strict Native in-flight claim,
+early accepted-result release, and failed-owner guards above do not use it.
+A previous-server-only confirmation is not same-namespace proof and does not
+confirm that a provider or its tools stopped. It cannot override those guards.
+Its notification requests recovery inspection; unfinished ownership can still
+require the separate containment and ordinary Retry described above.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Native finalization reconciliation (part of native recovery and the orphan
