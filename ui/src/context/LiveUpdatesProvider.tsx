@@ -1378,6 +1378,10 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.heartbeats(companyId, agentId),
     });
+    // Provider rate limits reported during the run live in runtime state.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.runtimeState(agentId),
+    });
   }
   const runId = readString(payload.runId);
   if (runId) {
@@ -1585,6 +1589,7 @@ function invalidateActivityQueries(
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
           const documentKey = readString(details?.key);
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.documents(ref),
@@ -1988,6 +1993,13 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "agent.runtime_state.updated") {
+    // The server saved a new provider rate-limit snapshot for this agent.
+    const agentId = readString(payload.agentId);
+    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
+    return;
+  }
+
   if (event.type === "agent.status") {
     queryClient.invalidateQueries({
       queryKey: queryKeys.agents.list(expectedCompanyId),
@@ -2132,7 +2144,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ??

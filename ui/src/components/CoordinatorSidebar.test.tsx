@@ -3,22 +3,25 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
-import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }> }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
-vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
+vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
+vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
-vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
+vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
@@ -43,13 +46,23 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = [];
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
+    fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
+      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
+    }));
+    await renderSidebar();
+    const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(20);
+    expect(region.textContent).not.toContain("Recents");
+    expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
+  });
   it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
@@ -77,6 +90,39 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("builds hundreds of agent pins with input reads proportional to list size", () => {
+    const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
+    const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
+    let reads = 0;
+    function bounded<T>(items: T[]) {
+      return new Proxy(items, { get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * agents.length) throw new Error("Pin construction scans growing lists repeatedly");
+        return Reflect.get(target, property, receiver);
+      } });
+    }
+    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), []);
+    expect(items.map(item => item.key)).toEqual(pins);
+    expect(reads).toBeLessThanOrEqual(4 * agents.length);
+    expect(items[0].to).toBe("/chats/agent-499");
+  });
+  it("keeps mixed pins in stored order and prevents native link dragging", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(saved));
+    await renderSidebar();
+    const links = [...container.querySelectorAll<HTMLAnchorElement>(".design-sidebar-pins a")];
+    expect(links.map(link => link.textContent)).toEqual(["CTO", "Artifacts", "Dashboard"]);
+    expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:reviewer")!)).toEqual(saved);
+    const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    act(() => links[1].dispatchEvent(nativeDrag));
+    expect(nativeDrag.defaultPrevented).toBe(true);
+  });
+  it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
+    fixture.enableCases = enabled;
+    await renderSidebar();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
+    expect(document.querySelector('a[href="/cases"]') !== null).toBe(enabled);
+  });
   it("announces unread chat totals in expanded and collapsed navigation", async () => {
     fixture.chats = [{ isUnreadForMe: true }, { isUnreadForMe: false }, { isUnreadForMe: true }];
     await renderSidebar();
@@ -85,7 +131,8 @@ describe("Coordinator pinned pages", () => {
     await renderSidebar();
     expect(container.querySelector('a[href="/chats"]')?.getAttribute("aria-label")).toBe("Chat, 2 unread chats");
   });
-  const pinnedPages = () => container.querySelector('[aria-label="Pinned pages"]');
+  const navigation = () => container.querySelector('nav[aria-label="Workspace navigation"]')!;
+  const pinnedPage = (to: string) => navigation().querySelector(`a[href="${to}"]`);
   async function click(label: string) {
     const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
     expect(button).not.toBeNull();
@@ -93,32 +140,39 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it("pins from More without navigating, restores after remount, and unpins from the sidebar", async () => {
+  it.each([false, true])("restores and unpins pages in the Pinned section when collapsed is %s", async collapsed => {
+    fixture.collapsed = collapsed;
     await renderSidebar();
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
     await click("More workspace pages");
     expect(document.activeElement).toBe(document.querySelector('[data-slot="popover-content"]'));
     await click("Pin Projects");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(pinnedPages()?.querySelector('a[href="/projects"]')?.textContent).toBe("Projects");
+    expect(pinnedPage("/projects")?.textContent).toBe("Projects");
+    expect(navigation().querySelector('[aria-label="Pinned pages"]')).toBeNull();
+    if (!collapsed) expect(navigation().querySelector('[data-slot="sidebar-group-label"]')?.textContent).toBe("Pinned");
+    const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
+    expect(more.compareDocumentPosition(pinnedPage("/projects")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderSidebar();
-    expect(pinnedPages()?.querySelector('a[href="/projects"]')).not.toBeNull();
+    expect(pinnedPage("/projects")).not.toBeNull();
+    if (collapsed) await click("More workspace pages");
     await click("Unpin Projects");
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
   });
 
   it("keeps pins personal and only renders known destinations", async () => {
-    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["/projects", "/unknown", "https://example.com"]));
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["/routines", "/projects", "/unknown", "https://example.com"]));
     await renderSidebar();
-    expect(pinnedPages()?.querySelectorAll("a")).toHaveLength(1);
+    expect(Array.from(navigation().querySelectorAll("a")).map(link => link.getAttribute("href")))
+      .toEqual(["/chats", "/issues", "/decisions", "/routines", "/projects"]);
     fixture.userId = "other-user";
     await renderSidebar();
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
     fixture.userId = "reviewer";
     await renderSidebar();
-    expect(pinnedPages()?.textContent).toContain("Projects");
+    expect(pinnedPage("/projects")?.textContent).toBe("Projects");
   });
 
   it("reflects pins changed in another browser tab", async () => {
@@ -128,7 +182,7 @@ describe("Coordinator pinned pages", () => {
       localStorage.setItem(key, JSON.stringify(["/agents/all"]));
       window.dispatchEvent(new StorageEvent("storage", { key }));
     });
-    expect(pinnedPages()?.querySelector('a[href="/agents/all"]')?.textContent).toBe("Agents");
+    expect(pinnedPage("/agents/all")?.textContent).toBe("Agents");
   });
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
@@ -139,7 +193,7 @@ async function renderSidebar() {
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
-describe("Coordinator Needs You badge", () => {
+describe("Coordinator Inbox badge", () => {
   it("counts every canonical outstanding decision even when none arrived today", async () => {
     // Personal page filters and completed receipts are separate cache entries.
     client.setQueryData([...coordinatorAttentionQueryKey("company"), { search: "no match" }], feed([]));
@@ -162,13 +216,13 @@ describe("Coordinator Needs You badge", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
-    expect(decisionLink().textContent).toBe("Needs you");
+    expect(decisionLink().textContent).toBe("Inbox");
   });
 
   it("announces the full outstanding count when the sidebar is collapsed", async () => {
     fixture.collapsed = true;
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Needs you, 2 decisions");
+    expect(decisionLink().getAttribute("aria-label")).toBe("Inbox, 2 decisions");
   });
 });
 
@@ -194,7 +248,7 @@ describe("Coordinator collection reads", () => {
     expect(fixture.attention).not.toHaveBeenCalled();
   });
 
-  it("reuses the page-owned complete feed on Needs You without a second summary read", async () => {
+  it("reuses the page-owned complete feed on Inbox without a second summary read", async () => {
     fixture.pathname = "/COO/decisions";
     client.setQueryData(coordinatorAttentionQueryKey("company"), feed([pending("review")]));
     await renderSidebar();
@@ -204,5 +258,38 @@ describe("Coordinator collection reads", () => {
     await act(async () => client.setQueryData(coordinatorAttentionQueryKey("company"), feed([])));
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
+  });
+});
+
+describe("Coordinator task status glyphs (BUG-07)", () => {
+  const covered = {
+    state: "covered", reason: "active_child", unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+    attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: "ONB-3", sampleStalledBlockerIdentifier: null,
+  };
+  const glyph = (href: string) => container.querySelector<SVGElement>(`a[href="${href}"] svg[role="img"]`);
+
+  it("shows a covered-blocked recent task with the same queued glyph and label as the task pane", async () => {
+    fixture.recentTasks = [{ id: "task-1", companyId: "company", identifier: "ONB-1", title: "Paperclip onboarding",
+      status: "blocked", displayStatus: "blocked", externalConversationState: null, blockerAttention: covered, recordedAt: 1 }];
+    await renderSidebar();
+    expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
+    expect(glyph("/issues/ONB-1")?.getAttribute("aria-label")).toBe("Blocked · waiting on active sub-task ONB-3");
+  });
+
+  it("shows project tasks with their full status presentation", async () => {
+    fixture.projects = [{ id: "project-1", companyId: "company", name: "Onboarding", urlKey: "onboarding" }];
+    fixture.projectTasks.mockResolvedValue([
+      { id: "task-1", identifier: "ONB-1", title: "Blocked parent", status: "blocked", displayStatus: "blocked", blockerAttention: covered },
+      { id: "task-3", identifier: "ONB-3", title: "Waiting review", status: "in_review", displayStatus: "in_review", externalConversationState: "waiting" },
+    ]);
+    fixture.pathname = "/COO/projects/onboarding";
+    await renderSidebar();
+    const expand = container.querySelector<HTMLButtonElement>('button[aria-label="Expand Onboarding"]');
+    expect(expand).not.toBeNull();
+    await act(async () => expand!.click());
+    await flush();
+    expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ projectId: "project-1", projection: "rows" }));
+    expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
+    expect(glyph("/issues/ONB-3")?.getAttribute("aria-label")).toBe("Idle");
   });
 });

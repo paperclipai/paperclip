@@ -1,5 +1,3 @@
-import { AgentAvatar } from "../components/AgentAvatar";
-import { CoordinatorAgentSwitcher } from "../components/CoordinatorAgentSwitcher";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
@@ -40,6 +38,10 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
+import { clearLocalInboxArchive, filterLocalInboxArchivedIssues, getLocalInboxArchiveIssueIds } from "../lib/inboxArchiveCache";
 import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
@@ -102,6 +104,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
+  acceptInteraction: vi.fn(),
   rejectInteraction: vi.fn(),
 }));
 
@@ -1536,6 +1539,239 @@ describe("IssueDetail", () => {
     vi.restoreAllMocks();
   });
 
+  describe.each(["read", "archive"] as const)("cached task %s account gate", action => {
+    it.each(["cached-owner", "other-owner", null])("waits for fresh identity before applying a write (verified=%s)", async verified => {
+      const issue = createIssue({ title: "Restored task" });
+      const verification = createDeferred<{ user: { id: string } } | null>();
+      mockAuthApi.getSession.mockReturnValue(verification.promise);
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "cached-owner" } });
+      const cache = startPersistedQueryCache(queryClient, { storage: null, buildId: "test", eventTarget: null });
+      markCachedSession(queryClient);
+      mockIssuesApi.get.mockReturnValue(new Promise(() => {}));
+      const ref = mockRouteParams.issueId!;
+      queryClient.setQueryData(queryKeys.issues.detail(ref), issue);
+      queryClient.setQueryData([...queryKeys.issues.detail(ref), "core"], issue);
+      const inboxKey = [...queryKeys.issues.listMineByMe(issue.companyId), "with-routine-executions", "live-descendant-summary"];
+      queryClient.setQueryData(inboxKey, [issue]);
+      mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+      mockIssuesApi.markRead.mockClear();
+      mockIssuesApi.archiveFromInbox.mockClear();
+      mockNavigate.mockClear();
+      try {
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(container.textContent).toContain(issue.title));
+        if (action === "archive") {
+          await waitForAssertion(() => expect(container.querySelector('button[aria-label="More task actions"]')).not.toBeNull());
+          const more = container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]');
+          await act(async () => more!.click());
+          const archive = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+            .find(button => button.textContent?.trim() === "Archive from inbox");
+          expect(archive).toBeDefined();
+          await act(async () => archive!.click());
+          await flushReact();
+          expect(mockIssuesApi.archiveFromInbox).not.toHaveBeenCalled();
+          expect(queryClient.getQueryData(inboxKey)).toEqual([issue]);
+        } else {
+          await flushReact();
+          expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
+        }
+        expect(mockNavigate).not.toHaveBeenCalled();
+        await act(async () => { verification.resolve(verified ? { user: { id: verified } } : null); });
+        await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+        expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0);
+        expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledTimes(action === "archive" && verified === "cached-owner" ? 1 : 0);
+        if (verified !== "cached-owner") expect(mockNavigate).not.toHaveBeenCalled();
+      } finally {
+        verification.resolve(null);
+        await flushReact();
+        cache.dispose();
+      }
+    });
+  });
+
+  describe.each([false, true])("pending archive account cleanup (unmounted=%s)", unmounted => {
+    it.each(["success", "failure"] as const)("releases the old account's guard after %s without changing the new account's rows", async outcome => {
+      const issue = createIssue({ title: "Old account task" });
+      const freshIssue = { ...issue, title: "Fresh account task" };
+      const archive = createDeferred<{ id: string; archivedAt: Date }>();
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "old-owner" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "old-owner" } });
+      mockIssuesApi.get.mockResolvedValue(issue);
+      mockIssuesApi.archiveFromInbox.mockReturnValue(archive.promise);
+      const inboxKey = queryKeys.issues.listMineByMe(issue.companyId);
+      queryClient.setQueryData(inboxKey, [issue]);
+      mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+      try {
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(container.querySelector('button[aria-label="More task actions"]')).not.toBeNull());
+        await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]')!.click());
+        const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+          .find(entry => entry.textContent?.trim() === "Archive from inbox")!;
+        await act(async () => button.click());
+        await waitForAssertion(() => expect(getLocalInboxArchiveIssueIds(issue.companyId).has(issue.id)).toBe(true));
+        await waitForAssertion(() => expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith(issue.id));
+        mockNavigate.mockClear();
+        mockPushToast.mockClear();
+        await act(async () => {
+          queryClient.setQueryData(queryKeys.auth.session, null);
+          queryClient.setQueryData(queryKeys.auth.session, { user: { id: "new-owner" } });
+          queryClient.setQueryData(inboxKey, [freshIssue]);
+          if (unmounted) root.unmount();
+        });
+        await act(async () => {
+          if (outcome === "success") archive.resolve({ id: issue.id, archivedAt: new Date() });
+          else archive.reject(new Error("Old account archive failed"));
+        });
+        await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+        expect(getLocalInboxArchiveIssueIds(issue.companyId).has(issue.id)).toBe(false);
+        expect(filterLocalInboxArchivedIssues(issue.companyId, [freshIssue])).toEqual([freshIssue]);
+        expect(queryClient.getQueryData(inboxKey)).toEqual([freshIssue]);
+        expect(mockNavigate).not.toHaveBeenCalled();
+        expect(mockPushToast).not.toHaveBeenCalled();
+      } finally {
+        archive.resolve({ id: issue.id, archivedAt: new Date() });
+        clearLocalInboxArchive(issue.companyId, issue.id);
+      }
+    });
+  });
+
+  it.each(["cached-owner", "other-owner", null])("retries an opened task's read receipt after session recovery only for its original account (verified=%s)", async verified => {
+    const issue = createIssue({ title: "Task awaiting a verified read receipt" });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "cached-owner" } });
+    const cache = startPersistedQueryCache(queryClient, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(queryClient);
+    mockAuthApi.getSession.mockRejectedValue(new ApiError("Try again later", 429, {}));
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markRead.mockClear();
+    try {
+      await act(async () => renderIssueView());
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBeGreaterThan(0));
+      await act(async () => {
+        await vi.waitFor(() => expect(queryClient.isMutating()).toBe(0), { timeout: 3_000, interval: 10 });
+      });
+      expect(mockAuthApi.getSession.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
+      const attempts = mockAuthApi.getSession.mock.calls.length;
+      await act(async () => renderIssueView());
+      await flushReact();
+      expect(queryClient.isMutating()).toBe(0);
+      expect(mockAuthApi.getSession).toHaveBeenCalledTimes(attempts);
+      mockAuthApi.getSession.mockResolvedValue(verified ? { user: { id: verified } } : null);
+      await act(async () => {
+        await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), retry: false, staleTime: 0 });
+      });
+      await flushReact();
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0);
+      if (verified === "cached-owner") {
+        await act(async () => {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(mockRouteParams.issueId!) });
+          await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+        });
+        await flushReact();
+        expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+      }
+    } finally { cache.dispose(); }
+  });
+
+  it.each(["success", "failure"] as const)("marks every opened cached task before an earlier read finishes with %s", async outcome => {
+    const tasks = [createIssue(), createIssue({ id: "second-task", identifier: "TASK-2" }), createIssue({ id: "third-task", identifier: "TASK-3" })];
+    const reads = tasks.map(() => createDeferred<{ id: string; lastReadAt: string }>());
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockImplementation(async ref => tasks.find(task => task.id === ref || task.identifier === ref)!);
+    mockIssuesApi.markRead.mockReset().mockImplementation(id => reads[tasks.findIndex(task => task.id === id)].promise);
+    try {
+      for (const [index, task] of tasks.entries()) {
+        queryClient.setQueryData(queryKeys.issues.detail(task.id), task);
+        queryClient.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
+        mockRouteParams.issueId = task.id;
+        mockLocation.pathname = `/issues/${task.id}`;
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(index + 1, task.id));
+      }
+      expect(queryClient.isMutating()).toBe(3);
+      await act(async () => root.unmount());
+      await act(async () => {
+        if (outcome === "failure") reads[0].reject(new ApiError("Try again later", 429, {}));
+        else reads[0].resolve({ id: tasks[0].id, lastReadAt: new Date().toISOString() });
+        for (let index = 1; index < reads.length; index++) reads[index].resolve({ id: tasks[index].id, lastReadAt: new Date().toISOString() });
+      });
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+    } finally {
+      reads.forEach((read, index) => read.resolve({ id: tasks[index].id, lastReadAt: new Date().toISOString() }));
+      await flushReact();
+    }
+  });
+
+  it("reuses an earlier task's pending read and recovers it independently of a later task's read", async () => {
+    const first = createIssue();
+    const second = createIssue({ id: "second-task", identifier: "TASK-2" });
+    const firstRead = createDeferred<{ id: string; lastReadAt: string }>();
+    const secondRead = createDeferred<{ id: string; lastReadAt: string }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockImplementation(async ref => ref === second.id ? second : first);
+    mockIssuesApi.markRead.mockReset()
+      .mockReturnValueOnce(firstRead.promise)
+      .mockReturnValueOnce(secondRead.promise)
+      .mockResolvedValue({ id: first.id, lastReadAt: new Date().toISOString() });
+    const openTask = async (task: Issue) => {
+      queryClient.setQueryData(queryKeys.issues.detail(task.id), task);
+      queryClient.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
+      mockRouteParams.issueId = task.id;
+      mockLocation.pathname = `/issues/${task.id}`;
+      await act(async () => renderIssueView());
+    };
+    try {
+      await openTask(first);
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(1, first.id));
+      await openTask(second);
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(2, second.id));
+      await openTask(first);
+      await flushReact();
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+      });
+      await flushReact();
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2);
+      await act(async () => firstRead.reject(new ApiError("Try again later", 429, {})));
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(3, first.id));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(1));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+      await act(async () => secondRead.resolve({ id: second.id, lastReadAt: new Date().toISOString() }));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+    } finally {
+      firstRead.resolve({ id: first.id, lastReadAt: new Date().toISOString() });
+      secondRead.resolve({ id: second.id, lastReadAt: new Date().toISOString() });
+      await flushReact();
+    }
+  });
+
+  it("does not loop a failed read receipt and retries it after a new successful session read", async () => {
+    const issue = createIssue();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markRead.mockClear();
+    mockIssuesApi.markRead.mockRejectedValueOnce(new ApiError("Try again later", 429, {}));
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1));
+    await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+    await act(async () => renderIssueView());
+    await flushReact();
+    expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+    });
+    await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2));
+    await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+  });
+
   it.each(["new-project", null])("remembers project %s only after its task update succeeds", async (projectId) => {
     const issue = createIssue({ projectId: "original-project" });
     trackRecentProject("original-project", issue.companyId);
@@ -1577,6 +1813,31 @@ describe("IssueDetail", () => {
     coordinatorPreference.loaded = true;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+  });
+
+  it("keeps a restored title draft when a fresh task read finds a newer title", async () => {
+    inlineEditorFixture.real = true;
+    coordinatorPreference.loaded = false;
+    const issue = createIssue({ title: "Cached title A" });
+    const fresh = { ...issue, title: "New title C" };
+    const owner = "title-draft-user";
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: owner } });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: owner } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getCore.mockImplementation(async (_id, options) => options?.cache === "no-store" ? fresh : issue);
+    mockIssuesApi.update.mockClear();
+    const key = `paperclip:inline-draft:v2:${owner}:issue:${issue.id}:title`;
+    localStorage.setItem(key, JSON.stringify({ version: 1, draft: "Restored title B", base: issue.title }));
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssuesApi.getCore).toHaveBeenCalledWith(issue.id, { cache: "no-store", fresh: true }));
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.issues.detail(issue.identifier!), fresh);
+      queryClient.setQueryData([...queryKeys.issues.detail(issue.identifier!), "core"], fresh);
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="issue-detail-header"] textarea')?.value).toBe("Restored title B");
+    expect(localStorage.getItem(key)).toContain("Restored title B");
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
   });
 
   it.each(["save", "failure", "escape", "unchanged", "navigate"])("retains the early title through preference readiness until %s", async (exit) => {
@@ -1815,29 +2076,13 @@ describe("IssueDetail", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    if (coordinator) {
-      expect(breadcrumbs[0].control.type).toBe(CoordinatorAgentSwitcher);
-      expect(breadcrumbs[0].control.props.agent).toEqual(agent);
-      expect(breadcrumbs[0].leading).toBeUndefined();
-      expect(breadcrumbs[0].trailing).toBeUndefined();
-    } else {
-      expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
-      expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
-    }
-    expect(breadcrumbs[0].leadingKey).toBe(`agent:${agent.id}:${JSON.stringify(agent.appearance)}`);
-    const updatedAgent = { ...agent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "deep-tide" } } as Agent;
+    expect(breadcrumbs).toEqual([{ label: "Chat" }]);
+    const updatedAgent = { ...agent, name: "Updated agent" };
     await act(async () => {
       renderIssueView(<TaskDetailSurface conversation={{ agent: updatedAgent, issue: canonical, ensureIssue: async () => canonical }} />);
     });
     await flushReact();
-    const [updatedBreadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    if (coordinator) {
-      expect(updatedBreadcrumbs[0].control.props.agent).toEqual(updatedAgent);
-      expect(updatedBreadcrumbs[0].controlKey).not.toBe(breadcrumbs[0].controlKey);
-    } else {
-      expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
-    }
-    expect(updatedBreadcrumbs[0].leadingKey).not.toBe(breadcrumbs[0].leadingKey);
+    expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "Chat" }]);
 
   });
 
@@ -1908,11 +2153,50 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: existing ? canonical : null, ensureIssue }} />));
     await flushReact();
     const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    mockIssuesApi.getCore.mockResolvedValueOnce({ ...canonical, assigneeAdapterOverrides: { useProjectWorkspace: true, adapterConfig: { chrome: true, command: "preserved-command", model: "old-model" } } });
     await act(async () => props.onAdd("Outline the launch", undefined, undefined, undefined, "model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
+    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.id, { cache: "no-store", fresh: true });
     expect(ensureIssue).toHaveBeenCalledOnce();
-    expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.id, { assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "high" } } });
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.id, { assigneeAdapterOverrides: { useProjectWorkspace: true, adapterConfig: { chrome: true, command: "preserved-command", model: "gpt-6-astra", modelReasoningEffort: "high" } } });
     expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Outline the launch", undefined, undefined, undefined, "model-message");
     expect(calls).toEqual(["settings", "comment"]);
+  });
+
+  it("preserves complete task options when sending with model preferences outside a conversation", async () => {
+    const canonical = createIssue({ assigneeAgentId: "agent-1", conversationAgentId: null });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    await act(async () => renderIssueView());
+    await flushReact();
+    mockIssuesApi.update.mockClear().mockResolvedValue(canonical);
+    mockIssuesApi.getCore.mockResolvedValueOnce({ ...canonical, assigneeAdapterOverrides: { adapterConfig: { chrome: true, command: "preserved-command" } } });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => props.onAdd("Use this model", undefined, undefined, undefined, "task-model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
+    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.identifier, { cache: "no-store", fresh: true });
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.identifier, expect.objectContaining({
+      comment: "Use this model",
+      assigneeAdapterOverrides: { adapterConfig: { chrome: true, command: "preserved-command", model: "gpt-6-astra", modelReasoningEffort: "high" } },
+    }));
+  });
+
+  it.each(["failed", "changed-account"])("does not replace settings or send after a %s fresh task read", async (outcome) => {
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "account-a" });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "account-a" } });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} />));
+    await flushReact();
+    mockIssuesApi.update.mockClear();
+    mockIssuesApi.addComment.mockClear();
+    mockIssuesApi.getCore.mockImplementationOnce(async () => {
+      if (outcome === "failed") throw new Error("Task refresh failed");
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "account-b" } });
+      return canonical;
+    });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => expect(props.onAdd("Outline the launch", undefined, undefined, undefined, "fresh-task-message", { model: "gpt-6-astra", effort: "high", fast: false })).rejects.toThrow());
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
   });
 
   it("does not send a chat message when its selected model preferences fail to save", async () => {
@@ -2199,6 +2483,32 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1"
       && options.order === "desc" && options.limit === 50 && options.after === (loaded ? rows[49].id : latest.id))).toBe(true));
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("opens a prefetched task without waiting on navigation reads (Coordinator: %s)", async coordinator => {
+    coordinatorPreference.enabled = coordinator;
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ description: "Prefetched instruction" }));
+    mockIssuesApi.recentComments.mockResolvedValue({
+      comments: [createIssueComment({ body: "Prefetched answer" })],
+      latestCommentId: "comment-1", oldestCommentId: "comment-1", hasMore: true,
+    });
+    await prefetchIssueDetailForNavigation(queryClient, "PAP-1");
+    mockIssuesApi.getCore.mockClear().mockReturnValue(createDeferred<Issue>().promise);
+    mockIssuesApi.recentComments.mockClear().mockReturnValue(createDeferred<IssueRecentComments>().promise);
+    mockIssuesApi.get.mockReturnValue(createDeferred<Issue>().promise);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        compactHistory: true, initialHistoryPending: false,
+        comments: [expect.objectContaining({ body: "Prefetched answer" })],
+      });
+    });
+    expect(mockIssuesApi.getCore).not.toHaveBeenCalled();
+    expect(mockIssuesApi.recentComments).not.toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
   });
 
   it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {
@@ -3573,7 +3883,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
-  it.each(["success", "failure", "pending question"])("connects the inline disposition retry to current state (%s)", async outcome => {
+  it.each(["success", "failure", "pending question", "outdated plan", "current plan"])("connects the inline disposition retry to current state (%s)", async outcome => {
     const fail = outcome === "failure";
     const actionId = "recovery-action-inline";
     const snapshot: DispositionRecoverySnapshot = { kind: "disposition_repair_escalated", actionId, attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: "agent-1" };
@@ -3586,13 +3896,28 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.listComments.mockResolvedValue([{ id: "notice-inline", companyId: issue.companyId, issueId: issue.id, authorType: "system", body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(), metadata: { version: 1, sections: [], recovery: snapshot } }]);
     if (outcome === "pending question") mockIssuesApi.listInteractions.mockResolvedValue([{ id: "question-1", kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }]);
+    if (outcome.endsWith("plan")) {
+      mockIssuesApi.getDocument.mockResolvedValue({
+        id: "plan-document", companyId: issue.companyId, issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: "# Current plan",
+        latestRevisionId: "revision-4", latestRevisionNumber: 4,
+        createdAt: new Date("2026-11-01T10:00:00Z"), updatedAt: new Date("2026-11-01T10:03:00Z"),
+        createdByAgentId: "agent-1", createdByUserId: null, updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+      });
+      const fixture = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+      const revision = outcome === "outdated plan" ? 3 : 4;
+      mockIssuesApi.listInteractions.mockResolvedValue([{
+        ...fixture, companyId: issue.companyId, issueId: issue.id, createdAt: new Date("2026-11-01T10:01:00Z"),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: "plan-document", revisionId: `revision-${revision}`, revisionNumber: revision } },
+      }]);
+    }
     if (fail) mockIssuesApi.resolveRecoveryAction.mockRejectedValue(new Error("The task is now paused."));
     else mockIssuesApi.resolveRecoveryAction.mockResolvedValue({ issue: { ...issue, status: "todo", activeRecoveryAction: null }, recoveryAction: { ...issue.activeRecoveryAction, status: "resolved" } });
     await act(async () => renderIssueView());
     await flushReact(); await flushReact();
     const retry = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Retry agent");
     expect(retry).toBeDefined();
-    if (outcome === "pending question") {
+    if (outcome === "pending question" || outcome === "current plan") {
       expect(retry!.disabled).toBe(true);
       expect(container.textContent).toContain("Respond to the pending question or confirmation before retrying.");
       await act(async () => retry!.click());
@@ -5987,6 +6312,28 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
+  });
+
+  it.each(["accept", "reject"] as const)("refreshes the request after a superseded %s response", async action => {
+    const pending = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+    const expired = { ...pending, status: "expired", result: { version: 1, outcome: "superseded_by_newer_request" } };
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([pending]);
+    const error = new ApiError("Interaction has been superseded", 409, { details: { code: "interaction_superseded" } });
+    mockIssuesApi.acceptInteraction.mockRejectedValue(error);
+    mockIssuesApi.rejectInteraction.mockRejectedValue(error);
+    await act(async () => renderIssueView());
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    const reads = mockIssuesApi.listInteractions.mock.calls.length;
+    mockIssuesApi.listInteractions.mockResolvedValue([expired]);
+    await act(async () => {
+      const resolve = action === "accept" ? props.onAcceptInteraction : props.onRejectInteraction;
+      await expect(resolve(pending)).rejects.toBe(error);
+    });
+    await flushReact();
+    expect(mockIssuesApi.listInteractions.mock.calls.length).toBeGreaterThan(reads);
+    expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1"))).toEqual([expired]);
   });
 
   it("reports the selected continuation action after rejecting completion", async () => {

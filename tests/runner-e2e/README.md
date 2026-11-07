@@ -63,8 +63,11 @@ chat. Other YAML entries remain planning inventory; registration is not live
 qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
-`recover-controller` journey with the recorded Codex and Claude staging models
-on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+`recover-controller` journey with the recorded Codex staging model
+on a fresh reusable warm Daytona fixture. Warm controller-replacement and legacy
+migration suites use the production managed warm-session capability to select
+profiles and set both the agent and environment policy to warm. Claude, OpenCode
+and Grok remain covered by the per-turn rolling and migration lanes. The sandbox, Runner and provider history
 must survive both controller replacements. After a completed task tool in an active revision
 turn, it keeps the owned development controller offline for 300 seconds. This
 exceeds the 60-second ownership lease and remains within the Runner's 420-second
@@ -83,7 +86,7 @@ ownership/reconnect limits, archive/delete backstops and owned cleanup remain un
 The retained continuation accepts whitespace between its exact marker and the
 exact `queue_r` output token; readiness and final grading use the same matcher.
 
-Definition version 7 uses the existing warm reusable environment with a dedicated
+Definition version 8 uses an explicitly warm agent and the warm reusable environment with a dedicated
 configuration key. Only the post-completion replacement follow-up uses the normal
 board-authenticated task-comment API, with one persisted user comment and the
 unchanged follow-up request. Initial creation, active outage and queued continuation
@@ -104,11 +107,32 @@ its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
 
+`rolling-web-deployment` definition 6 selects every registered native Daytona
+profile in disposable per-turn environments; `rolling-web-deployment-warm`
+selects providers supported by the production managed warm-session capability
+and explicitly sets both agent and environment policy to warm. Their
+provider-backup path uses encrypted object storage and a fenced database ledger.
+The earlier per-turn failure remains failed evidence; this definition requires
+a fresh passing run, including the strict post-replacement continuation oracle.
+Its revision task includes a 180-second foreground CLI reliability soak, giving
+the replacement time to become ready while useful agent work remains active.
+The observer rechecks the original live owner immediately before switching
+traffic and fails if that turn already settled. A completed turn cannot count
+as active takeover. Per-turn file inspection requires the exact committed saved
+snapshot. Completed warm turns also read that exact saved snapshot, while their
+workspace location must remain bound to the retained sandbox. The API's saved
+file response is independent of whether the sandbox is retained or retired.
+Cold restores retain the published workspace directory name, including after
+the old allocation is destroyed, because provider recovery binds the working
+directory into session identity. Unpublished preparations retain distinct
+epoch/lease directories, and a restore refuses to overwrite an occupied path
+owned by another preparation.
+
 The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
 
 The explicit-only `remote-workspace-storage` suite reuses that controller-restart
-journey for one native Codex Daytona cell. It verifies the default-enabled remote
+journey for one explicitly warm native Codex Daytona cell. It verifies the default-enabled remote
 workspace setting through the ordinary instance API and creates a projectless task.
 It enables the existing experimental Files viewer through that API. The agent
 creates only synthetic source, an unpushed Git commit, and an untracked random
@@ -123,7 +147,8 @@ after completion, a second replacement must admit a useful fourth native turn
 through the ordinary task-comment API with the same native and provider session.
 That request specifies one plain-text line containing its marker, one space, and
 the command's actual output; the expected output stays private to the evaluator.
-The browser then reads the saved reference through Files again. This is same-task
+The browser then reads the saved reference through Files again, with the sandbox
+location still retained. This is same-task
 continuation, not a separate-task sharing test. The ordinary original-process/lease,
 receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
 
@@ -169,8 +194,13 @@ pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover
 ```
 
 This source lane requires a complete server/UI build and disposable S3 and
-Postgres. Each controller has an independent compiled build and cache; shared
-workspace dependencies mean it is not released-container or Railway evidence.
+Postgres. Each controller has an independent compiled build and cache. The copied
+app retains the checkout's `cli/` and `packages/` dependency links, including the
+development Runner vendor entry. Shared workspace dependencies mean this is
+not released-container or Railway evidence.
+The warm lane selects providers through the production managed warm-session
+capability and explicitly sets the agent policy to warm. The per-turn lane
+retains every registered provider's per-turn policy.
 The read-only recovery observer captures the live predecessor's identity just
 before handoff, then requires a new controller generation, authenticated Runner
 attachment, and new canonical events for the original execution. No fixture
@@ -645,8 +675,10 @@ before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
-the managed project workspace delays completion until the source chat is positively
-observed idle, with a three-minute handoff setup budget and a four-minute worker
+the worker task's own isolated task directory delays completion until the source
+chat is positively observed idle. The wait command names only cwd-relative files,
+because native providers cannot read agent homes or unconfigured project roots. The
+setup uses a three-minute handoff setup budget and a four-minute worker
 wait limit. The brief is then released, the worker must save the output and
 reach Done. Its output must include the start time supplied only in that brief, allowing
 ordinary numeric and written forms. That check runs after completion observation
@@ -654,7 +686,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. Reaching the gate depends on the source agent running the instructed wait: the completion reply is published inside the run finalizer's own transaction, so the isolated-server entrypoint cannot hold it without a product hook. If no completion turn is still active and the turn that received this task's Done facts has succeeded or published its reply before the gate reports `waiting`, the cell fails at once with `restart boundary not reached (agent skipped gate)` rather than a generic timeout. That failure is agent compliance (the restart was never exercised), not restart robustness. A completion turn that fails or is cancelled before the gate is not blamed on the agent, because delivery can retry it; if the wait then times out, the timeout names that turn and its status as `restart boundary not reached`. After the restart, the chat navigation retries an abort caused by the old document's reload. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -807,7 +839,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -1152,6 +1184,13 @@ unavailable/terminated test process produce a `launcher/environment failure`
 diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
+PR CI runs `pnpm test:e2e:runner:unit` as the required "Runner support suite"
+job in `pr-trusted.yml`. It runs when server, CLI, package or UI source
+changes, and on every full CI run. The suite pins workflow security policy,
+evidence oracles, profile versions, suite hashes and dated fixtures. When a
+change to one of those is deliberate, update the pin in the same pull request
+and name the reason. Do not weaken a security check to make it pass.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:
@@ -1169,6 +1208,27 @@ changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
 
+Build speed comes from two layout rules. The revision-metadata step sits above
+both `COPY --from` steps, so the cached base and CLI layers download while the
+builder stages compile. Both copies use `--link`, so they do not wait for that
+download. The Rust build keeps no dependency layer: retaining Cargo's target
+and registry trees (about 1.2 GB) exhausted the builder disk during the
+default-branch cache export.
+
+To publish only the image for a branch, without a paid gate, dispatch with
+`image_only`. Authorization, target resolution, catalog validation and the
+signed, verified image publication run unchanged; every campaign job is
+skipped. Keep a selector that includes a Daytona cell:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.daytona.message-marker \
+  -f image_only=true
+```
+
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
 room for each declared attempt and the acquisition budget. It supplements the
@@ -1183,12 +1243,14 @@ or publish the current source locally:
 ```bash
 content_id="$(pnpm --silent test:e2e:runner:image-id)"
 source_revision="$(git rev-parse HEAD)"
+lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"
 image="ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${content_id}"
 if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
   docker buildx build \
     --platform linux/amd64 \
     --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${content_id}" \
     --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${source_revision}" \
+    --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${lock_sha}" \
     --file docker/daytona-runner/Dockerfile \
     --tag "$image" \
     --push \
@@ -1196,6 +1258,11 @@ if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
 fi
 docker buildx imagetools inspect "$image"
 ```
+
+The Dockerfile has no lockfile digest default: every build passes the SHA-256
+of the `pnpm-lock.yaml` in its build context, and a missing or malformed value
+fails before installation. Build from a clean checkout of the source revision
+so the content ID, provenance, and lockfile digest describe the same tree.
 
 The content ID hashes the audited image inputs, including the Dockerfile,
 platform, root package/lock/build configuration, dependency patches,
@@ -1573,6 +1640,38 @@ gh workflow run runner-full-stack-e2e.yml \
   -f id=core-compatibility.runner-codex.local.message-marker
 ```
 
+The same trusted workflow can run the standing **Product regression — core
+workflows** TestOps plan. Bootstrap one actual case with `-f testops_case=66`
+(message-marker), or select the complete plan with `-f testops_case=all`.
+Leave the ordinary `id`, `suite`, `group`, `profile`, `environment` and `case`
+selectors empty in this mode. TestOps dispatch supplies `ALLURE_JOB_RUN_ID` and
+`ALLURE_USERNAME`; the requested test-plan selection overrides the bootstrap
+case. All 20 imported case IDs and full names remain stable. The lane uses the
+existing native Codex/local cells and the existing native OpenCode/local
+task-workspaces cell. It does not qualify the historical 355-result snapshot.
+
+The sibling **Reliability — staging soak** plan runs the seven staging-soak
+reliability cases through this same lane: six on native OpenCode with DeepSeek
+1017, and `queue-steer` on steering-capable native Codex.
+Bootstrap it with `-f testops_plan=reliability -f testops_case=all` (or one case);
+a TestOps launch names its plan through its case IDs. A launch never mixes the
+two plans, and each keeps its own full-plan denominator. Its TestOps identities
+come from the trusted `runner-e2e-testops-registration.yml` workflow; until they
+are committed, selection fails closed. See
+[the Reliability plan](EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
+The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
+Only default-branch selection and reporting code receives this token. The
+ordinary paid provider jobs, their authorization and their evidence paths stay
+the same. Selection binds the job run, launch, source and workflow revisions.
+Reporting parses the retained normalized campaign, publishes original attempts
+and assertions, and makes an absent result explicitly broken. It verifies the
+uploaded case IDs and verdicts before finishing the original TestOps job run.
+No bootstrap or synthetic control result contributes to the pass count. Tag
+only a complete 20-case attempt `full-run` and `test-plan-2`; omit `full-run`
+from focused reruns. Inspect the linked launch and the retained report for
+acceptance. A local projection test does not establish a live product pass.
+
 Create a protected `runner-e2e-paid` GitHub environment, restrict it to the
 default branch, limit environment administration to trusted maintainers, and
 store the four provider secrets there. This is a second authorization boundary:
@@ -1711,9 +1810,42 @@ Revision delivery checks exclude preserved originals by their content hash, even
 
 ## First-task onboarding
 
+The explicit-only `onboarding-approval-history` suite extends the interview path
+through three separate human decisions: a saved plan checkbox selection, a
+writer hiring checkbox, and an untargeted Start drafting confirmation. The user
+selects drafting and clears publishing. The model must hire the approved writer,
+assign one child, and produce the saved welcome document through that child's
+own execution. Persisted decisions, the unchanged plan revision and selection,
+creation timestamps, one child work run, and readback after browser reload own
+the grade. The exact saved output revision must name the writer and its actual
+child run as author. A successful parent run or lead-authored output fails.
+
+It has one local cell each for native Codex and ACPX Claude. It reuses the
+production wizard, first-task fixtures, $5 company task budget, twelve-run
+maximum, fifteen-minute attempt deadline, five-minute response waits, screenshots,
+private diagnostics, sanitized public evidence, and disposable-company cleanup.
+Expect seven provider work turns, including the writer's child. The outer
+runner accepts one to seven parent heartbeat records; it does not count the
+child as a parent run. The oracle independently requires all three human
+decisions and exactly one writer execution. Setup probes are accounted separately.
+The case permits one attempt and is excluded from `--all`. Run it explicitly when
+qualifying changes to onboarding or approval semantics:
+
+```sh
+pnpm test:e2e:runner -- --list --suite onboarding-approval-history
+pnpm test:e2e:runner -- --id onboarding-approval-history.runner-codex.local.interview-hire-execute
+```
+
+The deterministic PostgreSQL contract in
+`server/src/__tests__/onboarding-approval-history.test.ts` runs in the ordinary
+Vitest suite. It uses native-produced cards, authenticated human acceptance,
+and a later native run to check standard and checkbox plan approvals across
+native creation, both REST creation routes, decomposition, context, and replay.
+Journey discovery and grader calibration do not establish a live provider pass.
+
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
-includes its 52 executions alongside the other suites in one shared dashboard,
+includes its 56 executions alongside the other suites in one shared dashboard,
 campaign result bundle, and history entry. Suite/profile selectors narrow that
 same harness; they do not invoke a separate onboarding reporting program.
 
@@ -1725,14 +1857,17 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
+There are fourteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (56 cells). `runner-codex` selects OpenAI in the
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
-Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
-before authentication and creation. All four paths are labeled
-`production-wizard`; there is no post-onboarding runner switch. Persona,
+Claude profile directly. Both Legacy profiles configure the inactive setup record
+through the normal agent API before authentication, reload, and finish the saved
+setup in the wizard. They are labeled `api-configured-legacy-setup`; the native
+paths retain `production-wizard`. The UI exposes no runner dropdown, and there
+is no post-onboarding runner switch. Legacy coverage proves setup resumption,
+not the fresh-agent automatic default. Persona,
 managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.
@@ -1742,6 +1877,7 @@ separate campaign reservation because they do not create task cost events.
 | First response / control | Complete journey |
 | --- | --- |
 | `interview-first-response` | `interview-plan-accept` |
+| | `plan-only-accept` |
 | `clear-task-first-response` | `task-card-accept` |
 | | `accept-while-running` |
 | `ambiguous-task-first-response` | `task-reply-accept` |
@@ -1755,8 +1891,13 @@ per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
 The harness waits for a new user comment to persist before recording a reply
 checkpoint; the composer clearing is only optimistic UI state.
-The interview journey requests a saved plan. Execution journeys require exactly
-one correctly parented/assigned subtask and its completed output document.
+The interview journey saves a plan, accepts its checkbox proposal through the
+browser, and requires exactly one correctly parented/assigned subtask and its
+completed output document. A retained plan alone fails this execution journey.
+The separate `plan-only-accept` journey explicitly forbids implementation after
+plan approval. It requires a retained plan and completed onboarding task, with
+no new agents, execution tasks, or finished output at any observed checkpoint.
+Other execution journeys require the same assigned child and completed output.
 Rejection and revision must not execute the rejected/superseded scope. Closing
 an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an
@@ -2045,7 +2186,10 @@ retirement.
 Launcher cancellation first signals its outer group, so Playwright and the wrapper
 own graceful server shutdown. It allows 45 seconds for that chain before bounded
 5-second forced cleanup of revalidated descendants. Normal launcher exit uses the
-same retained descendant inventory. Zombies count as stopped; an unavailable or
+same retained descendant inventory. Zombies count as stopped, including when
+macOS answers a group signal with EPERM because every remaining member is an
+unreaped zombie; EPERM stays fatal while a fresh inspection shows a running
+member. An unavailable or
 uncertain identity inspection triggers bounded direct-child-only retirement and
 still fails the tree audit. Failed cleanup preserves the temporary state. Graceful
 owners are selected from the same validated table used for delivery; ESRCH allows
@@ -2169,6 +2313,12 @@ Missing subscription coverage remains a qualification blocker;
 an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
+
+Grok accounting uses the complete prompt ledger bound to the matching ACP
+response. Its reasoning counter can exceed its output counter; it is not a
+validation bound or an extra term in the ledger's input-plus-output total.
+Reported cost remains authoritative. See the upstream
+[`UsageTotals` ledger](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-chat-state/src/usage.rs).
 
 ### Kimi Code qualification
 
@@ -3468,3 +3618,32 @@ separate BROKEN gap shape and must not be used for this recovery bundle. Final
 coverage must match all selected case IDs and preserve the separate gap count.
 This mode prepares data only. It does not upload, start jobs, reopen launches,
 change credentials, or change evaluation and evidence limits.
+# Legacy workspace migration
+
+`legacy-workspace-migration` and `legacy-workspace-migration-warm` are explicit,
+paid, two-turn Daytona workflows. The per-turn lane covers every registered native
+production profile; the warm lane selects supported managed warm providers and
+sets the agent policy explicitly to warm. They
+create a private reference file and ask a question on a local-disk controller.
+The supervisor stops that controller, runs the packaged offline migration with
+owned PostgreSQL and S3, verifies the export, starts an empty-home controller,
+and deletes the original home. The browser answers the existing question. The
+oracle requires the same native and provider session, workspace addresses and
+file bytes, plus the exact final document. Provider session identifiers are
+hashed in the added evidence. The company budget is $10 and automatic retries
+are disabled. Existing fixture teardown owns sandboxes, credentials, processes,
+database and storage; failed private evidence is retained under the usual policy.
+
+This proves preservation during initial enrollment, which has an offline step.
+Use the separate rolling deployment suites for uninterrupted deployment proof.
+
+## Canonical private framework references
+
+The protected private-cell reader accepts legacy evidence and the source-owned
+compact Playwright JSON representation. It validates both sealed inventories and
+all compact attachment hashes against the original tree. After those checks, it
+materializes exact referenced files only in the derived `selected-runner-e2e`
+tree. The sealed original and final inventories remain unchanged. The existing
+normalizer and TestOps exporter consume the derived files. Registered raw JSON
+remains subject to deep JSON and decoded-body privacy checks regardless of its
+text suffix. No existing physical byte, entry, ZIP, time, or archive bound changes.

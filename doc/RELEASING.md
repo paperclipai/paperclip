@@ -310,6 +310,14 @@ The workflow:
 
 ## Docker Image Tags
 
+Master image publication requires both exact-source verification and a successful
+`publish` job from the canonical migrator workflow at the same source SHA and
+latest attempt. A green admission-only run with skipped build and publish jobs
+is pending work. The source observer retries only producers that were strictly
+deferred, continues watching after build admission, and waits for publication.
+The final publication step rechecks both proofs before it creates image tags.
+Failed or cancelled producers require inspection and are not retried automatically.
+
 [`docker.yml`](../.github/workflows/docker.yml) publishes the standard image:
 
 | Build ref | Tags |

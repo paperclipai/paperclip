@@ -1,3 +1,4 @@
+import { useQueryView } from "../components/QueryView";
 import { loadIssueHierarchyChildren } from "../lib/issue-hierarchy-context";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -44,11 +45,14 @@ export function useIssueHierarchyContext(companyId: string | null, matches: Issu
         parentIds, oneChildPerParent, projection: "index", limit, offset, includeRoutineExecutions: true,
       }, { signal }) as Issue[]),
   });
+  const ancestorsView = useQueryView(ancestors);
+  const childrenView = useQueryView(children);
   return {
-    issues: [...(ancestors.data ?? []), ...(children.data?.issues ?? [])],
+    issues: [...(ancestorsView.kind === "error" ? [] : ancestors.data ?? []), ...(childrenView.kind === "error" ? [] : children.data?.issues ?? [])],
     hasMore: children.data?.hasMore ?? false,
-    isLoading: ancestors.isLoading || children.isLoading,
+    isLoading: ancestors.isLoading || children.isLoading || ancestorsView.kind === "reconnecting" || childrenView.kind === "reconnecting",
     isFetching: ancestors.isFetching || children.isFetching,
-    error: ancestors.error ?? children.error,
+    error: (ancestorsView.kind === "error" ? ancestors.error : null) ?? (childrenView.kind === "error" ? children.error : null),
+    refetch: () => { ancestorsView.retry(); childrenView.retry(); },
   };
 }

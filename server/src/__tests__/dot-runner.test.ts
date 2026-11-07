@@ -2,7 +2,7 @@ import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
-import { assertNoExternalOverlap } from "../modules/external-agents/admission.js";
+import { assertNoExternalOverlap, withExternalAdmissionGuard } from "../modules/external-agents/admission.js";
 import { accessService } from "../services/access.js";
 import { Readable } from "node:stream";
 import { createPublicMcpTransfers } from "../services/public-mcp/file-transfers.js";
@@ -18,7 +18,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import express, { type Request } from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
+import { budgetPolicies, costEvents, grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
   heartbeatRuns, mcpOauthGrants, issueAttachments, activityLog, agentWakeupRequests, issueComments, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, mcpEventSubscriptions, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
@@ -385,9 +385,11 @@ describe("durable Dot Runner integration", () => {
       expect(intake[0]).toMatchObject({ assigneeAgentId: f.agent.id, createdByAgentId: f.agent.id, responsibleUserId: f.userId });
       expect(await f.broker.capabilities(f.principal)).toMatchObject({ agentId: f.agent.id, responsibleUser: { id: f.userId }, idle: { start: provider === "grok_bot" ? "paperclip_grok_request_turn" : "paperclip_dot_request_turn" } });
       await expect(f.broker.requestTurn(f.principal, "Different request", requestId)).rejects.toThrow("reused");
-      await db.update(companies).set({ budgetMonthlyCents: 1, spentMonthlyCents: 1 }).where(eq(companies.id, f.company.id));
+      const [budget] = await db.insert(budgetPolicies).values({ companyId: f.company.id, scopeType: "company", scopeId: f.company.id,
+        windowKind: "calendar_month_utc", amount: 1 }).returning();
+      await db.insert(costEvents).values({ companyId: f.company.id, agentId: f.agent.id, provider: "test", model: "test", costCents: 1, occurredAt: new Date() });
       await expect(f.broker.requestTurn(f.principal, "Spend more", randomUUID())).rejects.toThrow("budget");
-      await db.update(companies).set({ budgetMonthlyCents: 0, spentMonthlyCents: 0 }).where(eq(companies.id, f.company.id));
+      await db.delete(budgetPolicies).where(eq(budgetPolicies.id, budget.id));
       await f.broker.revoke(f.company.id, f.agent.id, f.userId);
       expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0]!.adapterConfig).not.toHaveProperty(provider === "grok_bot" ? "externalBindingId" : "dotBindingId");
       await expect(f.broker.requestTurn(f.principal, "After revoke", randomUUID())).rejects.toThrow();
@@ -589,6 +591,21 @@ describe("durable Dot Runner integration", () => {
       } finally { await f.events.stop(); }
     }, 30000);
 
+  it("does not authorize a failed Grok bootstrap retry without an external assignment", async () => {
+    const f = await fixture({ provider: "grok_bot" });
+    try {
+      const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Bootstrap retry", assigneeAgentId: f.agent.id }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+        nativeIssueId: task.id, runtimeMode: "native", driverKind: "grok_bot_mcp", status: "failed", invocationSource: "assignment" }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.company.id, issueId: task.id, runId: run.id, phase: "retryable_failure" });
+      const cancelRun = vi.fn().mockResolvedValue(null);
+      const broker = dotRunnerBroker(db, { heartbeat: { wakeup: vi.fn(), cancelRun } });
+      await expect(broker.stopGrokWork(f.company.id, f.agent.id, f.userId, run.id)).rejects.toThrow("changed");
+      expect(cancelRun).not.toHaveBeenCalled();
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run.id))).toHaveLength(0);
+    } finally { await f.events.stop(); }
+  });
+
   it("fences a failed Grok run's remaining external assignment without stopping a successor", async () => {
     const f = await fixture({ provider: "grok_bot" });
     const old = await offeredWork(f);
@@ -698,6 +715,48 @@ describe("durable Dot Runner integration", () => {
     const initial = await reader;
     const next = await f.broker.mailbox(f.principal, initial.nextCursor);
     expect([...initial.items, ...next.items].map(i => i.sourceEventId)).toEqual(expect.arrayContaining([firstEvent, secondEvent]));
+    await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
+  }, 30000);
+
+  it.each(["accept", "finish"] as const)("settles %s under the admission guard without waiting on a run that admission holds", async action => {
+    const f = await fixture();
+    const { run, assignment } = await offeredWork(f);
+    const requestId = randomUUID();
+    await db.insert(dotRunnerOperations).values({ companyId: f.company.id, assignmentId: assignment.id, requestId,
+      digest: "test", command: { action }, status: "admitted" });
+    let release!: () => void;
+    let held!: () => void;
+    const locked = new Promise<void>(resolve => { held = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    // Execution admission locks the run before it takes the guard. A settle
+    // that holds the guard must not then need that run row, or the two
+    // transactions wait on each other.
+    const admission = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      held(); await gate;
+      await withExternalAdmissionGuard(tx, f.company.id, f.agent.id, async () => {});
+    });
+    await locked;
+    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id }, provider: { binding: f.snapshot } });
+    // Capture each outcome now so a failure surfaces as itself, not as the wait timeout.
+    let settled = false;
+    let settleError: unknown;
+    const settle = port.settle({ sourceEventId: randomUUID(), payload: { requestId, binding: { ...f.snapshot, runId: run.id,
+      normalizedSessionId: assignment.normalizedSessionId, turnId: assignment.turnId, assignmentRevision: assignment.revision },
+      outcome: { status: action === "accept" ? "accepted" : "completed" } } } as Parameters<typeof port.settle>[0])
+      .then(() => { settled = true; }, error => { settleError = error; });
+    const admitted = admission.then(() => undefined, error => error as unknown);
+    try {
+      await vi.waitFor(() => { if (settleError) throw settleError; expect(settled).toBe(true); }, { timeout: 5000, interval: 20 });
+    } finally {
+      release();
+      await settle;
+      const admissionError = await admitted;
+      if (settleError) throw settleError;
+      if (admissionError) throw admissionError;
+    }
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]?.status)
+      .toBe(action === "accept" ? "accepted" : "settled");
     await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
   }, 30000);
 
@@ -1116,9 +1175,12 @@ describe("durable Dot Runner integration", () => {
           expect(app).toBeUndefined();
           expect((work.tools as Array<{ operationId: string }>).some(tool => ["get_workspace", "prepare_repository", "workspace_read"].includes(tool.operationId))).toBe(false);
         }
-        await db.update(agents).set({ budgetMonthlyCents: 100, spentMonthlyCents: 100 }).where(eq(agents.id, f.agent.id));
+        const [budget] = await db.insert(budgetPolicies).values({ companyId: f.company.id, scopeType: "agent", scopeId: f.agent.id,
+          windowKind: "calendar_month_utc", amount: 100 }).returning();
+        await db.insert(costEvents).values({ companyId: f.company.id, agentId: f.agent.id, provider: "test", model: "test", costCents: 100, occurredAt: new Date() });
         await expect(f.broker.read(f.principal, assignment!.id)).rejects.toThrow("execution authority");
-        await db.update(agents).set({ budgetMonthlyCents: 0, spentMonthlyCents: 0, status: "paused" }).where(eq(agents.id, f.agent.id));
+        await db.delete(budgetPolicies).where(eq(budgetPolicies.id, budget.id));
+        await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
         await expect(f.broker.read(f.principal, assignment!.id)).rejects.toThrow("authority");
         await db.update(agents).set({ status: "active" }).where(eq(agents.id, f.agent.id));
         await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issue!.id));

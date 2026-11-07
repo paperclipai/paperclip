@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import Ajv from "ajv";
+import { Ajv } from "ajv";
 import {
   checkPiNativeTool, installPiRuntimeExtension, piMcpRequest, readPiRuntimeConfiguration,
   PI_NATIVE_QUESTION_TOOL, PI_PERMISSION_TITLE_PREFIX, type PiExtensionApi, type PiRuntimeConfiguration, type PiToolDefinition,
@@ -12,7 +12,7 @@ import {
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
-async function workspace() {
+async function workspace(): Promise<{ root: string; config: PiRuntimeConfiguration }> {
   const root = await mkdtemp(join(tmpdir(), "paperclip-pi-extension-")); directories.push(root);
   await mkdir(join(root, "workspace")); await mkdir(join(root, "skills")); await mkdir(join(root, "private"));
   return { root, config: {
@@ -20,7 +20,7 @@ async function workspace() {
     workspace: join(root, "workspace"), readOnly: false,
     readRoots: [join(root, "skills")], protectedRoots: [join(root, "private")],
     instructions: "Use the assigned Paperclip tools", servers: [],
-  } satisfies PiRuntimeConfiguration };
+  } };
 }
 function harness() {
   const handlers = new Map<string, (...args: any[]) => any>();
@@ -241,7 +241,7 @@ describe("owned Pi runtime extension", () => {
   it("revalidates paths after a human wait and never treats cancellation as approval", async () => {
     const { root, config } = await workspace(); const h = harness();
     await installPiRuntimeExtension(h.api, config); h.handlers.get("turn_start")!();
-    const context = { cwd: config.workspace, ui: { select: vi.fn(async () => {
+    const context = { cwd: config.workspace, ui: { select: vi.fn(async (_title: string) => {
       await symlink(join(root, "private"), join(config.workspace, "target"));
       return "Allow once";
     }) } };
