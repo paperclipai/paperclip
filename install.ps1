@@ -29,9 +29,7 @@ if (-not (Get-Command corepack -ErrorAction SilentlyContinue)) {
 }
 
 Info "Using Node.js $NodeVersion"
-Info "Preparing the pinned pnpm version (9.15.4) without changing system-wide Node.js files..."
-corepack prepare pnpm@9.15.4 --activate
-if ($LASTEXITCODE -ne 0) { StopWith "Could not prepare pnpm 9.15.4 through Corepack." }
+Info "Using pnpm 9.15.4 through Corepack without installing global shims."
 
 $Parent = Split-Path -Parent $InstallDir
 if ($Parent -and -not (Test-Path $Parent)) {
@@ -82,7 +80,7 @@ try {
 
   if ($ForceInstall -or -not (Test-Path $ModulesPath) -or $Fingerprint -ne $PreviousFingerprint) {
     Info "Installing dependencies (pnpm cache will be reused on later runs)..."
-    corepack pnpm install --frozen-lockfile --prefer-offline
+    corepack pnpm@9.15.4 install --frozen-lockfile --prefer-offline
     if ($LASTEXITCODE -ne 0) { StopWith "Dependency installation failed. Fix the reported error and rerun this script." }
     Set-Content -Path $FingerprintPath -Value $Fingerprint -NoNewline
   } else {
@@ -92,11 +90,11 @@ try {
   if (-not $NoStart) {
     Info "Starting Paperclip development server..."
     Info "Open http://localhost:3100 when the server is ready. Press Ctrl+C to stop."
-    corepack pnpm dev
+    corepack pnpm@9.15.4 dev
     if ($LASTEXITCODE -ne 0) { StopWith "Paperclip stopped with an error. Check the output above." }
   } else {
     Info "Installation is ready at $InstallDir"
-    Info "Start it later with: cd `"$InstallDir`"; corepack pnpm dev"
+    Info "Start it later with: cd `"$InstallDir`"; corepack pnpm@9.15.4 dev"
   }
 } finally {
   Pop-Location
