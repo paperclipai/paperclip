@@ -15,6 +15,7 @@ import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-resto
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailableError } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
@@ -1313,6 +1314,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     await settleAgent();
+    if (failureOutcome === "failed" && failedRun?.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1387,6 +1394,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // stays with its creation record and the cleanup reconciler.
     const environmentProviderUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
+    const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
@@ -1396,6 +1405,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       remoteWorkspaceRestoreFailure?.code ??
       pluginWorkerUnavailableFailure?.code ??
       environmentProviderUnavailable?.code ??
+      repositoryCatalogUnavailable?.code ??
       (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
@@ -1409,9 +1419,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       "setup_failed";
     // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
     const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
+    // A wrapped query error hides its driver cause (for example
+    // CONNECTION_CLOSED or SQLSTATE 53300). Log the bounded code only.
+    const causeCode = outerErr instanceof Error ? (outerErr.cause as { code?: unknown } | undefined)?.code : undefined;
+    const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
     logger.error(
       { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
-        errorCode: setupFailureErrorCode, ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
+        errorCode: setupFailureErrorCode, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
     const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
@@ -1445,6 +1460,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
+        ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
+      } : {}),
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
@@ -1561,7 +1579,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           // An accepted interaction keeps its own continuation retry, which
           // carries the interaction and escalates on exhaustion.
           const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
-            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE)
+            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE

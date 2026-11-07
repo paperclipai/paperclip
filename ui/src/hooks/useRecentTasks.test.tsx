@@ -182,6 +182,23 @@ describe("recent task synchronization", () => {
     expect(summaries).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("refreshes long histories in bounded requests without pruning on a partial failure (%s)", async fails => {
+    const tasks = Array.from({ length: 13 }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${i}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    summaries.mockImplementation(async (_company, ids: string[]) => {
+      expect(ids.length).toBeLessThanOrEqual(5);
+      if (fails && summaries.mock.calls.length === 2) throw new ApiError("Unavailable", 500, null);
+      return tasks.filter(issue => ids.includes(issue.id)).map(issue => ({ ...issue, title: `Refreshed ${issue.title}`, updatedAt: new Date(100) }));
+    });
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="long-history" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(fails ? 2 : 3);
+    const entries = readRecentTasks(storageKey, "company-1");
+    expect(entries).toHaveLength(13);
+    expect(entries.every(entry => entry.title.startsWith("Refreshed"))).toBe(!fails);
+    expect(getIssue).not.toHaveBeenCalled();
+  });
+
   it("prunes successful omissions without resurrecting cached full details", async () => {
     const missing = task(10, "Removed");
     recordRecentTask(missing, "user-1");

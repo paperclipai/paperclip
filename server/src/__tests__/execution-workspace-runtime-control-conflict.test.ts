@@ -402,6 +402,28 @@ describe("execution workspace runtime control conflict and failure reconciliatio
     expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
   });
 
+  it("reacquires the lifecycle fence for restore after command admission", async () => {
+    let held = false, restores = 0;
+    mockLifecycleLock.mockImplementation(async (_db, _id, run) => {
+      expect(held).toBe(false);
+      held = true;
+      try { return await run({}); } finally { held = false; }
+    });
+    mockEnsurePersistedExecutionWorkspaceAvailable.mockImplementationOnce(async () => {
+      expect(mockPublishRuntimeOperation).toHaveBeenCalledOnce();
+      expect(held).toBe(true);
+      restores++;
+      return { cwd: "/tmp/lane-a" };
+    });
+    mockStartRuntimeServices.mockResolvedValueOnce([]);
+    const response = await request(await createApp())
+      .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`).send({});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(restores).toBe(1);
+    expect(mockLifecycleLock).toHaveBeenCalledTimes(2);
+    expect(held).toBe(false);
+  });
+
   it("tears down residue and records a stopped desired state when a start fails", async () => {
     mockStartRuntimeServices.mockRejectedValue(
       new Error(

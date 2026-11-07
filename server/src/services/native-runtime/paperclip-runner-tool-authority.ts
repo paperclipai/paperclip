@@ -1505,7 +1505,11 @@ export class PaperclipRunnerToolAuthority {
     }
     const [company] = await this.db.select().from(companies).where(eq(companies.id, this.binding.companyId));
     if (company?.status !== "active"
-      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId, { issueId: this.binding.issueId })) throw forbidden("Company or budget authority unavailable");
+      // The running run was admitted already. A temporary accounting hold
+      // gates new work only; a hard stop or pause reaches this run through the
+      // normal pause and cancellation path, and is still refused here.
+      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId,
+        { issueId: this.binding.issueId, runId: this.binding.runId, admittedRecovery: true })) throw forbidden("Company or budget authority unavailable");
     if (this.binding.nativeReview) {
       const admitted = readNativeReviewAssignmentContext(row.run.contextSnapshot);
       if (!admitted || admitted.nativeReviewInteractionId !== this.binding.nativeReview.nativeReviewInteractionId

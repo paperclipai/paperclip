@@ -23,6 +23,18 @@ export function excludePatternMatches(relative: string, pattern: string): boolea
   return isRelativePathOrDescendant(relative, pattern);
 }
 
+/**
+ * Sandbox providers stage transfer scratch at the workspace root as
+ * `.paperclip-upload-<uuid>…` (see `buildWorkspaceTarExtractCommand` and the
+ * Daytona/Kubernetes `SCRATCH_PREFIX`). A control-plane kill during a transfer
+ * leaves it behind, and providers never export it. It is not workspace content.
+ * The literal stays inline: this function is serialized into the sandbox
+ * checkpoint helper.
+ */
+export function isSandboxTransferScratchPath(relative: string): boolean {
+  return !relative.includes("/") && relative.startsWith(".paperclip-upload-");
+}
+
 export function shouldExcludePath(relative: string, exclude: readonly string[]): boolean {
   return exclude.some((entry) => excludePatternMatches(relative, entry));
 }

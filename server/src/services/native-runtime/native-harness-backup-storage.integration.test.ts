@@ -1,8 +1,10 @@
+import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
+  nativeProviderArtifacts, nativeProviderArtifactReferences, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -15,7 +17,17 @@ import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, verifyN
 import { hasLocalNativeHarnessObligations, migrateNativeHarnessBackups, prestageNativeHarnessBackups } from "./native-harness-backup-migration.js";
 import { nativeHarnessBackupExpirationService } from "./native-harness-backup-expiration.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { DurablePrpControlPlane, captureLegacyDurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
+import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { restoreNativeProviderArtifacts } from "./native-provider-artifacts.js";
 import * as backupArchive from "./native-harness-backup-archive.js";
+import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  const files = { ...original };
+  return { ...original, default: files, cp: (...args: Parameters<typeof original.cp>) => files.cp(...args) };
+});
 
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
@@ -159,6 +171,309 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect(JSON.parse(await readFile(join(replacement, "current", provider, "sessions", "history.json"), "utf8"))).toEqual(f.identity);
     expect((await stat(join(replacement, "current", provider, "sessions"))).mode & 0o777).toBe(0o500);
     expect(await verifyDurableNativeHarnessBackup(f)).toBe(true);
+  });
+  async function artifactFixture(artifactVersion = randomUUID()) {
+    const f = await fixture("opencode");
+    const sourceRoot = join(f.home, "qualified-provider-pack");
+    await mkdir(sourceRoot);
+    const original = { nodeCommand: "qualified Node executable", opencodeExecutable: "qualified OpenCode executable",
+      opencodeProxy: `qualified original proxy bytes ${artifactVersion}` };
+    const artifacts = Object.fromEntries(await Promise.all(Object.entries(original).map(async ([name, bytes]) => {
+      await writeFile(join(sourceRoot, name), bytes, { mode: 0o500 });
+      return [name, { path: name, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` }];
+    })));
+    const payload = { runnerSourceRevision: "a".repeat(40), target: { platform: "linux", architecture: "x64" },
+      pins: { opencode: "1.18.34" }, artifacts: { ...artifacts, opencodeCommand: artifacts.opencodeExecutable } };
+    const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+      digest: `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}` };
+    const launchRoot = `/home/daytona/.paperclip-runtime/paperclip-runner/provider-artifacts/${manifest.digest.slice(7)}`;
+    await f.db.update(heartbeatRuns).set({ nativeSessionId: f.identity.normalizedSessionId, driverKind: "opencode_server",
+      runnerProfileJson: { ...f.preparedProfile, nativeProviderPackAdmissionState: {
+        schema: "paperclip.native-provider-pack-admission-state.v1", state: "verified", admissionEpoch: randomUUID() },
+      nativeProviderPackAdmission: { schema: "paperclip.native-provider-pack-admission.v1", stage: "session_admitted",
+        authority: "core_verified_selection", companyId: f.companyId, agentId: environment.current.agentId,
+        runId: f.runId, sessionId: f.identity.normalizedSessionId, runnerInstanceId: "artifact-fixture-runner",
+        runnerEnvironmentLeaseId: "artifact-fixture-lease", providerPackDigest: manifest.digest,
+        opencodeProxySha256: artifacts.opencodeProxy.sha256, sourceRevision: payload.runnerSourceRevision } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    return { ...f, original, manifest, launchRoot, providerArtifacts: { sourceRoot, manifest, launchRoot, accountUid: 1000 } };
+  }
+  it("restores the admitted OpenCode launch bytes after the controller and sandbox image change", async () => {
+    const publication = await artifactFixture(), f = publication;
+    const { original, manifest, launchRoot } = publication;
+    await persistNativeHarnessBackup(publication);
+    await removeNativeHarnessBackup(f.home);
+    const newImage = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(newImage);
+    await mkdir(newImage);
+    await writeFile(join(newImage, "opencodeProxy"), "qualified newer proxy bytes");
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "failover-backups"); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(JSON.parse(await readFile(join(replacement, "current/opencode/sessions/history.json"), "utf8"))).toEqual(f.identity);
+    for (const [name, bytes] of Object.entries(original)) {
+      expect(await readFile(join(replacement, "current/provider-artifacts", name), "utf8")).toBe(bytes);
+    }
+    const restored = JSON.parse(await readFile(join(replacement, "current/manifest.json"), "utf8"));
+    expect(restored.providerArtifacts).toMatchObject({ launchRoot, providerPackDigest: manifest.digest });
+  });
+  it("repairs a missing local launch cache without adding the binaries to each harness backup", async () => {
+    const f = await artifactFixture(); await persistNativeHarnessBackup(f);
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    await removeNativeHarnessBackup(join(replacement, "current/provider-artifacts"));
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(await readFile(join(replacement, "current/provider-artifacts/opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+    await persistNativeHarnessBackup({ ...f, providerArtifacts: undefined, root: join(replacement, "current") });
+    const [after] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")));
+    expect(after.reference.byteSize).toBe(before.reference.byteSize);
+  });
+  it("retries an interrupted artifact cache copy without publishing partial launch files", async () => {
+    const f = await artifactFixture(); await persistNativeHarnessBackup(f);
+    const receipt = JSON.parse(await readFile(join(f.root, "manifest.json"), "utf8")).providerArtifacts;
+    const home = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(home); await mkdir(home);
+    const targetRoot = join(home, "provider-artifacts"), copy = fs.cp.bind(fs);
+    const interrupted = vi.spyOn(fs, "cp").mockImplementation(async (source, destination, options) => {
+      if (String(destination).startsWith(targetRoot)) {
+        await mkdir(destination, { recursive: true });
+        await writeFile(join(String(destination), "opencodeProxy"), "partial copy");
+        throw Object.assign(new Error("controlled disk full during cache publication"), { code: "ENOSPC" });
+      }
+      return copy(source, destination, options);
+    });
+    try { await expect(restoreNativeProviderArtifacts({ ...f, receipt, targetRoot })).rejects.toThrow("controlled disk full"); }
+    finally { interrupted.mockRestore(); }
+    await expect(fs.stat(targetRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(restoreNativeProviderArtifacts({ ...f, receipt, targetRoot })).resolves.toBeUndefined();
+    expect(await readFile(join(targetRoot, "opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+    expect(await fs.readdir(home)).toEqual(["provider-artifacts"]);
+  });
+  it("reuses a sequentially admitted closure and releases it only after the last stopped checkpoint retires", async () => {
+    const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);
+    const second = { ...other, storage: first.storage };
+    const put = vi.spyOn(first.storage, "putFile");
+    await persistNativeHarnessBackup(first); await persistNativeHarnessBackup(second);
+    expect(put.mock.calls.filter(([input]) => input.namespace === "native-provider-artifacts")).toHaveLength(1);
+    const [firstBackup] = await first.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, first.scopeDigest));
+    const [secondBackup] = await first.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, second.scopeDigest));
+    const artifactId = (firstBackup.reference.providerArtifacts as { artifactId: string }).artifactId;
+    const [artifact] = await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifactId));
+    const stop = async (f: typeof first) => {
+      await settle(f, new Date(Date.now() - 10 * 86_400_000));
+      const leaseId = randomUUID(), providerLeaseId = randomUUID(), confirmedAt = new Date();
+      await f.db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId, heartbeatRunId: f.runId,
+        issueId: f.issueId, provider: "daytona", providerLeaseId, status: "expired", cleanupStatus: "success", releasedAt: confirmedAt,
+        metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.companyId,
+          runId: f.runId, leaseId, provider: "daytona", providerLeaseId, state: "destroyed", confirmedAt: confirmedAt.toISOString() } } });
+    };
+    await stop(first);
+    await first.db.update(nativeHarnessBackups).set({ status: "retired" }).where(eq(nativeHarnessBackups.id, firstBackup.id));
+    expect(await deleteRetiredNativeHarnessBackup(first.db, first.storage, firstBackup.id)).toBe(true);
+    expect(await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toHaveLength(1);
+    const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...second, backupRoot: replacement })).toBe(true);
+    await stop(second);
+    await second.db.update(nativeHarnessBackups).set({ status: "retired" }).where(eq(nativeHarnessBackups.id, secondBackup.id));
+    expect(await deleteRetiredNativeHarnessBackup(second.db, second.storage, secondBackup.id)).toBe(true);
+    expect(await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toHaveLength(1);
+    const runPins = await first.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.artifactId, artifact.id));
+    expect(runPins).toHaveLength(2); expect(runPins.every(pin => pin.backupId === null)).toBe(true);
+    await first.db.insert(nativeRunnerCheckpoints).values([first, second].map(f => ({ companyId: f.companyId,
+      issueId: f.issueId, runId: f.runId, part: "header", material: { retained: "canonical checkpoint expiry fixture" } })));
+    expect((await nativeHarnessBackupExpirationService(first.db, { storage: first.storage }).tickCheckpoints()).expiredCheckpoints).toBe(2);
+    expect(await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toHaveLength(0);
+    expect(await first.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.artifactId, artifact.id))).toHaveLength(0);
+  });
+  it("keeps independent overlapping uploads bounded and retains only their verified winner", async () => {
+    const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);
+    const second = { ...other, storage: first.storage }, put = first.storage.putFile.bind(first.storage);
+    let release!: () => void, arrivals = 0;
+    const together = new Promise<void>(resolve => { release = resolve; });
+    const uploaded: string[] = [];
+    const calls = vi.spyOn(first.storage, "putFile").mockImplementation(async input => {
+      if (input.namespace === "native-provider-artifacts") {
+        expect(input.objectKey).toBeTypeOf("string"); uploaded.push(input.objectKey!); if (++arrivals === 2) release();
+        await together; expect("byteSize" in input ? input.byteSize : input.body.length).toBeLessThan(512 * 1024 * 1024 + 1024 * 1024);
+      }
+      return put(input);
+    });
+    const deleted = vi.spyOn(first.storage, "deleteObject");
+    const transfers = Promise.all([persistNativeHarnessBackup(first), persistNativeHarnessBackup(second)]);
+    void transfers.catch(() => undefined);
+    try {
+      try { await vi.waitFor(() => expect(arrivals).toBe(2), { timeout: 10_000 }); } finally { release(); }
+      await transfers;
+    } finally { calls.mockRestore(); }
+    expect(uploaded).toHaveLength(2);
+    const objects = await first.db.select().from(nativeProviderArtifacts).where(and(eq(nativeProviderArtifacts.companyId, first.companyId),
+      inArray(nativeProviderArtifacts.id, uploaded.map(key => key.split("/").at(-2)!))));
+    expect(objects).toHaveLength(1); expect(objects[0].status).toBe("ready");
+    expect(deleted.mock.calls.map(([, key]) => key)).toEqual(uploaded.filter(key => key !== objects[0].reference!.objectKey));
+    for (const f of [first, second]) {
+      const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(run.runnerProfileJson?.nativeProviderArtifacts).toMatchObject({ artifactId: objects[0].id });
+      const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+      expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+      expect(await readFile(join(replacement, "current/provider-artifacts/opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+    }
+  });
+  it("keeps a resumable run pin when an interrupted backup is retired", async () => {
+    const f = await artifactFixture(), put = f.storage.putFile.bind(f.storage);
+    const interrupted = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (input.namespace === "native-harness-backups") throw new Error("harness upload reply lost");
+      return result;
+    });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("harness upload reply lost"); interrupted.mockRestore();
+    const [pending] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    expect(pending.status).toBe("pending");
+    const receipt = pending.reference.providerArtifacts as NonNullable<Parameters<typeof restoreNativeProviderArtifacts>[0]["receipt"]>;
+    const identity = { runnerInstanceId: f.native.runnerInstanceId, environmentLeaseId: f.native.environmentLeaseId,
+      runId: f.runId, normalizedSessionId: f.identity.normalizedSessionId, turnId: f.native.turnId, itemId: f.native.itemId };
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(f.home, "resumable-controller"), identity,
+      expectedRunnerVersion: "0.0.0", expectedRunnerDigest: "sha256:" + "1".repeat(64) });
+    const checkpoint = captureLegacyDurablePrpCheckpoint(JSON.stringify(controller.store.state), {
+      runId: f.runId, runnerInstanceId: identity.runnerInstanceId, normalizedSessionId: identity.normalizedSessionId },
+      { version: "0.0.0", digest: "sha256:" + "1".repeat(64) });
+    await nativeRunnerCheckpointWriter(f.db, { ...f.owner, leaseOwner: f.owner.leaseOwner! })(checkpoint);
+    const old = new Date(Date.now() - 10 * 86_400_000); await settle(f, old);
+    await f.db.update(nativeHarnessBackups).set({ createdAt: old, updatedAt: old }).where(eq(nativeHarnessBackups.id, pending.id));
+    const leaseId = randomUUID(), providerLeaseId = randomUUID(), confirmedAt = new Date();
+    await f.db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId, heartbeatRunId: f.runId,
+      issueId: f.issueId, provider: "daytona", providerLeaseId, status: "expired", cleanupStatus: "success", releasedAt: confirmedAt,
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.companyId,
+        runId: f.runId, leaseId, provider: "daytona", providerLeaseId, state: "destroyed", confirmedAt: confirmedAt.toISOString() } } });
+    const [selected] = await f.db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: environment.current.agentId,
+      adapterType: "paperclip_runner", taskKey: f.issueId, lastRunId: f.runId,
+      sessionParamsJson: { sessionId: f.identity.normalizedSessionId } }).returning();
+    const retention = nativeHarnessBackupExpirationService(f.db, { storage: f.storage });
+    const first = await retention.tickCheckpoints();
+    expect(first.expired).toBe(1); expect(first.expiredCheckpoints).toBe(0);
+    expect(await f.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.runId, f.runId)))
+      .toMatchObject([{ backupId: null, artifactId: receipt.artifactId }]);
+    expect((await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId }))?.recoveryEvidence.normalizedSessionId)
+      .toBe(f.identity.normalizedSessionId);
+    await removeNativeHarnessBackup(f.providerArtifacts.sourceRoot);
+    const restored = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(restored);
+    await restoreNativeProviderArtifacts({ ...f, receipt, targetRoot: restored });
+    expect(await readFile(join(restored, "opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+    await f.db.delete(agentTaskSessions).where(eq(agentTaskSessions.id, selected.id));
+    expect((await retention.tickCheckpoints()).expiredCheckpoints).toBe(1);
+    expect(await f.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, receipt.artifactId))).toEqual([]);
+  });
+  it("keeps the exact encrypted upload receipt when its artifact owner changes after upload", async () => {
+    const f = await artifactFixture(), put = f.storage.putFile.bind(f.storage);
+    vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (input.namespace === "native-provider-artifacts") await f.db.update(nativeRunFinalizations)
+        .set({ controllerGeneration: 2 }).where(eq(nativeRunFinalizations.runId, f.runId));
+      return result;
+    });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    const [pin] = await f.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.runId, f.runId));
+    const [artifact] = await f.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, pin.artifactId));
+    expect(artifact.status).toBe("pending");
+    expect(artifact.reference).toMatchObject({ companyId: f.companyId, artifactId: artifact.id, objectKey: expect.any(String), material: expect.any(Object) });
+    expect(await readFile(join(f.providerArtifacts.sourceRoot, "opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+  });
+  it("retires an abandoned artifact upload through checkpoint expiration without losing deletion retries", async () => {
+    const f = await artifactFixture(), put = f.storage.putFile.bind(f.storage);
+    const lostReply = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      await put(input); throw new Error("artifact upload reply lost");
+    });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("artifact upload reply lost"); lostReply.mockRestore();
+    const [pin] = await f.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.runId, f.runId));
+    const [artifact] = await f.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, pin.artifactId));
+    expect(artifact.reference).toMatchObject({ objectKey: expect.any(String), material: expect.any(Object) });
+    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+    await f.db.insert(nativeRunnerCheckpoints).values({ companyId: f.companyId, runId: f.runId,
+      issueId: f.issueId, part: "header", material: { retained: "canonical header index fixture" } });
+    const retention = nativeHarnessBackupExpirationService(f.db, { storage: f.storage });
+    expect((await retention.tickCheckpoints()).expiredCheckpoints).toBe(0);
+    const old = new Date(Date.now() - 10 * 86_400_000);
+    await settle(f, old);
+    const leaseId = randomUUID(), providerLeaseId = randomUUID(), confirmedAt = new Date();
+    await f.db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId, heartbeatRunId: f.runId,
+      issueId: f.issueId, provider: "daytona", providerLeaseId, status: "expired", cleanupStatus: "success", releasedAt: confirmedAt,
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.companyId,
+        runId: f.runId, leaseId, provider: "daytona", providerLeaseId, state: "destroyed", confirmedAt: confirmedAt.toISOString() } } });
+    const drop = vi.spyOn(f.storage, "deleteObject").mockRejectedValueOnce(new Error("delete reply lost"));
+    const [earlier] = await f.db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: environment.current.agentId,
+      adapterType: "paperclip_runner", taskKey: f.issueId, lastRunId: f.runId }).returning();
+    expect((await retention.tickCheckpoints()).expiredCheckpoints).toBe(0);
+    expect(drop).not.toHaveBeenCalled();
+    expect((await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId)))[0].material)
+      .toEqual({ retained: "canonical header index fixture" });
+    await f.db.delete(agentTaskSessions).where(eq(agentTaskSessions.id, earlier.id));
+    expect((await retention.tickCheckpoints()).failed).toBe(1);
+    const [retired] = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    expect(retired.material).toMatchObject({ schema: "paperclip.native-runner-checkpoint-retirement.v1", companyId: f.companyId,
+      runIds: [f.runId], sessionId: f.identity.normalizedSessionId });
+    expect(await f.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.artifactId, artifact.id))).toHaveLength(1);
+    await f.db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: environment.current.agentId,
+      adapterType: "paperclip_runner", taskKey: f.issueId, lastRunId: f.runId });
+    await expect(loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId }))
+      .rejects.toThrow("native_runner_checkpoint_retired");
+    const missingStorage = nativeHarnessBackupExpirationService(f.db);
+    expect((await missingStorage.tickCheckpoints()).failed).toBe(1);
+    expect(drop).toHaveBeenCalledTimes(1);
+    const [priorOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const currentOwner = { ...f.owner, generation: priorOwner.controllerGeneration, leaseOwner: "fresh-retired-source-claim" };
+    await f.db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: currentOwner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const identity = { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: f.runId,
+      normalizedSessionId: f.identity.normalizedSessionId, turnId: randomUUID(), itemId: randomUUID() };
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(f.home, "new-source-controller"), identity,
+      expectedRunnerVersion: "0.0.0", expectedRunnerDigest: "sha256:" + "1".repeat(64) });
+    const checkpoint = captureLegacyDurablePrpCheckpoint(JSON.stringify(controller.store.state), {
+      runId: f.runId, runnerInstanceId: identity.runnerInstanceId, normalizedSessionId: identity.normalizedSessionId },
+      { version: "0.0.0", digest: "sha256:" + "1".repeat(64) });
+    try { await expect(nativeRunnerCheckpointWriter(f.db, currentOwner)(checkpoint)).rejects.toThrow("native_runner_checkpoint_retired"); }
+    finally { await f.db.update(nativeRunFinalizations).set({ phase: priorOwner.phase, leaseOwner: null,
+      leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId)); }
+    const consumerRunId = randomUUID(), consumerLeaseId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: consumerRunId, companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.identity.normalizedSessionId, status: "running" });
+    await f.db.insert(nativeRunFinalizations).values({ runId: consumerRunId, companyId: f.companyId, issueId: f.issueId,
+      phase: "observed", controllerBootId: f.owner.bootId, controllerGeneration: 1, leaseOwner: "late-source-consumer",
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    await f.db.update(issues).set({ status: "in_progress", executionRunId: consumerRunId }).where(eq(issues.id, f.issueId));
+    await f.db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: {
+      schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.runId, leaseId, provider: "daytona",
+      providerLeaseId, state: "destroyed", confirmedAt: confirmedAt.toISOString() },
+      runnerTaskSourceConsumer: { leaseId: consumerLeaseId, runId: consumerRunId, accountIdentity: "owned-fixture-account", identity } } })
+      .where(eq(environmentLeases.id, leaseId));
+    await f.db.insert(environmentLeases).values({ id: consumerLeaseId, companyId: f.companyId, heartbeatRunId: consumerRunId,
+      issueId: f.issueId, provider: "daytona", providerLeaseId: randomUUID(), status: "active", metadata: { runnerTaskSourceRecovery: {
+        schema: "paperclip.runner.source-recovery.v1", sourceLeaseId: leaseId, consumerLeaseId, consumerRunId,
+        accountIdentity: "owned-fixture-account", controllerBootId: f.owner.bootId, controllerGeneration: 1, identity } } });
+    const lateCheckpoint = { ...checkpoint, reset: false, changedRecords: new Map([["cursor", checkpoint.records.get("cursor")!]]), removedRecords: [] };
+    await expect(nativeRunnerCheckpointWriter(f.db, { ...f.owner, authorityRunId: consumerRunId, generation: 1,
+      leaseOwner: "late-source-consumer" })(lateCheckpoint)).rejects.toThrow("native_runner_checkpoint_retired");
+    const restarted = nativeHarnessBackupExpirationService(f.db, { storage: f.storage });
+    expect((await restarted.tickCheckpoints()).expiredCheckpoints).toBe(1);
+    expect(await f.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toEqual([]);
+    expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual([]);
+    expect((await restarted.tickCheckpoints()).expiredCheckpoints).toBe(0);
+    expect(drop).toHaveBeenCalledTimes(2);
+  });
+  it("retains every artifact and checkpoint when a retirement family exceeds its run bound", async () => {
+    const f = await artifactFixture(), put = f.storage.putFile.bind(f.storage);
+    const lost = vi.spyOn(f.storage, "putFile").mockImplementation(async input => { await put(input); throw new Error("upload reply lost"); });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("upload reply lost"); lost.mockRestore();
+    const old = new Date(Date.now() - 10 * 86_400_000); await settle(f, old);
+    await f.db.insert(nativeRunnerCheckpoints).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      part: "header", material: { retained: "original checkpoint" } });
+    const relatives = Array.from({ length: 100 }, () => randomUUID());
+    await f.db.insert(heartbeatRuns).values(relatives.map(id => ({ id, companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.identity.normalizedSessionId, status: "failed", finishedAt: old })));
+    await f.db.insert(nativeRunFinalizations).values(relatives.map(runId => ({ runId, companyId: f.companyId, issueId: f.issueId, phase: "terminal_failure" })));
+    const remove = vi.spyOn(f.storage, "deleteObject");
+    const result = await nativeHarnessBackupExpirationService(f.db, { storage: f.storage }).tickCheckpoints();
+    expect(result.expiredCheckpoints).toBe(0); expect(remove).not.toHaveBeenCalled();
+    expect((await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId)))[0].material)
+      .toEqual({ retained: "original checkpoint" });
+    expect(await f.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.runId, f.runId))).toHaveLength(1);
   });
   it("keeps the last published backup when object storage fails", async () => {
     const f = await fixture(); await persistNativeHarnessBackup(f);

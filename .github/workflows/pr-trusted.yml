@@ -15,6 +15,9 @@ permissions:
 # the Honeycomb credential, so fork PRs cannot execute with it.
 env:
   PAPERCLIP_CI_PROFILE_DIR: ${{ github.workspace }}/.ci-profile
+  # Empty keeps the PR default of one Vitest retry (scripts/ci/vitest-retry.mjs).
+  # Set the CI_VITEST_RETRY repository variable to 0 to switch retries off.
+  PAPERCLIP_VITEST_RETRY: ${{ vars.CI_VITEST_RETRY }}
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -814,7 +817,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package","command":"test:typescript:vitest --shard=1/2","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --shard=2/2","release_crate":true,"task":"ci:runner-vitest"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}

@@ -1505,6 +1505,26 @@ it("does not hold a pending turn start behind another turn's restore-lost termin
     params: { turn: { id: "provider-turn-raw", status: "failed" } } }] })).toBe("provider-turn-raw");
 });
 
+it("settles a restored turn from the runner's reconciled result terminal", () => {
+  const { runnerdRecoveredTurnTerminal: recovered } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { payload: { payload } } });
+  const reconciled = event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: null });
+  const runTerminal = event("run.terminal", { turnTerminalState: "completed", runTerminalState: "succeeded" });
+  // The runner recovered turn-1's accepted result: no provider turn terminal,
+  // only the reconciliation and the run terminal.
+  expect(recovered([event("turn.started", { providerTurnId: "turn-1" }), reconciled, runTerminal], "turn-1"))
+    .toEqual({ status: "completed", error: null });
+  // An explicit provider terminal keeps its cause.
+  const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+  expect(recovered([reconciled, event("turn.failed", { providerTurnId: "turn-1", error: lost }), runTerminal], "turn-1"))
+    .toEqual({ status: "failed", error: lost });
+  // A run terminal settles only the turn the runner reconciled as ended.
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-0", activeProviderTurnId: null }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: "turn-1" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([reconciled, event("turn.started", { providerTurnId: "turn-2" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([runTerminal], "turn-1")).toBeNull();
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({
@@ -1991,6 +2011,56 @@ it("waits for the exact durable suspension command behind prior close work", asy
     "runner.suspend",
   ]);
   expect(pumpCount).toBeGreaterThanOrEqual(2);
+});
+
+it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
+  // An ACPX sidecar can reject session.suspend while the just-completed turn
+  // is still settling. One rejected command must not leave a successful run's
+  // own session closed without a proven suspension.
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let lifecycle = "ready";
+  const queueSuspend = vi.fn((commandId: string) => {
+    commands.push({ commandId, type: "runner.suspend", status: "pending" });
+  });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend,
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => false,
+      pump: () => {
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        if (commands.length === 1) pending.status = "failed";
+        else { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(queueSuspend).toHaveBeenCalledTimes(2);
+  expect(new Set(commands.map(command => command.commandId)).size).toBe(2);
+});
+
+it("stops retrying a rejected suspension at its attempt bound or when the runner exits", async () => {
+  for (const exited of [false, true]) {
+    const commands: Array<{ commandId: string; type: string; status: string }> = [];
+    const queueSuspend = vi.fn((commandId: string) => {
+      commands.push({ commandId, type: "runner.suspend", status: "failed" });
+    });
+    await expect(
+      runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+        commands: () => commands,
+        queueSuspend,
+        readRunnerState: async () => ({ lifecycle: "ready" }),
+        runnerHasExited: async () => exited,
+        pump: () => undefined,
+        deadline: Date.now() + 5_000,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toBe(false);
+    expect(queueSuspend).toHaveBeenCalledTimes(exited ? 1 : 3);
+  }
 });
 
 it("does not accept process exit without durable suspension", async () => {
@@ -6163,13 +6233,17 @@ describe("cold process admission budget", () => {
   it("bounds Pi cold startup and recovery at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
+  it("bounds a cold ACPX Claude session.open at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "claude", true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs("acpx", "claude", false)).toBe(30_000);
+  });
   it("bounds a cold OpenCode restore at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
     expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
-    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+    for (const agent of ["codex", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
     for (const provider of ["codex", "cursor_cloud", undefined]) {

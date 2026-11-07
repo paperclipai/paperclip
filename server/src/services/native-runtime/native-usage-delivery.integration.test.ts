@@ -538,6 +538,27 @@ describe("producer-owned native usage", () => {
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(0);
   });
 
+  // A replacement Runner fails the turn it lost on restore before the
+  // continuation turn runs. Remote delivery must keep that marker, or the
+  // receipt stays incomplete until the closure bound.
+  it("closes a replacement source's receipt past a turn lost on restore, as a lower bound", async () => {
+    const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
+    const lost = event(input, 26, "turn.failed", "turn-lost");
+    lost.payload = { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true } };
+    const started = event(input, 29, "turn.started", "turn-next");
+    const report = event(input, 30, "usage.reported", "turn-next");
+    const done = event(input, 31, "turn.completed", "turn-next");
+    let delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [lost, started, report, done]) await delivery.capture(value);
+    const read = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0];
+    expect((await read()).usageJson).toMatchObject({ accountingReceiptReady: true, outputTokens: 10,
+      pricingProvenance: { evidence: expect.stringContaining("lower bound") } });
+    // The saved receipts replay into a reopened receiver without conflict.
+    delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [lost, started, report, done]) await delivery.capture(value);
+    expect((await read()).usageJson).toMatchObject({ accountingReceiptReady: true });
+  });
+
   it("replays partial and final usage once after a lost commit response and restores turn aggregation", async () => {
     const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
     let loseResponse = false;
