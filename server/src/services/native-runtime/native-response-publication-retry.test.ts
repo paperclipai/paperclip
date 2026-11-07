@@ -106,8 +106,11 @@ describe.skipIf(!support.supported)("native final reply publication retry", () =
       unlock();
       await holder;
       await startup;
-      await vi.waitFor(async () => expect(await db.select({ id: issueComments.id }).from(issueComments)
-        .where(eq(issueComments.issueId, first.issueId))).toHaveLength(100), { timeout: 20_000 });
+      await vi.waitFor(async () => {
+        const posted = await db.select({ runId: issueComments.createdByRunId }).from(issueComments)
+          .where(eq(issueComments.issueId, first.issueId));
+        expect(posted.map(comment => comment.runId).sort()).toEqual(older.map(f => f.runId).sort());
+      }, { timeout: 20_000 });
       await vi.waitFor(() => {
         expect(coordinator.nextWakeAt()).toBeNull();
         expect(idleWorkSnapshot().active).toBe(0);
