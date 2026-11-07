@@ -12,7 +12,7 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader,
-  nativeRunnerCheckpointProvesIncompleteBootstrap } from "./native-runner-checkpoint.js";
+  nativeRunnerCheckpointRemoteBootstrapProof } from "./native-runner-checkpoint.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
@@ -369,6 +369,11 @@ export async function evaluateNativeProviderProcesses(input: {
 }
 
 /** Run event types that can carry a provider process identity. */
+/** Projected events a runner emits while opening its provider session, before any turn. */
+const SESSION_OPEN_PROVIDER_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "harness.ready", "session.started", "session.resumed", "session.updated",
+]);
+
 export const NATIVE_PROVIDER_PROCESS_EVENT_TYPES = [
   "harness.ready",
   "session.started",
@@ -487,7 +492,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   unclaimedBootstrap?: boolean;
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
-  remoteBootstrapIncompleteReason?: "remote_runner_never_launched";
+  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -518,7 +523,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
     }
-    if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
+    // Callers prove provider evidence is absent or only session-open events.
+    if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint) {
       // Each same-run bootstrap is another provider attempt; keep restarts bounded.
       if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
         return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
@@ -1070,6 +1076,7 @@ export async function claimNativeRestartRecoveries(input: {
       const providerEvents = await tx
         .select({
           id: heartbeatRunEvents.id,
+          eventType: heartbeatRunEvents.eventType,
           payload: heartbeatRunEvents.payload,
         })
         .from(heartbeatRunEvents)
@@ -1128,15 +1135,29 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
         && !durableAuthority && stagedAttachment === null
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
-        && row.coordinator.phase === "observed" && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
-        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid
-          && row.coordinator.controllerProcessStartedAt && row.coordinator.leaseOwner)
+        && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
+        // Either the executor still held the claim, or it settled a same-run
+        // bootstrap retry itself (for example after a shutdown closed its local
+        // runtime listener) and released the lease. That retry already proved
+        // no provider session, event or checkpoint; the checks below re-prove it.
+        && (row.coordinator.phase === "observed" ? Boolean(row.coordinator.leaseOwner)
+          : row.coordinator.phase === "retryable_failure" && row.run.status === "failed"
+            && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && !row.coordinator.leaseOwner)
         && !row.coordinator.failureDetail?.successorRunId
         && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
         && !row.run.sessionIdBefore && !row.run.sessionIdAfter
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
         && !hasCheckpoint && !hasProviderEvidence
         && !(await hasNativeExecutionStartEvidence(tx, row.run));
+      // A settled retry starts new work, so it needs the same current
+      // admission as the resumption reconciler: task pause, agent status,
+      // dependencies, ownership and competing runs. Keep it waiting otherwise.
+      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+        && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
+      }
 
       // A claimed remote bootstrap (runner launched, perhaps connected) has no
       // provider evidence when its controller dies before session.open
@@ -1144,12 +1165,22 @@ export async function claimNativeRestartRecoveries(input: {
       // writes every command to Postgres before sending it, so that checkpoint
       // is the complete record of what reached the sandbox runner. When it
       // proves no provider work, bootstrap again instead of holding the task.
-      const remoteBootstrapProvenIncomplete = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
-        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && !hasProviderEvidence
+      // A graceful drain can also suspend a run whose runner had just opened its
+      // provider session: session-open events may already be projected here,
+      // but no session snapshot or turn exists. Those events alone do not make
+      // the checkpoint proof ambiguous; any turn or provider event does.
+      const providerEvidenceIsSessionOpenOnly = !hasCheckpointProviderIdentity
+        && providerEvents.every(event => SESSION_OPEN_PROVIDER_EVENT_TYPES.has(event.eventType));
+      const remoteBootstrapProof = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
+        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && providerEvidenceIsSessionOpenOnly
         && Boolean(row.run.runnerInstanceId && row.run.nativeSessionId)
-        && await nativeRunnerCheckpointProvesIncompleteBootstrap(tx, {
+        ? await nativeRunnerCheckpointRemoteBootstrapProof(tx, {
           companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
-        }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! });
+        }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! })
+        : null;
+      // Projected session-open events need the stronger session-opened proof.
+      const remoteBootstrapProvenIncomplete = remoteBootstrapProof !== null
+        && (!hasProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
@@ -1157,7 +1188,8 @@ export async function claimNativeRestartRecoveries(input: {
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched,
-        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched" : undefined,
+        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,

@@ -11,7 +11,7 @@ export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool"] as const;
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result"] as const;
 export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
@@ -227,6 +227,10 @@ export interface TaskRecord {
   /** B5: distinct bench progress values the observer read during polling. */
   benchProgressSeen?: string[];
   benchFirstSeenAt?: number | null;
+  /** C1: first time the observer saw the run that received the follow-up propose or accept its result. */
+  resultAcceptedAt?: number | null;
+  /** The run whose result armed the `result` trigger; the fault fires only while it is still running. */
+  resultRunId?: string | null;
   triggerMissed?: TriggerId[];
 }
 

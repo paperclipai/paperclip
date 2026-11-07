@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
@@ -322,5 +322,84 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(await shutdownDispositions(f.db, f.runId)).toEqual(["finalizer_in_progress"]);
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(run.status).toBe("running");
+  }, 60_000);
+
+  /** RC-41: a hard kill leaves the accepted result leased to a controller that no longer exists. */
+  async function killedController(f: Awaited<ReturnType<typeof seedAcceptedResult>>, controller: {
+    bootId: string; pid: number; processStartedAt: Date | null;
+  }) {
+    await f.db.update(nativeRunFinalizations).set({ controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+  }
+  async function restart(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
+    const providerDispatch = vi.fn(() => { throw new Error("an accepted result must not open another provider turn"); });
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: providerDispatch });
+    try { await next.recoverNativeRunsAfterRestart(new Date()); }
+    finally { await next.drainActiveRunExecutions(); }
+    expect(providerDispatch).not.toHaveBeenCalled();
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    return { run, owner };
+  }
+
+  it.each([
+    { holder: "runner execution", leaseOwner: (runner: string) => `${runner}:${randomUUID()}` },
+    { holder: "restart-claimed execution", leaseOwner: () => `${randomUUID()}:2:${randomUUID()}` },
+    // An executor that adopted a finalization-resume claim keeps that token.
+    { holder: "resumed execution", leaseOwner: (runner: string) => `${runner}:resume:${randomUUID()}` },
+  ])("finalizes an accepted result promptly when a hard kill left its $holder lease to a dead controller", async ({ holder, leaseOwner }) => {
+    // RC-41: K1 lands after run.result is committed but before finalization.
+    // The dead boot's 20-minute lease must not hold the run `running`.
+    const f = await seedAcceptedResult(`ACCEPTED-THEN-SIGKILL-${holder}`, leaseOwner);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    const { run, owner } = await restart(f);
+    const [task] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+    expect(task.status).toBe("done");
+    expect(await f.db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+      .where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
+    expect(await f.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+  }, 90_000);
+
+  it("releases a dead controller's lease whose expiry Postgres stored with microsecond precision", async () => {
+    // The controller writes its lease with SQL time arithmetic, so the stored
+    // expiry carries microseconds that a JavaScript Date cannot round-trip.
+    const f = await seedAcceptedResult("ACCEPTED-THEN-SIGKILL-MICROS", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    await f.db.update(nativeRunFinalizations).set({
+      leaseExpiresAt: sql`date_trunc('second', now()) + interval '20 minutes 0.123456 seconds'`,
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+  }, 90_000);
+
+  it("keeps the accepted result leased while its earlier-boot controller process is still alive", async () => {
+    // Another live server (or an orphaned controller of an earlier boot) can
+    // still be finalizing. Age and boot ID alone never prove that it stopped.
+    const f = await seedAcceptedResult("ACCEPTED-LIVE-FOREIGN", () => `native-finalizer:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt });
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
+      .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
+  }, 60_000);
+
+  it.each(["native-finalizer", "native-cleanup"])("keeps a %s lease whose controller identity names an earlier executor", async (prefix) => {
+    // These claims do not rewrite the controller identity, so the dead earlier
+    // executor proves nothing about the process that holds the lease now.
+    const f = await seedAcceptedResult(`ACCEPTED-${prefix}-OF-LIVE-CLAIMANT`, () => `${prefix}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
+      .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
+  }, 60_000);
+
+  it("keeps a finalizer lease that belongs to the current boot", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-CURRENT-BOOT", () => `native-finalizer:${randomUUID()}`);
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
+      .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
   }, 60_000);
 });

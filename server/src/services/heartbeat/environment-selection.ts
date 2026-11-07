@@ -145,11 +145,13 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     existingExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, existingExecutionWorkspace.id);
   }
   const retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
-  const retainedWorkspace = input.task.freshWorkspace?.mode === "resume_stopped_native_workspace" ? input.task.freshWorkspace : retainedDirectory;
+  const retainedWorkspace = input.task.freshWorkspace?.mode === "resume_stopped_native_workspace"
+    || input.task.freshWorkspace?.mode === "reuse_issue_workspace" ? input.task.freshWorkspace : retainedDirectory;
   if (retainedWorkspace && (issueRef?.executionWorkspaceId !== retainedWorkspace.workspaceId ||
       existingExecutionWorkspace?.id !== retainedWorkspace.workspaceId || existingExecutionWorkspace.cwd !== retainedWorkspace.cwd)) {
     throw new WorkspaceValidationFailure("The saved Retry workspace binding changed.", {
-      workspaceValidation: { reason: retainedDirectory ? "isolated_task_directory_binding_mismatch" : "stopped_native_workspace_binding_mismatch", issueId },
+      workspaceValidation: { reason: retainedDirectory ? "isolated_task_directory_binding_mismatch"
+        : retainedWorkspace.mode === "reuse_issue_workspace" ? "retry_workspace_binding_mismatch" : "stopped_native_workspace_binding_mismatch", issueId },
     });
   }
   const nativeRecoveryExecutionWorkspaceId =

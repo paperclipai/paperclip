@@ -20,7 +20,7 @@ import { materializeIsolatedRemoteWorkspaceSource } from "../services/isolated-r
 import { realizeExecutionWorkspace, ensurePersistedExecutionWorkspaceAvailable } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { withExecutionWorkspaceLifecycleLock } from "../services/execution-workspace-lifecycle-lock.js";
-import { withWorkspaceSourceLocks } from "../services/workspace-source-lock.js";
+import { IsolatedRepositorySourceBusy, withWorkspaceSourceLocks } from "../services/workspace-source-lock.js";
 import { prepareProjectRepositoryWorkspaces, mergeExecutionWorkspaceMetadataForPersistence } from "../services/heartbeat/workspaces.js";
 import { describeGitExpirationFailure, expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { nestedWorktreeBranchPrefix, restoreNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
@@ -218,6 +218,30 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
     expect(await fs.readFile(f.nestedSettingsPath)).toEqual(f.settings);
     expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
+  });
+
+  it("retains a distinct private Git cache before the actual reopen lifecycle", async () => {
+    const f = await fixture(), sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, title: "Reopen consumer" });
+    const metadata = { ...(await f.row()).metadata };
+    delete metadata.isolatedRemoteSource;
+    await db.update(executionWorkspaces).set({ sourceIssueId, metadata }).where(eq(executionWorkspaces.id, f.workspaceId));
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, issueIds: [f.issueId] }, async () => {
+      entered(); await pending;
+    });
+    await started;
+    try {
+      await expect(f.reopen()).rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
+      const key = `execution_workspace_lifecycle:${f.workspaceId}`;
+      const locks = await db.execute(sql`select count(*)::int n from pg_locks where locktype='advisory' and granted
+        and classid=((hashtextextended(${key},0)>>32)&4294967295)::oid and objid=(hashtextextended(${key},0)&4294967295)::oid`);
+      expect(locks[0].n).toBe(0);
+    } finally { release(); await owner; }
+    expect(await f.reopen()).toMatchObject({ ok: true, reopened: false });
+    expect(git(f.cwd, "rev-parse", "HEAD")).toBe(f.commitA);
   });
 
   it("takes the project fence before the lifecycle lock during an actual nested reopen", async () => {
@@ -897,10 +921,22 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
 
   it("describes an unexpected inspection failure without the command or credentials", async () => {
     const f = await fixture();
-    await fs.writeFile(path.join(f.cwd, ".git"), `gitdir: ${path.join(f.cwd, "missing-admin")}\n`);
+    const failure = Object.assign(new Error("inspection command token=sk-secret-fixture"), { code: "EACCES" });
+    vi.spyOn(fs, "open").mockRejectedValueOnce(failure);
     const result = await f.expire();
     expect(result).toMatchObject({ expired: false, skipReason: "inspection_failed",
-      failure: { name: "Error", code: expect.any(String), at: expect.stringMatching(/^at /), stderr: expect.stringMatching(/not a git repository|gitfile does not point to a valid repository/) } });
+      failure: { name: "Error", code: "EACCES", at: expect.stringMatching(/^at /), stderr: null } });
+    expect(JSON.stringify(result)).not.toContain("sk-secret-fixture");
+    expect(JSON.stringify(result)).not.toContain("inspection command");
+    expect(await exists(f.cwd)).toBe(true);
+  });
+
+  it("retains an invalid Git pointer rejected by source admission without exposing its command", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.cwd, ".git"), `gitdir: ${path.join(f.cwd, "missing-admin")}\n`);
+    const result = await f.expire();
+    expect(result).toMatchObject({ expired: false, skipReason: "workspace_git_source_unproven" });
+    expect(result.failure).toBeUndefined();
     expect(await exists(f.cwd)).toBe(true);
   });
 

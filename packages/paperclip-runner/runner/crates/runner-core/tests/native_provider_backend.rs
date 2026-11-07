@@ -2439,7 +2439,9 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
 
 #[test]
 #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
-fn retains_opencode_state_when_a_valid_new_proxy_replaces_the_admitted_bytes() {
+fn prepared_opencode_state_follows_a_valid_new_proxy() {
+    // A prepared run has no provider work in flight, so a controller proxy
+    // upgrade re-binds it. The OpenCode release stays the admitted one.
     let directory = temporary_directory("opencode-proxy-upgrade-recovery");
     let config = opencode_config(&directory);
     let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -2452,44 +2454,336 @@ fn retains_opencode_state_when_a_valid_new_proxy_replaces_the_admitted_bytes() {
         .unwrap();
     first.shutdown().unwrap();
     drop(first);
-    let state_path = directory.join("codex-provider-state.json");
-    let saved_state = fs::read(&state_path).unwrap();
-    let proxy = directory.join("qualified-opencode-proxy-script");
-    let original = fs::read(&proxy).unwrap();
-    #[cfg(unix)]
-    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut upgraded = original.clone();
-    upgraded.extend_from_slice(b"\n# qualified next proxy release\n");
-    fs::write(&proxy, &upgraded).unwrap();
-    #[cfg(unix)]
-    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o500)).unwrap();
-    let mut next = config.clone();
-    next.opencode_launch_profile.as_mut().unwrap().proxy_script = qualified_artifact(proxy.clone());
+    let next = rebuild_opencode_proxy(&directory, &config);
     let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &next);
-    let error = recovered
+    recovered
         .execute(&command(
             2,
             "run.prepare",
             opencode_prepare_payload(&directory),
         ))
-        .unwrap_err();
-    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
-    assert_eq!(fs::read(&state_path).unwrap(), saved_state);
-    drop(recovered);
+        .unwrap();
+    recovered
+        .execute(&command(3, "session.open", json!({})))
+        .unwrap();
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// Replace the qualified proxy with valid new bytes, as a controller rebuild or
+/// deploy does, and return the launch profile that names those bytes.
+fn rebuild_opencode_proxy(directory: &Path, config: &DurableRunnerConfig) -> DurableRunnerConfig {
+    let proxy = directory.join("qualified-opencode-proxy-script");
+    let mut rebuilt = fs::read(&proxy).unwrap();
+    rebuilt.extend_from_slice(b"\n# rebuilt controller proxy\n");
     #[cfg(unix)]
     fs::set_permissions(&proxy, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(&proxy, original).unwrap();
+    fs::write(&proxy, &rebuilt).unwrap();
     #[cfg(unix)]
     fs::set_permissions(&proxy, fs::Permissions::from_mode(0o500)).unwrap();
-    let mut pinned = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
-    pinned
+    let mut next = config.clone();
+    next.opencode_launch_profile.as_mut().unwrap().proxy_script = qualified_artifact(proxy);
+    next
+}
+
+fn acknowledge_delivered_events(executor: &mut NativeProviderCommandExecutor) {
+    let events = executor.poll_events().unwrap();
+    executor.acknowledge_events(events.len()).unwrap();
+}
+
+fn poll_opencode_until(
+    executor: &mut NativeProviderCommandExecutor,
+    event_type: &str,
+) -> Vec<PolledEvent> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut observed = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let events = executor.poll_events().unwrap();
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+        if observed.iter().any(|event| event.event_type == event_type) {
+            return observed;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("OpenCode did not emit {event_type}: {observed:?}");
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn settled_opencode_session_continues_after_a_controller_proxy_rebuild() {
+    // A hard kill leaves a settled OpenCode conversation. The controller then
+    // restarts on a rebuilt proxy bundle; the OpenCode release is unchanged.
+    let directory = temporary_directory("opencode-settled-proxy-rebuild");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
         .execute(&command(
-            3,
+            1,
             "run.prepare",
             opencode_prepare_payload(&directory),
         ))
         .unwrap();
-    pinned.shutdown().unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    acknowledge_delivered_events(&mut first);
+    drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved_binding = |field: &str| -> Value {
+        serde_json::from_slice::<Value>(&fs::read(&state_path).unwrap()).unwrap()[field].clone()
+    };
+    let admitted_digest = saved_binding("opencodeLaunchProfileDigest");
+    let admitted_release = saved_binding("opencodeReleaseDigest");
+    assert!(admitted_digest.is_string() && admitted_release.is_string());
+
+    let rebuilt = rebuild_opencode_proxy(&directory, &config);
+    let resumes_before = opencode_call_count(&directory, "thread/resume");
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    recovered
+        .execute(&command(3, "runner.drain", json!({})))
+        .expect("a settled session re-binds to the rebuilt proxy");
+    assert_eq!(
+        opencode_call_count(&directory, "thread/resume"),
+        resumes_before + 1,
+        "recovery restores the same OpenCode conversation",
+    );
+    recovered
+        .execute(&command(
+            4,
+            "turn.start",
+            json!({"text": "Continue the task."}),
+        ))
+        .unwrap();
+    let observed = poll_opencode_until(&mut recovered, "turn.completed");
+    assert!(observed
+        .iter()
+        .any(|event| event.event_type == "turn.completed"));
+    recovered.shutdown().unwrap();
+    drop(recovered);
+
+    // The re-bound digest is durable and the release binding is unchanged.
+    let rebound_digest = saved_binding("opencodeLaunchProfileDigest");
+    assert!(rebound_digest.is_string());
+    assert_ne!(rebound_digest, admitted_digest);
+    assert_eq!(saved_binding("opencodeReleaseDigest"), admitted_release);
+    // The next recovery on the rebuilt profile matches the saved digest.
+    let mut again = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    again
+        .execute(&command(5, "session.snapshot", json!({})))
+        .unwrap();
+    again.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn opencode_release_change_still_refuses_a_settled_session() {
+    let directory = temporary_directory("opencode-settled-release-change");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    acknowledge_delivered_events(&mut first);
+    drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved_state = fs::read(&state_path).unwrap();
+
+    let executable = directory.join("qualified-opencode-executable");
+    #[cfg(unix)]
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(&executable, "next OpenCode release\n").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o500)).unwrap();
+    let mut released = rebuild_opencode_proxy(&directory, &config);
+    released
+        .opencode_launch_profile
+        .as_mut()
+        .unwrap()
+        .executable = qualified_artifact(executable);
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &released);
+    let error = recovered
+        .execute(&command(3, "runner.drain", json!({})))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("launch profile changed across durable recovery"));
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
+    assert_eq!(fs::read(&state_path).unwrap(), saved_state);
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn exited_opencode_session_continues_after_a_controller_proxy_rebuild() {
+    // The turn completes, then the idle provider exits nonzero. The observed
+    // exit leaves no provider work in flight, so a rebuilt proxy re-binds it.
+    let directory = temporary_directory("opencode-exited-proxy-rebuild");
+    let mut config = opencode_config(&directory);
+    let proxy_script = directory.join("qualified-opencode-proxy-script");
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        &proxy_script,
+        format!(
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract --fail-after-turn-completion --fail-after-turn-completion-delay-ms 250\n",
+            env!("CARGO_BIN_EXE_fake-codex-app-server"),
+            directory.join("fake-opencode-state.json").display(),
+            directory.join("fake-opencode-calls.log").display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o500)).unwrap();
+    config
+        .opencode_launch_profile
+        .as_mut()
+        .unwrap()
+        .proxy_script = qualified_artifact(proxy_script);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Finish the task."}),
+        ))
+        .unwrap();
+    poll_opencode_until(&mut first, "session.failed");
+    acknowledge_delivered_events(&mut first);
+    drop(first);
+    // The runner restarts an exited idle provider on its next poll. A hard
+    // kill can land first and leave the observed exit as the saved lifecycle.
+    let state_path = directory.join("codex-provider-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(saved["activeProviderTurnId"].is_null());
+    assert_eq!(saved["pendingEvents"], json!([]));
+    saved["lifecycle"] = json!("provider_exited");
+    fs::write(&state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let rebuilt = rebuild_opencode_proxy(&directory, &config);
+    let resumes_before = opencode_call_count(&directory, "thread/resume");
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    recovered
+        .execute(&command(4, "runner.drain", json!({})))
+        .expect("an exited, settled session re-binds to the rebuilt proxy");
+    assert_eq!(
+        opencode_call_count(&directory, "thread/resume"),
+        resumes_before + 1,
+        "recovery restarts the same OpenCode conversation",
+    );
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn opencode_proxy_rebuild_refuses_an_active_turn() {
+    let directory = temporary_directory("opencode-active-proxy-rebuild");
+    let mut config = opencode_config(&directory);
+    let proxy_script = directory.join("qualified-opencode-proxy-script");
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        &proxy_script,
+        format!(
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract --durable-turn-ids --linger-after-turn-start\n",
+            env!("CARGO_BIN_EXE_fake-codex-app-server"),
+            directory.join("fake-opencode-state.json").display(),
+            directory.join("fake-opencode-calls.log").display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o500)).unwrap();
+    config
+        .opencode_launch_profile
+        .as_mut()
+        .unwrap()
+        .proxy_script = qualified_artifact(proxy_script);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(3, "turn.start", json!({"text": "Edit the file."})))
+        .unwrap();
+    drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved_state = fs::read(&state_path).unwrap();
+
+    let rebuilt = rebuild_opencode_proxy(&directory, &config);
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    let error = recovered
+        .execute(&command(4, "runner.drain", json!({})))
+        .unwrap_err();
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
+    assert_eq!(fs::read(&state_path).unwrap(), saved_state);
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn opencode_state_without_a_release_binding_stays_exact() {
+    // State written before the release binding cannot prove which artifact
+    // changed, so a changed profile keeps failing closed.
+    let directory = temporary_directory("opencode-legacy-proxy-rebuild");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    acknowledge_delivered_events(&mut first);
+    drop(first);
+    let state_path = directory.join("codex-provider-state.json");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("opencodeReleaseDigest");
+    fs::write(&state_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+    let rebuilt = rebuild_opencode_proxy(&directory, &config);
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    let error = recovered
+        .execute(&command(3, "runner.drain", json!({})))
+        .unwrap_err();
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
+    drop(recovered);
     fs::remove_dir_all(directory).unwrap();
 }
 

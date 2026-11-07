@@ -152,13 +152,20 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // Unknown billing with no tokens (for example Cursor Cloud) still counts.
     // The lost-receipt exemption covers only that run's settled final charge;
     // later growth from a complete receipt is ordinary usage.
-    const exemptFromUnpricedBlock = sql`((${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
+    // A final charge settled only because closure evidence never arrived is
+    // genuinely unknown spend (its provider may still have run), so none of
+    // these exemptions apply to it.
+    const closureTimedOutCharge = sql`(${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
+      and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
+        and timed_out_run.company_id = ${costEvents.companyId}
+        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true'))`;
+    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
         and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
           and lost_receipt_run.company_id = ${costEvents.companyId}
           and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'))
       or ${costEvents.costCents} > 0
       or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
-        and ${costEvents.outputTokens} = 0))`;
+        and ${costEvents.outputTokens} = 0)))`;
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
       and not ${exemptFromUnpricedBlock})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;

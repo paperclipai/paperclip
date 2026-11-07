@@ -1781,6 +1781,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"turn": {"id": provider_turn_id, "status": "inProgress"}}
                 }))?;
+                // A resumed Codex thread can report the cumulative usage of the
+                // turn lost to a restart after it accepts the next turn.
+                if durable_turn_ids
+                    && state.next_turn > 1
+                    && args
+                        .iter()
+                        .any(|value| value == "--stale-usage-after-turn-start")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": format!("provider-turn-{}", state.next_turn - 1),
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
+                // A loaded host can accept a turn long before it starts it.
+                if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
+                // An accepted turn can be lost before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--exit-before-turn-started")
+                {
+                    return Err("configured exit before turn started".into());
+                }
                 send(json!({
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}

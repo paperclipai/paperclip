@@ -1,7 +1,7 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
-import { canSelectFreshWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
+import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
@@ -16,7 +16,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -314,6 +314,8 @@ export async function admitExplicitNativeContinuation(input: {
   const sources: Run[] = [];
   let readiness: ContinuationReadiness | undefined;
   const freshSources = new Map<string, string>();
+  const freshCandidates: Array<{ run: Run; intent: string; cause: string; evidence: Record<string, unknown>;
+    remote: boolean; leaseIds: string[] }> = [];
   const stoppedSessions: Array<{ evidence: Record<string, unknown>; retire: () => boolean }> = [];
   const cancelledStartupIds = new Set<string>();
   for (const action of sourceChecks) {
@@ -485,7 +487,9 @@ export async function admitExplicitNativeContinuation(input: {
         // A missing process identity is not evidence that a provider exited.
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
-            !await hasHistoricalSuspendedNativeSession(db, run)) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+            !await hasHistoricalSuspendedNativeSession(db, run) &&
+            !(run.runtimeMode === "native" &&
+              await recordUnidentifiedLocalRunnerStop(db, run, { record: !input.dryRun }))) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }
@@ -512,11 +516,31 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
     if (freshIntent && !await hasVerifiedWorkspaceRepair(db, run)) {
       freshSources.set(run.id, freshIntent);
-      readiness = { mode: "fresh_isolated_workspace", retryIntentId: freshIntent, sourceRunId: run.id,
-        retainedSourceIds: [...new Set([...(readiness?.mode === "fresh_isolated_workspace" ? readiness.retainedSourceIds : []),
-          ...leases.map(lease => lease.id)])] };
+      freshCandidates.push({ run, intent: freshIntent, cause: action.cause, evidence: strategyEvidence, remote,
+        leaseIds: leases.map(lease => lease.id) });
     }
     sources.push(run);
+  }
+  if (freshCandidates.length) {
+    // R2: keep the task's own workspace when its single prior writer is
+    // contained and the directory is safe to reuse. Otherwise start the fresh
+    // isolated attempt and leave every source directory untouched. Several
+    // holds can describe the same failed run; each hold must permit the reuse.
+    const sourceRunIds = new Set(freshCandidates.map(candidate => candidate.run.id));
+    const only = sourceRunIds.size === 1 && freshCandidates.every(candidate => !candidate.remote) ? freshCandidates[0]! : null;
+    let retained: { id: string; cwd: string } | null = null;
+    const gitProbes = new Map<string, Promise<boolean>>();
+    for (const candidate of only ? freshCandidates : []) {
+      const checked = await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,
+        successorRunId: input.successorRunId, cause: candidate.cause, source: candidate.run, evidence: candidate.evidence, gitProbes });
+      if (!checked || (retained && (retained.id !== checked.id || retained.cwd !== checked.cwd))) { retained = null; break; }
+      retained = checked;
+    }
+    const last = freshCandidates.at(-1)!;
+    readiness = retained && only ? { mode: "reuse_issue_workspace", retryIntentId: only.intent, sourceRunId: only.run.id,
+      workspaceId: retained.id, cwd: retained.cwd }
+      : { mode: "fresh_isolated_workspace", retryIntentId: last.intent, sourceRunId: last.run.id,
+        retainedSourceIds: [...new Set(freshCandidates.flatMap(candidate => candidate.leaseIds))] };
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
@@ -603,8 +627,8 @@ export async function admitExplicitNativeContinuation(input: {
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },
   });
   if (readiness) await persistActivity(db, { companyId, actorType: "system", actorId: "task-recovery",
-    action: "issue.fresh_workspace_selected", entityType: "issue", entityId: issueId,
-    details: { ...readiness, runId: input.successorRunId } });
+    action: readiness.mode === "reuse_issue_workspace" ? "issue.retry_workspace_reused" : "issue.fresh_workspace_selected",
+    entityType: "issue", entityId: issueId, details: { ...readiness, runId: input.successorRunId } });
   if (input.taskRetryRequestId) {
     const payload = sql`jsonb_set(${agentWakeupRequests.payload} #- '{taskRetry,continuation}', '{taskRetry,strategy}',
       ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`;
