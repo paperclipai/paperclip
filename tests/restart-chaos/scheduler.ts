@@ -34,10 +34,11 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   retry: [0, 2_000],
   queued: [0, 0],
   tool: [15_000, 60_000],
+  result: [2_000, 12_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
-  if (trigger === "comment") return workload === "C1";
+  if (trigger === "comment" || trigger === "result") return workload === "C1";
   if (trigger === "tool") return workload === "B5";
   return true;
 }
@@ -51,7 +52,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
     if (!options.workloads.some(workload => triggerFitsWorkload(trigger, workload))) {
-      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" ? "C1" : "B5"} in --workloads`);
+      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" || trigger === "result" ? "C1" : "B5"} in --workloads`);
     }
   }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: FaultKind; trigger: TriggerId }> = [];

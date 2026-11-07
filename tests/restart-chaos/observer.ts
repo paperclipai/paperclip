@@ -206,6 +206,14 @@ export class TaskObserver {
         return queued && !started ? first.at : "missed";
       }
       case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "result": {
+        // B8: the run that received the follow-up has accepted its result but
+        // has not settled yet. A follow-up posted at rest cannot cross it.
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        if (!followUp.commentId || !followUp.duringRun) return "missed";
+        return this.record.resultAcceptedAt ?? null;
+      }
     }
   }
 
@@ -294,6 +302,7 @@ export class TaskObserver {
       if (!events?.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
+        if (event.eventType === "run.result.accepted" && this.record.followUp?.duringRun) this.record.resultAcceptedAt ??= Date.now();
         cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
       }
       if (events.length < RUN_EVENT_PAGE) break;

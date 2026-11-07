@@ -198,6 +198,29 @@ describe("trigger firing", () => {
     expect(observer.faultDue(start + 50_000)).toMatchObject({ trigger: "tool" });
   });
 
+  it("result: fires its delay after the run that received the follow-up accepts its result", async () => {
+    const observer = new TaskObserver({ ...base, trigger: "result", triggerDelayMs: 4_000 },
+      scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    expect(observer.faultDue(start + 60_000)).toBeNull();
+    observer.record.followUp = { at: start + 1_000, postedAt: start + 1_000, commentId: "c1", error: null, duringRun: true };
+    expect(observer.faultDue(start + 60_000)).toBeNull();
+    observer.record.resultAcceptedAt = start + 30_000;
+    expect(observer.faultDue(start + 33_999)).toBeNull();
+    expect(observer.faultDue(start + 34_000)).toMatchObject({ trigger: "result" });
+  });
+
+  it("result: misses when the follow-up was posted at rest", async () => {
+    const observer = new TaskObserver({ ...base, trigger: "result", triggerDelayMs: 0 },
+      scriptedApi({ runs: [], issue: { id: "i1", status: "done" } }), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    observer.record.followUp = { at: start, postedAt: start, commentId: "c1", error: null, duringRun: false };
+    expect(observer.faultDue(start + 1)).toBeNull();
+    expect(observer.record.triggerMissed).toEqual(["result"]);
+  });
+
   it("records a miss instead of firing a triggered fault after its window has passed", async () => {
     const observer = new TaskObserver({ ...base, workload: "B5", trigger: "tool", triggerDelayMs: 1_000 },
       scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);

@@ -21,7 +21,7 @@ pnpm exec vitest run --config tests/restart-chaos/vitest.config.ts  # credential
 node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
-Options: `--triggers time,comment,retry,queued,tool` (fault timing, below),
+Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
 
@@ -117,6 +117,7 @@ the observer, after a seeded delay:
 | Trigger | Fires | Plan |
 | --- | --- | --- |
 | `comment` | 0–5 s after the C1 follow-up was posted to a live run (C1 only) | C1 + K1, B8 |
+| `result` | 2–12 s after the run that received the C1 follow-up accepted its result, before it settles (C1 only) | C1 + K1, B8 |
 | `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
 | `queued` | on the first poll whose run is still `queued` with no start | B1 |
 | `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
