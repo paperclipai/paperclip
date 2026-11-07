@@ -702,6 +702,9 @@ describe("opencode remote execution — stable task workspace", () => {
   it("returns a transient retry result when the stable-workspace cycle lock is held by a concurrent run", async () => {
     const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-lockwait-"));
     cleanupDirs.push(workspaceDir);
+    // Make the no-provider-run assertion independent of the shared mock
+    // history: only calls made by this attempt count.
+    runChildProcess.mockClear();
     prepareAdapterExecutionTargetRuntime.mockImplementationOnce(() =>
       Promise.reject(Object.assign(new Error("Timed out waiting for the stable task workspace cycle lock"), {
         code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
