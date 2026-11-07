@@ -277,18 +277,20 @@ describe("report-only ownership reconciliation", () => {
       .toEqual([{ entityId: "orphan-2", companyId: laterCompany }]);
   });
 
-  it("rotates through a kind larger than one page", async () => {
+  it("reads a kind larger than one page in a single pass, so second proofs compare the same records", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "failed", invocationSource: "manual" });
     const leases = [randomUUID(), randomUUID(), randomUUID()].sort();
-    await db.insert(environmentLeases).values(leases.map(id => ({ id, companyId, status: "pending_cleanup" })));
+    await db.insert(environmentLeases).values(leases.map(id => ({ id, companyId, heartbeatRunId: runId, status: "active" })));
     const state = createOwnershipReportState();
-    const seen: string[] = [];
-    for (let pass = 0; pass < 3; pass++) {
-      const report = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
-      seen.push(...report.violations.filter(violation => violation.kind === "environment_pending_cleanup")
-        .map(violation => violation.recordId));
-      if (pass === 0) expect(report.retryNeeded).toBe(true);
-    }
-    expect([...new Set(seen)].sort()).toEqual(leases);
+    const first = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(kindReport(first, "environment_run_lease_active")).toMatchObject({ inProgress: 3, truncated: false, verdicts: { gone: 3 } });
+    expect(first.awaitingSecondProof).toBe(3);
+    const second = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(second.violations.filter(violation => violation.rule === "I2_settled").map(violation => violation.recordId).sort())
+      .toEqual(leases);
+    expect(second.awaitingSecondProof).toBe(0);
+    expect(second.retryNeeded).toBe(false);
   });
 
   it("keeps a wake that lands while dispatch is drained", async () => {
