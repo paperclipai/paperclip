@@ -231,6 +231,110 @@ describePostgres("heartbeat agent status", () => {
     expect(await reconcile()).toHaveLength(2);
   });
 
+  it("reconciles an agent stuck running behind a cancelled never-started scheduled retry", async () => {
+    const { agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "cancelled",
+      startedAt: null,
+      finishedAt: old(),
+      scheduledRetryAt: new Date(Date.now() + 60 * 60_000),
+      scheduledRetryAttempt: 1,
+      costAccountingPending: false,
+    }).where(eq(heartbeatRuns.id, runId));
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
+    expect(await db.select().from(activityLog)).toEqual([expect.objectContaining({
+      entityId: agentId,
+      action: "agent.status_reconciled",
+      details: { previousStatus: "running", nextStatus: "idle", reason: "no_unsettled_execution" },
+    })]);
+  });
+
+  it("reconciles an agent stuck running behind an orphaned run with pending cost accounting", async () => {
+    const { agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      startedAt: old(),
+      finishedAt: old(),
+      errorCode: "orphaned_running_run",
+      scheduledRetryAt: null,
+      costAccountingPending: true,
+    }).where(eq(heartbeatRuns.id, runId));
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
+  });
+
+  it.each(["succeeded", "cancelled"] as const)(
+    "reconciles an agent stuck running behind an orphaned run recovered as %s with pending cost accounting",
+    async (status) => {
+      const { agentId, runId } = await seed();
+      await db.update(heartbeatRuns).set({
+        status,
+        startedAt: old(),
+        finishedAt: old(),
+        errorCode: null,
+        scheduledRetryAt: null,
+        costAccountingPending: true,
+        usageJson: { accountingReceiptReady: false },
+      }).where(eq(heartbeatRuns.id, runId));
+      expect(await reconcile()).toEqual([agentId]);
+      expect((await agent(agentId)).status).toBe("idle");
+    },
+  );
+
+  it.each(["succeeded", "cancelled"] as const)(
+    "reconciles an agent stuck running behind a coalesced wake whose target was recovered as %s with pending cost accounting",
+    async (status) => {
+      const { companyId, agentId, runId } = await seed();
+      await db.update(heartbeatRuns).set({
+        status,
+        startedAt: old(),
+        finishedAt: old(),
+        errorCode: null,
+        costAccountingPending: true,
+        usageJson: { accountingReceiptReady: false },
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(agentWakeupRequests).values({ companyId, agentId, runId,
+        source: "comment", status: "coalesced", finishedAt: old(),
+        requestedAt: old(), createdAt: old(), updatedAt: old() });
+      expect(await reconcile()).toEqual([agentId]);
+      expect((await agent(agentId)).status).toBe("idle");
+    },
+  );
+
+  it("reconciles an agent stuck running behind a coalesced wake whose target run still owes accounting", async () => {
+    const { companyId, agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      startedAt: old(),
+      finishedAt: old(),
+      errorCode: "orphaned_running_run",
+      costAccountingPending: true,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, runId,
+      source: "comment", status: "coalesced", finishedAt: old(),
+      requestedAt: old(), createdAt: old(), updatedAt: old() });
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
+  });
+
+  it("reconciles an agent stuck running behind a coalesced wake whose target is a cancelled never-started retry", async () => {
+    const { companyId, agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "cancelled",
+      startedAt: null,
+      finishedAt: old(),
+      scheduledRetryAt: new Date(Date.now() + 60 * 60_000),
+      scheduledRetryAttempt: 1,
+      costAccountingPending: false,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, runId,
+      source: "task_retry", status: "coalesced", finishedAt: old(),
+      requestedAt: old(), createdAt: old(), updatedAt: old() });
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
+  });
+
   it("rolls the correction back when the audit write fails", async () => {
     const { agentId } = await seed();
     await db.execute(sql`ALTER TABLE activity_log ADD CONSTRAINT reject_status_repair CHECK (action <> 'agent.status_reconciled')`);
