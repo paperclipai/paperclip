@@ -91,8 +91,6 @@ export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenC
     || claims.scope !== scope
     || typeof claims.iat !== "number"
     || typeof claims.exp !== "number"
-    // Connection tools revalidate the bound run through loadRunContext on every
-    // request; exp does not impose a deadline on a running heartbeat.
     || (scope !== "connection_intents" && claims.exp <= Math.floor(Date.now() / 1000))
   ) return null;
   return claims as unknown as RuntimeToolsTokenClaims;

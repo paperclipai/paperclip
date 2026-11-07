@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, heartbeatRuns } from "@paperclipai/db";
+import { createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { runtimeConnectionIntentRoutes } from "../routes/connection-intents.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
@@ -39,7 +39,6 @@ const support = await getEmbeddedPostgresTestSupport();
     return server;
   }
 
-  // Mint the token two hours in the past, so its exp is already over.
   function expiredConnectionToken(input: { agentId: string; companyId: string; runId: string }) {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -52,6 +51,8 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("keeps a connection tools token usable after its exp while the bound run is running", async () => {
     const input = await seed();
+    await db.update(issues).set({ assigneeAgentId: input.agentId, status: "in_progress" })
+      .where(eq(issues.id, input.issueId));
     const minted = expiredConnectionToken(input);
     expect(new Date(minted.expiresAt).getTime()).toBeLessThan(Date.now());
 
@@ -60,12 +61,14 @@ const support = await getEmbeddedPostgresTestSupport();
       .set("Authorization", `Bearer ${minted.token}`)
       .send({ query: "github" });
 
-    expect(res.status, JSON.stringify(res.body)).not.toBe(401);
-    expect(JSON.stringify(res.body)).not.toContain("Runtime tools token is missing, invalid, or expired");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ version: 1, query: "github", results: expect.any(Array) });
   });
 
   it("refuses the same token as soon as the bound run is no longer running", async () => {
     const input = await seed();
+    await db.update(issues).set({ assigneeAgentId: input.agentId, status: "in_progress" })
+      .where(eq(issues.id, input.issueId));
     const minted = expiredConnectionToken(input);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, input.runId));
