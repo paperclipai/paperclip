@@ -109,7 +109,9 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     try {
       if (req.actor.type === "none") throw unauthorized("Authentication required");
       assertCompanyAccess(req, String(req.params.companyId));
-      if (!await svc.getById(String(req.params.companyId), id)) throw notFound("Skill not found");
+      const skill = await svc.getByRouteRef(String(req.params.companyId), id);
+      if (!skill) throw notFound("Skill not found");
+      req.params.skillId = skill.id;
       next();
     } catch (error) { next(error); }
   });
