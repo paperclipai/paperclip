@@ -136,7 +136,7 @@ describe("internal agent commentary through both transports", () => {
       expect(response.status).toBe(403);
       const body = await response.json() as { error: string; remediation?: string };
       expect(body.error).toBe("Board access required");
-      expect(body.remediation).toContain(`/${company!.issuePrefix}/activity/commentary`);
+      expect(body.remediation).toContain(`[Commentary](/${company!.issuePrefix}/activity/commentary)`);
     };
     // Reading other agents' commentary is never a default agent grant.
     expect(NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS).not.toContain("commentary:view");
