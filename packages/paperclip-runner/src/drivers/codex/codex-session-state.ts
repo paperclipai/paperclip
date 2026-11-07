@@ -1,5 +1,4 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
-import { readLocalProcessStartedAt } from "../../live/linux-process-start.js";
 import type { ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
 import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
@@ -627,16 +626,9 @@ export function initializeCodexSessionEvents(
   state: CodexSessionState,
   input: CodexSessionStateInput,
 ): void {
-    // Name the local app-server process (Codex, or the OpenCode proxy that owns `opencode serve`
-    // in its process group) so the control plane's stop proof can verify that exact process exited.
-    const processInfo = state.transport.processInfo?.();
-    const processIdentity = processInfo && !processInfo.exited && processInfo.pid !== null
-      ? { processId: processInfo.pid, processGroupId: processInfo.processGroupId, processStartedAt: readLocalProcessStartedAt(processInfo.pid) }
-      : {};
     state.emit(input.resumed ? "session.resumed" : "session.started", {
       driverSessionId: input.opened.threadId,
       providerSessionId: input.opened.providerSessionId,
-      ...processIdentity,
       context: input.opened.context,
     });
     state.emitGoalCapabilities();
