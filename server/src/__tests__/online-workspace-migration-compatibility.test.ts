@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { activityLog, companies, createDb, executionWorkspaceSnapshots, executionWorkspaces,
   issues, projects, workspaceOperations, type Db } from "@paperclipai/db";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { runOnlineWorkspaceMigration, type OnlineWorkspaceMigrationRequest } from "../maintenance/online-workspace-migration.js";
+import { onlineWorkspaceMigrationReceipt, runOnlineWorkspaceMigration, type OnlineWorkspaceMigrationRequest } from "../maintenance/online-workspace-migration.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
@@ -102,7 +102,11 @@ describe.skipIf(!support.supported)("versioned online migration compatibility wi
       }, true);
       expect(await fs.readFile(path.join(other.cwd, "unrelated.txt"), "utf8")).toBe("unrelated writer admitted\n");
     } finally { release.resolve(); await writer; }
-    await expect(apply(request(f))).resolves.toMatchObject({ applied: true });
+    const result = await apply(request(f));
+    expect(result).toMatchObject({ applied: true });
+    const [completed] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId));
+    expect(completed.status).toBe("succeeded");
+    expect(onlineWorkspaceMigrationReceipt(result).members?.[0]?.operationId).toBe(completed.id);
     await oldColdRestore(f, "saved by old writer\n");
   }, 60_000);
   it.each(["pending", "uploaded"])("resumes the old migration.v1 journal shape with the same operation and snapshot IDs (%s)", async state => {
