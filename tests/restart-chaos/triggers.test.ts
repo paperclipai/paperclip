@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -6,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
 import { gradeR5 } from "./grader.js";
-import { latestIso, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
+import { latestIso, localProcessAlive, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { crashLoopShouldFire } from "./supervisor.js";
@@ -376,6 +377,49 @@ describe("R5 live evidence", () => {
     const sample = (at: number, ready = true): TaskSample => ({ at, reachable: ready, serverReady: ready, issueStatus: "in_progress", runs: [run] });
     expect(gradeR5(record([sample(start, false), sample(start + 1_000), sample(start + 120_000)])).verdict).toBe("pass");
     expect(gradeR5(record([sample(start, false), sample(start + 1_000), sample(start + 200_000)])).verdict).toBe("fail");
+  });
+
+  const quietB5 = (live: { toolInFlight?: boolean; processAlive?: boolean }) => {
+    // A B5 run quiet for 4 minutes while bench.sh runs: no event, no activity, started long before.
+    const start = Date.parse("2026-11-06T10:00:00Z");
+    const run = { id: "r1", status: "running", createdAt: null, startedAt: new Date(start - 600_000).toISOString(), finishedAt: null,
+      errorCode: null, retryOfRunId: null, wakeCommentIds: [], livenessState: null, lastEvidenceAt: new Date(start).toISOString(), ...live };
+    return record([0, 60_000, 120_000, 180_000, 240_000].map(offset => ({ at: start + offset, reachable: true, serverReady: true,
+      issueStatus: "in_progress", runs: [run] })));
+  };
+
+  it("does not flag a quiet run whose tool is still in flight or whose process is verifiably alive (B5 quiet 4 min)", () => {
+    expect(gradeR5(quietB5({ toolInFlight: true })).verdict).toBe("pass");
+    expect(gradeR5(quietB5({ processAlive: true })).verdict).toBe("pass");
+    expect(gradeR5(quietB5({}))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+  });
+
+  it("derives tool-in-flight and process liveness from run events", async () => {
+    const startedAt = new Date().toISOString();
+    const identity = { processPid: 4242, processGroupId: 4242, processStartedAt: "2026-11-06T10:00:00.000Z", targetKind: "local" };
+    const state = { runs: [{ runId: "r1", status: "running", startedAt }] as Json[], issue: { id: "i1", status: "in_progress" },
+      events: [{ seq: 1, eventType: "native.process_identity_recorded", payload: identity, createdAt: startedAt },
+        { seq: 2, eventType: "tool.execution.started", payload: {}, createdAt: startedAt }] as Json[] };
+    const observer = new TaskObserver({ ...base, workload: "B5" }, scriptedApi(state), lab, new Timeline(null), ready);
+    const checked: Array<[number, string]> = [];
+    observer.processAlive = (pid, at) => { checked.push([pid, at]); return true; };
+    await observer.launch();
+    await observer.poll(Date.now());
+    expect(observer.record.samples.at(-1)!.runs![0]).toMatchObject({ toolInFlight: true, processAlive: true });
+    expect(checked).toEqual([[4242, "2026-11-06T10:00:00.000Z"]]);
+    state.events.push({ seq: 3, eventType: "tool.execution.completed", payload: {}, createdAt: startedAt },
+      { seq: 4, eventType: "native.local_process_stopped", payload: { processPid: 4242 }, createdAt: startedAt });
+    await observer.poll(Date.now() + 3_000);
+    const latest = observer.record.samples.at(-1)!.runs![0]!;
+    expect(latest.toolInFlight).toBeUndefined();
+    expect(latest.processAlive).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === "win32")("checks a local process by PID and start time, so a recycled PID is not alive", () => {
+    const lstart = spawnSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } }).stdout.trim();
+    const startedAt = new Date(Date.parse(lstart)).toISOString();
+    expect(localProcessAlive(process.pid, startedAt)).toBe(true);
+    expect(localProcessAlive(process.pid, new Date(Date.parse(lstart) - 60_000).toISOString())).toBe(false);
   });
 
   it("keeps the latest evidence timestamp", () => {

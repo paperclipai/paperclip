@@ -24,6 +24,7 @@ import { StormRun, observedFaultSchedule, planWave, replayWave } from "./schedul
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
+import { worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -103,6 +104,14 @@ async function main(): Promise<number> {
   const timeline = new Timeline(path.join(waveDir, "timeline.jsonl"));
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
+  // Builds and branch switches must happen before the wave, never during it.
+  const startFingerprint = worktreeFingerprint(repositoryRoot);
+  let worktreeChanged = false;
+  const checkWorktree = (at: string) => {
+    if (worktreeChanged || worktreeFingerprint(repositoryRoot) === startFingerprint) return;
+    worktreeChanged = true;
+    timeline.add("worktree_changed_mid_wave", { at, gitSha: git(["rev-parse", "HEAD"]) });
+  };
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
     tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`),
     ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
@@ -171,6 +180,7 @@ async function main(): Promise<number> {
       faultsQueued += 1;
       faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
+        checkWorktree(receipt.faultId);
         for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
       }, (error: Error & { receipt?: FaultReceipt }) => {
         if (error.receipt) faults.push(error.receipt);
@@ -231,6 +241,8 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    checkWorktree("wave_end");
+    if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");
     // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
     if (storm && !interrupted && storm.exhaustedEarly(Date.now())) {
       timeline.add("storm_pool_exhausted", { faultsFired: storm.state.fired, launched: launched.length });
