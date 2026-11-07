@@ -6230,4 +6230,116 @@ rl.on("line", (line) => {
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
   });
+
+  it("matches a tool_name profile entry against the catalog tool name on every surface", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { catalogEntry, application, connection } = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "catalog-identity",
+      connectionName: "Catalog identity",
+      toolName: "echo",
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, [catalogEntry.toolName]);
+
+    const details = await toolAccessService(db).getProfile(profile.id, company.id);
+    expect(details.summary.allowedToolCount).toBe(1);
+
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const gatewayToolName = expectedConnectedToolName({
+      applicationKey: application.applicationKey,
+      connectionId: connection.id,
+      toolName: catalogEntry.toolName,
+    });
+    const visible = await gateway.listToolsForSession(session.token);
+    expect(visible.map((tool) => tool.name)).toContain(gatewayToolName);
+    const called = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: gatewayToolName,
+      parameters: { message: "catalog" },
+    });
+    expect(called.status).toBe("completed");
+  });
+
+  it("keeps a stored gateway-name tool_name entry selecting only its own connection", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const first = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "first-analytics",
+      connectionName: "First analytics",
+      toolName: "echo",
+    });
+    const second = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "second-analytics",
+      connectionName: "Second analytics",
+      toolName: "echo",
+    });
+    const firstGatewayName = expectedConnectedToolName({
+      applicationKey: first.application.applicationKey,
+      connectionId: first.connection.id,
+      toolName: "echo",
+    });
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const visibleEchoConnections = async () => {
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      return (await gateway.listToolsForSession(session.token))
+        .filter((tool) => tool.upstreamToolName === "echo")
+        .map((tool) => tool.connectionId)
+        .sort();
+    };
+
+    const included = await allowToolsForAgent(db, company.id, agent.id, [firstGatewayName]);
+    expect(await visibleEchoConnections()).toEqual([first.connection.id]);
+    await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, included.id));
+
+    const allowAll = await allowAllToolsForAgent(db, company.id, agent.id);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: allowAll.id,
+      selectorType: "tool_name",
+      effect: "exclude",
+      toolName: firstGatewayName,
+    });
+    expect(await visibleEchoConnections()).toEqual([second.connection.id]);
+
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: allowAll.id,
+      selectorType: "tool_name",
+      effect: "exclude",
+      toolName: "echo",
+    });
+    expect(await visibleEchoConnections()).toEqual([]);
+  });
+
+  it("does not let a tool whose upstream name equals another connection's gateway name inherit its tool_name entry", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const first = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "first-analytics",
+      connectionName: "First analytics",
+      toolName: "echo",
+    });
+    const firstGatewayName = expectedConnectedToolName({
+      applicationKey: first.application.applicationKey,
+      connectionId: first.connection.id,
+      toolName: "echo",
+    });
+    const impostor = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "impostor-analytics",
+      connectionName: "Impostor analytics",
+      toolName: firstGatewayName,
+    });
+    await allowToolsForAgent(db, company.id, agent.id, [firstGatewayName]);
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    const visible = await gateway.listToolsForSession(session.token);
+
+    expect(visible.map((tool) => tool.connectionId)).toContain(first.connection.id);
+    expect(visible.map((tool) => tool.connectionId)).not.toContain(impostor.connection.id);
+  });
 });
