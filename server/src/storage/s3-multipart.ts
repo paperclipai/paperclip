@@ -5,6 +5,10 @@ import type { PutObjectInput } from "./types.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
 import { cleanupStorageFailure } from "./failure-cleanup.js";
 
+const bufferedPartSize = 8 * 1024 * 1024;
+const bufferedPayloadLimit = 4 * bufferedPartSize;
+let bufferedPayloadBytes = 0;
+
 /** Each part is streamed too: multipart must not become another whole-file
  * buffer or a fixed part-count ceiling below the storage provider's limits. */
 export async function putS3Multipart(client: S3Client, bucket: string, key: string, input: PutObjectInput) {
@@ -55,7 +59,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   };
   let uploadId: string | undefined;
   // Scale part sizes to the S3 part-count limit while retaining stream backpressure.
-  const partSize = Math.max(8 * 1024 * 1024, Math.ceil(input.contentLength / 10_000));
+  const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
   try {
     check();
     uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
@@ -67,10 +71,15 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
       check();
       const length = Math.min(partSize, input.contentLength - offset);
       const number = ++partNumber;
-      const buffered = partSize <= 8 * 1024 * 1024 ? Buffer.allocUnsafe(length) : null;
-      if (buffered) {
-        let position = 0;
-        await readPart(length, async chunk => { chunk.copy(buffered, position); position += chunk.length; });
+      let buffered: Buffer | null = null;
+      if (partSize <= bufferedPartSize && bufferedPayloadBytes + length <= bufferedPayloadLimit) {
+        bufferedPayloadBytes += length;
+        try {
+          const payload = Buffer.allocUnsafe(length);
+          let position = 0;
+          await readPart(length, async chunk => { chunk.copy(payload, position); position += chunk.length; });
+          buffered = payload;
+        } catch (error) { bufferedPayloadBytes -= length; throw error; }
       }
       let remaining = length;
       const body = new PassThrough({ highWaterMark: 64 * 1024 });
@@ -90,7 +99,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
         body.end();
       })().catch(stop) : Promise.resolve();
       const uploading = Promise.all([sending, producing]).then(() => undefined)
-        .finally(() => { active.delete(uploading); bodies.delete(body); body.destroy(); });
+        .finally(() => { if (buffered) bufferedPayloadBytes -= length; active.delete(uploading); bodies.delete(body); body.destroy(); });
       active.add(uploading);
       if (!buffered) {
         await readPart(length, write);
