@@ -546,6 +546,7 @@ function applyCreateIssueStatusDefault(
 
 function noopTaskWatchdogService(): TaskWatchdogService {
   return {
+    readIdleSchedule: async () => ({ blocked: true, state: "unavailable", deadlines: [] }),
     getActiveForIssue: async () => null,
     listActiveSummariesForIssues: async () => new Map(),
     upsertForIssue: async () => {
@@ -8013,7 +8014,7 @@ export function issueRoutes(
           "This issue is linked to a closed workspace that cannot be reopened.",
       });
     } else {
-      res.status(409).json({ error: result.message });
+      res.status(409).json({ error: result.message, ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}) });
     }
     return null;
   }

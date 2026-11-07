@@ -1,3 +1,4 @@
+import { slackCloudAcceptedAt } from "./cloud-event.js";
 import { isProvisionedSlackSetup } from "@paperclipai/shared";
 import { slackRequestSignatureIsValid, slackRequestWorkspaceId, slackCallbackMatchesPublicUrl, inspectSlackCallback } from "./callback-verification.js";
 import type { InternalSetupState } from "../runtime-types.js";
@@ -53,6 +54,7 @@ export function createSlackWebhookCallbacks(db: Db, options: SlackWebhookOptions
     return null;
   }
   async function recordSlackWebhookCallback(endpoint: EndpointRow, request: Request, slackCallbackInspection: Request, runtimeContext: RuntimeContext): Promise<void> {
+    if (slackCloudAcceptedAt(request) !== undefined) return;
     const eventBody = await slackCallbackInspection.clone().text();
     const callback = await inspectSlackCallback(slackCallbackInspection);
     if (callback) {

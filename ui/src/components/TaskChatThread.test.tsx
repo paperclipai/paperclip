@@ -1248,6 +1248,42 @@ function renderThread(props: ComponentProps<typeof TaskChatThread>) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it.each(["original", "changed"])("groups PAP-2525 native image uploads with %s receipt wording", async (wording) => {
+    const comment = (id: string, body: string, runId?: string) => ({
+      id, body, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId ?? null, createdAt: new Date("2026-11-06T13:32:00Z"), updatedAt: new Date("2026-11-06T13:32:00Z"),
+      metadata: null, presentation: null,
+    });
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const workProducts = [1, 2].map(n => ({
+      id: `image-${n}`, type: "artifact", provider: "paperclip", title: `Screen ${n}`, status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "images-run", createdAt: new Date(`2026-11-06T13:31:0${n}Z`), updatedAt: new Date(`2026-11-06T13:31:0${n}Z`),
+      metadata: { attachmentId: `00000000-0000-4000-8000-00000000000${n}`, originalFilename: `screen-${n}.png`, contentType: "image/png", byteSize: 2048, contentPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, openPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, downloadPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content?download=1` },
+    })) as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = workProducts.map((w, n) => ({ id: w.metadata!.attachmentId, issueCommentId: `receipt-${n}`, originatingRunId: "images-run", createdByAgentId: "agent",
+      originalFilename: `screen-${n}.png`, contentType: "image/png", contentPath: w.metadata!.contentPath,
+      createdAt: w.createdAt, updatedAt: w.updatedAt, byteSize: 2048,
+    })) as unknown as NonNullable<Props["attachments"]>;
+    const comments = workProducts.map((w, n) => ({ ...comment(`receipt-${n}`, wording === "original" ? `Prepared ${w.title} for this response.` : `Image ready: ${w.title}`, "images-run"),
+      createdAt: new Date(new Date(w.createdAt).getTime() + 100),
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol",
+        ...(wording === "changed" ? { attachmentPreparation: { attachmentId: String(w.metadata!.attachmentId) } } : {}),
+      },
+    }));
+    const props: Props = { comments, workProducts, attachments, onAdd: async () => {}, issueStatus: "done" };
+    render(<TaskChatThread {...props} />);
+    await settleThreadLayout();
+    for (const receipt of comments) expect(container.textContent).not.toContain(receipt.body);
+    expect(container.querySelectorAll('[data-testid="task-chat-image-grid"]')).toHaveLength(1);
+    expect(container.querySelectorAll('button[aria-label^="Open gallery:"]')).toHaveLength(2);
+    // The same words written by a person are conversation and must remain.
+    render(<TaskChatThread {...props} comments={[...comments, { ...comment("human-receipt-words", "Prepared Screen 1 for this response."), authorAgentId: null, authorType: "user", authorUserId: "viewer" }]} />);
+    expect(container.textContent).toContain("Prepared Screen 1 for this response.");
+    // Native progress messages share the protocol marker and can have attachments.
+    render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: { ...comments[0].metadata, attachmentPreparation: undefined } }, comments[1]]} />);
+    expect(container.textContent).toContain("Keep this image context");
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [
@@ -3919,6 +3955,56 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
   const props = { conversationMode, issueId: "issue-1", currentUserId: "user-board", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
   const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
   const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
+  it.each([false, true])("removes an old plan approval as soon as the newer document arrives (coordinator=%s)", coordinator => {
+    const review = planReviewInteraction();
+    planState.data = planDocument();
+    const show = (interactions = [review]) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} comments={[]} interactions={interactions} onAcceptInteraction={vi.fn()} />
+    </CoordinatorPresentation.Provider>);
+    show();
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+
+    const replacement = { ...planReviewInteraction("pending", "revision-4"), id: "new-review", createdAt: new Date("2026-08-23T10:04:00Z") };
+    show([review, replacement]);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+    expect(takeover()?.textContent).not.toContain("2 pending");
+    expect(review.status).toBe("pending");
+  });
+
+  it("keeps a new approval when its document query is still on an older revision", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-2", latestRevisionNumber: 2 });
+    render(<TaskChatThread {...props} comments={[]} interactions={[planReviewInteraction()]} />);
+    expect(takeover()?.textContent).toContain("Do you accept this plan?");
+  });
+
+  it.each(["id", "number"] as const)("removes an older plan review that has only a revision %s", reference => {
+    const review = {
+      ...planReviewInteraction(),
+      payload: {
+        version: 1,
+        prompt: "Approve this Plan?",
+        target: { type: "issue_document", key: "plan", ...(reference === "id" ? { revisionId: "revision-3" } : { revisionNumber: 3 }) },
+      },
+    } as IssueThreadInteraction;
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+  });
+
+  it("keeps unrelated approvals and accepted plan history when a plan changes", () => {
+    planState.data = planDocument({ latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-08-23T10:03:00Z") });
+    const review = { ...planReviewInteraction(), payload: { version: 1, prompt: "Review another task", target: { type: "issue_document", issueId: "other-task", key: "plan", revisionId: "revision-3" } } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[review, { ...planReviewInteraction("accepted"), id: "accepted-plan" }]} />);
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('#interaction-accepted-plan')).not.toBeNull();
+  });
   const dismiss = async () => {
     await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
   };
@@ -4406,13 +4492,15 @@ describe("TaskChatThread blocker links", () => {
           '[data-testid="task-chat-live-work-step"] a',
         ),
       ].map((link) => link.textContent);
+      // Each step leads with the shared task status glyph (its <title> is
+      // the status label), the same glyph the task list draws (BUG-07).
       expect(orderedLinks).toEqual([
-        "PAP-17424Run the guarded cutover",
-        "PAP-17425Verify the live projection",
-        "PAP-17427Verify the completed projection",
+        "DonePAP-17424Run the guarded cutover",
+        "In ProgressPAP-17425Verify the live projection",
+        "TodoPAP-17427Verify the completed projection",
       ]);
       expect(notice.textContent).toContain(
-        "Now runningPAP-17426Restore live alias projection",
+        "Now runningIn ProgressPAP-17426Restore live alias projection",
       );
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
@@ -5505,6 +5593,30 @@ describe("TaskChatThread live transcript", () => {
       ).toBeNull();
     },
   );
+
+  it("renders one Stopped row when an interrupted native turn settles without a reply", () => {
+    const runId = "native-interrupted";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-11-06T15:14:05Z", "INTERRUPTED-PROGRESS-LINE", "progress"),
+      { kind: "run_terminal", ts: "2026-11-06T15:14:26Z", turnState: "cancelled", runState: "cancelled", disposition: "blocked" },
+    ]);
+    const activeRun = {
+      id: runId, runtimeMode: "native" as const, status: "running", invocationSource: "issue" as const,
+      triggerDetail: null, startedAt: "2026-11-06T15:14:05Z", createdAt: "2026-11-06T15:14:05Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Researcher", adapterType: "paperclip_runner",
+    };
+    renderThread({ comments: [], onAdd: async () => {}, issueStatus: "in_progress", activeRun });
+    // Interrupt cancels the turn. A stopped turn posts no reply comment, so the
+    // settled turn alone owns it; the live tail must not render a second row.
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      linkedRuns: [{ ...activeRun, runId, status: "cancelled", finishedAt: "2026-11-06T15:14:26Z",
+        errorCode: "operator_interrupted", resultJson: { operatorInterrupted: true, cancelledByActorType: "user" } }],
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBeNull();
+    expect(container.textContent?.split("INTERRUPTED-PROGRESS-LINE")).toHaveLength(2);
+    expect(container.textContent?.match(/Stopped (for|after) /g)).toHaveLength(1);
+  });
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [

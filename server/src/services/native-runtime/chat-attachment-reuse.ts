@@ -1637,6 +1637,7 @@ export async function prepareReusedChatAttachment(input: {
       {
         attachmentIds: [attachment.id],
         authorizationReason: "paperclip_runner_protocol",
+        metadata: { version: 1, sections: [], attachmentPreparation: { attachmentId: attachment.id } },
       },
       input.db,
     );

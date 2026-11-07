@@ -15,6 +15,9 @@ permissions:
 # the Honeycomb credential, so fork PRs cannot execute with it.
 env:
   PAPERCLIP_CI_PROFILE_DIR: ${{ github.workspace }}/.ci-profile
+  # Empty keeps the PR default of one Vitest retry (scripts/ci/vitest-retry.mjs).
+  # Set the CI_VITEST_RETRY repository variable to 0 to switch retries off.
+  PAPERCLIP_VITEST_RETRY: ${{ vars.CI_VITEST_RETRY }}
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -727,10 +730,71 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  verify_runner_e2e_support:
+    name: Runner support suite
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.run) }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Runner support suite
+
+    # The paid Runner workflows depend on this suite: workflow security
+    # policy, evidence oracles, cost receipts and controller recovery. It
+    # used to run only in a manual Docker Runner check, so master changes
+    # broke it unseen (#19527, #19529). It needs no provider credentials.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        uses: ./.github/actions/setup-ci-dependencies
+
+      # Builds the plugin SDK first, then runs Vitest and the node:test files.
+      - name: Run the Runner support suite
+        run: pnpm test:e2e:runner:unit
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
   verify:
     name: verify
     if: ${{ always() }}
-    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run]
+    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
     steps:
@@ -749,7 +813,7 @@ jobs:
           const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
           if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
           if (plan?.testSelection) assert.equal(results.test_selection.result, 'success', 'Published selection must succeed');
-          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","sandbox_provider_tests","verify_serialized_server","canary_dry_run"]) {
+          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","sandbox_provider_tests","verify_serialized_server","canary_dry_run","verify_runner_e2e_support"]) {
             if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
             const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
             assert.equal(results[job].result, selected ? 'success' : 'skipped', job);
@@ -764,7 +828,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package","command":"test:typescript:vitest --shard=1/2","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --shard=2/2","release_crate":true,"task":"ci:runner-vitest"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}

@@ -83,6 +83,22 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
+## ACPX checkpoints after a rejected turn start
+
+A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
+`retryable: true` can retain the exact saved conversation. The session must have
+no active turn, pending request or buffered event. The saved identity must still
+match, with no retained work event or active goal. A pending `session.resumed`
+notification is retained for the normal drain; it does not start provider work. The Runner first reaps
+the sidecar, then confirms the provider lifetime fence. It stores this boundary
+as `prepared`, with exit confirmation, before the normal drain and suspension
+make it reusable. The scheduled recovery keeps its existing attempt limit.
+
+Unknown acceptance, malformed replies, other rejection codes, pending work and
+unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
+An arbitrary `closed` provider state stays closed. This path does not establish
+recovery for a Runner killed during an accepted turn.
+
 ## Settled ACPX sessions across a Runner upgrade
 
 Saved ACPX provider state records the digest of the launch profile that wrote
@@ -112,12 +128,35 @@ after a failed resume, it opens a fresh provider session as before. Otherwise th
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
 
+A Codex `run.attach` that would change the durable provider profile or a
+protected launch argument fails with the closed classification
+`provider_attach_refused`. An attach blocked by a pending tool call fails with
+`provider_side_effect_pending`. Neither refusal changes the saved state. The
+controller never opens a replacement session after either class, whatever the
+checkpoint's recovery policy, and stops the run for an operator.
+
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the
-executable, each by path and SHA-256). These providers do not re-bind. A changed
+executable, each by path and SHA-256). Cursor Cloud does not re-bind. A changed
 profile fails restore with the same `provider_state_incompatible`
 classification and follows the same disposition, so the controller does not
 retry the restore or try to reattach a runner that already rejected it.
+
+Saved OpenCode state also records the SHA-256 of the OpenCode executable, the
+upstream release that owns the saved conversation. The Node command and the
+proxy bundle are controller runtime: a rebuild or deploy between a hard kill and
+recovery replaces their bytes, and the proxy keeps no state of its own. Restore
+re-binds a saved OpenCode session to the current launch profile only when all of
+these are true:
+
+- The saved release digest equals the current executable's digest.
+- The saved configuration names the current command and proxy paths.
+- The session is settled. It has no active or ambiguous turn, startup attempt,
+  receipt-limit interrupt, pending tool call, undelivered provider event, or
+  working goal. An observed provider exit with nothing in flight is settled.
+
+A changed OpenCode release, an unsettled session, and state written before the
+release digest existed keep the exact binding and fail closed as above.
 
 ## Profile identity
 

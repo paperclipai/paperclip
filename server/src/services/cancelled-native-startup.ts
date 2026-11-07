@@ -1,7 +1,8 @@
+import { isRetainedWorkspaceWorkerStopProof } from "./native-runtime/native-workspace-platform-proof.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
@@ -11,6 +12,7 @@ import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
 import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
@@ -59,6 +61,9 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
 
 async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {
   const [source] = await db.select({ agentId: heartbeatRuns.agentId,
+    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
+      'skillSelectionSnapshot', ${heartbeatRuns.contextSnapshot}->'skillSelectionSnapshot',
+      'skillVersions', ${heartbeatRuns.contextSnapshot}->'skillVersions')`,
     runtimeModeResolverVersion: heartbeatRuns.runtimeModeResolverVersion, runtimeModeReason: heartbeatRuns.runtimeModeReason,
     runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
     driverKind: heartbeatRuns.driverKind, driverVersion: heartbeatRuns.driverVersion,
@@ -75,13 +80,18 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     && source.logRef === `${run.companyId}/${source.agentId}/${run.id}`
     && source.logBytes === 0 && source.logSha256 === EMPTY_LOG_SHA256
     && [source.stdoutExcerpt, source.stderrExcerpt].every(value => value === null || value === "");
-  if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
-    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
+  const preparationLog = historicalRetryAncestor && source &&
+    await hasVerifiedPreparationLog({ ...source, id: run.id, companyId: run.companyId });
+  if (!source || source.logCompressed || !preparationLog && source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
+    !["agentId", "contextSnapshot", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
     !(historicalRetryAncestor && key === "sessionIdBefore") &&
+    !(preparationLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt",
+      "lastOutputAt", "lastOutputStream", "lastOutputBytes"].includes(key)) &&
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
-    || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key))
+    || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
+        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
@@ -172,17 +182,37 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
   const cancellation = readRunCancellation(run.resultJson);
   const issueId = run.issueId ?? run.contextSnapshot?.issueId;
   if (run.runtimeMode !== "legacy" || run.startedAt !== null || run.executionStage !== null
-    || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)
-    || run.errorCode !== "cancelled" || run.resultJson?.stopReason !== "cancelled"
-    || cancellation?.source !== "control_plane" || cancellation.expected !== true || cancellation.initiator.type !== "system") return false;
+    || run.runnerProfileJson !== null || typeof issueId !== "string" || !isUuidLike(issueId)) return false;
+  const systemCancellation = run.errorCode === "cancelled" && run.resultJson?.stopReason === "cancelled"
+    && cancellation?.source === "control_plane" && cancellation.expected === true && cancellation.initiator.type === "system";
+  const pausedBeforePromotion = run.errorCode === "issue_paused" && run.resultJson === null && run.finishedAt
+    ? await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+      .innerJoin(issueTreeHolds, and(eq(issueTreeHolds.companyId, run.companyId),
+        sql`${issueTreeHolds.id}::text = ${heartbeatRunEvents.payload}->>'holdId'`,
+        sql`${issueTreeHolds.rootIssueId}::text = ${heartbeatRunEvents.payload}->>'rootIssueId'`))
+      .innerJoin(issueTreeHoldMembers, and(eq(issueTreeHoldMembers.companyId, run.companyId),
+        eq(issueTreeHoldMembers.holdId, issueTreeHolds.id), eq(issueTreeHoldMembers.issueId, issueId),
+        eq(issueTreeHoldMembers.skipped, false)))
+      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
+        eq(heartbeatRunEvents.stream, "system"), eq(heartbeatRunEvents.level, "warn"),
+        eq(heartbeatRunEvents.message, "Scheduled retry suppressed because the issue is held by an active subtree pause hold"),
+        sql`${heartbeatRunEvents.payload}->>'issueId' = ${issueId}`,
+        sql`${heartbeatRunEvents.payload}->>'scheduledRetryReason' = 'workspace_busy'`,
+        eq(issueTreeHolds.mode, "pause"), eq(issueTreeHolds.status, "released"),
+        lte(issueTreeHolds.createdAt, run.finishedAt), isNotNull(issueTreeHolds.releasedAt),
+        gt(issueTreeHolds.releasedAt, run.finishedAt))).limit(1).then(rows => rows.length > 0)
+    : false;
+  if (!systemCancellation && !pausedBeforePromotion) return false;
   const [source] = await db.select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt,
     retryOfRunId: heartbeatRuns.retryOfRunId,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
     eq(heartbeatRuns.scheduledRetryReason, "workspace_busy"),
     sql`${heartbeatRuns.contextSnapshot}->>'retryReason' = 'workspace_busy'`,
     sql`${heartbeatRuns.contextSnapshot}->>'retryOfRunId' = ${heartbeatRuns.retryOfRunId}::text`,
-    sql`(${heartbeatRuns.resultJson} - array['stopReason', 'cancellation', 'startupCancellation',
-      'timeoutFired', 'timeoutSource', 'timeoutConfigured', 'effectiveTimeoutSec']) = '{}'::jsonb`,
+    pausedBeforePromotion ? isNull(heartbeatRuns.resultJson)
+      : sql`(${heartbeatRuns.resultJson} - array['stopReason', 'cancellation', 'startupCancellation',
+        'timeoutFired', 'timeoutSource', 'timeoutConfigured', 'effectiveTimeoutSec']) = '{}'::jsonb`,
     noRetainedExecutionPredicate(), noProviderOutputPredicate(), isNull(heartbeatRuns.runnerProfileJson),
     isNull(heartbeatRuns.usageJson)));
   if (!source?.retryOfRunId) return false;

@@ -18,6 +18,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
@@ -317,6 +318,16 @@ export function errorHandler(
   if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
     if (!res.headersSent) {
       res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
     } else {
       res.end();
     }

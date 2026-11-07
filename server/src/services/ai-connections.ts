@@ -176,7 +176,7 @@ export function aiConnectionService(db: Db) {
                   : ("connected" as const),
         },
       ];
-    });
+    }).sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
   }
   async function setDefault(
     companyId: string,

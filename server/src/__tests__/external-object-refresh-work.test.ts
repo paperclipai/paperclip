@@ -42,7 +42,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
   beforeAll(async () => {
     if (url) await applyPendingMigrations(url);
     if (!url) temp = await startEmbeddedPostgresTestDatabase("external-refresh-work-");
-    db = createDb(url ?? temp!.connectionString, { maxConnections: 6 });
+    db = createDb(url ?? temp!.connectionString, { maxConnections: 4 });
     await db.execute(sql`truncate table ${companies} cascade`);
   }, 90_000);
   afterEach(async () => {
@@ -120,13 +120,17 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
 
   it("settles empty, configured-idle and retained terminal history without recurring SQL or provider calls", async () => {
     clock();
-    const svc = service(); await start(svc); await quiet();
+    const svc = service(); const worker = await start(svc); await quiet();
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [] });
     const selects = vi.spyOn(db, "select");
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(selects).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
     const f = await fixture(); await svc.syncIssue(f.issueId);
     await settle(async () => (await row(f.companyId))?.isTerminal === true); await quiet();
     expect((await row(f.companyId)).statusKey).toBe("done");
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [] });
     selects.mockClear(); provider.mockClear();
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(selects).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
@@ -135,12 +139,15 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
 
   it("registers exact future deadlines, preempts them on earlier writes and cancels terminal work", async () => {
     clock(); provider.mockResolvedValue(active);
-    const svc = service(); await start(svc);
+    const svc = service(); const worker = await start(svc);
     const f = await fixture(); await svc.syncIssue(f.issueId);
     await settle(() => provider.mock.calls.length === 1);
     await settle(async () => (await row(f.companyId)).lastResolvedAt !== null);
     const saved = await row(f.companyId);
     await settle(() => coordinator!.nextWakeAt() === saved.nextRefreshAt!.getTime());
+    await settle(() => worker.reconciliationSnapshot().reconciled);
+    expect(await db.transaction(tx => svc.readIdleSchedule(tx, Date.now(), worker.reconciliationSnapshot)))
+      .toMatchObject({ blocked: false, deadlines: [saved.nextRefreshAt!.getTime()] });
     const earlier = new Date(Date.now() + 1000); await change(f.companyId, { nextRefreshAt: earlier });
     await settle(() => coordinator!.nextWakeAt() === earlier.getTime());
     await vi.advanceTimersByTimeAsync(999); expect(provider).toHaveBeenCalledTimes(1);

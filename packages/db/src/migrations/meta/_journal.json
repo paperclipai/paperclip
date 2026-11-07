@@ -3057,8 +3057,29 @@
     {
       "idx": 438,
       "version": "7",
-      "when": 1793986386234,
-      "tag": "0438_gray_ghost_rider",
+      "when": 1793996706927,
+      "tag": "0438_mighty_outlaw_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 439,
+      "version": "7",
+      "when": 1794024254666,
+      "tag": "0439_cultured_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 440,
+      "version": "7",
+      "when": 1794035686391,
+      "tag": "0440_flippant_the_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 441,
+      "version": "7",
+      "when": 1794055804787,
+      "tag": "0441_rare_sabretooth",
       "breakpoints": true
     }
   ]

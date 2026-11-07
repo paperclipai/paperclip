@@ -204,6 +204,7 @@ export async function buildExecutionContinuation(input: {
   runId?: string;
   summary: string | null;
   exposeLowTrustRaw: boolean;
+  prospectiveTaskStatus?: "todo";
 }): Promise<ExecutionContinuationEnvelope> {
   const { db, companyId, issueId } = input;
   const [issue] = await db
@@ -214,7 +215,7 @@ export async function buildExecutionContinuation(input: {
     !issue ||
     issue.assigneeAgentId !== input.agentId ||
     issue.status === "cancelled" ||
-    (issue.status === "done" && !await isCompletedOnboardingHandoffWake(db, {
+    (issue.status === "done" && input.prospectiveTaskStatus !== "todo" && !await isCompletedOnboardingHandoffWake(db, {
       companyId, issueId, agentId: input.agentId,
       reason: string(input.context.wakeReason), contextSnapshot: input.context,
     }))

@@ -1987,15 +1987,54 @@ impl AcpxCommandExecutor {
             .expect("ACPX session exists before turn start")
             .start_turn_timed(&provider_turn_id, text, &working_directory, measure);
         if let Err(error) = &start_result {
+            let rejected_checkpoint = self
+                .session
+                .as_ref()
+                .and_then(AcpxProviderSession::rejected_start_checkpoint)
+                .filter(|identity| {
+                    self.state.as_ref().is_some_and(|state| {
+                        state.identity.as_ref() == Some(*identity)
+                            && !state.provider_exit_unconfirmed
+                            && state.pending_runtime_requests.is_empty()
+                            && state
+                                .pending_events
+                                .iter()
+                                .all(|event| event.event_type == "session.resumed")
+                            && (state.goal_projection.is_null()
+                                || goal_is_dormant(&state.goal_projection))
+                    })
+                })
+                .cloned();
             let state = self
                 .state
                 .as_mut()
                 .expect("ACPX state remains available after failed turn start");
-            state.lifecycle = "closed".to_owned();
+            state.lifecycle = if rejected_checkpoint.is_some() {
+                "prepared"
+            } else {
+                "closed"
+            }
+            .to_owned();
+            state.provider_exit_unconfirmed = rejected_checkpoint.is_some();
             state.active_turn_id = None;
             self.context.provider_turn_id = None;
             self.session = None;
             self.save_state()?;
+            if let Some(identity) = rejected_checkpoint {
+                let _provider_lifetime_fence =
+                    await_provider_lifetime_fence(identity.provider_lifetime_fence_candidates)?;
+                self.state
+                    .as_mut()
+                    .expect("ACPX rejected checkpoint remains available")
+                    .provider_exit_unconfirmed = false;
+                if let Err(error) = self.save_state() {
+                    self.state
+                        .as_mut()
+                        .expect("ACPX rejected checkpoint remains available")
+                        .provider_exit_unconfirmed = true;
+                    return Err(error);
+                }
+            }
             return Err(DurableRunnerError::invalid(format!(
                 "ACPX turn start failed closed: {error}"
             )));

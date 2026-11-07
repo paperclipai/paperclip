@@ -4,7 +4,8 @@ import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
-import { actorBinding } from "../actor.js";
+import { actorBinding, connectionActorUserId } from "../actor.js";
+import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
 import { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
@@ -242,6 +243,8 @@ async function removeConnection(
         await lease.assertOwned(tx);
         await tx.update(chatEndpoints).set({ status: "archived", updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
         await tx.update(toolConnections).set({ status: "archived", enabled: false, updatedAt: new Date() }).where(eq(toolConnections.id, connection.id));
+        await stageSlackCloudEnrollmentIntent(tx as unknown as Db, endpoint.id, connectionActorUserId(actor));
+        await lease.assertOwned(tx);
       });
       await removeSlackRegistration(db, endpoint.id, lease);
       return removeConnectionUnlocked(connectionId, companyId, actor);

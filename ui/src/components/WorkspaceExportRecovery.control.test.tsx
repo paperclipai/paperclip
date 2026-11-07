@@ -8,8 +8,9 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
-const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn() }));
-vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover } }));
+const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn() }));
+vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover,
+  resumeWorkspaceFinalization: api.resume } }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const action = {
@@ -285,5 +286,72 @@ describe("governed retained-file recovery", () => {
     await settle();
     expect(container.textContent).toContain("Saved files recovered");
     expect(api.recover).not.toHaveBeenCalled();
+  });
+
+  describe("previous server stop confirmation", () => {
+    const ownerAction = { ...action, cause: "native_workspace_finalization_owner_unverified", ownerType: "board", status: "escalated",
+      evidence: { runId: "run-1", owner: { token: "owner-token", hostname: "secret-host", pid: 2 },
+        workspaceOwnerRecovery: { state: "operator_required" } } } as unknown as IssueRecoveryAction;
+
+    it("offers one board action that resumes the saved result with the board's stop evidence", async () => {
+      api.resume.mockResolvedValue({ runId: "run-1", resultId: "result-1", status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      await mount(ownerAction);
+      expect(container.textContent).toContain("can’t verify that it stopped");
+      expect(container.textContent).not.toContain("secret-host");
+      await click("Confirm the previous server stopped");
+      const submit = button("Confirm and resume")!;
+      expect(submit.disabled).toBe(true);
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server process exited and was not restarted.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.resume).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+        ownerToken: "owner-token", controllerAndCopybackStopped: true,
+        stopEvidence: "The old server process exited and was not restarted." });
+      expect(container.textContent).toContain("Restoring saved work…");
+    });
+
+    it("offers the same action for retained saved-work recovery held by a stopped copyback owner", async () => {
+      api.resume.mockResolvedValue({ runId: "run-1", resultId: null, status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }] });
+      const held = { ...action, evidence: { ...action.evidence,
+        workspaceOwnerRecovery: { state: "operator_required", owner: { token: "retained-token", hostname: "secret-host", pid: 9 } } } } as IssueRecoveryAction;
+      await mount(held);
+      expect(button("Recover saved files")).toBeUndefined();
+      expect(container.textContent).not.toContain("secret-host");
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server process exited and was not restarted.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.resume).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+        ownerToken: "retained-token", controllerAndCopybackStopped: true,
+        stopEvidence: "The old server process exited and was not restarted." });
+      // Once confirmed or resuming, the ordinary retained recovery controls return.
+      await mount({ ...held, evidence: { ...held.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);
+      expect(button("Confirm the previous server stopped")).toBeUndefined();
+      expect(container.querySelector('[data-testid="retained-file-recovery"]')).not.toBeNull();
+    });
+
+    it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
+      // The default fixture is an operator: it may resolve other recovery but not attest a controller stop.
+      await mount({ ...ownerAction, evidence: { ...ownerAction.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);
+      expect(button("Confirm the previous server stopped")).toBeUndefined();
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }] });
+      await mount(ownerAction);
+      expect(button("Confirm the previous server stopped")).toBeUndefined();
+      expect(container.textContent).toContain("owner or administrator can confirm");
+      expect(api.resume).not.toHaveBeenCalled();
+    });
   });
 });

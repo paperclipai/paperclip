@@ -1184,6 +1184,13 @@ unavailable/terminated test process produce a `launcher/environment failure`
 diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
+PR CI runs `pnpm test:e2e:runner:unit` as the required "Runner support suite"
+job in `pr-trusted.yml`. It runs when server, CLI, package or UI source
+changes, and on every full CI run. The suite pins workflow security policy,
+evidence oracles, profile versions, suite hashes and dated fixtures. When a
+change to one of those is deliberate, update the pin in the same pull request
+and name the reason. Do not weaken a security check to make it pass.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:
@@ -1200,6 +1207,27 @@ workspace and package store can be removed before export. Source-provenance
 changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
+
+Build speed comes from two layout rules. The revision-metadata step sits above
+both `COPY --from` steps, so the cached base and CLI layers download while the
+builder stages compile. Both copies use `--link`, so they do not wait for that
+download. The Rust build keeps no dependency layer: retaining Cargo's target
+and registry trees (about 1.2 GB) exhausted the builder disk during the
+default-branch cache export.
+
+To publish only the image for a branch, without a paid gate, dispatch with
+`image_only`. Authorization, target resolution, catalog validation and the
+signed, verified image publication run unchanged; every campaign job is
+skipped. Keep a selector that includes a Daytona cell:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.daytona.message-marker \
+  -f image_only=true
+```
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
@@ -1622,6 +1650,16 @@ case. All 20 imported case IDs and full names remain stable. The lane uses the
 existing native Codex/local cells and the existing native OpenCode/local
 task-workspaces cell. It does not qualify the historical 355-result snapshot.
 
+The sibling **Reliability — staging soak** plan runs the seven staging-soak
+reliability cases through this same lane: six on native OpenCode with DeepSeek
+1017, and `queue-steer` on steering-capable native Codex.
+Bootstrap it with `-f testops_plan=reliability -f testops_case=all` (or one case);
+a TestOps launch names its plan through its case IDs. A launch never mixes the
+two plans, and each keeps its own full-plan denominator. Its TestOps identities
+come from the trusted `runner-e2e-testops-registration.yml` workflow; until they
+are committed, selection fails closed. See
+[the Reliability plan](EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
 Only default-branch selection and reporting code receives this token. The
 ordinary paid provider jobs, their authorization and their evidence paths stay
@@ -1807,7 +1845,7 @@ Journey discovery and grader calibration do not establish a live provider pass.
 
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
-includes its 52 executions alongside the other suites in one shared dashboard,
+includes its 56 executions alongside the other suites in one shared dashboard,
 campaign result bundle, and history entry. Suite/profile selectors narrow that
 same harness; they do not invoke a separate onboarding reporting program.
 
@@ -1819,8 +1857,8 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
+There are fourteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (56 cells). `runner-codex` selects OpenAI in the
 production wizard, omits the runner override, and verifies the saved native
 configuration without changing runners afterward. `runner-acpx-claude` does the
 same for Claude on its qualified default targets and inspects the saved ACPX
@@ -1839,6 +1877,7 @@ separate campaign reservation because they do not create task cost events.
 | First response / control | Complete journey |
 | --- | --- |
 | `interview-first-response` | `interview-plan-accept` |
+| | `plan-only-accept` |
 | `clear-task-first-response` | `task-card-accept` |
 | | `accept-while-running` |
 | `ambiguous-task-first-response` | `task-reply-accept` |
@@ -1852,8 +1891,13 @@ per-attempt marker drive all conversations. Clarification supplies facts only;
 acceptance is a separate explicit user reply or browser-approved confirmation.
 The harness waits for a new user comment to persist before recording a reply
 checkpoint; the composer clearing is only optimistic UI state.
-The interview journey requests a saved plan. Execution journeys require exactly
-one correctly parented/assigned subtask and its completed output document.
+The interview journey saves a plan, accepts its checkbox proposal through the
+browser, and requires exactly one correctly parented/assigned subtask and its
+completed output document. A retained plan alone fails this execution journey.
+The separate `plan-only-accept` journey explicitly forbids implementation after
+plan approval. It requires a retained plan and completed onboarding task, with
+no new agents, execution tasks, or finished output at any observed checkpoint.
+Other execution journeys require the same assigned child and completed output.
 Rejection and revision must not execute the rejected/superseded scope. Closing
 an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an

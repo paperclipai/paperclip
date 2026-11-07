@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,6 +10,7 @@ import type { Timeline } from "./timeline.js";
 import type {
   InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
+import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
@@ -33,6 +35,15 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
   return out.sort();
 }
 
+export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
+
+function stillQueued(runs: readonly RunSample[]): boolean {
+  return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
+}
+export const TRIGGER_LATE_MS = 10_000;
+/** The run settles soon after acceptance; arming on the proposal keeps the window reachable. */
+const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accepted"]);
+
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
@@ -47,8 +58,57 @@ export function toRunSample(run: Json): RunSample {
     id: String(run.runId ?? run.id), status: String(run.status), createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null,
     finishedAt: run.finishedAt ?? null, errorCode: run.errorCode ?? null, retryOfRunId: run.retryOfRunId ?? null,
     wakeCommentIds: [...wake], livenessState: run.livenessState ?? null,
+    lastEvidenceAt: latestIso([run.startedAt, run.lastUsefulActionAt, run.execution?.lastConfirmedActivityAt]),
   };
 }
+
+interface RunEventCursor {
+  seq: number;
+  lastAt: string | null;
+  /** Tool starts minus tool ends. PRP item ids are not unique per tool call, so this counts. */
+  openTools: number;
+  /** The run's latest recorded local runner process, until recovery reports it stopped. */
+  process: { pid: number; startedAt: string } | null;
+}
+
+/** R5 liveness: a tool in flight, or a recorded local runner process. */
+export function noteLivenessEvent(cursor: RunEventCursor, event: Json) {
+  const payload = (event.payload ?? {}) as Json;
+  switch (event.eventType) {
+    case "tool.execution.started": cursor.openTools += 1; break;
+    case "tool.execution.completed": cursor.openTools = Math.max(0, cursor.openTools - 1); break;
+    case "native.process_identity_recorded":
+      if (payload.targetKind === "local" && Number.isSafeInteger(payload.processPid) && typeof payload.processStartedAt === "string") {
+        // A replacement runner cannot finish a tool its predecessor started.
+        if (cursor.process && cursor.process.pid !== payload.processPid) cursor.openTools = 0;
+        cursor.process = { pid: payload.processPid, startedAt: payload.processStartedAt };
+      }
+      break;
+    case "native.local_process_stopped":
+      // A stopped runner's in-flight tools can never send their completion.
+      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; }
+      break;
+  }
+}
+
+/** Alive only when the PID still runs with the recorded start time, so a recycled PID never counts. */
+export function localProcessAlive(pid: number, startedAt: string): boolean {
+  if (process.platform === "win32") return false;
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeout: 5_000 });
+  const started = Date.parse(result.stdout?.trim() ?? "");
+  return Number.isFinite(started) && restartProcessStartMatches(new Date(started).toISOString(), startedAt);
+}
+
+export function latestIso(values: ReadonlyArray<unknown>): string | null {
+  let best: number | null = null;
+  for (const value of values) {
+    const at = typeof value === "string" ? Date.parse(value) : NaN;
+    if (Number.isFinite(at) && (best === null || at > best)) best = at;
+  }
+  return best === null ? null : new Date(best).toISOString();
+}
+
+export const RUN_EVENT_PAGE = 500;
 
 export function toInterruption(value: Json | null | undefined): InterruptionSample | null {
   if (!value) return null;
@@ -80,8 +140,11 @@ export class TaskObserver {
   private restCandidateSince: number | null = null;
   private stallSince: number | null = null;
   private readonly faultSchedule: ScheduledFault[];
-  private nextFault = 0;
+  private readonly pendingFaults: ScheduledFault[];
   done = false;
+
+  /** Replaceable in tests. A Daytona run's process is remote, so only local runs are checked. */
+  processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
     private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean },
@@ -91,6 +154,7 @@ export class TaskObserver {
       restAt: null, finalStatus: null, deadlineAt: null, timedOut: false, followUp: null, faultIds: [], sweep: null,
       preFaultFiles: null, lostFiles: null };
     this.faultSchedule = taskFaultSchedule(plan);
+    this.pendingFaults = [...this.faultSchedule];
   }
 
   get definition() { return workloadDefinitions[this.plan.workload]; }
@@ -122,10 +186,103 @@ export class TaskObserver {
   /** The next scheduled fault once it is due and the task has not rested yet. */
   faultDue(now: number): ScheduledFault | null {
     if (this.done || this.record.createdAt === null) return null;
-    const fault = this.faultSchedule[this.nextFault];
-    if (!fault || now < this.record.createdAt + fault.atMs) return null;
-    this.nextFault += 1;
-    return fault;
+    for (const fault of [...this.pendingFaults]) {
+      const armedAt = this.triggerArmedAt(fault);
+      if (armedAt === null) continue;
+      const dueAt = armedAt === "missed" ? 0 : armedAt + (fault.delayMs ?? 0);
+      if (armedAt !== "missed" && now < dueAt) continue;
+      this.pendingFaults.splice(this.pendingFaults.indexOf(fault), 1);
+      const triggered = fault.trigger !== undefined && fault.trigger !== "time";
+      if (armedAt === "missed" || (triggered && !this.triggerWindowOpen(fault, now, dueAt))) {
+        this.noteTriggerMissed(fault);
+        continue;
+      }
+      return fault;
+    }
+    return null;
+  }
+
+  private triggerWindowOpen(fault: ScheduledFault, now: number, dueAt: number): boolean {
+    if (now - dueAt > TRIGGER_LATE_MS) return false;
+    if (fault.trigger === "result") return this.resultRunStillRunning(this.latestReachableRuns());
+    if (fault.trigger !== "queued") return true;
+    const latest = [...this.record.samples].reverse().find(sample => sample.reachable);
+    return stillQueued(latest?.runs ?? []);
+  }
+
+  async confirmTrigger(fault: ScheduledFault, now: number): Promise<boolean> {
+    if (!fault.trigger || fault.trigger === "time") return true;
+    const armedAt = this.triggerArmedAt(fault);
+    let open = typeof armedAt === "number" && now - (armedAt + (fault.delayMs ?? 0)) <= TRIGGER_LATE_MS;
+    if (open && fault.trigger === "result") {
+      const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
+        .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
+      open = runs !== null && this.resultRunStillRunning(runs);
+    }
+    if (open && fault.trigger === "queued") {
+      const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
+        .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
+      open = runs !== null && stillQueued(runs);
+    }
+    if (!open) this.noteTriggerMissed(fault);
+    return open;
+  }
+
+  private latestReachableRuns(): RunSample[] {
+    return [...this.record.samples].reverse().find(sample => sample.reachable)?.runs ?? [];
+  }
+
+  /** A `result` fault outside the accepted-but-unsettled window would test a different boundary. */
+  private resultRunStillRunning(runs: readonly RunSample[]): boolean {
+    return runs.some(run => run.id === this.record.resultRunId && run.status === "running");
+  }
+
+  /** A due fault the wave decided not to fire (for example, the storm ended during its checks). */
+  markTriggerMissed(fault: ScheduledFault) {
+    if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
+  }
+
+  private noteTriggerMissed(fault: ScheduledFault) {
+    const trigger = fault.trigger ?? "time";
+    (this.record.triggerMissed ??= []).push(trigger);
+    this.timeline.add("trigger_missed", { taskId: this.plan.taskId, trigger, fault: fault.kind });
+  }
+
+  private triggerArmedAt(fault: ScheduledFault): number | null | "missed" {
+    const createdAt = this.record.createdAt!;
+    switch (fault.trigger ?? "time") {
+      case "time": return createdAt + fault.atMs;
+      case "comment": {
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        return followUp.commentId && followUp.duringRun ? followUp.postedAt ?? followUp.at : "missed";
+      }
+      case "retry": {
+        const retry = this.record.retry;
+        if (!retry) return null;
+        return retry.accepted ? retry.acceptedAt ?? retry.at : "missed";
+      }
+      case "queued": {
+        const first = this.record.samples.find(sample => sample.reachable && (sample.runs ?? []).length > 0);
+        if (!first) return this.record.samples.filter(sample => sample.reachable).length >= QUEUED_TRIGGER_MAX_EMPTY_SAMPLES ? "missed" : null;
+        const queued = (first.runs ?? []).some(run => run.status === "queued" && !run.startedAt);
+        const started = (first.runs ?? []).some(run => run.startedAt || run.status === "running");
+        return queued && !started ? first.at : "missed";
+      }
+      case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "result": {
+        // B8: the run that received the follow-up has accepted its result but
+        // has not settled yet. A follow-up posted at rest cannot cross it.
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        if (!followUp.commentId || !followUp.duringRun) return "missed";
+        return this.record.resultAcceptedAt ?? null;
+      }
+    }
+  }
+
+  private closeUnfiredTriggers() {
+    for (const fault of this.pendingFaults.splice(0)) if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
   }
 
   /**
@@ -140,6 +297,7 @@ export class TaskObserver {
     if (!value) return;
     const seen = this.record.benchProgressSeen ??= [];
     if (!seen.includes(value)) seen.push(value);
+    this.record.benchFirstSeenAt ??= Date.now();
   }
 
   /** R2: remember which workspace files existed before the first fault hit this task. */
@@ -148,14 +306,17 @@ export class TaskObserver {
     // One task's snapshot failure must not end the wave; R2 fails with the reason.
     try {
       const workspace = await this.workspacePath();
-      if (workspace) this.record.preFaultFiles = await listWorkspaceFiles(workspace);
+      if (workspace) { this.record.preFaultFiles = await listWorkspaceFiles(workspace); this.record.preFaultWorkspacePath = workspace; }
     } catch (error) {
       this.record.preFaultSnapshotError = error instanceof Error ? error.message : String(error);
       this.timeline.add("pre_fault_snapshot_failed", { taskId: this.plan.taskId, error: this.record.preFaultSnapshotError });
     }
   }
 
-  noteFault(faultId: string) { if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId); }
+  noteFault(faultId: string, startedAt?: number) {
+    if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId);
+    if (startedAt !== undefined) this.record.lastFaultAt = Math.max(this.record.lastFaultAt ?? 0, startedAt);
+  }
 
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
@@ -195,6 +356,31 @@ export class TaskObserver {
     }
   }
 
+  private readonly runEventCursors = new Map<string, RunEventCursor>();
+
+  private async runEvidence(run: RunSample): Promise<RunSample> {
+    if (run.status !== "running") return run;
+    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null, openTools: 0, process: null };
+    for (let page = 0; page < 3; page += 1) {
+      const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
+      if (!events?.length) break;
+      for (const event of events) {
+        if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
+        if (RESULT_TRIGGER_EVENTS.has(String(event.eventType)) && this.record.followUp?.duringRun && !this.record.resultAcceptedAt) {
+          this.record.resultAcceptedAt = Date.now();
+          this.record.resultRunId = run.id;
+        }
+        cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
+        noteLivenessEvent(cursor, event);
+      }
+      if (events.length < RUN_EVENT_PAGE) break;
+    }
+    this.runEventCursors.set(run.id, cursor);
+    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]),
+      ...(cursor.openTools > 0 ? { toolInFlight: true } : {}),
+      ...(cursor.process && this.processAlive(cursor.process.pid, cursor.process.startedAt) ? { processAlive: true } : {}) };
+  }
+
   private async sample(now: number): Promise<TaskSample> {
     const serverReady = this.supervisor.serverReady && !this.supervisor.faultInProgress;
     try {
@@ -207,7 +393,7 @@ export class TaskObserver {
         interruption: toInterruption(issue.interruption), activeRecoveryAction: Boolean(issue.activeRecoveryAction),
         recoveryOwner: issue.activeRecoveryAction?.ownerType ?? null,
         executionBlocker: Boolean(issue.executionBlocker), scheduledRetry: Boolean(issue.scheduledRetry),
-        runs: (runs ?? []).map(toRunSample) };
+        runs: await Promise.all((runs ?? []).map(toRunSample).map(run => this.runEvidence(run))) };
     } catch {
       return { at: now, reachable: false, serverReady: false };
     }
@@ -222,11 +408,11 @@ export class TaskObserver {
     if (!running && !isResting(sample)) return false;
     try {
       const comment = await this.api.post<Json>(`/api/issues/${this.record.issueId}/comments`, { body: definition.followUp(this.plan.nonce) });
-      this.record.followUp = { at: now, commentId: comment?.id ?? null, error: null };
+      this.record.followUp = { at: now, postedAt: Math.max(now, Date.now()), commentId: comment?.id ?? null, error: null, duringRun: running };
     } catch (error) {
-      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error) };
+      this.record.followUp = { at: now, commentId: null, error: error instanceof Error ? error.message : String(error), duringRun: running };
     }
-    this.timeline.add("task_follow_up", { taskId: this.plan.taskId, duringRun: running, ...this.record.followUp });
+    this.timeline.add("task_follow_up", { taskId: this.plan.taskId, ...this.record.followUp });
     return true;
   }
 
@@ -234,7 +420,9 @@ export class TaskObserver {
     const status = sample.issueStatus ?? null;
     // C1: a follow-up posted after rest must be served before the task counts as resting.
     if (this.definition.followUp && !this.record.followUp) return;
-    if (status !== "done" && !this.record.retry && sample.interruption?.canRetry) {
+    const faultSinceRetry = this.record.retry !== null && (this.record.lastFaultAt ?? 0) > this.record.retry.at;
+    if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
+      if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);
       this.restCandidateSince = null;
       if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
@@ -256,6 +444,7 @@ export class TaskObserver {
         { idempotencyKey: randomUUID(), observedRunId });
       attempt.httpStatus = 200;
       attempt.accepted = result?.accepted === true;
+      attempt.acceptedAt = Math.max(now, Date.now());
     } catch (error) {
       attempt.httpStatus = error instanceof ChaosApiError ? error.status : null;
       attempt.error = error instanceof Error ? error.message : String(error);
@@ -288,9 +477,15 @@ export class TaskObserver {
     }
     const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
     const workspacePath = await this.workspacePath();
-    if (workspacePath && this.record.preFaultFiles) {
-      const present = new Set(await listWorkspaceFiles(workspacePath));
-      this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
+    const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
+    if (snapshotPath && this.record.preFaultFiles) {
+      if (workspacePath && snapshotPath !== workspacePath) this.record.workspaceMovedTo = workspacePath;
+      try {
+        const present = new Set(await listWorkspaceFiles(snapshotPath));
+        this.record.lostFiles = this.record.preFaultFiles.filter(file => !present.has(file));
+      } catch (error) {
+        this.record.restSnapshotError = error instanceof Error ? error.message : String(error);
+      }
     }
     const files: Record<string, string | null> = {};
     const commands: OracleArtifacts["commands"] = {};
@@ -312,6 +507,7 @@ export class TaskObserver {
 
   /** R6 sweep: nothing still pending once the wave is quiet. */
   async sweep(): Promise<RestSweep> {
+    this.closeUnfiredTriggers();
     if (!this.record.issueId) return { activeRuns: [], runningWorkspaceOperations: [], activeRecoveryAction: false, error: null };
     try {
       const [issue, runs] = await Promise.all([

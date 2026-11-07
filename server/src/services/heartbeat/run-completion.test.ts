@@ -5,7 +5,7 @@ import { registerLocalRuntimeApiServer } from "../../runtime-api.js";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart } from "../native-runtime/native-session-executor.js";
+import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart, nativeSessionFailureSourceCode } from "../native-runtime/native-session-executor.js";
 import { createHeartbeatRunOutput } from "./run-output.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.js";
@@ -16,8 +16,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, aiConnectionPools, aiConnectionTaskPins, aiConnectionQuotaCooldowns, toolApplications, toolConnections, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { activityLog, agents, agentWakeupRequests, aiConnectionPools, aiConnectionTaskPins, aiConnectionQuotaCooldowns, toolApplications, toolConnections, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations, issueComments, issueQuestionResponseDeliveries } from "@paperclipai/db";
+import { eq, sql, and } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as usageReceipts from "../usage-receipts.js";
@@ -30,6 +30,7 @@ import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, Re
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
@@ -48,6 +49,9 @@ import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { planNativeStartupRetry } from "../native-runtime/native-startup-retry.js";
+import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { heartbeatService } from "../heartbeat.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -168,8 +172,8 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.restoreAllMocks(); });
   beforeEach(async () => { await db.execute(sql`truncate table companies restart identity cascade`); });
 
-  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
-    const [company] = await db.insert(companies).values({ name: "Completion", issuePrefix: "CMP" }).returning();
+  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}, issuePrefix = "CMP") {
+    const [company] = await db.insert(companies).values({ name: "Completion", issuePrefix }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Completing agent", adapterType: "process" }).returning();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "on_demand", status: "claimed" }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, wakeupRequestId: wake.id, status: "running", runtimeMode: "legacy", ...patch }).returning();
@@ -279,6 +283,41 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await db.update(heartbeatRuns).set({ resultJson: { providerFailure: { ...nativeFailure, category: "quota_exhausted" } } }).where(eq(heartbeatRuns.id, timerRun.id));
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(true);
   });
+
+  it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
+    for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
+      const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
+      const failureMessage = mode === "archive_failed"
+        ? "runner_continuity_break_archive_failed: exit=1 timedOut=false mv: cannot remove 'runner': Directory not empty"
+        : "runner_remote_process_identity_unavailable";
+      const retryExpected = mode === "unattached" || mode === "archive_failed" || mode === "promoted";
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Continue saved work",
+        assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
+        authorType: "user", authorUserId: "local-board", body: "Please finish the saved change." }).returning();
+      await db.update(agentWakeupRequests).set({ runId: f.run.id, reason: "issue_reopened_via_comment",
+        requestedByActorType: mode === "system_wake" ? "system" : "user", requestedByActorId: "local-board",
+        payload: { issueId: issue.id, commentId: comment.id } }).where(eq(agentWakeupRequests.id, f.wake.id));
+      const [run] = await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue.id, responsibleUserId: "local-board",
+        contextSnapshot: { issueId: issue.id, wakeReason: "issue_reopened_via_comment", wakeCommentId: comment.id } })
+        .where(eq(heartbeatRuns.id, f.run.id)).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: issue.id, runId: run.id,
+        phase: "terminal_failure", failureCode: nativeSessionFailureSourceCode(new Error(failureMessage)) });
+      if (mode === "provider_started") await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id,
+        agentId: run.agentId, eventType: "turn.started", stream: "system", level: "info", message: "Provider started" });
+      if (mode === "stopped_failed") await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        error: failureMessage, errorCode: nativeSessionFailureSourceCode(new Error(failureMessage)) }).where(eq(heartbeatRuns.id, run.id));
+      if (mode === "stopped" || mode === "stopped_failed") f.controller.abort();
+      const observedRun = mode === "promoted" ? { ...run, runtimeMode: f.run.runtimeMode } : run;
+      await f.completion.failRun({ ...f.failure(new Error(failureMessage)), run: observedRun,
+        issueId: issue.id, requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: false });
+      const requests = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.reason, "task_retry")));
+      expect.soft(requests, mode).toHaveLength(retryExpected ? 1 : 0);
+      if (retryExpected && requests[0]) expect(requests[0]).toMatchObject({ status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "local-board", payload: { taskRetry: { sourceRunId: run.id } } });
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each(["ordinary", "stalled append", "object admission"] as const)("finishes accepted output before ordinary lease teardown without writing to a retired recorder (%s)", async mode => {
     const stalledAppend = mode === "stalled append", stalledAdmission = mode === "object admission";
@@ -1118,6 +1157,82 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
+  it.each(["fresh", "started", "untrusted", "denied", "retained", "session", "runner"] as const)("bounds only an owned pre-dispatch chat binding wait: %s", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy",
+      ...(scenario === "session" ? { nativeSessionId: randomUUID() } : {}),
+      ...(scenario === "runner" ? { runnerInstanceId: randomUUID() } : {}) });
+    const error = scenario === "untrusted" ? new Error("reviewed_chat_execution_binding_not_ready")
+      : scenario === "denied" ? new ReviewedChatBindingDeniedError("principal_denied")
+      : new ReviewedChatBindingNotReadyError();
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled" } as never);
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reviewed_chat_execution_binding_not_ready" : "setup_failed" });
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps an answered chat interaction on its own bounded continuation retry", async () => {
+    const f = await fixture({ contextSnapshot: { source: "issue.interaction.respond", externalChatContinuation: true,
+      interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" } });
+    await f.completion.failRunSetup(f.setup(new ReviewedChatBindingNotReadyError()));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" });
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("selects the answer retry from the real delivery producer and heartbeat queue (legacy context=%s)", async legacy => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "idle",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Answer delivery retry",
+      status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board" }).returning();
+    const [questionRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+      issueId: issue.id, nativeIssueId: issue.id, runtimeMode: "native", status: "succeeded", finishedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, source: "chat:telegram" } }).returning();
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create(issue, { kind: "ask_user_questions", sourceRunId: questionRun.id,
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "choice", prompt: "Choose",
+        selectionMode: "single", required: true, options: [{ id: "yes", label: "Yes" }] }] } },
+      { agentId: f.agent.id, runId: questionRun.id });
+    await interactions.answerQuestions(issue, interaction.id, { answers: [{ questionId: "choice", optionIds: ["yes"] }] },
+      { userId: "local-board" });
+    const heartbeat = heartbeatService(db);
+    const answerHeartbeat = legacy ? { ...heartbeat, wakeup: (...[agentId, options]: Parameters<typeof heartbeat.wakeup>) => {
+      const contextSnapshot = { ...options?.contextSnapshot };
+      delete contextSnapshot.mutation;
+      return heartbeat.wakeup(agentId, { ...options, contextSnapshot });
+    } } : heartbeat;
+    await questionResponseDeliveryService(db, { heartbeat: answerHeartbeat }).deliver(interaction.id);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id));
+    expect(delivery).toMatchObject({ status: "fallback_queued", deliveryMode: "wake_fallback" });
+    expect(delivery.targetRunId).toBeTruthy();
+    const [admitted] = await db.update(heartbeatRuns).set({ status: "running", executionStage: "preparing", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, delivery.targetRunId!)).returning();
+    f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible.mockImplementation(async run => {
+      await heartbeat.scheduleBoundedRetry(run.id, { now: new Date(), random: () => 0,
+        retryReason: "interaction_continuation_infra_retry", wakeReason: "interaction_continuation_infra_retry", maxAttempts: 2 });
+      return null;
+    });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "not_scheduled",
+      reason: "Wrong retry owner fixture", issueId: issue.id });
+    await f.completion.failRunSetup({ ...f.setup(new ReviewedChatBindingNotReadyError()), run: admitted, runId: admitted.id });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: admitted.id }), expect.anything());
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, admitted.id));
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({ scheduledRetryReason: "interaction_continuation_infra_retry",
+      contextSnapshot: { interactionId: interaction.id, interactionStatus: "answered", mutation: "interaction" } });
+    expect((await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, delivery.id)))[0]).toEqual(delivery);
+  }, 30_000);
+
   const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
     data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
 
@@ -1165,6 +1280,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
     expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed",
       workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } });
+  });
+
+  it("logs the driver cause code of a wrapped setup query failure without its text", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("write CONNECTION_CLOSED 127.0.0.1:5432"), { code: "CONNECTION_CLOSED" });
+    await f.completion.failRunSetup(f.setup(new Error("Failed query: select 1", { cause: driverError })));
+    const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
+    expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed", causeCode: "CONNECTION_CLOSED" });
+    expect(JSON.stringify(setupLog?.[0])).not.toContain("127.0.0.1:5432");
   });
 
   it("retries a workspace operation the stopped provider worker never received", async () => {

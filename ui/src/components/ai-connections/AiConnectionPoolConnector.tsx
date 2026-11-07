@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ExternalLink, Loader2, MoreHorizontal, Plus, Search, Trash2, X } from "lucide-react";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, aiConnectionRouterAppDefinition, type AiConnectionPool, type AiConnectionPoolConfig, type AiConnectionPoolMember, type AiManagedConnectionSummary, type ToolConnection } from "@paperclipai/shared";
+import { PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiConnectionPoolsApi, type PoolInspection } from "@/api/ai-connection-pools";
 import { describeError } from "@/api/errors";
@@ -30,7 +31,7 @@ import { AI_PROVIDERS, aiMethodLabel } from "./model";
 const configOf = ({ name, enabled, members, mode, thresholdPercent }: AiConnectionPoolConfig): AiConnectionPoolConfig => ({ name, enabled, members, mode, thresholdPercent });
 const emptyConfig = (): AiConnectionPoolConfig => ({ name: "AI connection pool", enabled: false, members: [], mode: "round_robin", thresholdPercent: 90 });
 function memberOf(account: AiManagedConnectionSummary): AiConnectionPoolMember {
-  const profile: AiConnectionPoolMember["profile"] = account.provider === "openai" ? { provider: "codex", model: "gpt-5.6-sol" }
+  const profile: AiConnectionPoolMember["profile"] = account.provider === "openai" ? { provider: "codex", model: PAPERCLIP_RUNNER_DEFAULT_MODELS.codex }
     : account.provider === "anthropic" ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }
     : account.provider === "xai" ? { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }
     : { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" };

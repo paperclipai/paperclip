@@ -23,11 +23,13 @@ import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { consumeLegacyQuotaPrestartFence } from "./heartbeat/quota-prestart-fence.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
@@ -279,7 +281,7 @@ import {
 } from "./agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import {
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
   settleNativeRunProcess,
 } from "./native-local-process-stop.js";
 
@@ -371,6 +373,7 @@ import {
 
 import {
   dispatchNativeSessionResumptions,
+  prepareIdleWarmNativeSessionsForSleep,
   NativeCancellationPendingRecoveryError,
   NativeControllerDetachedForRestartError,
   prepareNativeWorkspaceSync,
@@ -469,6 +472,7 @@ import {
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
@@ -1883,6 +1887,7 @@ export function heartbeatService(
 
     let legacyAdapterEntered = false;
     let legacyLocalAdapterEntered = false;
+    let legacyPreparationFailedBeforeDispatch = false;
     let persistUsageCaptureFailure: (() => Promise<void>) | undefined;
     let run = await getRun(runId);
     if (!run) return;
@@ -1968,7 +1973,7 @@ export function heartbeatService(
             )
             .returning()
             .then((rows) => rows[0] ?? null);
-          if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+          if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
           return cleared;
         });
         if (!cleared) {
@@ -3820,14 +3825,23 @@ export function heartbeatService(
         );
       } else {
         await preserveNativeWorkspaceOnFailure();
-        if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) await runCompletion.failRunSetup({
-          run, runId, outerErr, signal: executionControl.controller.signal,
-          providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
-          identityRedactor, readFailureReportSecrets,
-        });
+        if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
+          await runCompletion.failRunSetup({
+            run, runId, outerErr, signal: executionControl.controller.signal,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+            identityRedactor, readFailureReportSecrets,
+          });
+          legacyPreparationFailedBeforeDispatch = !legacyAdapterEntered && !nativeDispatchStarted;
+        }
+        // A failed re-preparation must not keep its recovery claim open.
+        if (runOptions.nativeRestartRecovery && !legacyAdapterEntered && !nativeDispatchStarted)
+          await settleFailedNativeRecoveryPreparation(db, { companyId: run.companyId, runId: run.id,
+            claim: runOptions.nativeRestartRecovery }).catch(error =>
+            logger.warn({ err: error, runId: run.id }, "Failed native recovery preparation could not be settled"));
       }
     } finally {
       let caseHandoffCleanupSettled = false;
+      let failedProcessCancellationSeen = failedProcessRunCancellations.has(run.id);
       await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
@@ -4000,6 +4014,16 @@ export function heartbeatService(
                 "failed to record heartbeat run scratch cleanup event",
               );
             });
+            // Earlier process attempts of this run (before a restart) left their
+            // own scratch directories; the run is terminal, so remove them too.
+            if (scratchCleanup.removed) {
+              await sweepOrphanedRunScratch({
+                runId: run.id,
+                resolveRunStates: async (ids) => new Map(ids.map((id) => [id, "terminal" as const])),
+              }).catch((sweepError) => {
+                logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
+              });
+            }
           }
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
@@ -4060,6 +4084,7 @@ export function heartbeatService(
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.
+        failedProcessCancellationSeen ||= failedProcessRunCancellations.has(run.id);
         failedProcessRunCancellations.delete(run.id);
         executionControl.finish();
         if (adapterExecutionControls.get(run.id) === executionControl) {
@@ -4071,6 +4096,22 @@ export function heartbeatService(
       // that a local legacy adapter's closed-stdio descendants stopped.
       if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyLocalAdapterEntered) {
         caseHandoffCleanupSettled = hasStoppedLocalProcessTree(latestRun);
+        const canRecordSettlement = () => caseHandoffCleanupSettled &&
+          !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld &&
+          !nativeStartupCleanupScheduled && !nativeStartupCleanupError && !failedProcessCancellationSeen &&
+          !failedProcessRunCancellations.has(run.id) && !processRunCancellationSettlements.has(run.id) &&
+          !adapterExecutionControls.has(run.id) && !activeRunExecutions.has(run.id);
+        if (canRecordSettlement()) await recordLegacyProcessSettlement(db, latestRun, canRecordSettlement)
+          .catch(error => logger.warn({ runId: run.id, error }, "Could not record optional legacy process settlement"));
+      }
+      if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyPreparationFailedBeforeDispatch) {
+        const canRecordPreparation = () => caseHandoffCleanupSettled && legacyPreparationFailedBeforeDispatch &&
+          !legacyAdapterEntered && !nativeDispatchStarted && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError && !failedProcessCancellationSeen &&
+          !failedProcessRunCancellations.has(run.id) && !processRunCancellationSettlements.has(run.id) &&
+          !adapterExecutionControls.has(run.id) && !activeRunExecutions.has(run.id) && !runningProcesses.has(run.id);
+        if (canRecordPreparation()) await recordLegacyPreparationSettlement(db, latestRun, canRecordPreparation)
+          .catch(error => logger.warn({ runId: run.id, error }, "Could not record optional legacy preparation settlement"));
       }
       if (caseHandoffCleanupSettled && latestRun && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
           !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError && isHeartbeatRunTerminalStatus(latestRun.status)) {
@@ -4370,6 +4411,7 @@ export function heartbeatService(
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
+    prepareIdleWarmNativeSessionsForSleep,
     readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions, counters: getTaskDrainStatus }),
     computeTaskDrain,
     applyTaskDrain,
@@ -4388,6 +4430,7 @@ export function heartbeatService(
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
+    readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),

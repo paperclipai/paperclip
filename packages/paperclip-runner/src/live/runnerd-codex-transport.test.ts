@@ -68,6 +68,7 @@ import {
   unwrapRunnerdProviderNotifications,
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
+  controllerAcceptedTurnStartId,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -76,6 +77,33 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("controllerAcceptedTurnStartId", () => {
+  // Shapes copied from the RC-59 durable controller journal.
+  const attach = { commandId: "command_prp_00000001", controllerSeq: 1, type: "run.attach", status: "completed", result: {} };
+  const start = (overrides: Record<string, unknown> = {}) => ({
+    commandId: "command_lab_start", controllerSeq: 4, type: "turn.start", status: "completed",
+    payload: { text: "Continue", turnId: "turn_lab_1" },
+    result: { commandType: "turn.start", controllerSeq: 4, status: "completed", result: { providerTurnId: "turn_lab_1", status: "accepted" } },
+    ...overrides,
+  });
+
+  it("names the turn this run's latest completed turn.start accepted", () => {
+    expect(controllerAcceptedTurnStartId([attach, start()])).toBe("turn_lab_1");
+  });
+
+  it.each([
+    ["no turn.start", [attach]],
+    ["a pending turn.start", [attach, start({ status: "pending", result: undefined })]],
+    ["a failed turn.start", [attach, start({ status: "failed" })]],
+    ["a result that did not accept the turn", [attach, start({ result: { result: { providerTurnId: "turn_lab_1", status: "rejected" } } })]],
+    ["a result for a different turn than requested", [attach, start({ result: { result: { providerTurnId: "turn_lab_2", status: "accepted" } } })]],
+    ["a later run attachment", [start({ controllerSeq: 1 }), { ...attach, controllerSeq: 2 }]],
+    ["a later pending turn.start", [attach, start(), start({ controllerSeq: 5, status: "pending", payload: { turnId: "turn_lab_2" }, result: undefined })]],
+  ])("returns null for %s", (_label, commands) => {
+    expect(controllerAcceptedTurnStartId(commands)).toBeNull();
+  });
+});
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
@@ -1505,6 +1533,26 @@ it("does not hold a pending turn start behind another turn's restore-lost termin
     params: { turn: { id: "provider-turn-raw", status: "failed" } } }] })).toBe("provider-turn-raw");
 });
 
+it("settles a restored turn from the runner's reconciled result terminal", () => {
+  const { runnerdRecoveredTurnTerminal: recovered } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { payload: { payload } } });
+  const reconciled = event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: null });
+  const runTerminal = event("run.terminal", { turnTerminalState: "completed", runTerminalState: "succeeded" });
+  // The runner recovered turn-1's accepted result: no provider turn terminal,
+  // only the reconciliation and the run terminal.
+  expect(recovered([event("turn.started", { providerTurnId: "turn-1" }), reconciled, runTerminal], "turn-1"))
+    .toEqual({ status: "completed", error: null });
+  // An explicit provider terminal keeps its cause.
+  const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+  expect(recovered([reconciled, event("turn.failed", { providerTurnId: "turn-1", error: lost }), runTerminal], "turn-1"))
+    .toEqual({ status: "failed", error: lost });
+  // A run terminal settles only the turn the runner reconciled as ended.
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-0", activeProviderTurnId: null }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: "turn-1" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([reconciled, event("turn.started", { providerTurnId: "turn-2" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([runTerminal], "turn-1")).toBeNull();
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({
@@ -1589,12 +1637,11 @@ it.each(["before", "after"] as const)(
         JSON.stringify(controlPlaneState),
       );
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).rejects.toThrow(`crashed ${crashPoint} remote archive`);
       await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
@@ -1602,12 +1649,11 @@ it.each(["before", "after"] as const)(
       });
 
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).resolves.toEqual(controlPlaneState);
       expect(readCount).toBe(1);
@@ -1621,6 +1667,261 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+describe("authority rotation after the prior controller state is restored", () => {
+  const priorIdentity = {
+    runnerInstanceId: "runner-restored-rotation",
+    environmentLeaseId: "lease-restored-rotation",
+    runId: "run-restored-rotation-prior",
+    normalizedSessionId: "session-restored-rotation",
+    turnId: "turn-restored-rotation-prior",
+    itemId: "item-restored-rotation-prior",
+  };
+  const desiredIdentity = {
+    ...priorIdentity,
+    runId: "run-restored-rotation-next",
+    turnId: "turn-restored-rotation-next",
+    itemId: "item-restored-rotation-next",
+  };
+  // The live controller state carries fields that a server checkpoint
+  // restore does not reproduce, so a restored copy can differ in bytes.
+  const controlPlaneState = {
+    schema: "paperclip.runner.durable.control-plane-state.v1",
+    identity: priorIdentity,
+    ackedSourceSeq: 7,
+  };
+  const suspendedRunnerState = {
+    schema: "paperclip.runner.durable.state.v1",
+    ...priorIdentity,
+    lifecycle: "suspended",
+  };
+  const restoredCopies = {
+    "byte-identical": JSON.stringify(controlPlaneState),
+    "re-serialized": JSON.stringify(
+      { schema: controlPlaneState.schema, identity: priorIdentity },
+      null,
+      2,
+    ),
+    "other-authority": JSON.stringify({
+      ...controlPlaneState,
+      identity: { ...priorIdentity, turnId: "turn-restored-rotation-other" },
+    }),
+  } as const;
+  type RestoredCopy = keyof typeof restoredCopies;
+  const cases = Object.keys(restoredCopies) as RestoredCopy[];
+
+  async function restoreControlPlane(root: string, copy: RestoredCopy) {
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(
+      join(root, "control-plane", "control-plane-state.json"),
+      restoredCopies[copy],
+    );
+  }
+
+  it.each(cases)("external rotation: %s restored copy", async (copy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-restore-"));
+    let activeRunnerState: Record<string, unknown> | null = suspendedRunnerState;
+    let archivedRunnerState: Record<string, unknown> | null = null;
+    let readCount = 0;
+    const readRunnerState = async () => {
+      readCount += 1;
+      if (activeRunnerState === null) throw new Error("runner state moved");
+      return activeRunnerState;
+    };
+    // The remote archive is idempotent: a retry returns the saved snapshot.
+    const archiveRunnerState = async () => {
+      if (activeRunnerState !== null) {
+        archivedRunnerState = activeRunnerState;
+        activeRunnerState = null;
+      }
+      if (archivedRunnerState === null) {
+        throw new Error("archived runner state unavailable");
+      }
+      return archivedRunnerState;
+    };
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        { read: readRunnerState, archive: archiveRunnerState },
+      );
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      // The first attempt completes both archives, then fails before the
+      // new Runner starts.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      // Retry preparation restores the prior run's controller checkpoint.
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow(
+          "native_runner_authority_archive_conflict",
+        );
+        // Contradictory state stays in place for operator recovery.
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
+        return;
+      }
+      // The retry resumes from the archived snapshot, not the restored copy.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(readCount).toBe(1);
+      expect(archivedRunnerState).toEqual(suspendedRunnerState);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(cases)("local rotation: %s restored copy", async (copy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-restore-"));
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        runnerdRecoveryInternals.localRunnerStateArchive(root),
+      );
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      await writeFile(
+        join(root, "runner", "runner-state.json"),
+        JSON.stringify(suspendedRunnerState),
+      );
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        stat(join(root, "runner", "runner-state.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
+        return;
+      }
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["identical", "different"] as const)(
+    "local rotation: %s duplicate runner state",
+    async (duplicate) => {
+      const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-runner-state-"));
+      const runnerStatePath = join(root, "runner", "runner-state.json");
+      const rotate = () =>
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          runnerdRecoveryInternals.localRunnerStateArchive(root),
+        );
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(
+          join(root, "control-plane", "control-plane-state.json"),
+          JSON.stringify(controlPlaneState),
+        );
+        await writeFile(runnerStatePath, JSON.stringify(suspendedRunnerState));
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+
+        // A settled Runner state reappears beside its archived snapshot.
+        await writeFile(
+          runnerStatePath,
+          duplicate === "identical"
+            ? JSON.stringify(suspendedRunnerState)
+            : JSON.stringify({ ...suspendedRunnerState, outbox: [] }),
+        );
+        if (duplicate === "different") {
+          await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+          await expect(stat(runnerStatePath)).resolves.toBeDefined();
+          return;
+        }
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+        await expect(stat(runnerStatePath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // Drives the transport's real start path. The missing runnerd binary stops
+  // it right after the rotation, so its ENOENT proves the retry passed every
+  // earlier check without reading the retired live Runner state.
+  it.each([
+    ["a completed warm handoff", { completedWarmTransition: { receipt: { commandId: "warm-command" } } }, "resumes"],
+    ["a source attachment hook", {}, "resumes"],
+    ["an unfinished warm transition", { warmTransition: { receipt: { commandId: "warm-command" } } }, "conflicts"],
+    ["a pending attachment", { commands: [{ commandId: "attach", type: "run.attach", status: "pending", payload: {} }] }, "conflicts"],
+  ] as const)("transport retry after a committed rotation with %s", async (_name, restoredFields, outcome) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-committed-rotation-transport-"));
+    const archiveKey = createHash("sha256").update(JSON.stringify(priorIdentity)).digest("hex").slice(0, 24);
+    const archivedControlPlane = join(root, "authority-epochs", `epoch-${archiveKey}`, "control-plane");
+    const restoredState = { ...controlPlaneState, ...restoredFields };
+    const steps: string[] = [];
+    const { transport } = createCapabilityRunnerdCodexTransport({
+      provider: "codex",
+      stateDirectory: root,
+      runnerBinary: join(root, "missing-paperclip-runnerd"),
+      prpIdentity: desiredIdentity,
+      ...(_name === "a source attachment hook" ? { onRecoveryAccountingEvent: () => undefined } : {}),
+      // The previous attempt already moved the live Runner state.
+      prepareExternalRunnerState: async () => { steps.push("prepared"); },
+      readRunnerState: async () => { steps.push("read"); throw new Error("live runner state was archived"); },
+      archiveExternalRunnerState: async (input) => {
+        steps.push(`archived:${input.archiveKey}`);
+        return suspendedRunnerState;
+      },
+    } as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]);
+    try {
+      await mkdir(archivedControlPlane, { recursive: true });
+      await writeFile(join(archivedControlPlane, "control-plane-state.json"), JSON.stringify(controlPlaneState));
+      // Retry preparation restored the prior run's controller checkpoint.
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(restoredState));
+      const started = transport.request("thread/read", {});
+      if (outcome === "conflicts") {
+        await expect(started).rejects.toThrow("native_runner_authority_archive_conflict");
+        expect(steps).toEqual([]);
+        await expect(stat(join(root, "control-plane", "control-plane-state.json"))).resolves.toBeDefined();
+        return;
+      }
+      await expect(started).rejects.toThrow(/ENOENT|missing-paperclip-runnerd/);
+      expect(steps).toEqual([`archived:${archiveKey}`]);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await transport.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
@@ -1738,6 +2039,56 @@ it("waits for the exact durable suspension command behind prior close work", asy
     "runner.suspend",
   ]);
   expect(pumpCount).toBeGreaterThanOrEqual(2);
+});
+
+it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
+  // An ACPX sidecar can reject session.suspend while the just-completed turn
+  // is still settling. One rejected command must not leave a successful run's
+  // own session closed without a proven suspension.
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let lifecycle = "ready";
+  const queueSuspend = vi.fn((commandId: string) => {
+    commands.push({ commandId, type: "runner.suspend", status: "pending" });
+  });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend,
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => false,
+      pump: () => {
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        if (commands.length === 1) pending.status = "failed";
+        else { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(queueSuspend).toHaveBeenCalledTimes(2);
+  expect(new Set(commands.map(command => command.commandId)).size).toBe(2);
+});
+
+it("stops retrying a rejected suspension at its attempt bound or when the runner exits", async () => {
+  for (const exited of [false, true]) {
+    const commands: Array<{ commandId: string; type: string; status: string }> = [];
+    const queueSuspend = vi.fn((commandId: string) => {
+      commands.push({ commandId, type: "runner.suspend", status: "failed" });
+    });
+    await expect(
+      runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+        commands: () => commands,
+        queueSuspend,
+        readRunnerState: async () => ({ lifecycle: "ready" }),
+        runnerHasExited: async () => exited,
+        pump: () => undefined,
+        deadline: Date.now() + 5_000,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toBe(false);
+    expect(queueSuspend).toHaveBeenCalledTimes(exited ? 1 : 3);
+  }
 });
 
 it("does not accept process exit without durable suspension", async () => {
@@ -5910,13 +6261,17 @@ describe("cold process admission budget", () => {
   it("bounds Pi cold startup and recovery at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
+  it("bounds a cold ACPX Claude session.open at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "claude", true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs("acpx", "claude", false)).toBe(30_000);
+  });
   it("bounds a cold OpenCode restore at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
     expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
-    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+    for (const agent of ["codex", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
     for (const provider of ["codex", "cursor_cloud", undefined]) {
