@@ -8,7 +8,7 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
-import { assertCurrentWorkspaceSourceHeld, isolatedTaskSourceIdentity, managedProjectSourceIdentity, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { assertCurrentWorkspaceSourceHeld, workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -7807,10 +7807,9 @@ async function withRuntimeServiceSourceLocks<T>(input: {
     resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
   const projectIds: string[] = [], issueIds: string[] = [];
   for (const cwd of new Set(paths)) {
-    const projectId = await managedProjectSourceIdentity(input.agent.companyId, cwd);
-    const issueId = await isolatedTaskSourceIdentity(input.agent.companyId, cwd);
-    if (projectId) projectIds.push(projectId);
-    if (issueId) issueIds.push(issueId);
+    const identities = await workspaceSourceIdentities(input.agent.companyId, cwd);
+    projectIds.push(...identities.projectIds);
+    issueIds.push(...identities.issueIds);
   }
   return withWorkspaceSourceLocks(input.db, { companyId: input.agent.companyId, projectIds, issueIds }, action);
 }

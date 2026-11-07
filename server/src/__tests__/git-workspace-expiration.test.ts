@@ -20,7 +20,7 @@ import { materializeIsolatedRemoteWorkspaceSource } from "../services/isolated-r
 import { realizeExecutionWorkspace, ensurePersistedExecutionWorkspaceAvailable } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { withExecutionWorkspaceLifecycleLock } from "../services/execution-workspace-lifecycle-lock.js";
-import { withWorkspaceSourceLocks } from "../services/workspace-source-lock.js";
+import { IsolatedRepositorySourceBusy, withWorkspaceSourceLocks } from "../services/workspace-source-lock.js";
 import { prepareProjectRepositoryWorkspaces, mergeExecutionWorkspaceMetadataForPersistence } from "../services/heartbeat/workspaces.js";
 import { describeGitExpirationFailure, expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { nestedWorktreeBranchPrefix, restoreNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
@@ -218,6 +218,30 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
     expect(await fs.readFile(f.nestedSettingsPath)).toEqual(f.settings);
     expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
+  });
+
+  it("retains a distinct private Git cache before the actual reopen lifecycle", async () => {
+    const f = await fixture(), sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, title: "Reopen consumer" });
+    const metadata = { ...(await f.row()).metadata };
+    delete metadata.isolatedRemoteSource;
+    await db.update(executionWorkspaces).set({ sourceIssueId, metadata }).where(eq(executionWorkspaces.id, f.workspaceId));
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, issueIds: [f.issueId] }, async () => {
+      entered(); await pending;
+    });
+    await started;
+    try {
+      await expect(f.reopen()).rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
+      const key = `execution_workspace_lifecycle:${f.workspaceId}`;
+      const locks = await db.execute(sql`select count(*)::int n from pg_locks where locktype='advisory' and granted
+        and classid=((hashtextextended(${key},0)>>32)&4294967295)::oid and objid=(hashtextextended(${key},0)&4294967295)::oid`);
+      expect(locks[0].n).toBe(0);
+    } finally { release(); await owner; }
+    expect(await f.reopen()).toMatchObject({ ok: true, reopened: false });
+    expect(git(f.cwd, "rev-parse", "HEAD")).toBe(f.commitA);
   });
 
   it("takes the project fence before the lifecycle lock during an actual nested reopen", async () => {

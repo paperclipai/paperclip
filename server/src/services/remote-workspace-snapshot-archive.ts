@@ -11,6 +11,7 @@ async function workspaceArchive(input: {
   expectedManifestDigest?: string;
   exclude?: string[];
   requireNoGit?: boolean;
+  gitSourceRoots?: string[];
   signal?: AbortSignal;
   maxEntries?: number;
   maxManifestBytes?: number;
@@ -273,6 +274,46 @@ async function workspaceArchive(input: {
     const output = await fs.open(destination, "w", 0o600);
     try { await readStableFile(source, bytes => output.writeFile(bytes)); } finally { await output.close(); }
   };
+  const assertGitSourceFence = async (repo: string) => {
+    if (!input.gitSourceRoots) return null;
+    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 384
+      || input.gitSourceRoots.some(root => !path.isAbsolute(root) || path.resolve(root) !== root)) fail("online_source_git_requires_shared_fence");
+    const directory = async (target: string) => {
+      const actual = await fs.realpath(target), entry = await fs.lstat(target, { bigint: true });
+      if (!entry.isDirectory() || entry.isSymbolicLink()
+        || !input.gitSourceRoots!.some(root => actual === root || actual.startsWith(`${root}${path.sep}`))) {
+        fail("online_source_git_requires_shared_fence");
+      }
+      return { path: actual, device: String(entry.dev), inode: String(entry.ino) };
+    };
+    const gitDirectory = await directory((await git(repo, ["rev-parse", "--absolute-git-dir"])).trim());
+    const commonDirectory = await directory((await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+    const stores: unknown[] = [], seen = new Set<string>();
+    const visit = async (target: string, depth: number): Promise<void> => {
+      if (depth > 4 || seen.size >= 32) fail("online_source_git_requires_shared_fence");
+      const current = await directory(target);
+      if (seen.has(current.path)) return;
+      seen.add(current.path);
+      if (await fs.lstat(path.join(current.path, "info", "http-alternates")).then(() => true,
+        (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; })) fail("online_source_git_requires_shared_fence");
+      const alternatePath = path.join(current.path, "info", "alternates");
+      const entry = await fs.lstat(alternatePath).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+      if (!entry) { stores.push(current); return; }
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 64 * 1024) fail("online_source_git_requires_shared_fence");
+      const chunks: Buffer[] = []; let size = 0;
+      const saved = await readStableFile(alternatePath, async bytes => {
+        size += bytes.length;
+        if (size > 64 * 1024) fail("online_source_git_requires_shared_fence");
+        chunks.push(bytes);
+      });
+      const values = Buffer.concat(chunks).toString("utf8").split("\n").filter(Boolean);
+      if (values.length > 32 || values.some(value => /[\0\r]/.test(value) || value.startsWith('"'))) fail("online_source_git_requires_shared_fence");
+      stores.push({ ...current, alternatesSha256: saved.sha256 });
+      for (const value of values) await visit(path.resolve(current.path, value), depth + 1);
+    };
+    await visit(path.join(commonDirectory.path, "objects"), 0);
+    return { gitDirectory, commonDirectory, stores };
+  };
   const gitStatePath = async (repo: string, name: string) => (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", name])).trim();
   const gitStateHash = async (repo: string, name: string) => {
     const file = await gitStatePath(repo, name);
@@ -325,7 +366,7 @@ async function workspaceArchive(input: {
       const directoryStat = await fs.lstat(directory);
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
       const names = (await fs.readdir(directory)).sort();
-      if (input.requireNoGit && (names.includes("commondir") || names.includes("gitdir")
+      if (skipGit && (input.requireNoGit || input.gitSourceRoots) && (names.includes("commondir") || names.includes("gitdir")
         || names.includes("objects") && names.some(name => ["HEAD", "refs", "packed-refs"].includes(name))
         || names.includes("HEAD") && names.includes("config")
         || path.basename(directory) === "info" && names.some(name => ["alternates", "http-alternates"].includes(name)))) {
@@ -411,13 +452,14 @@ async function workspaceArchive(input: {
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
+        const fence = await assertGitSourceFence(repo);
         const operation = await assertGitOperationComplete(repo);
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
         const config = settings ?? await portableGitSettings(repo), shallow = await gitStateHash(repo, "shallow");
         const partial = config.some(setting => /^remote\..*\.promisor$/u.test(setting.key) && setting.value === "true");
         return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, config,
-          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, operation]);
+          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, operation, fence]);
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
@@ -587,7 +629,7 @@ async function workspaceArchive(input: {
   }
 }
 
-export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; signal?: AbortSignal }) {
+export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {
   return workspaceArchive({ ...input, kind: "capture" });
 }
 

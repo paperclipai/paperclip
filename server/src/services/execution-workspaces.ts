@@ -8,7 +8,7 @@ import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
-import { managedProjectSourceIdentity, retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { workspaceSourceIdentities, retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
 import { expireIsolatedTaskDirectory, hasPendingTaskDirectoryRetention, isIsolatedTaskDirectoryWorkspace, isRetryableTaskDirectorySkip,
   mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, restoreIsolatedTaskDirectory, supersedeTaskDirectoryRestorePoint,
@@ -4774,14 +4774,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return result;
       };
       if (freshSnapshot.providerType === "plugin") return reopenSource();
-      const projectIds = new Set<string>();
+      const projectIds = new Set<string>(), issueIds = new Set<string>();
       if (freshSnapshot.projectId) projectIds.add(freshSnapshot.projectId);
       for (const cwd of new Set([freshSnapshot.cwd, freshSnapshot.providerRef])) {
         if (!cwd) continue;
-        const projectId = await managedProjectSourceIdentity(freshSnapshot.companyId, cwd);
-        if (projectId) projectIds.add(projectId);
+        const identities = await workspaceSourceIdentities(freshSnapshot.companyId, cwd);
+        for (const id of identities.projectIds) projectIds.add(id);
+        for (const id of identities.issueIds) issueIds.add(id);
       }
-      return withWorkspaceSourceLocks(db, { companyId: freshSnapshot.companyId, projectIds: [...projectIds] }, reopenSource);
+      return withWorkspaceSourceLocks(db, { companyId: freshSnapshot.companyId, projectIds: [...projectIds], issueIds: [...issueIds] }, reopenSource);
       };
       return authorizedSnapshot.sourceIssueId
         ? withIsolatedRepositorySourceLock(db, authorizedSnapshot.companyId, authorizedSnapshot.sourceIssueId, reopen)

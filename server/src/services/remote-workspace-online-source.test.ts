@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -74,9 +76,44 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     }
     return { companyId, projectId, cwd, aliases, workspaceId: aliases[0].workspace.id };
   }
+  const execute = promisify(execFile);
+  const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0",
+      GIT_AUTHOR_NAME: "Source fixture", GIT_AUTHOR_EMAIL: "source@example.test", GIT_COMMITTER_NAME: "Source fixture", GIT_COMMITTER_EMAIL: "source@example.test" },
+  })).stdout.trim();
+  async function gitFixture(f = undefined as Awaited<ReturnType<typeof fixture>> | undefined) {
+    const base = f ?? await fixture();
+    await git(base.cwd, "init", "-q", "-b", "main");
+    await git(base.cwd, "add", "."); await git(base.cwd, "commit", "-qm", "Saved legacy work");
+    const repoUrl = "https://example.invalid/saved-work.git";
+    await git(base.cwd, "remote", "add", "origin", repoUrl);
+    for (const alias of base.aliases) await db.update(executionWorkspaces).set({ repoUrl, branchName: "main" })
+      .where(eq(executionWorkspaces.id, alias.workspace.id));
+    const [issue] = await db.insert(issues).values({ companyId: base.companyId, projectId: base.projectId, title: "Shared Git child" }).returning();
+    const cwd = path.join(base.cwd, ".paperclip", "worktrees", "child");
+    await git(base.cwd, "worktree", "add", "-qb", "child", cwd);
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: base.companyId, projectId: base.projectId,
+      sourceIssueId: issue.id, name: "Shared Git child", mode: "isolated_workspace", strategyType: "git_worktree",
+      providerType: "git_worktree", cwd, providerRef: cwd, repoUrl, branchName: "child", baseRef: "main" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issue.id));
+    return { ...base, child: workspace, repoUrl };
+  }
   async function stored(workspaceId: string) {
     return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0];
   }
+  it("rejects a foreign Git alias recorded only in providerRef", async () => {
+    const f = await gitFixture(), companyId = randomUUID(), cwd = path.join(home, "foreign-display-root");
+    await fs.mkdir(cwd);
+    await db.insert(companies).values({ id: companyId, name: "Foreign Git owner", issuePrefix: "FGIT" });
+    await db.insert(executionWorkspaces).values({ companyId, name: "Foreign Git alias", mode: "shared_workspace",
+      strategyType: "project_primary", providerType: "local_fs", cwd, providerRef: f.child.cwd });
+    const input = { companyId: f.companyId, workspaceId: f.child.id };
+    expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: false });
+    await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).rejects.toThrow("remote_workspace_migration_blocked");
+    expect(readRemoteWorkspaceAuthority((await stored(f.child.id)).metadata)).toBeNull();
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([]);
+    expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
   function uploadBarrier() {
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -360,6 +397,103 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
       status: "active", evidence: { runId } });
     return { ...f, run, owner, lease, warning };
   }
+  it("imports a shared Git child while a terminal sibling recovery and unrelated remote execution remain intact", async () => {
+    const recovery = await recoveryFixture(), f = await gitFixture(recovery);
+    const unrelated = await remoteWriter(f.companyId, recovery.run.agentId);
+    await fs.writeFile(path.join(f.child.cwd!, "saved.txt"), "staged child work\n");
+    await git(f.child.cwd!, "add", ".");
+    await fs.writeFile(path.join(f.child.cwd!, "saved.txt"), "unstaged child work\n");
+    const input = { companyId: f.companyId, workspaceId: f.child.id };
+    expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: true });
+    await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).resolves.toMatchObject({ applied: true });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.id)))[0]).toEqual(unrelated);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, recovery.run.id)))[0]).toEqual(recovery.run);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, recovery.run.id)))[0]).toEqual(recovery.owner);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, recovery.warning.id)))[0]).toEqual(recovery.warning);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, recovery.lease.id)))[0]).toEqual(recovery.lease);
+    const authority = readRemoteWorkspaceAuthority((await stored(f.child.id)).metadata)!;
+    const reference = await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: f.child.id, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(home, "git-child.pcws"), targetDir = path.join(home, "git-child-restored");
+    await loadWorkspaceSnapshotArchive({ storage, reference: reference!, targetPath: archivePath });
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+    await fs.rm(f.cwd, { recursive: true });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: reference!.manifestDigest });
+    expect(await git(targetDir, "show", ":saved.txt")).toBe("staged child work");
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("unstaged child work\n");
+    await git(targetDir, "fsck", "--full", "--no-dangling");
+  });
+  it("takes the original private Git store owner before reserving an import journal", async () => {
+    const f = await fixture();
+    const [seed] = await db.insert(issues).values({ companyId: f.companyId, title: "Private seed owner" }).returning();
+    const source = path.join(resolvePaperclipInstanceRoot(), "isolated-repository-sources", f.companyId, seed.id, "checkout");
+    await fs.mkdir(source, { recursive: true }); await git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "saved.txt"), "private seed work\n");
+    await git(source, "add", "."); await git(source, "commit", "-qm", "Private seed");
+    const repoUrl = "https://example.invalid/private-seed.git";
+    await git(source, "remote", "add", "origin", repoUrl);
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Linked task" }).returning();
+    const cwd = path.join(f.cwd, ".paperclip", "worktrees", "private-child");
+    await git(source, "worktree", "add", "-qb", "private-child", cwd);
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
+      sourceIssueId: issue.id, name: "Private linked source", mode: "isolated_workspace", strategyType: "git_worktree",
+      providerType: "git_worktree", cwd, providerRef: cwd, repoUrl, branchName: "private-child" }).returning();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withIsolatedRepositorySourceLock(db, f.companyId, seed.id, async () => { entered(); await pending; });
+    await started;
+    const input = { companyId: f.companyId, workspaceId: workspace.id };
+    try {
+      expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: true });
+      await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
+      expect(await db.select().from(workspaceOperations)).toEqual([]);
+    } finally { release(); await owner; }
+    await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(await fs.readFile(path.join(source, "saved.txt"), "utf8")).toBe("private seed work\n");
+  });
+  it.each(["coordinator", "allocation", "locator", "git-metadata"] as const)("rechecks the shared Git companion %s before publication", async change => {
+    const recovery = await recoveryFixture(), f = await gitFixture(recovery), barrier = uploadBarrier();
+    const migration = migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.child.id, apply: true })
+      .then(value => ({ value }), error => ({ error }));
+    await Promise.race([barrier.started, migration.then(result => { if ("error" in result) throw result.error; throw new Error("capture did not upload"); })]);
+    try {
+      if (change === "coordinator") await db.update(nativeRunFinalizations).set({ leaseOwner: randomUUID(), leaseExpiresAt: new Date(Date.now() - 1000) })
+        .where(eq(nativeRunFinalizations.runId, recovery.run.id));
+      if (change === "allocation") await db.update(environmentLeases).set({ metadata: { remoteCwd: "/changed-companion-source" } })
+        .where(eq(environmentLeases.id, recovery.lease.id));
+      if (change === "locator") await db.update(executionWorkspaces).set({ providerRef: path.join(home, "unproven-companion") })
+        .where(eq(executionWorkspaces.id, f.aliases[1].workspace.id));
+      if (change === "git-metadata") {
+        const administration = await git(f.child.cwd!, "rev-parse", "--absolute-git-dir");
+        await fs.writeFile(path.join(administration, "commondir"), path.join(f.cwd, ".git") + "\n");
+      }
+    } finally { barrier.release(); }
+    const result = await migration;
+    expect(result).toHaveProperty("error");
+    expect("error" in result ? String(result.error) : "").toContain("online_workspace_source_scope_changed");
+    expect(readRemoteWorkspaceAuthority((await stored(f.child.id)).metadata)).toBeNull();
+    expect((await db.select().from(executionWorkspaceSnapshots))[0].status).toBe("uploaded");
+    expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
+  it.each([false, true])("requires exact imported-child coverage for an online shared Git parent (%s)", async changed => {
+    const f = await gitFixture();
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["nested_workspace_import_required"]) });
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.child.id, apply: true });
+    if (changed) await fs.writeFile(path.join(f.child.cwd!, "new-work.txt"), "changed after child import\n");
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
+    const migration = migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+    if (changed) {
+      await expect(migration).rejects.toThrow("nested_workspace_source_changed");
+      expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
+      expect(await fs.readFile(path.join(f.child.cwd!, "new-work.txt"), "utf8")).toBe("changed after child import\n");
+    } else {
+      await expect(migration).resolves.toMatchObject({ applied: true });
+      const authority = readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)!;
+      const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+      expect(snapshot.metadata?.importedWorkspaceChildren).toEqual([expect.objectContaining({ workspaceId: f.child.id })]);
+    }
+  });
   it("imports a terminal prepared source while retaining its original provider and finalization obligations", async () => {
     const f = await recoveryFixture(), put = storage.putFile.bind(storage);
     const unrelated = await remoteWriter(f.companyId, f.run.agentId);

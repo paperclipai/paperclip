@@ -6,6 +6,7 @@ import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, worksp
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { managedProjectSourceIdentity } from "./workspace-source-lock.js";
+import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -49,8 +50,9 @@ export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
   return active ? ["active_execution_requires_drain"] : [];
 }
 
-export type OnlineOrdinarySource = {
+export type WorkspaceSourceScope = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
+  physicalRoots?: string[]; gitSourceRoots?: string[]; settledPreparedWorkspaceIds?: string[]; settledRecoveryIssueIds?: string[]; settledFinalizationRunIds?: string[];
 };
 
 export async function requiresOnlineOrdinarySource(workspace: Workspace): Promise<boolean> {
@@ -67,7 +69,7 @@ export async function requiresOnlineOrdinarySource(workspace: Workspace): Promis
   return Boolean(entry?.isDirectory() && !entry.isSymbolicLink());
 }
 
-export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OnlineOrdinarySource | null> {
+export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<WorkspaceSourceScope | null> {
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
@@ -132,9 +134,12 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
 }
 
 export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, companyId: string,
-  source: OnlineOrdinarySource, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string): Promise<string[]> {
+  source: WorkspaceSourceScope, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string): Promise<string[]> {
   const workspaceIds = sql.join(source.workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
   const issueIds = sql.join(source.issueIds.map(id => sql`${id}::uuid`), sql`, `);
+  const settledWorkspaces = sql.join((source.settledPreparedWorkspaceIds?.length ? source.settledPreparedWorkspaceIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}`), sql`, `);
+  const settledFinalizers = sql.join((source.settledFinalizationRunIds?.length ? source.settledFinalizationRunIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
+  const settledRecoveries = sql.join((source.settledRecoveryIssueIds?.length ? source.settledRecoveryIssueIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
   const rows = await db.execute<{ reason: string }>(sql`
     select 'active_execution' reason where exists (select 1 from heartbeat_runs r where r.company_id=${companyId}::uuid
       and r.status in ('queued','running') and (r.issue_id in (${issueIds}) or r.native_issue_id in (${issueIds})
@@ -154,18 +159,19 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
       and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
       and (r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id}
         and r.runner_profile_json#>>'{nativeWorkspaceSync,state}'='prepared'
+        and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' not in (${settledWorkspaces})
         or r.runner_profile_json->'nativeWorkspaceFinalizationOwner' is not null
         or r.controller_lease_expires_at>clock_timestamp()))
     union all select 'execution_finalization_unresolved' where exists (select 1 from native_run_finalizations f where f.company_id=${companyId}::uuid
       and (f.issue_id in (${issueIds}) and f.issue_id<>${workspace.sourceIssueId}::uuid or f.run_id in
         (select r.id from heartbeat_runs r where r.company_id=${companyId}::uuid
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
-          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and (f.phase not in ('committed','terminal_failure') or f.lease_owner is not null))
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and f.run_id not in (${settledFinalizers}) and (f.phase not in ('committed','terminal_failure') or f.lease_owner is not null))
     union all select 'workspace_recovery_unresolved' where exists (select 1 from issue_recovery_actions a where a.company_id=${companyId}::uuid
       and (a.source_issue_id in (${issueIds}) and a.source_issue_id<>${workspace.sourceIssueId}::uuid or a.source_issue_id in
         (select r.native_issue_id from heartbeat_runs r where r.company_id=${companyId}::uuid
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
-          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.status in ('active','escalated'))
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.source_issue_id not in (${settledRecoveries}) and a.status in ('active','escalated'))
     union all select 'repository_preparation_unresolved' where exists (select 1 from execution_workspace_repositories r where r.company_id=${companyId}::uuid
       and r.execution_workspace_id in (${workspaceIds}) and r.state<>'ready')`);
   const services = await db.execute<{ cwd: string | null; provider: string }>(sql`
@@ -174,9 +180,17 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
   if (services.length > 1000) reasons.push("workspace_runtime_service_unsettled");
   else for (const service of services) {
     try {
-      if (service.cwd ? overlaps(source.root, await physicalPath(service.cwd)) : service.provider !== "adapter_managed") {
-        reasons.push("workspace_runtime_service_unsettled"); break;
+      const cwd = service.cwd ? await physicalPath(service.cwd) : null;
+      let overlap = cwd ? (source.physicalRoots ?? [source.root]).some(root => overlaps(root, cwd)) : service.provider !== "adapter_managed";
+      if (!overlap && cwd && source.gitSourceRoots) {
+        const owned = (target: string) => source.gitSourceRoots!.some(root => target === root || target.startsWith(root + path.sep));
+        overlap = owned(cwd);
+        if (!overlap) {
+          const git = await readWorkspaceGitSourceRoots(cwd, { ancestors: true });
+          overlap = Boolean(git && [git.gitDirectory.path, git.commonDirectory.path, ...git.objectDirectories.map(root => root.path)].some(owned));
+        }
       }
+      if (overlap) { reasons.push("workspace_runtime_service_unsettled"); break; }
     } catch { reasons.push("workspace_runtime_service_unsettled"); break; }
   }
   const controlled = [...adapterExecutionControls.keys()];
@@ -191,7 +205,7 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
 
 /** Only the maintenance entry point can acknowledge that every old deployment
  * has stopped. A task-level migration hold cannot fence other path aliases. */
-export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false, onlineSource?: OnlineOrdinarySource) {
+export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false, onlineSource?: WorkspaceSourceScope) {
   if (writersStopped) return offlineWorkspaceMigrationBlockers(db);
   const cwd = rootOf(workspace);
   if (!cwd) return [];
@@ -201,8 +215,17 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
   ));
   const root = await physicalPath(cwd);
-  for (const row of local) if (!onlineSource?.workspaceIds.includes(row.id) && rootOf(row) && overlaps(root, await physicalPath(rootOf(row)!)))
-    return ["overlapping_workspace_requires_maintenance"];
+  for (const row of local) {
+    const cwd = rootOf(row);
+    if (!cwd) continue;
+    const physical = await physicalPath(cwd);
+    if (onlineSource?.gitSourceRoots && physical.startsWith(`${root}/.paperclip/worktrees/`)) {
+      const entry = await fs.lstat(physical).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+      if (entry) return ["nested_workspace_import_required"];
+    }
+    if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
+  }
+  if (onlineSource?.gitSourceRoots) return [];
   const migrated = await db.select({ cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.phase, "remote_workspace_migration"),
     eq(workspaceOperations.status, "succeeded"), ne(workspaceOperations.executionWorkspaceId, workspace.id),
@@ -217,7 +240,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
  * the parent archive. The snapshot owner retains the resulting dependencies. */
 export async function prepareNestedWorkspaceImports(input: {
   db: Db; storage: StorageService; workspace: Workspace; scratch: string; signal?: AbortSignal;
-  recordedChildren?: ImportedWorkspaceChild[];
+  recordedChildren?: ImportedWorkspaceChild[]; gitSourceRoots?: string[];
 }): Promise<ImportedWorkspaceChild[]> {
   const sourceRoot = rootOf(input.workspace);
   if (!sourceRoot) return [];
@@ -259,7 +282,7 @@ export async function prepareNestedWorkspaceImports(input: {
 
 async function verifyCoveredWorkspace(input: {
   db: Db; storage: StorageService; sourcePath: string; snapshot: typeof executionWorkspaceSnapshots.$inferSelect;
-  operationId: string; expectedDigest: unknown; scratch: string; signal?: AbortSignal; depth: number;
+  operationId: string; expectedDigest: unknown; scratch: string; signal?: AbortSignal; depth: number; gitSourceRoots?: string[];
 }) {
   input.signal?.throwIfAborted();
   if (input.depth > 32) throw new Error("nested_workspace_coverage_invalid");
@@ -287,6 +310,6 @@ async function verifyCoveredWorkspace(input: {
   await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal: input.signal });
   await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal: input.signal });
   const current = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath: path.join(area, "current.pcws"),
-    exclude: children.map(child => child.relativePath), signal: input.signal });
+    exclude: children.map(child => child.relativePath), gitSourceRoots: input.gitSourceRoots, signal: input.signal });
   if (current.manifestDigest !== reference.manifestDigest) throw new Error("nested_workspace_source_changed");
 }
