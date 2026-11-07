@@ -1234,6 +1234,21 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     expect((await rpc("events/unsubscribe", { ...f.input, delivery: { mode: "webhook", url: f.input.delivery.url } })).body.result.resultType).toBe("complete");
   });
 
+  it("marks MCP 2.0 list results with valid cache hints", async () => {
+    const f = await eventFixture();
+    const app = express(); app.use(express.json());
+    app.use(publicMcpIngressRoutes(oauth, createPublicMcpExecutor(db, oauth, f.dispatch), f.service));
+    const params = { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } };
+    const rpc = (method: string) => request(app).post("/mcp/paperclip")
+      .set({ Authorization: `Bearer ${f.tokens.access_token}`, "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method })
+      .send({ jsonrpc: "2.0", id: 1, method, params });
+    for (const method of ["tools/list", "events/list"]) {
+      const { result } = (await rpc(method)).body;
+      expect(typeof result.ttlMs).toBe("number");
+      expect(["public", "private"]).toContain(result.cacheScope);
+    }
+  });
+
   it("persists verified subscriptions, deduplicates refresh and delivers signed filtered events after restart", async () => {
     const f = await eventFixture();
     const first = await f.service.subscribe(f.principal, f.input);
