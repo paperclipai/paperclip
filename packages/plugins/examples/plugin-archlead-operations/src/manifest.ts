@@ -49,6 +49,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.read",
     "issue.interactions.create",
     "issue.interactions.read",
+    "issue.interactions.respond",
     "jobs.schedule",
     "secrets.read-ref",
     "ui.page.register",
@@ -158,6 +159,7 @@ const manifest: PaperclipPluginManifestV1 = {
     jobKey,
     displayName,
     description: "Manual-only migration hook; no integration work is scheduled until it is ported.",
+    schedule: undefined,
   })),
   webhooks: [
     {

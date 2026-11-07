@@ -525,4 +525,48 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as { cause?: { code?: string } }).cause?.code).toBe("23505");
   });
+
+  it("pluginRegistryService.listEntities scopes by companyId and scopeId — never returns another company's records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+      entityType: "lead",
+      externalId: "lead-1",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+      entityType: "lead",
+      externalId: "lead-2",
+      title: "Lead B",
+      status: "open",
+      data: { name: "Bob" },
+    });
+
+    const listA = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.externalId).toBe("lead-1");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    const listB = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.externalId).toBe("lead-2");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
 });

@@ -541,6 +541,15 @@ export function pluginRegistryService(db: Db) {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
+      if (query?.scopeKind) conditions.push(eq(pluginEntities.scopeKind, query.scopeKind));
+      if (query?.scopeId !== undefined) {
+        conditions.push(query.scopeId === null ? isNull(pluginEntities.scopeId) : eq(pluginEntities.scopeId, query.scopeId));
+      }
+      if (query?.companyId !== undefined) {
+        conditions.push(query.companyId === null ? isNull(pluginEntities.companyId) : eq(pluginEntities.companyId, query.companyId));
+      } else if (query?.scopeKind === "company" && query?.scopeId) {
+        conditions.push(eq(pluginEntities.companyId, query.scopeId));
+      }
 
       return db
         .select()
@@ -610,10 +619,16 @@ export function pluginRegistryService(db: Db) {
       // may share the same (pluginId, entityType, externalId) tuple, so the
       // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
       // otherwise — to avoid returning and overwriting another tenant's row.
+      const resolvedCompanyId =
+        input.companyId !== undefined
+          ? input.companyId
+          : (input as any).scopeKind === "company" && (input as any).scopeId
+            ? (input as any).scopeId
+            : null;
       const companyIdPredicate =
-        input.companyId == null
+        resolvedCompanyId == null
           ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, input.companyId);
+          : eq(pluginEntities.companyId, resolvedCompanyId);
       const existing = await db
         .select()
         .from(pluginEntities)
@@ -632,6 +647,7 @@ export function pluginRegistryService(db: Db) {
           .update(pluginEntities)
           .set({
             ...input,
+            companyId: resolvedCompanyId,
             updatedAt: new Date(),
           })
           .where(eq(pluginEntities.id, existing.id))
@@ -643,6 +659,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginEntities)
         .values({
           ...input,
+          companyId: resolvedCompanyId,
           pluginId,
         } as any)
         .returning()

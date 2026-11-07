@@ -2351,9 +2351,9 @@ export function pluginLoader(
       };
 
       if (prebuiltOnly) {
-        workerOptions.execArgv = ["--import", resolveBundledPluginRuntimeLoader()];
+        workerOptions.execArgv = ["--import", pathToFileURL(resolveBundledPluginRuntimeLoader()).href];
       } else if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);

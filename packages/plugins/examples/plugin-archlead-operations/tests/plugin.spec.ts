@@ -937,4 +937,46 @@ describe("ArchLead Operations plugin", () => {
     await plugin.definition.setup(harness.ctx);
     await expect(harness.runJob("gmail-sync")).rejects.toThrow("business logic has not been ported");
   });
+
+  it("exposes totals and pagination in overview data query", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const overview = await harness.getData<{
+      totals: { leads: number; requests: number; isLimited: boolean };
+      pagination: { limit: number; offset: number };
+    }>("overview", { companyId: COMPANY_ID });
+    expect(overview.totals).toMatchObject({ leads: 0, requests: 0, isLimited: false });
+    expect(overview.pagination).toMatchObject({ limit: 200, offset: 0 });
+  });
+
+  it("self-heals and recovers an unfinished sandbox qualification task on retry", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const body = {
+      companyId: COMPANY_ID,
+      externalLeadId: "sandbox:retry-lead",
+      sandbox: true,
+      lead: {
+        name: "Retry Lead",
+        email: "retry@example.test",
+        business: "Retry Co",
+      },
+    };
+    const first = await plugin.definition.onApiRequest?.({
+      ...apiInput("create-qualification-task", body),
+    });
+    expect(first?.status).toBe(201);
+
+    // Calling again with the same externalLeadId recovers the task
+    const second = await plugin.definition.onApiRequest?.({
+      ...apiInput("create-qualification-task", body),
+    });
+    expect(second?.status).toBe(200);
+    expect(second?.body).toMatchObject({
+      issueId: (first?.body as any).issueId,
+      interactionId: (first?.body as any).interactionId,
+      synthetic: true,
+      qualificationStatus: "pending_review",
+    });
+  });
 });

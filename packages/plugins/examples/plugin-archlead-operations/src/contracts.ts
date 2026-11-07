@@ -423,3 +423,10 @@ function parseAttribution(value: unknown): Record<string, string> | null {
   }
   return attribution;
 }
+
+export class PluginRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "PluginRequestError";
+  }
+}

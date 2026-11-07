@@ -4,7 +4,7 @@ import {
   usePluginData,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useState, useEffect, type CSSProperties, type FormEvent, type ReactNode } from "react";
 
 type PluginRecord = {
   id: string;
@@ -45,6 +45,26 @@ type Overview = {
   attribution: Record<string, number>;
   paymentReceipts: PaymentReceipt[];
   manualOnlyJobs: Array<{ jobKey: string; displayName: string }>;
+  totals?: {
+    leads: number;
+    requests: number;
+    clients: number;
+    tickets: number;
+    qualificationTasks: number;
+    isLimited: boolean;
+  };
+  pagination?: {
+    limit: number;
+    offset: number;
+    hasMore: {
+      leads: boolean;
+      requests: boolean;
+      clients: boolean;
+      tickets: boolean;
+      qualificationTasks: boolean;
+    };
+  };
+  isLimited?: boolean;
 };
 
 type Operation = "create-lead" | "create-request" | "create-client" | "update-record" | "convert-request";
@@ -113,6 +133,24 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingLeadId, setPendingLeadId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      void refresh();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [refresh]);
 
   async function runAction(action: () => Promise<unknown>, successMessage: string): Promise<boolean> {
     setBusy(true);
@@ -171,17 +209,14 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
     const form = event.currentTarget;
     if (!companyId) return;
     const fields = readFormFields(form);
-    const id = globalThis.crypto?.randomUUID?.();
-    if (!id) {
-      setActionError("This browser cannot create a secure sandbox task ID.");
-      return;
-    }
+    const id = pendingLeadId ?? `sandbox:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+    setPendingLeadId(id);
     const succeeded = await runAction(
       () => mutate({
         operation: "create-sandbox-qualification",
         companyId,
         sandbox: true,
-        externalLeadId: `sandbox:${id}`,
+        externalLeadId: id,
         lead: {
           name: fields.name,
           email: fields.email,
@@ -192,7 +227,30 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
       }),
       "Sandbox qualification task created in Paperclip. No outreach was sent.",
     );
-    if (succeeded) form.reset();
+    if (succeeded) {
+      setPendingLeadId(null);
+      form.reset();
+    }
+  }
+
+  async function retryQualificationTask(task: QualificationTask) {
+    if (!companyId || !task.externalId) return;
+    await runAction(
+      () => mutate({
+        operation: "create-sandbox-qualification",
+        companyId,
+        sandbox: true,
+        externalLeadId: task.externalId,
+        lead: {
+          name: value(task, "name", task.title?.replace("[SANDBOX] Review lead: ", "") ?? "Synthetic Contact"),
+          email: value(task, "email", "contact@example.test"),
+          business: value(task, "business", "[SANDBOX] Synthetic Business"),
+          message: value(task, "message", "Synthetic qualification request"),
+          source: "sandbox",
+        },
+      }),
+      "Qualification task recovered successfully.",
+    );
   }
 
   async function updateStatus(record: PluginRecord, entityType: string, status: string) {
@@ -301,9 +359,26 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
                       <Cell>{task.approvalStatus}<Small>Paperclip confirmation: {task.interactionStatus ?? "unavailable"}.</Small></Cell>
                       <Cell>{task.outreachStatus}<Small>No provider execution is enabled.</Small></Cell>
                       <Cell>
-                        {task.issueId
-                          ? <><a {...hostNavigation.linkProps(`/issues/${encodeURIComponent(task.issueId)}`)}>Open issue</a><Small>{task.issueTitle ?? task.issueId} · {task.issueStatus ?? "unavailable"}</Small></>
-                          : <Small>Issue creation is pending; retry the same externalLeadId to recover.</Small>}
+                        {task.issueId ? (
+                          <>
+                            <a {...hostNavigation.linkProps(`/issues/${encodeURIComponent(task.issueId)}`)}>Open issue</a>
+                            <Small>{task.issueTitle ?? task.issueId} · {task.issueStatus ?? "unavailable"}</Small>
+                          </>
+                        ) : (
+                          <div>
+                            <div style={{ color: "var(--destructive)", fontSize: "0.75rem", marginBottom: "4px" }}>
+                              Issue creation incomplete.
+                            </div>
+                            <button
+                              type="button"
+                              style={{ ...secondaryButtonStyle, marginTop: "4px", fontSize: "0.75rem", padding: "3px 8px" }}
+                              disabled={busy}
+                              onClick={() => void retryQualificationTask(task)}
+                            >
+                              Retry recovery
+                            </button>
+                          </div>
+                        )}
                       </Cell>
                     </tr>
                   ))}</tbody>
@@ -320,12 +395,37 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
 
       {data && (
         <>
+          {data.isLimited && (
+            <div style={{ ...cardStyle, background: "var(--muted)", padding: "10px 14px", fontSize: "0.85rem" }}>
+              <strong>Limited overview:</strong> Showing the first 200 records per CRM/support type (50 for qualifications). Counts represent the visible working set.
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>
-            <Metric label="Leads" count={leads.length} />
-            <Metric label="CRM requests" count={requests.length} />
-            <Metric label="Clients" count={clients.length} />
-            <Metric label="Open support tickets" count={tickets.filter((ticket) => ticket.status !== "resolved").length} />
-            <Metric label="Entered pipeline value" count={data.pipelineValue} />
+            <Metric
+              label="Leads"
+              count={data.totals?.leads ?? leads.length}
+              subtext={data.pagination?.hasMore?.leads ? "Showing first 200 (limited view)" : undefined}
+            />
+            <Metric
+              label="CRM requests"
+              count={data.totals?.requests ?? requests.length}
+              subtext={data.pagination?.hasMore?.requests ? "Showing first 200 (limited view)" : undefined}
+            />
+            <Metric
+              label="Clients"
+              count={data.totals?.clients ?? clients.length}
+              subtext={data.pagination?.hasMore?.clients ? "Showing first 200 (limited view)" : undefined}
+            />
+            <Metric
+              label="Open support tickets"
+              count={tickets.filter((ticket) => ticket.status !== "resolved").length}
+              subtext={data.pagination?.hasMore?.tickets ? "From first 200 visible" : undefined}
+            />
+            <Metric
+              label="Entered pipeline value"
+              count={data.pipelineValue}
+              subtext={data.pagination?.hasMore?.requests ? "From first 200 visible requests" : undefined}
+            />
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: "12px" }}>
@@ -472,8 +572,16 @@ export function ArchLeadOperationsPage({ context }: PluginPageProps) {
   );
 }
 
-function Metric({ label, count }: { label: string; count: number }) {
-  return <section style={cardStyle}><div style={mutedStyle}>{label}</div><strong style={{ display: "block", fontSize: "1.35rem", marginTop: "4px" }}>{count.toLocaleString()}</strong></section>;
+function Metric({ label, count, subtext }: { label: string; count: number | string; subtext?: string }) {
+  return (
+    <section style={cardStyle}>
+      <div style={mutedStyle}>{label}</div>
+      <strong style={{ display: "block", fontSize: "1.35rem", marginTop: "4px" }}>
+        {typeof count === "number" ? count.toLocaleString() : count}
+      </strong>
+      {subtext && <div style={{ ...mutedStyle, fontSize: "0.75rem", marginTop: "2px" }}>{subtext}</div>}
+    </section>
+  );
 }
 
 function CreateForm({
