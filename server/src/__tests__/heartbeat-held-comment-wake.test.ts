@@ -148,6 +148,33 @@ describePostgres("a promoted comment refused by a temporary admission hold", () 
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
+  it("saves a comment whose wake the hold refuses at enqueue and delivers it once after the hold clears", async () => {
+    // s7532/t06: the comment arrived during the hold; its wake was refused
+    // before admission and written as a terminal skip, so it was lost.
+    const f = await seedHeldComment();
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the hold." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toThrow(/await accounting/);
+    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
+    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null,
+      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: "budget.blocked" }) }) })]);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+
+    await settleAccounting(f);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) }).where(eq(agentWakeupRequests.id, saved[0].id));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
   it("keeps a Retry clicked during the hold pending and starts it exactly once after the hold clears", async () => {
     const f = await seedHeldComment();
     // The run the user retries failed; its saved comment was already discarded.
