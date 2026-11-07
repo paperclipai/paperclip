@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "issue_write_run_context_unavailable",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -250,7 +251,7 @@ export function describeIssueWriteDenial(
         status: 403,
         tone: "boundary",
         boundary: "Heartbeat run context",
-        title: "Cross-issue writes need a run to attribute them to",
+        title: "Issue writes need a run to attribute them to",
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
@@ -258,8 +259,27 @@ export function describeIssueWriteDenial(
         whoCanAct: `${actor}, once the request carries its own run id.`,
         sanctionedPath:
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
+          `and retry once. If the header was already present, check \`GET /api/heartbeat-runs/$PAPERCLIP_RUN_ID\` and report the denial.`,
 
+      };
+
+    case "issue_write_run_context_unavailable":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Heartbeat run attribution",
+        title: "The issue write could not be attributed to this run",
+        description:
+          `The supplied run id did not identify a registered heartbeat run owned by ${actor} ` +
+          `in this company. This issue write cannot proceed without that attribution.`,
+        whoCanAct: `${actor}, after its heartbeat run is available to the control plane.`,
+        sanctionedPath:
+          `Check \`GET /api/heartbeat-runs/$PAPERCLIP_RUN_ID\` with the current run credential. ` +
+          `Stop affected issue writes and report this denial and the lookup result. The supplied run ` +
+          `must be registered in this company and owned by ${actor}; a 403 or 404 from the lookup ` +
+          `alone does not prove missing registration. Do not create a different run id or retry ` +
+          `this write under another identity.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

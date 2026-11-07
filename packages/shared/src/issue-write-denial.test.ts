@@ -84,6 +84,19 @@ describe("describeIssueWriteDenial", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    expect(copy.sanctionedPath).toContain("/api/heartbeat-runs/$PAPERCLIP_RUN_ID");
+  });
+
+  it("routes an unverifiable run to the canonical run endpoint", () => {
+    const copy = describeIssueWriteDenial("issue_write_run_context_unavailable");
+    expect(copy.status).toBe(403);
+    expect(copy.sanctionedPath).toContain("/api/heartbeat-runs/$PAPERCLIP_RUN_ID");
+    expect(copy.sanctionedPath).toContain("Stop affected issue writes");
+    expect(copy.sanctionedPath).toContain("registered in this company");
+    expect(copy.sanctionedPath).toContain("owned by");
+    expect(copy.sanctionedPath).toContain("403 or 404");
+    expect(copy.sanctionedPath).toContain("does not prove missing registration");
+    expect(copy.title).not.toContain("Cross-issue");
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {
