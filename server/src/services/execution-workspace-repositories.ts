@@ -226,13 +226,17 @@ export function executionWorkspaceRepositoryService(db: Db) {
         .where(and(eq(executionWorkspaceRepositories.companyId, input.companyId),
           eq(executionWorkspaceRepositories.executionWorkspaceId, input.workspaceId))).limit(1);
       if (existing) return 0;
-      const [task] = await tx.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId })
+      const [task] = await tx.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId,
+        projectId: issues.projectId })
         .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
       const sourceIssueId = task?.privacyParentIssueId ?? task?.parentId;
       if (!sourceIssueId) return 0;
-      const [source] = await tx.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
-        .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId)));
+      const [source] = await tx.select({ executionWorkspaceId: issues.executionWorkspaceId, projectId: issues.projectId })
+        .from(issues).where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId)));
       if (!source?.executionWorkspaceId || source.executionWorkspaceId === input.workspaceId) return 0;
+      // Repositories belong to the source's project. A task in another project
+      // takes its own project's defaults instead, like a top-level task there.
+      if (task?.projectId !== source.projectId) return 0;
       const requested = await tx.select().from(executionWorkspaceRepositories).where(and(
         eq(executionWorkspaceRepositories.companyId, input.companyId),
         eq(executionWorkspaceRepositories.executionWorkspaceId, source.executionWorkspaceId)));

@@ -77,7 +77,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
     if (root) await rm(root, { recursive: true, force: true });
   });
 
-  it.each(["new", "older-release"] as const)("gives a %s child its own freshly acquired repository instead of the parent's checkout", async (shape) => {
+  it.each(["new", "older-release", "cross-project"] as const)("gives a %s child its own workspace and never the parent's checkout", async (shape) => {
     const companyId = randomUUID(), userId = randomUUID(), agentId = randomUUID(), projectId = randomUUID();
     const parentId = randomUUID(), parentWorkspaceId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -109,14 +109,24 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
       requestedByIssueId: parentId, repoUrl: REPO_URL, repositoryIdentity: REPO_URL, relativePath, requestedRef: "HEAD",
       pinnedCommit, branchName: "main", state: "ready", requestKey: "parent-repository", requestKeys: ["parent-repository"] });
 
-    const child = shape === "new"
+    // A second project without a project workspace, for the cross-project child.
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({ id: otherProjectId, companyId, name: "Other repository-free project", status: "in_progress" });
+    const child = shape !== "older-release"
       ? await issueService(db).create(companyId, { parentId, title: "Child", status: "todo",
-          assigneeAgentId: agentId, actorResponsibleUserId: userId })
+          assigneeAgentId: agentId, actorResponsibleUserId: userId,
+          ...(shape === "cross-project" ? { projectId: otherProjectId } : {}) })
       // An older release bound every child to its parent's realized workspace.
       : (await db.insert(issues).values({ companyId, projectId, parentId, title: "Child", status: "todo",
           assigneeAgentId: agentId, responsibleUserId: userId, executionWorkspaceId: parentWorkspaceId,
           executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: "isolated_workspace" } }).returning())[0]!;
-    if (shape === "new") expect(child.executionWorkspaceId).toBeNull();
+    if (shape !== "older-release") expect(child.executionWorkspaceId).toBeNull();
+    if (shape === "cross-project") {
+      // The target project's defaults, exactly as for a top-level task there.
+      const topLevel = await issueService(db).create(companyId, { projectId: otherProjectId, title: "Top-level", status: "backlog" });
+      expect(child).toMatchObject({ projectId: otherProjectId, projectWorkspaceId: topLevel.projectWorkspaceId,
+        executionWorkspaceSettings: topLevel.executionWorkspaceSettings });
+    }
 
     let childCwd: string | null = null;
     execute.mockImplementation(async (input: { context: { paperclipWorkspace?: { cwd?: string } } }) => {
@@ -134,13 +144,20 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
     // The child ran in its own task files with its own fresh copy of the repository.
     expect(childCwd).toBeTruthy();
     expect(childCwd).not.toBe(parentCwd);
-    expect(await readFile(path.join(childCwd!, relativePath, "source.txt"), "utf8")).toBe("project base\n");
-    // The parent's checkout and its unmerged change are untouched.
-    expect(await readFile(path.join(parentCheckout, "source.txt"), "utf8")).toBe("parent unmerged change\n");
     const [childRow] = await db.select().from(issues).where(eq(issues.id, child.id));
     expect(childRow.executionWorkspaceId).not.toBe(parentWorkspaceId);
     const childRepositories = await db.select().from(executionWorkspaceRepositories)
       .where(and(eq(executionWorkspaceRepositories.companyId, companyId), eq(executionWorkspaceRepositories.executionWorkspaceId, childRow.executionWorkspaceId!)));
+    if (shape === "cross-project") {
+      // The parent's repositories belong to the parent's project.
+      expect(childRepositories).toEqual([]);
+      expect(await lstat(path.join(childCwd!, relativePath)).catch(() => null)).toBeNull();
+      expect(await readFile(path.join(parentCheckout, "source.txt"), "utf8")).toBe("parent unmerged change\n");
+      return;
+    }
+    expect(await readFile(path.join(childCwd!, relativePath, "source.txt"), "utf8")).toBe("project base\n");
+    // The parent's checkout and its unmerged change are untouched.
+    expect(await readFile(path.join(parentCheckout, "source.txt"), "utf8")).toBe("parent unmerged change\n");
     expect(childRepositories).toEqual([expect.objectContaining({ repositoryIdentity: REPO_URL, requestedByIssueId: child.id,
       state: "ready", relativePath })]);
     expect(await lstat(path.join(childCwd!, relativePath, ".git"))).toBeTruthy();
