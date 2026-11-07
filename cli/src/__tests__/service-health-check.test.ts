@@ -7,6 +7,7 @@ import {
   extractExecutableFromLaunchdPlist,
   extractExecutableFromSystemdUnit,
   isExecutableFile,
+  LaunchdServiceManager,
   renderLaunchdPlist,
   renderSystemdUnit,
 } from "../services/service-manager.js";
@@ -130,6 +131,30 @@ describe("service health doctor checks", () => {
     });
 
     expect(results.every((result) => result.status === "pass")).toBe(true);
+  });
+
+  it("accepts an operator-managed LaunchDaemon without requiring a generated GUI plist", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-system-doctor-"));
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const label = "ing.paperclip.paperclipai";
+    const runner = vi.fn(async (command: string, args: string[]) => {
+      if (command === "launchctl" && args[0] === "print") {
+        return { stdout: `system/${label} = {\n pid = 123\n}`, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const manager = new LaunchdServiceManager("default", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+    const results = await serviceHealthChecks(config, {
+      detect: vi.fn(async () => ({ supported: true as const, manager })),
+      probe: vi.fn(async () => ({ ok: true, version: null })),
+    });
+
+    expect(results.find((result) => result.name === "Service definition")).toMatchObject({
+      status: "pass",
+      message: expect.stringContaining("managed by the operator"),
+    });
+    expect(results.some((result) => result.name === "Service definition" && result.repairHint)).toBe(false);
+    expect(runner.mock.calls.every(([command]) => command === "launchctl")).toBe(true);
   });
 
   it("detects a foreground process on the configured port while the service is inactive", async () => {
