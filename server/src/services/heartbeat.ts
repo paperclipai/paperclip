@@ -587,8 +587,6 @@ export { isNonAssigneeWorkspaceBusyRetry };
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
-// Shutdown is a process boundary. Route, scheduler and recovery instances of
-// heartbeatService share it, so no instance starts a run after shutdown begins.
 let shutdownInProgress = false;
 // A legacy process adapter's signal exit can race the operator cancellation CAS while
 // its owned process group is still being joined. Keep that exit from becoming
@@ -4390,8 +4388,6 @@ export function heartbeatService(
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
     drainActiveRunExecutions,
-    // Called synchronously when graceful shutdown starts, before its first await.
-    // executeRun then returns every claimed run to the queue before it does work.
     setShutdownInProgress: (value = true) => {
       shutdownInProgress = value;
     },

@@ -335,8 +335,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         status: "interrupted", errorCode: "server_shutdown_interrupted",
       });
       expect(result.interruptedRunIds).toContain(fixture.runId);
-      // Releasing the interrupted run promotes the agent's next queued run,
-      // and shutdown keeps that promotion from starting it.
       await expectQueuedClaim(pending);
     } finally {
       await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
@@ -346,8 +344,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   type StatementInfo = { operation: string; table: string };
 
-  // A separate client whose statements report back once PostgreSQL answers,
-  // so a test can start shutdown while a claim is inside its database work.
   function observedClient(onStatementFinished: (info: StatementInfo) => void) {
     const observed = createDb(tempDb!.connectionString);
     const now = Date.now();
