@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, FileCheck2 } from "lucide-react";
-import type { ConversationTaskHandoff } from "@paperclipai/shared";
+import type { ConversationTaskHandoff, IssueSummary } from "@paperclipai/shared";
 import type { SuggestTasksInteraction } from "@/lib/issue-thread-interactions";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -9,6 +9,7 @@ import { Link } from "@/lib/router";
 import { StatusIcon } from "@/components/StatusIcon";
 import { CoordinatorRelativeTime } from "./CoordinatorRelativeTime";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Presentation-only memory. It contains no task text or authority, and prevents
 // revisiting a conversation from replaying its task-creation celebration.
@@ -122,10 +123,11 @@ export function CoordinatorTaskMotion({
  * handoffs, so both creation paths settle into the same card. */
 export function CoordinatorCreatedTaskLink({ task, createdAt }: {
   createdAt?: Date | string | null;
-  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] };
+  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] }
+    & Partial<Pick<IssueSummary, "displayStatus" | "externalConversationState" | "blockerAttention">>;
 }) {
   return <Link to={`/issues/${task.identifier ?? task.issueId}`} className="coordinator-created-task">
-    {task.status ? <StatusIcon status={task.status} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
+    {task.status ? <StatusIcon {...taskStatusIconProps({ ...task, status: task.status })} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium">{task.title}</span>
       <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{task.identifier ?? task.issueId}</span> · Created</span>
@@ -143,8 +145,7 @@ function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteractio
     queryKey: queryKeys.issues.summaryBatch(interaction.companyId, userId, ids),
     queryFn: ({ signal }) => issuesApi.summaries(interaction.companyId, ids, { signal }),
     enabled: ids.length > 0,
-    retry: false,
-  });
+    });
   if (tasks.length === 0) return <p className="p-4 text-sm text-muted-foreground">No tasks were created.</p>;
   return <div className="divide-y divide-border">
     {tasks.map(task => {
@@ -154,6 +155,9 @@ function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteractio
         identifier: summary?.identifier ?? task.identifier ?? null,
         title: summary?.title ?? task.title ?? "Task created",
         status: summary?.status,
+        displayStatus: summary?.displayStatus,
+        externalConversationState: summary?.externalConversationState,
+        blockerAttention: summary?.blockerAttention,
       }} />;
     })}
   </div>;

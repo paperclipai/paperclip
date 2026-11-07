@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentChatPicker } from "./AgentChatPicker";
@@ -14,6 +14,16 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
   const [open, setOpen] = useState(false);
   const { agents, chats } = useAgentChatNavigation();
   const navigate = useNavigate();
+  const chatAgentIds = useMemo(() => {
+    const existing: string[] = [];
+    const unread = new Map<string, number>();
+    for (const chat of chats.data ?? []) {
+      if (!chat.conversationAgentId) continue;
+      existing.push(chat.conversationAgentId);
+      if (chat.unreadMessageCount) unread.set(chat.conversationAgentId, chat.unreadMessageCount);
+    }
+    return { existing, unread };
+  }, [chats.data]);
   return (
     <AgentChatPicker
       open={open}
@@ -29,7 +39,8 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
       loading={agents.isPending}
       error={agents.error}
       onRetry={() => { void agents.refetch(); }}
-      existingChatAgentIds={(chats.data ?? []).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : [])}
+      existingChatAgentIds={chatAgentIds.existing}
+      unreadMessageCounts={chatAgentIds.unread}
       onSelect={next => { navigate(`/chats/${encodeURIComponent(agentRouteRef(next))}`); }}
     />
   );

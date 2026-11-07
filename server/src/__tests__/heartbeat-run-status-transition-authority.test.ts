@@ -76,7 +76,7 @@ function statusWrite(text: string, argumentAt: number): string | null {
       const spread = member.slice(3).trim();
       const reason = /^[A-Za-z_$][\w$]*$/.test(spread)
         ? declaredStatusWrite(text, spread, argumentAt)
-        : /[{,]\s*status\s*:/.test(spread) ? "sets status inside a spread" : null;
+        : /[{,]\s*status\s*:/.test(spread.replace(/\/\/[^\n]*/g, "")) ? "sets status inside a spread" : null;
       if (reason) return reason;
     }
     return null;

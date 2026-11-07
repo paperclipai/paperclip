@@ -3,6 +3,7 @@ import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } f
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
@@ -26,12 +27,13 @@ function absent(pid: number): boolean {
  * the original host, process birth, and launch event before accepting it. */
 export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt">) {
-  const [identity] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+  const [identity] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+    isNull(heartbeatRunEvents.sourceEventId),
   )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
   const recorded = identity?.payload;
-  if (recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
+  if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
       recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
       !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
   return Boolean(run.processPid && absent(run.processPid) &&
@@ -55,6 +57,8 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
   if (leases.some(lease => lease.provider !== "local")) return false;
   if ((run.processPid && !absent(run.processPid)) ||
       (run.processGroupId && !absent(-run.processGroupId))) return false;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.executionReplacement,
+    JSON.stringify({ companyId: run.companyId, runId: run.id }));
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,
     runId: run.id,
@@ -67,6 +71,15 @@ export async function recordNativeLocalProcessStop(db: Db, run: Pick<typeof hear
       processStartedAt: run.processStartedAt?.toISOString() ?? null },
   });
   return true;
+}
+
+/** Transaction form for callers that clear the process identity: a stopped
+ * provider closes its usage source, so accounting may settle a terminal run
+ * whose final receipt can no longer arrive. */
+export async function recordNativeLocalProcessStopInTransaction(tx: Db, run: Parameters<typeof recordNativeLocalProcessStop>[1]) {
+  const recorded = await recordNativeLocalProcessStop(tx, run);
+  if (recorded) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+  return recorded;
 }
 
 /** Only server-authored evidence counts. A later launch invalidates the receipt. */
@@ -82,6 +95,43 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
     .orderBy(desc(heartbeatRunEvents.seq))
     .limit(1);
   return event?.eventType === LOCAL_PROCESS_STOPPED;
+}
+
+/**
+ * A local runner launch can be requested and the server killed before the
+ * runner's process identity is recorded. With no PID to check, prove on this
+ * host that no runner for the run exists and that it never wrote runner state
+ * (no provider can start before that), then record the stop like a verified
+ * PID. A later launch request invalidates the receipt as usual.
+ */
+export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" | "runnerProfileJson">,
+  options: { record: boolean } = { record: true }): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.processPid || run.processGroupId) return false;
+  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  // Only the host that requested the launch can inspect its process table.
+  if (latest?.eventType !== PROCESS_START_REQUESTED || latest.payload?.hostname !== os.hostname()) return false;
+  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
+    .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+  if (leases.some(lease => lease.provider !== "local")) return false;
+  const { unidentifiedLocalRunnerProvenAbsent } = await import("./native-runtime/native-session-executor.js");
+  if (!await unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput })) return false;
+  if (!options.record) return true;
+  await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId,
+    runId: run.id,
+    agentId: run.agentId,
+    eventType: LOCAL_PROCESS_STOPPED,
+    stream: "system",
+    level: "info",
+    message: "Verified that no runner for this run exists on this host and none saved runner state.",
+    payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" },
+  });
+  return true;
 }
 
 /** Pre-receipt native runs can retain an exact suspended session after their
@@ -199,6 +249,8 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
     }
     await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
+    // Local and remote stops both close the run's usage source.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
     await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, run.id));
