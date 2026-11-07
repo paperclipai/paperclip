@@ -423,4 +423,62 @@ describe("gemini remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(runChildProcess).not.toHaveBeenCalled();
   });
+
+  it("forwards the run cancellation signal to the SSH workspace restore (TOG-25014)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-restore-signal-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const controller = new AbortController();
+
+    await execute({
+      runId: "run-restore-signal",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "gemini",
+        env: {
+          GEMINI_API_KEY: "test-key",
+          NO_COLOR: "1",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      signal: controller.signal,
+      onLog: async () => {},
+    });
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });
