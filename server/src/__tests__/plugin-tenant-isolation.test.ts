@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   companies,
   createDb,
+  pluginCompanySettings,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     await db.delete(pluginJobs);
     await db.delete(pluginLogs);
     await db.delete(pluginWebhookDeliveries);
+    await db.delete(pluginCompanySettings);
     await db.delete(plugins);
     await db.delete(companies);
   });
@@ -524,5 +526,81 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       );
     expect(err).toBeInstanceOf(Error);
     expect((err as { cause?: { code?: string } }).cause?.code).toBe("23505");
+  });
+
+  it("patchCompanySettingsEntry survives a concurrent revoke of one host and approve of another", async () => {
+    const pluginId = await seedPlugin();
+    const companyId = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    await registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "ha", {
+      host: "ha.tieredint.com",
+    });
+
+    await Promise.all([
+      registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "ha", null),
+      registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "other", {
+        host: "10.0.1.50",
+      }),
+    ]);
+
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    const hosts = settings?.settingsJson?.privateNetworkHosts as Record<string, { host: string }> | undefined;
+    expect(hosts?.ha).toBeUndefined();
+    expect(hosts?.other?.host).toBe("10.0.1.50");
+  });
+
+  it("patchCompanySettingsEntry creates its top-level key when the settings row already holds an unrelated one", async () => {
+    const pluginId = await seedPlugin();
+    const companyId = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    await registry.patchCompanySettingsEntry(pluginId, companyId, "localFolders", "data", {
+      path: "/tmp/data",
+    });
+
+    await registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "ha", {
+      host: "ha.tieredint.com",
+    });
+
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    const settingsJson = settings?.settingsJson as Record<string, unknown> | undefined;
+    expect((settingsJson?.localFolders as Record<string, { path: string }>)?.data?.path).toBe("/tmp/data");
+    expect((settingsJson?.privateNetworkHosts as Record<string, { host: string }>)?.ha?.host).toBe(
+      "ha.tieredint.com",
+    );
+  });
+
+  it("patchCompanySettingsEntry can set lastError atomically without disturbing a concurrent patch to a different key", async () => {
+    const pluginId = await seedPlugin();
+    const companyId = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    await registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "ha", {
+      host: "ha.tieredint.com",
+    });
+
+    await Promise.all([
+      registry.patchCompanySettingsEntry(
+        pluginId,
+        companyId,
+        "localFolders",
+        "data",
+        { path: "/tmp/data" },
+        { lastError: "folder unwritable" },
+      ),
+      registry.patchCompanySettingsEntry(pluginId, companyId, "privateNetworkHosts", "other", {
+        host: "10.0.1.50",
+      }),
+    ]);
+
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    const settingsJson = settings?.settingsJson as Record<string, unknown> | undefined;
+    expect((settingsJson?.privateNetworkHosts as Record<string, { host: string }>)?.ha?.host).toBe(
+      "ha.tieredint.com",
+    );
+    expect((settingsJson?.privateNetworkHosts as Record<string, { host: string }>)?.other?.host).toBe("10.0.1.50");
+    expect((settingsJson?.localFolders as Record<string, { path: string }>)?.data?.path).toBe("/tmp/data");
+    expect(settings?.lastError).toBe("folder unwritable");
   });
 });
