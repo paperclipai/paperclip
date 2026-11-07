@@ -32,8 +32,9 @@ export default defineConfig({
     hookTimeout: 30000,
     teardownTimeout: 30000,
     // The route/authz suites import very large modules (for example
-    // src/routes/issues.ts and its dependency graph). The first test in each
-    // file pays the one-time transform cost inside its own timeout budget. On
+    // src/routes/issues.ts and its dependency graph). The global setup below
+    // now transforms those graphs before any test starts; the first test in a
+    // file still evaluates its graph inside its own timeout budget. On
     // the loaded serial shard (maxWorkers=1) that cost can cross vitest's
     // default 5s testTimeout and fail the first test, which also lets its
     // fire-and-forget wake leak into the next test. Give each test generous
@@ -52,5 +53,8 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    // Transform each test file's import graph before any worker starts, so no
+    // test or hook pays the cold transform inside its timeout (see the file).
+    globalSetup: ["./src/__tests__/warm-transforms.global-setup.ts"],
   },
 });
