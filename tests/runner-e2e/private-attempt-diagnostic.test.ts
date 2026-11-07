@@ -120,3 +120,14 @@ it("retains each remaining fixed scanner reason without dynamic text", () => {
   expect(diagnostic.carrierReasons).toEqual(reasons.map(reason => ({ source: "reporter", carrier: "embedded-html", reason, count: 1 })));
   expect(JSON.stringify(diagnostic)).not.toMatch(/private-filename|private-error|html-report/);
 });
+
+import { readFileSync } from "node:fs";
+it("gives every fixed packaging, sealing and report-asset refusal a closed finalization code", () => {
+  const messages = ["manual-private-handoff.ts", "evidence.ts", "manual-private-report-assets.ts"].flatMap(file =>
+    [...readFileSync(new URL(`./${file}`, import.meta.url), "utf8").matchAll(/(?:new Error|budgetFailure)\("([^"$`]+)"/g)].map(match => match[1]!));
+  expect(messages.length).toBeGreaterThan(20);
+  for (const message of messages) {
+    const diagnostic = privateAttemptDiagnostic({ stage: "seal-original", error: new Error(message) });
+    expect(diagnostic.finalization, message).not.toBe("unclassified");
+  }
+});
