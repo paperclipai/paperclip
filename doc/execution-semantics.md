@@ -1803,14 +1803,48 @@ A native run can accept its result and then lose its server to a hard kill
 before finalization. Its result stays leased to the controller of the earlier
 boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
-different boot and its recorded controller process has exited or its PID now
-names another process. Only the executor's lease carries that controller
+different boot in the same known kernel and PID namespace, and its recorded
+controller process has exited or its PID now names another process. The
+executor saves that namespace with its claim. Linux uses its boot UUID and PID
+namespace; macOS uses its kernel boot-session UUID. An unreadable or unsupported
+identity, a different namespace, or an older claim without this proof keeps the
+original lease expiry and does not probe the recorded PID. Only the executor's
+lease carries that controller
 identity; a finalizer or cleanup lease is never released this way and expires
 on its own short lease. The stored result is then
 finalized without another
 provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
+
+Before claiming an in-flight local native run, restart recovery also requires
+this same known process space. Expiry alone does not prove a local controller
+stopped. A missing, foreign or unreadable namespace creates one board-owned
+recovery action for the exact saved authority, without probing the recorded PID,
+spending retry attempts, or arming a polling loop. Renewed authority gets a new
+opaque fingerprint and preserves the previous action. Remote and plugin tasks
+retain their ordinary Stop/provider-cleanup path and do not offer the local
+containment confirmation.
+
+When automatic recovery cannot prove a local owner stopped, an operator can
+record containment through the task's recovery action after the original lease
+expires. The operator separately confirms the controller and provider/tools
+stopped on their original host, and records reviewed action outcomes and evidence.
+The server rechecks board runtime permission, company, assignee, source binding,
+opaque authority, exact expiry (including microseconds), pending Stop, accepted
+results and cleanup obligations under the normal ownership locks. A renewed or
+replaced owner invalidates the confirmation. This is explicit operator evidence,
+not a local process-stop observation.
+
+Containment uses normal failed-owner settlement and preserves usage uncertainty,
+workspaces and outcome evidence. It does not accept a provider result or queue a
+replacement. Only exact unadmitted Retry receipts for the contained source are
+closed with an inspectable reason; accepted or newer work stays intact. After
+cleanup and outcome review, the user makes a new ordinary Retry request under
+current authorization. Unknown outcomes keep the hold; reviewed completed or
+mixed effects remain in the continuation context and never authorize automatic
+replay. A later successful ordinary recovery claim resolves only its exact prior
+namespace attention.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
@@ -78,4 +79,17 @@ export function nativeRunnerOwnershipNotHeldCondition() {
       or ${heartbeatRuns.errorCode} = ${NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT}
     ), false
   )`;
+}
+
+/** Opaque binding for an operator's exact observed controller authority. Never
+ * expose the token itself. expiryEpoch must come from Postgres numeric epoch
+ * text, which is timezone independent and retains timestamp microseconds. */
+export function nativeControllerAuthorityDigest(owner: Pick<typeof nativeRunFinalizations.$inferSelect,
+  "companyId" | "issueId" | "runId" | "leaseOwner" | "controllerGeneration" | "controllerBootId" |
+  "controllerHostHash" | "controllerPid" | "controllerProcessStartedAt">, expiryEpoch: string | null): string {
+  return createHash("sha256").update(JSON.stringify([
+    "paperclip.native-controller-authority.v1", owner.companyId, owner.issueId, owner.runId,
+    owner.leaseOwner, owner.controllerGeneration, owner.controllerBootId, owner.controllerHostHash,
+    owner.controllerPid, owner.controllerProcessStartedAt?.toISOString() ?? null, expiryEpoch,
+  ])).digest("hex");
 }
