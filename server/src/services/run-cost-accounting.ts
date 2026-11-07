@@ -217,8 +217,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
-      if (object(run.usageJson).accountingLateReceiptPending === true)
+      if (object(run.usageJson).accountingLateReceiptPending === true) {
+        // Clearing late debt can release an admission hold too.
+        await notifyAccountingHoldRelease(tx, run.companyId);
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
+      }
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
       await notifyAccountingHoldRelease(tx, run.companyId);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));

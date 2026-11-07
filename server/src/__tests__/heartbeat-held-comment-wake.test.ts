@@ -230,6 +230,27 @@ describePostgres("a promoted comment refused by a temporary admission hold", () 
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
   }, 180_000);
 
+  it.each([
+    { shape: "edited after the later run started", edit: true, startedBeforeComment: false },
+    { shape: "posted while the later run was already running", edit: false, startedBeforeComment: true },
+  ])("still delivers a saved comment $shape", async ({ edit, startedBeforeComment }) => {
+    // A run's recorded context can be refreshed after it starts, and an edit
+    // made after it started is unread: neither proves delivery.
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const startedAt = startedBeforeComment ? new Date(Date.now() - 60_000) : new Date();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt, finishedAt: new Date(), retryOfRunId: f.sourceRunId,
+      contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry",
+        executionContinuation: { messages: [{ id: f.commentId }] } } });
+    if (edit) await db.update(issueComments).set({ body: "Edited: also include the FOLLOWUP line.", updatedAt: new Date(Date.now() + 1_000) })
+      .where(eq(issueComments.id, f.commentId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
   it("still delivers a saved comment that the later completed run never received", async () => {
     const f = await seedHeldComment();
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
@@ -238,6 +259,18 @@ describePostgres("a promoted comment refused by a temporary admission hold", () 
       triggerDetail: "system", status: "succeeded", startedAt: new Date(), finishedAt: new Date(), retryOfRunId: f.sourceRunId,
       contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry", executionContinuation: { messages: [] } } });
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
+  it("still gives a saved comment its own turn when a later non-retry run only saw it as task history", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(), finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [randomUUID()],
+        executionContinuation: { messages: [{ id: f.commentId }] } } });
     await settle(f); await settle(f);
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
