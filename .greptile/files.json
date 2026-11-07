@@ -102,6 +102,21 @@
         "ui/src/**/*.tsx",
         "ui/src/**/use*.ts"
       ]
+    },
+    {
+      "path": "rules/upgrade-safe-run-state.mdc",
+      "description": "Upgrade safety for persisted run, session, launch, and pack state: state saved by the previous release resumes or fails with a permanent, named code, with old-saved/new-resumed and mid-run deploy tests.",
+      "scope": [
+        "server/src/services/native-runtime/**",
+        "server/src/services/recovery/**",
+        "server/src/services/heartbeat/session-preparation.ts",
+        "server/src/services/heartbeat/run-state.ts",
+        "server/src/services/runner-revision-mismatch.ts",
+        "server/src/services/sandbox-provider-runtime.ts",
+        "packages/paperclip-runner/**",
+        "packages/adapter-utils/src/acpx-engine/**",
+        "docker/daytona-runner/**"
+      ]
     }
   ]
 }

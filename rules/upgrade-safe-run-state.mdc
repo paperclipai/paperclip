@@ -1,0 +1,69 @@
+---
+description: Run, session, launch, and pack state saved by one release must resume on the next or fail with a permanent, named code - never a generic retryable one.
+globs: "server/src/services/native-runtime/**,server/src/services/recovery/**,server/src/services/heartbeat/session-preparation.ts,server/src/services/heartbeat/run-state.ts,server/src/services/runner-revision-mismatch.ts,server/src/services/sandbox-provider-runtime.ts,packages/paperclip-runner/**,packages/adapter-utils/src/acpx-engine/**,docker/daytona-runner/**"
+alwaysApply: false
+---
+
+# Upgrade-safe run state
+
+## Scope and purpose
+
+This rule covers native runtime, recovery, session preparation, runner, ACPX
+engine, provider-pack, and sandbox image code. Deploys and restarts happen while
+runs are saved or in flight, so state written by one release is routinely
+resumed by the next. Code here must treat that cutover as a normal path, not an
+edge case.
+
+Persisted run identity includes:
+
+- launch configuration and protected launch arguments;
+- provider and runner pack identity, such as profile versions, command digests,
+  and pack contract digests;
+- execution leases, owners, and runtime API listeners;
+- saved session, thread, and checkpoint schema;
+- workspace authority, paths, and sandbox confinement.
+
+## Required behavior
+
+- **State the previous-release story.** A change that adds, removes, or changes
+  persisted run or session state, launch configuration, or pack identity must
+  say in the PR how state saved by the previous release is handled: it carries
+  forward, it is migrated, or it is refused.
+- **Refuse permanently and by name.** When saved identity is unknown or no longer
+  accepted, map it to a permanent, named error code that recovery does not
+  retry. Never report it as a generic retryable code such as
+  `native_session_interrupted`. A retry cannot change saved identity; it repeats
+  the refusal, and a replacement can destroy saved state.
+- **Keep saved state on refusal.** A permanent refusal leaves the saved session,
+  checkpoint, and workspace intact and hands the run on with that named reason.
+- **Fix the class.** Prefer one admission or recovery rule that classifies
+  release-incompatible state over adding single error codes to a list.
+- **Test the cutover.** Add an old-saved/new-resumed regression that saves state
+  in the previous release's shape and resumes it with the new code. When a run
+  can be in flight at the cutover (preparing, attaching, holding a lease or
+  listener), add a case where the deploy or restart lands mid-run.
+- **Apply remote confinement in tests.** Remote-sandbox paths need a test that
+  applies the provider's workspace confinement rules. A local test without them
+  does not prove the remote path.
+
+## Exceptions
+
+- A deliberate reset of saved sessions (for example an ACPX profile version
+  bump under [`acpx-profile-identity.mdc`](acpx-profile-identity.mdc)) is
+  allowed when the PR names which saved state it resets and why, and the reset
+  is reported with a named code rather than as an interruption.
+- Refactors, comments, and logging that change no persisted shape or identity
+  need no cutover test.
+
+## Review criteria
+
+- Does the PR say how state saved by the previous release is handled?
+- Does changed or unknown saved identity map to a permanent, named code instead
+  of a generic retryable one?
+- Is there an old-saved/new-resumed regression, and a deploy-lands-mid-run case
+  where the run can be in flight?
+- Is the fix class-level, rather than one more per-code exception?
+- Do remote-sandbox paths have a test that applies the provider's confinement?
+
+The release-compatibility contract is stated in
+[`doc/execution-semantics.md`](../doc/execution-semantics.md#94-release-compatibility-of-saved-run-state).

@@ -45,6 +45,9 @@ For ACPX provider profiles, their release attestations and pins, the provider-pa
 contract registry, and ACPX driver and provider code under
 `packages/paperclip-runner/`, read
 [`rules/acpx-profile-identity.mdc`](rules/acpx-profile-identity.mdc).
+For native runtime, recovery, session preparation, runner, ACPX engine, and
+provider-pack or sandbox image code that persists or resumes run state, read
+[`rules/upgrade-safe-run-state.mdc`](rules/upgrade-safe-run-state.mdc).
 See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 
 ## 3. Repo Map
