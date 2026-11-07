@@ -8,6 +8,7 @@ import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
+import { managedProjectSourceIdentity, retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
 import { expireIsolatedTaskDirectory, hasPendingTaskDirectoryRetention, isIsolatedTaskDirectoryWorkspace, isRetryableTaskDirectorySkip,
   mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, restoreIsolatedTaskDirectory, supersedeTaskDirectoryRestorePoint,
@@ -4318,6 +4319,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           return { ok: true, reopened: true, workspace: toExecutionWorkspace(active!), generation: generation + 1 };
         });
       }
+      const reopenSource = async (): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
       const snapshot = freshSnapshot.providerType === "plugin" ? freshSnapshot : await rehomeExpiredIsolatedRestoration(db, freshSnapshot);
       if (snapshot.providerType === "plugin") {
         return withExecutionWorkspaceLifecycleLock(db, snapshot.id, async tx => {
@@ -4375,6 +4377,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ]);
       let resolvedBaseCwd: string | null;
       try {
+        if (projectWorkspace?.cwd) await retainCurrentWorkspaceSource(projectWorkspace.cwd);
+        if (recipe?.sourcePath) await retainCurrentWorkspaceSource(recipe.sourcePath);
         resolvedBaseCwd = recipe && isClosedExecutionWorkspaceStatus(snapshot.status)
           ? await restoreGitCacheBase(snapshot, recipe, gitAuth, undefined, { freshStart })
           : await verifiedRecordedIsolatedRemoteSource(snapshot) ?? projectWorkspace?.cwd ?? null;
@@ -4768,6 +4772,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
       });
       return result;
+      };
+      if (freshSnapshot.providerType === "plugin") return reopenSource();
+      const projectIds = new Set<string>();
+      if (freshSnapshot.projectId) projectIds.add(freshSnapshot.projectId);
+      for (const cwd of new Set([freshSnapshot.cwd, freshSnapshot.providerRef])) {
+        if (!cwd) continue;
+        const projectId = await managedProjectSourceIdentity(freshSnapshot.companyId, cwd);
+        if (projectId) projectIds.add(projectId);
+      }
+      return withWorkspaceSourceLocks(db, { companyId: freshSnapshot.companyId, projectIds: [...projectIds] }, reopenSource);
       };
       return authorizedSnapshot.sourceIssueId
         ? withIsolatedRepositorySourceLock(db, authorizedSnapshot.companyId, authorizedSnapshot.sourceIssueId, reopen)

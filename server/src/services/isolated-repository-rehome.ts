@@ -9,6 +9,7 @@ import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices, heart
   withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { IsolatedRepositorySourceBusy, isolatedRemoteSourcePath, verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
+import { retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, gitExpirationSkipReason, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
 import { finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
@@ -353,13 +354,17 @@ async function undoMove(db: Db | Tx, workspaceId: string, pending: IsolatedRepos
 
 export function withWorkspaceMoveLocks<T>(db: Db, workspace: Workspace, work: (tx: Tx) => Promise<T>) {
   return withIsolatedRepositorySourceLock(db, workspace.companyId, workspace.sourceIssueId!, () =>
-    withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
-      const rows = await tx.execute<{ locked: boolean; idle_timeout_ms: string | number | null }>(sql`select
-        pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0)) as locked,
-        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-      if (!rows[0]?.locked) throw new Error("lifecycle_busy");
-      return withWorkspaceLockKeepalive(tx, Number(rows[0]?.idle_timeout_ms), () => work(tx));
-    })), true);
+    withWorkspaceSourceLocks(db, { companyId: workspace.companyId, projectIds: workspace.projectId ? [workspace.projectId] : [] }, async () => {
+      const cwd = workspace.cwd ?? workspace.providerRef;
+      if (cwd) await retainCurrentWorkspaceSource(cwd);
+      return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+        const rows = await tx.execute<{ locked: boolean; idle_timeout_ms: string | number | null }>(sql`select
+          pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0)) as locked,
+          (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+        if (!rows[0]?.locked) throw new Error("lifecycle_busy");
+        return withWorkspaceLockKeepalive(tx, Number(rows[0]?.idle_timeout_ms), () => work(tx));
+      }));
+    }), true);
 }
 
 function emptyResult(): IsolatedRepositoryRehomeResult {

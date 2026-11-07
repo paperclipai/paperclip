@@ -68,6 +68,44 @@ describe("portable remote workspace archives", () => {
     const promise = new Promise<void>(done => { resolve = done; });
     return { promise, resolve };
   }
+  it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
+    const cwd = await source(), repository = path.join(cwd, location);
+    await fs.mkdir(repository, { recursive: true });
+    await git(repository, "init", "--quiet");
+    await fs.writeFile(path.join(repository, "saved.txt"), "preserve original work\n");
+    await git(repository, "add", ".");
+    await git(repository, "commit", "-qm", "Saved work");
+    const before = await sourceBytes(cwd);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "fenced.pcws"), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+    await expect(capture(cwd)).resolves.toMatchObject({ manifestDigest: expect.any(String) });
+  });
+  it("requires a shared Git fence for a nested bare repository borrowing external objects", async () => {
+    const cwd = await source(), upstream = path.join(root, "upstream"), repository = path.join(cwd, "bare.git");
+    await fs.mkdir(upstream);
+    await git(upstream, "init", "--quiet");
+    await fs.writeFile(path.join(upstream, "saved.txt"), "external commit objects\n");
+    await git(upstream, "add", ".");
+    await git(upstream, "commit", "-qm", "External source");
+    await git(cwd, "clone", "--bare", "--shared", upstream, repository);
+    expect(await fs.readFile(path.join(repository, "objects", "info", "alternates"), "utf8"))
+      .toContain(path.join(upstream, ".git", "objects"));
+    const before = await sourceBytes(cwd), external = await sourceBytes(upstream);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "bare.pcws"), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+    expect(await sourceBytes(upstream)).toBe(external);
+  });
+  it.each(["commondir", "alternates"])("requires a shared Git fence for included detached %s metadata", async marker => {
+    const cwd = await source(), directory = path.join(cwd, marker === "commondir" ? "admin" : "object-cache/info");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, marker), "/outside/source/Git-storage\n");
+    const before = await sourceBytes(cwd);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, `${marker}.pcws`), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+  });
   async function parallelSource() {
     const cwd = await source();
     for (const name of ["a", "b", "c", "d", "e", "f"]) {

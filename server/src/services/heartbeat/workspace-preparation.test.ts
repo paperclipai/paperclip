@@ -44,6 +44,8 @@ import { assertNativeSessionPreparationAuthority } from "../native-runtime/nativ
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 import { projectService } from "../projects.js";
 import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
+import { withWorkspaceSourceLocks } from "../workspace-source-lock.js";
+import { resolveManagedProjectWorkspaceDir } from "../../home-paths.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -126,6 +128,31 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
+  it("waits for the actual managed project source fence before admitting a new issue", async () => {
+    const f = await fixture();
+    const companyId = f.input.agent.companyId, projectId = f.issue.projectId!;
+    const cwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(cwd, "legacy.txt"), "legacy bytes remain unchanged\n");
+    await db.update(projectWorkspaces).set({ cwd, repoUrl: null })
+      .where(eq(projectWorkspaces.id, f.issue.projectWorkspaceId!));
+    let entered!: () => void, release!: () => void, prepared = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId, projectIds: [projectId] }, async () => { entered(); await pending; });
+    await started;
+    const preparation = prepareHeartbeatWorkspace(db, f.input).then(value => { prepared = true; return value; });
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+      expect(prepared).toBe(false);
+      expect(await readFile(join(cwd, "legacy.txt"), "utf8")).toBe("legacy bytes remain unchanged\n");
+    } finally { release(); await owner; }
+    await expect(preparation).resolves.toMatchObject({ executionWorkspace: expect.objectContaining({ cwd }) });
+    expect(prepared).toBe(true);
+  });
   it.each([false, true])("places Cursor Cloud in its provider API without a Computer under managed-only policy (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
     const { input, source, issue, run } = await fixture();
@@ -554,8 +581,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.environment.selectedEnvironmentId = environment.id;
     input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = false;
     input.task.issueRef = { ...issue, executionWorkspaceId: imported.id };
-    input.reuse.existingExecutionWorkspace = toExecutionWorkspace(imported);
-    input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(imported);
+    input.reuse.existingExecutionWorkspace = toExecutionWorkspace(sourceKind === "path" ? original : imported);
+    input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(sourceKind === "path" ? original : imported);
     input.reuse.requestedShouldReuseExisting = true;
     input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: imported.id,
       issueExecutionWorkspacePreference: null, existingExecutionWorkspaceStatus: imported.status });
