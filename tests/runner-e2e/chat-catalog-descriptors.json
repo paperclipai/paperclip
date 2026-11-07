@@ -2895,7 +2895,7 @@
       "chat-catalog-domains/internal-documents-artifacts.ts",
       "chat-scenarios/documents-artifacts.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.write-plan.brief-coverage.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

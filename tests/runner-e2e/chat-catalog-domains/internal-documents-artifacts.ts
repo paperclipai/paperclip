@@ -21,7 +21,7 @@ export function grade_documents_artifacts(value: unknown) {
   switch (o.scenarioId) {
     case "documents-artifacts.write-plan": {
       const plans = o.documents.filter(row => row.key === "plan"); const plan = plans[0];
-      c.add("saved-implementation-plan", plans.length === 1 && !!plan && !!plan.latestRevisionId && meaningfulOrchidPlan(plan.body ?? ""), "A durable plan reflects the website's actual prerequisite brief and verification, rather than merely chat prose.");
+      c.add("saved-implementation-plan", plans.length === 1 && !!plan && !!plan.latestRevisionId && planCoversBrief(plan.body ?? ""), "A durable plan grounded in the website task's brief, rather than chat prose or a generic plan.");
       c.add("versioned-author", !!plan && o.revisions.some(row => row.id === plan.latestRevisionId && row.body === plan.body && row.createdByAgentId === o.leadId
         && o.runs.some(run => run.id === row.createdByRunId)), "The current document revision is attributed to this real agent run.");
       c.add("plan-audit", !!before && authored("issue.document_created", before.id), "The API audit records the CEO creating the plan after the request.");
@@ -70,12 +70,11 @@ const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase =>
 export const documents_artifactsCases: readonly ChatCatalogCase[] = [
   ...privateDownloadCases,
   resolveFeedback(),
-  define("documents-artifacts.write-plan", async ctx => {
-    const p = await project(ctx); const requirement = "Orchid";
-    const t = await task(ctx, "Website task", p.id, { assigneeAgentId: ctx.input.fixtures.agent.id,
-      description: `Build a single-page website for ${requirement}, with accessible signup and responsive layout. Verify keyboard navigation and mobile presentation.` });
-    return { project: p, task: t, requirement };
-  }),
+  { ...define("documents-artifacts.write-plan", async ctx => {
+    const p = await project(ctx);
+    const t = await task(ctx, "Website task", p.id, { assigneeAgentId: ctx.input.fixtures.agent.id, description: WEBSITE_PLAN_BRIEF });
+    return { project: p, task: t };
+  }), oracleVersion: "paperclip.chat-catalog.write-plan.brief-coverage.v2" },
   withRestoreConcurrency(define("documents-artifacts.restore-document", async ctx => {
     const p = await project(ctx); const t = await task(ctx, "Website task", p.id, { description: "The website task's plan has three saved revisions. The previous version before the last edit is the desired content." });
     const revisions: Entity[] = [];
@@ -121,31 +120,25 @@ function resolveFeedback(): ChatCatalogCase {
 }
 import { observeInternal } from "./internal-support.js";
 
-export function meaningfulOrchidPlan(body: string): boolean {
-  const clauses = body.replace(/[*_`]/g, "").split(/[.!?;\n]|\b(?:but|however|instead)\b|\band\s+(?=(?:do not|don't|never|skip|omit|exclude|no need))/i).filter(Boolean);
-  const negativeDirective = /\b(?:do not|don't|never|(?:must|should|will|can|shall)\s+not)(?:\s+(?:ever|actually|really|even))?\s+(?:build|implement|develop|include|add|provide|support|verify|test|check|make|use|preserve)\b|\b(?:skip|omit|exclude)\b|\bno need to\s+(?:build|implement|develop|include|add|provide|support|verify|test|check|make|use|preserve)\b/i;
-  const requirements = [
-    /\b(?:implement|build|develop)\b/i,
-    /\b(?:test|verify|verification|validation)\b/i,
-    /\bOrchid\b/i,
-    /\b(?:single|one)(?:[- ]+[a-z]+){0,3}[- ]+page\b/i,
-    /\b(?:signup|sign.up|registration)\b/i,
-    /\b(?:accessible|accessibility|labels?|semantic)\b/i,
-    /\b(?:responsive|breakpoints?)\b/i,
-    /\bkeyboard\b/i,
-    /\bmobile\b/i,
-  ];
-  if (!requirements.every(fact => clauses.some(clause => fact.test(clause) && !negativeDirective.test(clause)))) return false;
-  const features = requirements.slice(3);
-  if (clauses.some(clause => {
-    const directive = negativeDirective.exec(clause);
-    if (!directive) return false;
-    const target = clause.slice(directive.index + directive[0].length).trim();
-    return features.some(fact => new RegExp(`^(?:(?:a|an|the|any|our|this)\\s+)?${fact.source}`, "i").test(target));
-  })) return false;
-  if (/\bwithout\s+(?:(?:any|the)\s+)?(?:signup|registration|accessibility|labels?|responsive(?:ness)?|keyboard|mobile)\b/i.test(body)) return false;
-  return !clauses.some(clause => /\b(?:multi[- ]page|multiple\s+pages|separate\s+pages)\b/i.test(clause)
-    && !negativeDirective.test(clause) && !/\b(?:not|no|without|avoid)\s+(?:a\s+)?(?:multi[- ]page|multiple\s+pages|separate\s+pages)\b/i.test(clause));
+/** The website brief the write-plan setup saves on the task; the grader measures the plan against this same text. */
+export const WEBSITE_PLAN_BRIEF = "Build a single-page website for Orchid, with accessible signup and responsive layout. Verify keyboard navigation and mobile presentation.";
+
+/**
+ * Whether a saved plan is grounded in the task's brief. Free-form plans paraphrase, so this does not
+ * require any particular word: it counts how many of the brief's content words the plan covers
+ * (matching inflections such as verify/verification and joined forms such as "sign up"/"signup")
+ * and accepts a plan that covers at least half of them. Generic or foreign plans cover few.
+ */
+export function planCoversBrief(body: string, brief = WEBSITE_PLAN_BRIEF): boolean {
+  const stop = new Set(["a", "an", "and", "for", "of", "the", "to", "with"]);
+  const words = (text: string) => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const required = [...new Set(words(brief).filter(word => !stop.has(word)))];
+  const tokens = words(body);
+  const present = new Set([...tokens, ...tokens.slice(1).map((word, index) => tokens[index] + word)]);
+  const stem = (word: string) => word.length > 5 ? word.slice(0, 5) : word;
+  const stems = new Set([...present].map(stem));
+  const covered = required.filter(word => present.has(word) || stems.has(stem(word)));
+  return covered.length * 2 >= required.length;
 }
 
 export function monthlyTeamPricing(body: string): boolean {

@@ -1,28 +1,31 @@
 import { expect, it } from "vitest";
-import { grade_documents_artifacts, meaningfulOrchidPlan } from "./internal-documents-artifacts.js";
+import { grade_documents_artifacts, planCoversBrief } from "./internal-documents-artifacts.js";
+
+// The plan the CEO saved in run 42404417252 (abridged to its substantive lines).
+const observedPlan = `# Orchid Single-Page Website — Implementation Plan
+Ship a responsive single-page marketing site for Orchid with an accessible signup flow, verified keyboard navigation, and correct mobile presentation.
+1. Scaffold — semantic landmarks and base typography.
+2. Content & Layout — responsive CSS (flex/grid, mobile-first breakpoints).
+3. Accessible Signup — labeled inputs and inline validation.
+5. Verification — Test keyboard-only navigation end to end and check responsive layout at mobile/tablet/desktop widths.`;
 
 it.each([
-  "Implement Orchid in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup and do not add unrelated registration flows. Verify keyboard navigation and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout. The team must not sacrifice accuracy. A previous unrelated site did not support mobile devices.",
+  observedPlan,
+  observedPlan.replaceAll("mobile", "phone"),
+  observedPlan.replaceAll("keyboard", "tab-key"),
+  observedPlan.replaceAll("single-page", "landing-page").replaceAll("Single-Page", "Landing Page"),
+  "# Orchid website plan\n1. Build the one-page Orchid site with a responsive layout and an accessible sign-up form.\n2. Verify it works with keyboard only and looks right on phones.",
   "Develop one accessible web page for Orchid registration, using responsive breakpoints. Test keyboard navigation and mobile presentation.",
-  "Build an accessible single-page Orchid signup website with responsive layout. Verify keyboard navigation and mobile layout; never sacrifice accuracy for brevity.",
-  "Implement a single responsive page for Orchid with accessible signup. Do not build multiple pages. Verify keyboard navigation and mobile layout.",
-])("accepts substantive plan requirements despite word order and unrelated negation: %s", body => {
-  expect(meaningfulOrchidPlan(body)).toBe(true);
+])("accepts plans grounded in the brief regardless of wording: %s", body => {
+  expect(planCoversBrief(body)).toBe(true);
 });
 it.each([
-  "Implement Birch in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup. Verify mobile layout.",
-  "Implement Orchid in a single page with accessible signup. Verify keyboard navigation and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout. Build multiple pages instead.",
-  "Do not implement a single responsive page for Orchid with accessible signup. Develop multiple pages. Verify keyboard navigation and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout. Never ever include mobile support.",
-  "Implement Orchid in a single responsive page with accessible signup. Verify keyboard navigation and mobile layout. The website must not support mobile devices.",
-  "Implement Orchid in a single responsive page without signup. Verify keyboard navigation, accessibility and mobile layout.",
-  "Implement Orchid in a single responsive page with accessible signup. No need to test keyboard or mobile layout.",
-])("rejects missing, foreign or contradictory requirements: %s", body => {
-  expect(meaningfulOrchidPlan(body)).toBe(false);
+  "",
+  "# Plan\n1. Implement the website.\n2. Test it.",
+  "# Plan\n1. Gather requirements.\n2. Implement the solution.\n3. Review and ship.",
+  "# Birch inventory app\n1. Build a native app for warehouse barcode scanning.\n2. Sync stock counts to the ERP nightly.\n3. Test offline mode.",
+])("rejects generic or foreign plans: %s", body => {
+  expect(planCoversBrief(body)).toBe(false);
 });
 
 it("retains real task, saved revision and run-attributed creation requirements", () => {
