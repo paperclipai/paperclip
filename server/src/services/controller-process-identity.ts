@@ -63,6 +63,8 @@ export async function observedProcessStartedAt(pid: number): Promise<number | nu
 // claim, preparation check and lease renewal. A failed read is not cached, so
 // a transient failure is retried by the next caller.
 let ownStartedAt: Promise<number | null> | undefined;
+/** The start time from the last resolved read, for `currentControllerProcessStamp`. */
+let resolvedProcessStartedAt: string | null = null;
 
 /** OS-observed start time of this server process (epoch ms), read at most once
  * successfully per process. Null when the OS cannot report it. */
@@ -72,6 +74,8 @@ export function currentProcessStartedAtMs(): Promise<number | null> {
     ownStartedAt = read;
     void read.then(value => {
       if (value === null && ownStartedAt === read) ownStartedAt = undefined;
+      // Any resolved read also feeds the no-I/O stamp.
+      if (value !== null) resolvedProcessStartedAt = new Date(value).toISOString();
     });
   }
   return ownStartedAt;
@@ -85,8 +89,6 @@ export function resetCurrentProcessStartedAtForTests(): void {
 export function currentControllerBootId(): string {
   return bootId;
 }
-
-let resolvedProcessStartedAt: string | null = null;
 
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
