@@ -151,6 +151,21 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("classifies the org monthly spend limit wording and parses the session 'resets' clock", () => {
+    const now = new Date("2026-08-28T22:30:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "Claude run failed: subtype=success: You've hit your org's monthly spend limit · your session limit resets 2:30am (UTC)",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-29T02:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
