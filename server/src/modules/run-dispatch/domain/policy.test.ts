@@ -239,6 +239,24 @@ describe("decideScheduledRetryGate", () => {
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
   });
 
+  it("lets a pending-addressee retry pass the ownership and review-participant checks", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(),
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "agent-2",
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-3",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-3" },
+      },
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toMatchObject({ allowed: false });
+    expect(decideScheduledRetryGate({ ...facts, isPendingAddresseeWake: true }, NOW)).toMatchObject({ allowed: true });
+  });
+
   it("allows a reassigned issue when the retry is a non-assignee workspace-busy retry", () => {
     const facts: ScheduledRetryFacts = {
       ...baseGateFacts(),
@@ -425,6 +443,27 @@ describe("decideQueuedRunStaleness", () => {
       },
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("lets an interaction wake bypass the review-participant check but not a plain wake", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-1",
+      issueStatus: "in_review",
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-2",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-2" },
+      },
+    };
+    expect(decideQueuedRunStaleness({ ...facts, isInteractionWake: true }, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_review_participant_changed",
+    });
   });
 
   it("allows resume intent to bypass a terminal status", () => {
