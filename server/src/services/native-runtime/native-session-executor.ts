@@ -9510,8 +9510,39 @@ async function executePaperclipNativeSessionWithinScope(
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
-  if (cachedReleasedOwner?.released) requireReleasedWarmScope(input, releasedWarmRunner(readWarmNativeEnvelope(input.execution)),
-    readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)));
+  if (cachedReleasedOwner?.released) {
+    const proof = releasedWarmRunner(readWarmNativeEnvelope(input.execution));
+    const identity = readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution));
+    const target = input.runnerExecutionTarget;
+    if (proof && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId
+      && target.sandboxLeaseAcquisition?.outcome === "created" && proof.taskId !== target.sandboxLeaseAcquisition.providerLeaseId) {
+      const ownInstructionPreparation = cachedReleasedOwner.instructionPreparationRunId === input.execution.binding.runId
+        && input.instructionWorkingCopy?.runId === input.execution.binding.runId;
+      if ((cachedReleasedOwner.busy && !ownInstructionPreparation)
+        || cachedReleasedOwner.preparingRunId && cachedReleasedOwner.preparingRunId !== input.execution.binding.runId
+        || cachedReleasedOwner.instructionPreparationRunId && !ownInstructionPreparation
+        || cachedReleasedOwner.closeOnReleaseReason) throw new Error("native_session_supervisor_busy");
+      if (proof.taskId !== cachedReleasedOwner.pluginTaskId || proof.scopeDigest !== releasedWarmScope(input)
+        || canonicalJson(proof.source) !== canonicalJson(identity)) throw new Error("native_session_released_owner_scope_mismatch");
+      const wasBusy = cachedReleasedOwner.busy;
+      cachedReleasedOwner.busy = true;
+      try {
+        // Only physical stop releases the cached controller; ordinary checkpoint admission still proves continuation.
+        const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
+          leaseId: target.leaseId, priorIdentity: proof.source, inspectCheckpoint: true });
+        if (resumeFrom !== proof.taskId) throw new Error("native_session_released_owner_scope_mismatch");
+        if (!cachedReleasedOwner.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
+        try {
+          await cachedReleasedOwner.session.detachControllerForRestart();
+          await cachedReleasedOwner.githubAccess?.stop();
+        } catch (error) {
+          cachedReleasedOwner.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+          throw error;
+        }
+        forgetWarmNativeSession(nativeSessionScopeKey(input.execution), cachedReleasedOwner);
+      } finally { cachedReleasedOwner.busy = wasBusy; }
+    } else requireReleasedWarmScope(input, proof, identity);
+  }
   if (input.useRunnerd && !input.restartRecovery && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -12858,6 +12889,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
       }
       await uploadVerifiedProviderPack({
         root: configuredProviderPackRoot,
+        sourceDigest: readRemoteProviderPackIdentity(configuredProviderPackRoot, false).digest,
         expectedDigest: expectedProviderPackManifest.digest,
         runner: remoteCommandRunner,
         cwd: remoteTarget.remoteCwd,
@@ -14322,6 +14354,10 @@ async function createRunnerdBackendWithinSessionClaim(
       await current.acceptAccountingEvent(event);
     } : undefined,
     onRecoveryAccountingEvent: input.onAccountingEvent ? async (event: PrpEvent, source: Parameters<NonNullable<typeof recoveryUsage>>[1]) => {
+      // Only usage needs a proven recovery source. A lifecycle event that
+      // fails here closes the Runner connection without an ACK, and the
+      // Runner then replays that event without end.
+      if (!isNativeUsageAccountingEvent(event)) return;
       const current = sessionToolAuthorityEpochs.get(sessionScopeId);
       if (!current) throw new Error("native_recovery_usage_source_unproven");
       await current.acceptRecoveryAccountingEvent(event, () => {
