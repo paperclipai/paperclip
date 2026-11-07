@@ -496,6 +496,21 @@ function selectStageParticipant(
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
 }
 
+function selectEligibleStageParticipant(
+  stage: IssueExecutionStage,
+  opts: {
+    preferred?: IssueExecutionStagePrincipal | null;
+    returnAssignee: IssueExecutionStagePrincipal | null;
+  },
+): IssueExecutionStagePrincipal | null {
+  const excluded = selectStageParticipant(stage, {
+    preferred: opts.preferred ?? null,
+    exclude: opts.returnAssignee,
+  });
+  if (excluded || stage.type === "review") return excluded;
+  return selectStageParticipant(stage, { preferred: opts.preferred ?? null });
+}
+
 function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
   if (!participant) return false;
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
@@ -655,6 +670,77 @@ function canAutoSkipPendingStage(input: {
   }
   return input.stage.participants.length > 0 &&
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
+type StageAssignment =
+  | {
+    kind: "assigned";
+    stage: IssueExecutionStage;
+    participant: IssueExecutionStagePrincipal;
+    previous: IssueExecutionState | null;
+  }
+  | { kind: "exhausted"; state: IssueExecutionState }
+  | { kind: "unassignable"; stage: IssueExecutionStage };
+
+function resolveStageAssignment(input: {
+  previous: IssueExecutionState | null;
+  stage: IssueExecutionStage;
+  preferred: IssueExecutionStagePrincipal | null;
+  returnAssignee: IssueExecutionStagePrincipal | null;
+  requestedStatus?: string;
+  advance: (state: IssueExecutionState) => IssueExecutionStage | null;
+}): StageAssignment {
+  const previousCompletedCount = (input.previous?.completedStageIds ?? []).length;
+  const completedStageIds = [...(input.previous?.completedStageIds ?? [])];
+  let stage = input.stage;
+  let participant = selectEligibleStageParticipant(stage, {
+    preferred: input.preferred,
+    returnAssignee: input.returnAssignee,
+  });
+
+  while (
+    !participant &&
+    canAutoSkipPendingStage({ stage, returnAssignee: input.returnAssignee, requestedStatus: input.requestedStatus })
+  ) {
+    completedStageIds.push(stage.id);
+    const nextStage = input.advance(
+      buildStateWithCompletedStages({
+        previous: input.previous,
+        completedStageIds,
+        returnAssignee: input.returnAssignee,
+      }),
+    );
+    if (!nextStage) {
+      return {
+        kind: "exhausted",
+        state: buildSkippedStageCompletedState({
+          previous: input.previous,
+          completedStageIds,
+          returnAssignee: input.returnAssignee,
+        }),
+      };
+    }
+    stage = nextStage;
+    participant = selectEligibleStageParticipant(stage, {
+      preferred: input.preferred,
+      returnAssignee: input.returnAssignee,
+    });
+  }
+
+  if (!participant) return { kind: "unassignable", stage };
+  return {
+    kind: "assigned",
+    stage,
+    participant,
+    previous:
+      completedStageIds.length === previousCompletedCount
+        ? input.previous
+        : buildStateWithCompletedStages({
+          previous: input.previous,
+          completedStageIds,
+          returnAssignee: input.returnAssignee,
+        }),
+  };
 }
 
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
@@ -825,20 +911,39 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           };
         }
 
-        const participant = selectStageParticipant(nextStage, {
+        const policy = input.policy;
+        const assignment = resolveStageAssignment({
+          previous: approvedState,
+          stage: nextStage,
           preferred: explicitAssignee,
-          exclude: existingState?.returnAssignee ?? null,
+          returnAssignee: existingState?.returnAssignee ?? null,
+          requestedStatus,
+          advance: (state) => nextPendingStageAfter(policy, activeStage, state),
         });
-        if (!participant) {
-          throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
+
+        if (assignment.kind === "exhausted") {
+          patch.executionState = assignment.state;
+          return {
+            patch,
+            decision: {
+              stageId: activeStage.id,
+              stageType: activeStage.type,
+              outcome: "approved",
+              body: input.commentBody.trim(),
+            },
+          };
+        }
+
+        if (assignment.kind === "unassignable") {
+          throw unprocessable(`No eligible ${assignment.stage.type} participant is configured for this issue`);
         }
 
         buildPendingStagePatch({
           patch,
-          previous: approvedState,
+          previous: assignment.previous,
           policy: input.policy,
-          stage: nextStage,
-          participant,
+          stage: assignment.stage,
+          participant: assignment.participant,
           returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
           reviewRequest: input.reviewRequest ?? null,
         });
@@ -993,64 +1098,41 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
-  let pendingStage =
+  const policy = input.policy;
+  const pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
-  const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
-  let participant = selectStageParticipant(pendingStage, {
+  const assignment = resolveStageAssignment({
+    previous: existingState,
+    stage: pendingStage,
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
-    exclude: returnAssignee,
+    returnAssignee,
+    requestedStatus,
+    advance: (state) => nextPendingStage(policy, state),
   });
-  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
-    skippedStageIds.push(pendingStage.id);
-    pendingStage = nextPendingStage(
-      input.policy,
-      buildStateWithCompletedStages({
-        previous: existingState,
-        completedStageIds: skippedStageIds,
-        returnAssignee,
-      }),
-    );
-    if (!pendingStage) {
-      patch.executionState = buildSkippedStageCompletedState({
-        previous: existingState,
-        completedStageIds: skippedStageIds,
-        returnAssignee,
-      });
-      return { patch };
-    }
-    participant = selectStageParticipant(pendingStage, {
-      preferred:
-        existingState?.status === CHANGES_REQUESTED_STATUS
-          ? explicitAssignee ?? existingState.currentParticipant ?? null
-          : explicitAssignee,
-      exclude: returnAssignee,
-    });
+
+  if (assignment.kind === "exhausted") {
+    patch.executionState = assignment.state;
+    return { patch };
   }
-  if (!participant) {
-    throw unprocessable(`No eligible ${pendingStage.type} participant is configured for this issue`);
+
+  if (assignment.kind === "unassignable") {
+    throw unprocessable(`No eligible ${assignment.stage.type} participant is configured for this issue`);
   }
 
   buildPendingStagePatch({
     patch,
-    previous:
-      skippedStageIds.length === (existingState?.completedStageIds ?? []).length
-        ? existingState
-        : buildStateWithCompletedStages({
-            previous: existingState,
-            completedStageIds: skippedStageIds,
-            returnAssignee,
-          }),
+    previous: assignment.previous,
     policy: input.policy,
-    stage: pendingStage,
-    participant,
+    stage: assignment.stage,
+    participant: assignment.participant,
     returnAssignee,
     reviewRequest: input.reviewRequest ?? null,
   });

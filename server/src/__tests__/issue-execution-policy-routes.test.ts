@@ -53,10 +53,13 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsertValues = vi.hoisted(() => vi.fn(async () => []));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: mockDbInsertValues })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect; insert: typeof mockDbInsert }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: unknown) => undefined));
@@ -127,6 +130,7 @@ function registerModuleMocks() {
           feedbackDataSharingPreference: "prompt",
         },
       })),
+      getExperimental: vi.fn(async () => ({ enableExternalObjects: false, enableAgentChat: false })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => mockIssueApprovalService,
@@ -211,6 +215,7 @@ describe("issue execution policy routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -222,6 +227,8 @@ describe("issue execution policy routes", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbInsert.mockImplementation(() => ({ values: mockDbInsertValues }));
+    mockDbInsertValues.mockImplementation(async () => []);
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -1339,6 +1346,192 @@ describe("issue execution policy routes", () => {
         entityId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
+    );
+  });
+
+  function stubDecisionComment() {
+    mockIssueService.addComment.mockImplementation(async (_issueId: string, body: string) => ({
+      id: "comment-1",
+      body: body ?? "",
+    }));
+  }
+
+  it("honors approval-stage returnAssignee participant selection via PATCH /api/issues/:id (#4912)", async () => {
+    stubDecisionComment();
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const runId = "55555555-5555-4555-8555-555555555555";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "approval",
+          participants: [{ type: "agent", agentId: authorAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1020",
+      title: "Review entering approval stage with returnAssignee",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: reviewerAgentId,
+      companyId: "company-1",
+      runId,
+    });
+
+    const res = await request(app)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ status: "done", comment: "LGTM approved by reviewer" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: authorAgentId,
+        assigneeUserId: null,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageId: "22222222-2222-4222-8222-222222222222",
+          currentStageIndex: 1,
+          currentStageType: "approval",
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: authorAgentId }),
+          returnAssignee: expect.objectContaining({ type: "agent", agentId: authorAgentId }),
+          completedStageIds: ["11111111-1111-4111-8111-111111111111"],
+          lastDecisionOutcome: "approved",
+        }),
+      }),
+      expect.anything(),
+    );
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        stageId: "11111111-1111-4111-8111-111111111111",
+        stageType: "review",
+        actorAgentId: reviewerAgentId,
+        outcome: "approved",
+        body: "LGTM approved by reviewer",
+      }),
+    );
+  });
+
+  it("auto-skips intermediate self-review stage and advances to approval stage via PATCH", async () => {
+    stubDecisionComment();
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const runId = "55555555-5555-4555-8555-555555555555";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "review",
+          participants: [{ type: "agent", agentId: authorAgentId }],
+        },
+        {
+          id: "33333333-3333-4333-8333-333333333334",
+          type: "approval",
+          participants: [{ type: "agent", agentId: authorAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1021",
+      title: "Review auto-skipping intermediate stage",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: reviewerAgentId,
+      companyId: "company-1",
+      runId,
+    });
+
+    const res = await request(app)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ status: "done", comment: "First review approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: authorAgentId,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageId: "33333333-3333-4333-8333-333333333334",
+          currentStageIndex: 2,
+          currentStageType: "approval",
+          completedStageIds: [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+          ],
+        }),
+      }),
+      expect.anything(),
     );
   });
 });
