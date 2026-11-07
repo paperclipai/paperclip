@@ -32,3 +32,23 @@ describe("admitted native lifecycle policy", () => {
     expect(resolveHeartbeatNativeLifecyclePolicy({ ...base, ...change })).toEqual(expected);
   });
 });
+
+describe("default lifecycle for an agent that never chose one", () => {
+  const defaultWarm: NativeLifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+  const unset: Input = { ...base, agentMode: undefined, agentIdleTimeoutMs: undefined, localTarget: true };
+  it.each<{ name: string; change: Partial<Input>; expected: NativeLifecyclePolicy }>([
+    { name: "local Codex keeps a warm runner for the default idle window", change: {}, expected: defaultWarm },
+    { name: "local OpenCode is warm", change: { backend: "opencode_server" }, expected: defaultWarm },
+    { name: "local Claude is warm", change: { backend: "acpx_runtime", acpxAgent: "claude" }, expected: defaultWarm },
+    { name: "an explicit per-turn choice is honored", change: { agentMode: "per_turn" }, expected: perTurn },
+    { name: "an explicit warm idle window is honored", change: { agentMode: "warm", agentIdleTimeoutMs: 900_000 }, expected: warm },
+    { name: "a remote target stays per-turn", change: { localTarget: false }, expected: perTurn },
+    { name: "an unknown target stays per-turn", change: { localTarget: undefined }, expected: perTurn },
+    { name: "an unmeasured ACP harness stays per-turn", change: { backend: "acpx_runtime", acpxAgent: "grok" }, expected: perTurn },
+    { name: "managed Claude without warm support stays per-turn", change: { backend: "acpx_runtime", acpxAgent: "claude", managedAiSelected: true }, expected: perTurn },
+    { name: "a session admitted per-turn before the default changed stays per-turn", change: { persistedPolicy: perTurn }, expected: perTurn },
+    { name: "a non-native adapter stays per-turn", change: { adapterType: "codex_local" }, expected: perTurn },
+  ])("$name", ({ change, expected }) => {
+    expect(resolveHeartbeatNativeLifecyclePolicy({ ...unset, ...change })).toEqual(expected);
+  });
+});
