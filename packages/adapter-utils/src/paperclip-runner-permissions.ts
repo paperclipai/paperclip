@@ -199,6 +199,16 @@ export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {
     : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
 }
 
+/**
+ * Native providers that store no lifecycle so the server applies the product
+ * default (warm on a local target for Codex and OpenCode; per-turn for Claude
+ * until its follow-up relaunch is removed). Others keep an explicit per_turn.
+ */
+export function paperclipRunnerFollowsLifecycleDefault(config: Record<string, unknown>): boolean {
+  return config.provider === "codex" || config.provider === "opencode"
+    || (config.provider === "acpx" && config.acpxAgent === "claude");
+}
+
 /** Defaults for converting a local adapter; the operator may override the provider. */
 export function paperclipRunnerTransitionConfig(
   previousAdapterType: string,
@@ -220,7 +230,7 @@ export function paperclipRunnerTransitionConfig(
     providerOverride === "acpx"
       ? providerOverride
       : previousProvider;
-  return {
+  const converted: Record<string, unknown> = {
     provider,
     model: provider === "acpx" && previousAdapterType === "grok_local"
       ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
@@ -233,8 +243,8 @@ export function paperclipRunnerTransitionConfig(
     ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "grok_local" ? "grok" : previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
     [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
-    lifecycleMode: "per_turn",
   };
+  return paperclipRunnerFollowsLifecycleDefault(converted) ? converted : { ...converted, lifecycleMode: "per_turn" };
 }
 
 /** Old ACPX Codex agent settings use native Codex on their next configuration write. */
