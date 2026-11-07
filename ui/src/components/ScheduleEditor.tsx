@@ -229,7 +229,7 @@ export function ScheduleEditor({
   const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
-  const customValidation = getScheduleCronValidation(customCron);
+  const customValidation = useMemo(() => getScheduleCronValidation(customCron), [customCron]);
 
   useEffect(() => {
     onValidityChange?.(preset !== "custom" || customValidation.valid);
