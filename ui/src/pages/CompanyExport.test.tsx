@@ -250,6 +250,7 @@ describe("CompanyExport", () => {
       include: { company: true, agents: true, projects: true, issues: false, skills: true },
     });
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
+    expect(container.textContent).not.toContain("Not included in this export");
   });
 
   it("shows a retryable error instead of a false loading state", async () => {
@@ -260,7 +261,10 @@ describe("CompanyExport", () => {
     await renderPage();
 
     expect(container.textContent).toContain("Export preview failed");
-    expect(container.textContent).toContain("Failed to fetch");
+    // A network failure is explained in shared readable copy, never as the
+    // browser's raw "Failed to fetch".
+    expect(container.textContent).toContain("Paperclip is temporarily unavailable.");
+    expect(container.textContent).not.toContain("Failed to fetch");
     expect(container.textContent).not.toContain("Loading export data");
 
     const retry = Array.from(container.querySelectorAll("button")).find((button) =>
@@ -312,6 +316,10 @@ describe("CompanyExport", () => {
     });
     expect(container.textContent).toContain("Exporting 3 of 6 files");
 
+    const attachments = categoryInput("attachments");
+    expect(attachments.disabled).toBe(true);
+    expect(attachments.checked).toBe(false);
+    expect(container.querySelector('[data-file-tree-path="tasks"]')?.className).toContain("opacity-50");
     await clickElement(categoryInput("tasks"));
     await clickElement(categoryInput("routines"));
     await clickElement(categoryInput("attachments"));
@@ -441,18 +449,6 @@ describe("CompanyExport", () => {
     ]);
   });
 
-  it("disables Attachments once both Tasks and Routines are off", async () => {
-    mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
-
-    await renderPage();
-
-    const attachments = categoryInput("attachments");
-    expect(attachments.disabled).toBe(true);
-    expect(attachments.checked).toBe(false);
-    expect(container.textContent).toContain("Exporting 3 of 6 files");
-    expect(container.querySelector('[data-file-tree-path="tasks"]')?.className).toContain("opacity-50");
-  });
-
   it("shows the estimated download size and updates it when a category toggles off", async () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
@@ -497,12 +493,5 @@ describe("CompanyExport", () => {
       "Importing this export will fail because the bundle references data this board cannot restore.",
     );
     expect(container.textContent).toContain("3 approvals are not included in the export bundle.");
-  });
-
-  it("renders no fidelity panel when the report has no warnings", async () => {
-    await renderPage();
-
-    expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
-    expect(container.textContent).not.toContain("Not included in this export");
   });
 });

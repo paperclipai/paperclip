@@ -133,6 +133,7 @@ it("rejects URLs, SVG, corrupt and oversized images, unsupported fields and inac
 
 it("lets a paired Dot upload without an assignment, with feature and current grant authorization", async () => {
   const f = await fixture(); const userId = randomUUID(); const clientId = randomUUID();
+  await db.update(agents).set({ adapterConfig: { provider: "openai_dot" } }).where(eq(agents.id, f.agent.id));
   await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
   await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
   await db.insert(mcpOauthClients).values({ id: clientId, name: "Dot", redirectUris: [] });

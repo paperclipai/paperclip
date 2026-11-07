@@ -1,3 +1,4 @@
+import type { RuntimeContext } from "../runtime-types.js";
 import type { FileUpload } from "chat";
 import { createHash } from "node:crypto";
 
@@ -37,3 +38,16 @@ export function discordMarkdownAttachment(text: string): FileUpload {
       mimeType: "text/markdown; charset=utf-8",
     };
   }
+
+export async function admitDiscordSdkMessage(
+  endpointId: string,
+  runtimeContext: RuntimeContext | undefined,
+  options: {
+    ensureRuntimeIsCurrent: (endpointId: string, context: RuntimeContext) => Promise<boolean>;
+    messageAdmissionBarrier: () => Promise<void> | void;
+  },
+): Promise<boolean> {
+  if (!runtimeContext || !(await options.ensureRuntimeIsCurrent(endpointId, runtimeContext))) return false;
+  await options.messageAdmissionBarrier();
+  return true;
+}

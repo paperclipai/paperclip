@@ -200,7 +200,9 @@ describe("IssueThreadInteractionCard", () => {
     host.remove();
     const reopened = renderCard({ interaction: canonicalDraftInteraction, onSubmitInteractionAnswers: submit });
     expect(reopened.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
-    expect(Array.from(reopened.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(reopened.querySelector('[role="alert"]')).toBeNull();
+    await act(() => Array.from(reopened.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.click());
+    expect(reopened.textContent).toContain("This question is required.");
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -217,7 +219,8 @@ describe("IssueThreadInteractionCard", () => {
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
+    expect(host.textContent).toContain("New connections default to all agents");
+    expect(host.textContent).toContain("Reusing an account adds access for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );
@@ -282,6 +285,67 @@ describe("IssueThreadInteractionCard", () => {
     );
     expect(otherLink?.getAttribute("role")).toBeNull();
     expect(otherLink?.className).toContain("underline");
+  });
+
+  it("keeps Coordinator decision questions focused while preserving answers and accessible requirements", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      presentationVariant: "coordinator-decision",
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+    expect(host.querySelector('[data-presentation="coordinator-decision"]')?.classList.contains("border")).toBe(false);
+    expect(host.querySelector('[data-testid="interaction-status-badge"]')).toBeNull();
+    expect(host.textContent).not.toContain("Ask user questions");
+    expect(host.textContent).not.toContain("Question 1");
+    expect(host.textContent).not.toContain("proposed by");
+    const group = host.querySelector('[role="radiogroup"]');
+    expect(group?.getAttribute("aria-required")).toBe("true");
+    expect(group?.getAttribute("aria-describedby")).toBe("interaction-questions-default-collapse-depth-requirements");
+    await act(() => {
+      (host.querySelector('[role="radio"]') as HTMLButtonElement).click();
+      (host.querySelector('[role="checkbox"]') as HTMLButtonElement).click();
+    });
+    const submit = [...host.querySelectorAll("button")].find(button => button.textContent === "Send answers")!;
+    await act(() => submit.click());
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(pendingAskUserQuestionsInteraction, [
+      { questionId: "collapse-depth", optionIds: ["visible-root"] },
+      { questionId: "post-submit-summary", optionIds: ["answers-inline"] },
+    ]);
+  });
+
+  it("keeps Coordinator confirmation details collapsed while preserving context, exact target, and approval", async () => {
+    const onAcceptInteraction = vi.fn(async () => undefined);
+    const interaction = { ...pendingRequestConfirmationInteraction, title: "Repeated approval context", summary: "Repeated approval context", payload: { ...pendingRequestConfirmationInteraction.payload, prompt: "Repeated approval context", detailsMarkdown: "Revision proof: sha256-test-proof" } };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction, onAcceptInteraction });
+    expect(host.textContent?.split("Repeated approval context")).toHaveLength(2);
+    expect(host.querySelector('[data-testid="interaction-status-badge"]')).toBeNull();
+    const documentLink = host.querySelector('a[href*="#document-"]');
+    expect(documentLink?.getAttribute("href")).toContain("revision=11111111-1111-4111-8111-111111111111");
+    expect(documentLink?.getAttribute("href")).toContain(`interaction=${interaction.id}`);
+    const details = host.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")?.textContent?.trim()).toBe("Details");
+    expect(details.textContent).toContain("Revision proof: sha256-test-proof");
+    expect(documentLink?.closest("details")).toBeNull();
+    expect(host.querySelector("[data-decision-prompt]")?.closest("details")).toBeNull();
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(false);
+    const approve = [...host.querySelectorAll("button")].find(button => button.textContent?.includes(interaction.payload.acceptLabel ?? "Approve"))!;
+    expect(approve.closest("details")).toBeNull();
+    await act(() => approve.click());
+    expect(onAcceptInteraction).toHaveBeenCalledWith(interaction);
+  });
+
+  it("retains inline confirmation details in the Classic presentation", () => {
+    const host = renderCard({ interaction: {
+      ...pendingRequestConfirmationInteraction,
+      payload: { ...pendingRequestConfirmationInteraction.payload, detailsMarkdown: "Original review context" },
+    } });
+    expect(host.textContent).toContain("Original review context");
+    expect(host.querySelector("details")).toBeNull();
   });
 
   it("submits written Other answers for pending questions", async () => {
@@ -602,6 +666,34 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("No reason provided.");
   });
 
+  it.each([
+    ["confirmation", "default"],
+    ["confirmation", "coordinator-decision"],
+    ["checkbox", "default"],
+    ["checkbox", "coordinator-decision"],
+  ] as const)("renders Markdown in %s prompts in the %s view", (kind, presentationVariant) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? pendingRequestConfirmationInteraction
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    const host = renderCard({ interaction, presentationVariant });
+
+    const link = host.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
+  });
+
   it("requires a revision note when the request confirmation payload asks for one", async () => {
     const onRejectInteraction = vi.fn(async () => undefined);
     const host = renderCard({
@@ -751,7 +843,7 @@ describe("IssueThreadInteractionCard", () => {
 
     expect(
       host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
-    ).toBe("Request failed: 503. Try again.");
+    ).toBe("Paperclip is temporarily unavailable. Please try again in a moment.");
   });
 
   it("surfaces a denied suggested-task acceptance instead of failing silently", async () => {
@@ -1085,6 +1177,35 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("opens a bound attachment directly without experimental panel routing", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "file", label: "Reviewed file", target: {
+        type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash",
+      } }] },
+    } });
+    const link = host.querySelector('a[href="/api/attachments/immutable-file/content"]');
+    expect(link?.getAttribute("target")).toBe("_blank");
+  });
+
+  it.each([undefined, "/stale-display-link"])("opens a confirmation's bound attachment in Classic when href is %s", href => {
+    const host = renderCard({ interaction: { ...pendingRequestConfirmationInteraction, payload: {
+      version: 1, prompt: "Review the attached copy", target: {
+        type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash", href,
+      },
+    } } });
+    expect(host.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("links a bound review item to its exact document without requiring href", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "copy", label: "Reviewed copy", target: {
+        type: "issue_document", issueId: "document-owner", key: "copy", revisionId: "reviewed-v1",
+      } }] },
+    } });
+    expect(host.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/document-owner#document-copy&revision=reviewed-v1&interaction=${pendingRequestItemVerdictsInteraction.id}`);
+  });
+
   it("submits an approve verdict once a draft is marked and applied", async () => {
     const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
     const host = renderCard({
@@ -1171,7 +1292,7 @@ describe("IssueThreadInteractionCard", () => {
 });
 
 describe("IssueThreadInteractionCard tool-action card", () => {
-  it("shows only the request description, app icon, and decision controls", () => {
+  it("keeps the request description and decisions primary with optional argument inspection", () => {
     const host = renderCard({ interaction: pendingToolActionWriteInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
     expect(host.textContent).toContain("Add 1 row");
     expect(host.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe("Google Sheets");
@@ -1188,6 +1309,52 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     interaction.payload.toolAction!.previewMarkdown = "Add a row.\n\n**Title:** Launch checklist";
     const host = renderCard({ interaction });
     expect(host.textContent).toContain("Launch checklist");
+  });
+
+  it("renders only the server-redacted proposal as plain text when inspected", async () => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });
+    const accept = vi.fn();
+    const host = renderCard({ interaction, onAcceptInteraction: accept });
+    const details = host.querySelector("details")!;
+    expect(details.open).toBe(false);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    expect(details.querySelector("img")).toBeNull();
+    expect(details.textContent).toContain("[redacted]");
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, { secret: "must not render" }, "x".repeat(20_001)])("withholds missing, malformed or oversized proposal details (%#)", summary => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    Object.assign(interaction.payload.toolAction!, { argumentsSummaryJson: summary });
+    const host = renderCard({ interaction });
+    expect(host.querySelector("details")).toBeNull();
+    expect(host.textContent).toContain("Request arguments are unavailable.");
+    expect(host.textContent).not.toContain("must not render");
+    expect(host.querySelector("pre")).toBeNull();
+    expect(Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run")?.disabled).toBe(true);
+  });
+
+  it.each(["argumentsSummaryJson", "argumentsHash"] as const)("rejects oversized whitespace before trimming %s", field => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    const oversized = " ".repeat(field === "argumentsSummaryJson" ? 20_001 : 256);
+    interaction.payload.toolAction![field] = oversized;
+    const trim = String.prototype.trim;
+    let oversizedTrimCalls = 0;
+    const spy = vi.spyOn(String.prototype, "trim").mockImplementation(function (this: string) {
+      if (String(this) === oversized) oversizedTrimCalls++;
+      return trim.call(this);
+    });
+    try {
+      const host = renderCard({ interaction });
+      expect(host.querySelector("details")).toBeNull();
+      expect(host.textContent).toContain("Request arguments are unavailable.");
+      expect(oversizedTrimCalls).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("keeps the destructive request warning and approval styling", () => {
@@ -1254,6 +1421,28 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(declined.textContent).toContain("Declined");
     expect(declined.textContent).toContain("use the CRM sync instead");
     expect(declined.textContent).not.toContain("Approve & run");
+  });
+
+  it("makes a GitHub access failure actionable without offering a futile retry", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+        errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("GitHub access needed");
+    expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
+    expect(host.textContent).toContain("Check the connected account");
+    expect(host.textContent).toContain("ask the agent to continue");
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+    const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
+    expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);
+    expect(host.textContent).not.toContain("Retry");
+    expect(host.textContent).not.toContain("Approve & run");
   });
 
   it("renders the expired state without decision controls", () => {

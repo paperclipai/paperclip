@@ -4,7 +4,7 @@ import { agents, costEvents, type Db } from "@paperclipai/db";
 import {
   agentAppearanceSchema, resolveAgentAppearance, agentAvatarUrl,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS, agentRuntimeConfigSchema, getAgentWorkEligibility,
-  normalizeAgentUrlKey, type AgentEligibilityAgent,
+  normalizeAgentUrlKey, type AgentEligibilityAgent, type AgentRunnerChoice,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -74,25 +74,32 @@ export interface ClaudeLoginContext {
 }
 
 export interface UpdateAgentOptions {
+  expectedConfigurationRevision?: string;
+  expectedConfiguration?: Pick<AgentConfigurationRecord, "adapterType" | "adapterConfig" | "runtimeConfig" | "defaultEnvironmentId">;
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
 
-export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">;
+export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation"> & { runner?: AgentRunnerChoice };
 export type AgentConfigurationRecord = typeof agents.$inferSelect;
 export const AGENT_CONFIGURATION_FIELDS = [...CONFIG_REVISION_FIELDS, "permissions"] as const;
 export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, typeof AGENT_CONFIGURATION_FIELDS[number]>>;
 export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  setupOnly?: boolean;
+  setupAgentId?: string;
+  runnerResolved?: boolean;
   responsibleUserId?: string | null;
   createdByUserId?: string | null;
   aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
+
+type AgentEligibilityRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">;
 
 interface AgentShortnameRow {
   id: string;
@@ -336,7 +343,7 @@ export function agentRecordQueries(db: Db) {
     };
   }
 
-  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows = rows) {
+  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows: AgentEligibilityRow[] = rows) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
@@ -353,12 +360,17 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
+  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: AgentEligibilityRow[]) {
     return normalizeAgentRows([row], allCompanyRows)[0]!;
   }
 
   async function listCompanyAgentRows(companyId: string) {
     return db.select().from(agents).where(eq(agents.companyId, companyId));
+  }
+
+  async function listCompanyAgentEligibilityRows(companyId: string): Promise<AgentEligibilityRow[]> {
+    return db.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      status: agents.status, reportsTo: agents.reportsTo }).from(agents).where(eq(agents.companyId, companyId));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -401,7 +413,7 @@ export function agentRecordQueries(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [companyRows, hydrated] = await Promise.all([
-      listCompanyAgentRows(row.companyId),
+      listCompanyAgentEligibilityRows(row.companyId),
       hydrateAgentSpend([row]).then((rows) => rows[0]!),
     ]);
     return normalizeAgentRow(hydrated, companyRows);
@@ -468,6 +480,6 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, hydrateAgentSpend,
+  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, listCompanyAgentEligibilityRows, hydrateAgentSpend,
     getById, ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed };
 }

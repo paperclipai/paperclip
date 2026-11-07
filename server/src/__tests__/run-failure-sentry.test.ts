@@ -49,6 +49,7 @@ function mockSentryPackage() {
 
   vi.doMock("@sentry/node", () => ({
     init,
+    getClient: () => ({ on: vi.fn() }),
     captureException,
     close,
     httpIntegration,
@@ -71,12 +72,14 @@ async function importFreshSentryWithGateOpen() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
   delete process.env[DSN_ENV];
   delete process.env[FRONTEND_DSN_ENV];
   delete process.env[BACKEND_DSN_ENV];
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (originalDsn === undefined) delete process.env[DSN_ENV];
   else process.env[DSN_ENV] = originalDsn;
   if (originalFrontendDsn === undefined) delete process.env[FRONTEND_DSN_ENV];
@@ -89,6 +92,82 @@ afterEach(() => {
 });
 
 describe("captureRunFailure", () => {
+  it("reports a saved-message failure with the run-failure tag and the actual run status", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", runId: "run",
+      agentAdapter: "process", runStatus: "succeeded" as const, intentId: "intent" };
+    sentryModule.captureTaskInterruptionFailure(event);
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException.mock.calls[0]![0]).toMatchObject({
+      message: "Couldn’t finish this attempt. Your message is saved.",
+    });
+    expect(captureException.mock.calls[0]![1]).toMatchObject({
+      tags: { event_kind: "run_failure", failure_source: "task_interruption", run_id: "run", task_id: "task",
+        company_id: "company", agent_id: "agent", run_status: "succeeded", error_code: "task_attempt_failed" },
+      contexts: { paperclip: { runPath: "/api/heartbeat-runs/run", taskPath: "/api/issues/task" } },
+      fingerprint: ["task_attempt_failed", "process"],
+    });
+    sentryModule.captureTaskInterruptionFailure({ ...event, intentId: "next-intent" });
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "next-run" });
+    expect(captureException).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not consume a saved-message report while reporting is off or capture fails", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", runId: "run",
+      agentAdapter: "process", runStatus: "failed" as const, intentId: null };
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "off");
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).not.toHaveBeenCalled();
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
+    captureException.mockImplementationOnce(() => { throw new Error("Sentry unavailable"); });
+    expect(() => sentryModule.captureTaskInterruptionFailure(event)).not.toThrow();
+    sentryModule.captureTaskInterruptionFailure(event);
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, "off", "true", "invalid"])("keeps ordinary server errors enabled while run reporting is disabled: %s", async mode => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
+    if (mode === undefined) delete process.env.PAPERCLIP_SENTRY_RUN_FAILURES;
+    sentryModule.captureRunFailure(baseEvent());
+    const error = new Error("ordinary server failure");
+    sentryModule.captureException(error);
+    expect(captureException).toHaveBeenCalledExactlyOnceWith(error);
+  });
+
+  it("provides authenticated run references and groups repeated causes without leaking scope", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.com");
+    const event = baseEvent({ companyId: "company", agentId: "agent", taskId: null,
+      diagnostics: { execution: { failurePhase: "setup", originalFailureCode: "tool_name_collision" }, adapter: {}, provider: {}, exceptions: [], truncatedFields: [] } });
+    sentryModule.captureRunFailure(event);
+    sentryModule.captureRunFailure({ ...event, runId: "another-run", errorMessage: "Another tool failed" });
+    sentryModule.captureException(new Error("unrelated"));
+    const first = captureException.mock.calls[0]![1]!;
+    expect(first.tags).toMatchObject({ event_kind: "run_failure", company_id: "company", agent_id: "agent", root_error_code: "tool_name_collision" });
+    expect(first.tags).not.toHaveProperty("task_id");
+    expect(first.contexts.paperclip).toEqual({ schemaVersion: 1, companyId: "company", agentId: "agent",
+      runPath: `/api/heartbeat-runs/${event.runId}`, eventsPath: `/api/heartbeat-runs/${event.runId}/events`, logPath: `/api/heartbeat-runs/${event.runId}/log`,
+      runUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}`, eventsUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}/events`,
+      logUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}/log` });
+    expect(first.fingerprint).toEqual(["process_lost", "claude-code", "setup", "tool_name_collision"]);
+    expect(captureException.mock.calls[1]![1]?.fingerprint).toEqual(first.fingerprint);
+    expect(captureException.mock.calls[2]![1]).toBeUndefined();
+  });
+
+  it.each([undefined, "invalid", "ftp://example.com", "https://user:password@example.com", "https://example.com?token=private", "https://example.com/#private", "https://example.com/private"])("omits unsafe or absent instance URLs: %s", async value => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", value);
+    sentryModule.captureRunFailure(baseEvent({ companyId: "company", agentId: "agent" }));
+    const context = captureException.mock.calls[0]![1]!.contexts.paperclip;
+    expect(context).toHaveProperty("runPath");
+    expect(context).not.toHaveProperty("runUrl");
+    expect(JSON.stringify(context)).not.toMatch(/password|private/);
+  });
+
   it("sets the fingerprint [errorCode, agentAdapter] in that order", async () => {
     const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
@@ -109,6 +188,60 @@ describe("captureRunFailure", () => {
 
     expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["timeout", "codex"]);
     expect(captureException.mock.calls[1]![1]?.fingerprint).toEqual(["timeout", "codex"]);
+  });
+
+  it("separates setup failures without a usable root code by the root exception", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const setupFailure = (exceptions: NonNullable<RunFailureEvent["diagnostics"]>["exceptions"]) => baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {}, exceptions, truncatedFields: [] },
+    });
+
+    sentryModule.captureRunFailure(setupFailure([{ name: "LegacyControllerLeaseLostError", message: "Legacy controller lease lost" }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "The workspace still has an unfinished writer", status: 409 }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "Workspace ownership changed", status: 409 }]));
+    sentryModule.captureRunFailure(setupFailure([
+      { name: "EnvironmentRunError", message: "Failed to acquire lease", code: "lease_acquire_failed" },
+      { name: "JsonRpcCallError", message: "Daytona lease acquisition timed out", code: "-32002" },
+    ]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "JsonRpcCallError", message: "RPC call timed out", code: "-32003" }]));
+    sentryModule.captureRunFailure(setupFailure([{ name: "Error", message: "plain failure" }]));
+
+    const fingerprints = captureException.mock.calls.map(([, context]) => context?.fingerprint);
+    const prefix = ["setup_failed", "paperclip_runner", "setup"];
+    expect(fingerprints).toEqual([
+      [...prefix, "exception:LegacyControllerLeaseLostError"],
+      [...prefix, "exception:Error", "status:409"],
+      [...prefix, "exception:Error", "status:409"],
+      [...prefix, "exception:JsonRpcCallError", "code:-32002"],
+      [...prefix, "exception:JsonRpcCallError", "code:-32003"],
+      [...prefix, "exception:Error"],
+    ]);
+    expect(JSON.stringify(fingerprints)).not.toMatch(/workspace|timed out|plain failure/i);
+  });
+
+  it("keeps an identifier root code as the only root grouping element", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure(baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {},
+        exceptions: [{ name: "Error", code: "ECONNRESET", status: 503 }], truncatedFields: [] },
+    }));
+
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["setup_failed", "paperclip_runner", "setup", "ECONNRESET"]);
+  });
+
+  it("drops unbounded root exception names and codes from the fallback", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure(baseEvent({
+      errorCode: "setup_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: { failurePhase: "setup" }, adapter: {}, provider: {},
+        exceptions: [{ name: "Error: token=secret value", code: "not a code 123" }], truncatedFields: [] },
+    }));
+
+    expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["setup_failed", "paperclip_runner", "setup"]);
   });
 
   it("sets the fingerprint element \"unknown\" when the error code is absent", async () => {
@@ -195,6 +328,7 @@ describe("captureRunFailure", () => {
     sentryModule.captureRunFailure(event);
 
     expect(captureException.mock.calls[0]![1]?.tags).toEqual({
+      event_kind: "run_failure",
       run_id: event.runId,
       task_id: event.taskId,
       error_code: event.errorCode,

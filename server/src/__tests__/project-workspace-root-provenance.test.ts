@@ -9,11 +9,11 @@ import { agents, authUsers, companies, companyMemberships, createDb, executionWo
   executionWorkspaces, issues, projects, projectWorkspaces, projectAccessMembers, principalPermissionGrants,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { projectService } from "../services/projects.js";
-import { assertExecutionWorkspaceRootReadAccess, assertExecutionWorkspaceRootWriteAccess } from "../services/execution-workspace-repositories.js";
+import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../services/task-workspace-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-(support.supported ? describe : describe.skip)("configured project root provenance", () => {
+(support.supported ? describe : describe.skip)("configured project mutations without filesystem provenance", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let root: string;
@@ -31,7 +31,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it.each((["cwd", "file_url", "absolute_path"] as const).flatMap(sourceKind =>
     (["move", "remove", "remove_project", "replace_repositories"] as const).map(mutation => ({ sourceKind, mutation }))))(
-    "retains nested private files before first admission ($sourceKind / $mutation)", async ({ sourceKind, mutation }) => {
+    "does not retain filesystem ownership after $sourceKind / $mutation", async ({ sourceKind, mutation }) => {
       const companyId = randomUUID(), userId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
       const cwd = path.join(root, companyId), privateCwd = path.join(cwd, "private"), unrelatedCwd = `${cwd}-unrelated`;
       await mkdir(privateCwd, { recursive: true });
@@ -59,25 +59,13 @@ const support = await getEmbeddedPostgresTestSupport();
       else if (mutation === "remove") await service.removeWorkspace(source.id, configured.id);
       else if (mutation === "remove_project") await service.remove(source.id);
       else await service.replaceRepositories(source.id, []);
-      const retained = await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, companyId));
-      expect(retained).toEqual(expect.arrayContaining([
-        expect.objectContaining({ kind: "project_source", scopeId: source.id, canonicalCwd: await realpath(privateCwd) }),
-        expect.objectContaining({ kind: "shared_project_source", scopeId: source.id, canonicalCwd: await realpath(privateCwd) }),
-      ]));
-      expect(retained.some(row => row.kind === "reader")).toBe(false);
-      await expect(assertExecutionWorkspaceRootReadAccess(db, access)).rejects.toThrow(/source project/);
-      await expect(assertExecutionWorkspaceRootWriteAccess(db, { ...access, issueId })).rejects.toThrow(/source project/);
-      if (mutation !== "move") await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId, cwd: unrelatedCwd, actor })).resolves.toBeUndefined();
+      expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, companyId))).toEqual([]);
+      await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId, workspaceId: workspace.id })).resolves.toBeDefined();
       if (mutation === "remove_project") return;
-      const [readGrant] = await db.insert(projectAccessMembers).values({ companyId, projectId: source.id, subjectType: "user", subjectId: userId }).returning();
-      await expect(assertExecutionWorkspaceRootReadAccess(db, access)).resolves.toBeUndefined();
-      await expect(assertExecutionWorkspaceRootWriteAccess(db, { ...access, issueId })).rejects.toThrow(/protected|not authorized/);
-      await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId,
-        permissionKey: "tasks:assign_scope", scope: { projectId: source.id, assigneeAgentId: agentId } });
-      await expect(assertExecutionWorkspaceRootWriteAccess(db, { ...access, issueId })).resolves.toBeUndefined();
-      await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, readGrant.id));
-      await expect(assertExecutionWorkspaceRootReadAccess(db, access)).rejects.toThrow(/source project/);
-      await expect(assertExecutionWorkspaceRootWriteAccess(db, { ...access, issueId })).rejects.toThrow(/source project/);
+      // The selected app configuration remains private even though neighboring files are not classified.
+      await expect(assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, source.id)).rejects.toThrow();
+      await db.insert(projectAccessMembers).values({ companyId, projectId: source.id, subjectType: "user", subjectId: userId });
+      await expect(assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, source.id)).resolves.toBeUndefined();
     });
 
   it("can remove a configured folder that never existed without inventing provenance", async () => {

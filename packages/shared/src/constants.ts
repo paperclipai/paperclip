@@ -1,4 +1,5 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const ISSUE_SUMMARIES_MAX_IDS = 5;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -197,6 +198,12 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Read-only task presentation. Monitoring never grants execution authority. */
+export const ISSUE_DISPLAY_STATUSES = [
+  "backlog", "todo", "in_progress", "monitoring", "in_review", "done", "blocked", "cancelled",
+] as const;
+export type IssueDisplayStatus = (typeof ISSUE_DISPLAY_STATUSES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -216,6 +223,13 @@ export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+/**
+ * Deepest task tree an agent (or automation acting for one) may create: a root
+ * task plus one level of children. A deeper request is not rejected; the new
+ * task is parented at this depth instead, as a sibling of the requester. Board
+ * users are not limited, and existing deeper trees stay valid.
+ */
+export const MAX_AGENT_TASK_HIERARCHY_DEPTH = 2;
 
 export const SUMMARY_SLOT_SCOPE_KINDS = [
   "project",
@@ -436,11 +450,9 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
-export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+  "pipeline-case-body",
 ] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
@@ -498,6 +510,7 @@ export const EXTERNAL_OBJECT_LIVENESS_STATES = [
   "fresh",
   "stale",
   "auth_required",
+  "rate_limited",
   "unreachable",
 ] as const;
 export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
@@ -670,7 +683,7 @@ export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
 // reason for platform-managed pauses (plugins, built-ins).
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -945,8 +958,10 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.activity",
   "agent.session.goal.changed",
   "agent.status",
+  "agent.runtime_state.updated",
   "activity.logged",
   "external_object.updated",
   "plugin.ui.updated",
@@ -1002,6 +1017,7 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",
@@ -1012,6 +1028,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_profiles",
   "tools:view_audit",
   "audit:view_agent_actions",
+  "commentary:view",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",
@@ -1020,7 +1037,6 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
-  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -1324,8 +1340,11 @@ export const PLUGIN_CAPABILITIES = [
   // Data Read
   "companies.read",
   "projects.read",
+  "projects.instance-secrets",
+  "projects.git-credentials",
   "project.workspaces.read",
   "execution.workspaces.read",
+  "workspaces.manage",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -1496,6 +1515,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
 export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const HEARTBEAT_RUN_LIST_DEFAULT_LIMIT = 200;
+export const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
 export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
 export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
 
