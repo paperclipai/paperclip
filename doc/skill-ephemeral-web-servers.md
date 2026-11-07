@@ -40,6 +40,30 @@ Native recovery resolves the version, reconstructs its v1 projection and require
 the admitted digest, manifest digest, file count and byte count to match. Adjacent
 compatible releases must preserve that projection contract.
 
+Older native inputs can contain immutable skill bundles without a version ID.
+Retained recovery obligations and current task sessions keep those bundles as
+local durability dependencies until the `runtime-assets` maintenance phase copies
+their authenticated files into the existing package store. The receipt binds the
+original run input, skill selection, native manifest and package content hash.
+Recovery restores the original bytes and read/execute modes, verifies the admitted
+digests, and preserves the null version ID. Package collection protects these
+receipts under the same row lock used by receipt publication.
+
+This conversion may run online, including for an active run: it only copies an
+immutable bundle under its publication/collection lock and appends an input-bound
+receipt. It does not claim provider or controller ownership, settle recovery,
+start a turn, change task intent or remove local data. Missing or changed sources
+remain blockers. Ordinary new admission without a completed execution input is
+not itself a local asset obligation. Both migration and replacement startup check
+the concrete retained asset obligations independently of installation eligibility.
+
+Run on the host retaining the original runtime asset files, and follow its cursor:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=runtime-assets --company=<uuid> --limit=10
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=runtime-assets --company=<uuid> --limit=10 --apply
+```
+
 Studio tests deliver the selected saved version through the same native Runner
 path, even without a permanent agent assignment. Their `skill_test` mode remains
 explicit in the execution input. The durable test row replaces ordinary agent
@@ -90,15 +114,17 @@ use the latest branch as a replacement for missing installed content.
    `versions` phases. The latter also fills missing version metadata indexes so
    subsequent library/history reads need no object downloads. Keep original bytes
    until independent verification succeeds.
-3. Stop admission and skill/source writers; retire every filesystem-authoritative
-   process. The `--writers-stopped` flag attests this operator action; it does not
-   stop the application itself.
-4. Apply final installation conversion on the host with the legacy files:
+3. Copy installations on the host with the legacy files. This phase shares the
+   cache, publication and row locks with normal writers. It checks the exact
+   local source again before publication:
 
    ```sh
-   pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=installations --company=<uuid> --limit=10 --apply --writers-stopped
+   pnpm --filter @paperclipai/server exec tsx scripts/migrate-skill-packages.ts --phase=installations --company=<uuid> --limit=10 --apply
    ```
 
+4. Keep all original directories, versions and inline bytes. Conversion does not
+   settle old execution, recovery or pin uncertainty. Preserve or settle every
+   remaining local dependency through its owner before removing the volume.
 5. Sweep `eligibility` and `verification`, including all historical versions. The
    latter verifies object bytes independently of caches. Follow all cursors; a
    successful first batch is not a complete readiness report.
@@ -109,9 +135,10 @@ Managed conversion preserves skill IDs, keys, history, assignments, pins and acc
 provenance. Identical complete snapshots reuse their version IDs. Catalog conversion
 preserves the original reset version as well as installed content. A missing legacy
 directory can use a complete verified saved version. A partial Markdown-only rescue,
-unknown revision, unsafe source tree or active legacy selection without exact version
-identity is a blocker. Settle or snapshot such runs while A is still available; do
-not cancel them simply to pass preflight.
+unknown revision or unsafe source tree blocks conversion. An active legacy selection
+without exact version identity remains a retention and volume-removal blocker even
+after copy-only conversion. Preserve or settle such runs while A is still available;
+do not cancel them simply to pass preflight.
 
 Report statuses distinguish linked-local sources, legacy managed/catalog records,
 missing current versions, unknown active-run selections, missing/corrupt packages,

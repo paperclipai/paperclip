@@ -14,6 +14,7 @@ import {
   companies,
   companyMemberships,
   companySkills,
+  completionContracts,
   createDb,
   environmentLeases,
   heartbeatRuns,
@@ -22,6 +23,7 @@ import {
   issueThreadInteractions,
   issueRecoveryActions,
   nativeRunFinalizations,
+  nativeRunResults,
   issues,
   runIdentityContexts,
 } from "@paperclipai/db";
@@ -194,6 +196,22 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       updatedAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
     })));
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
+  }
+
+  async function commitNativeSuccess(f: Awaited<ReturnType<typeof seedQueue>>) {
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+      revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test",
+      risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {}, canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, completionContractId: contractId })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, completionContractId: contractId, serverFingerprint: resultId,
+      schemaStatus: "accepted", canonicalSha256: resultId,
+      resultJson: { terminal: { runTerminalState: "succeeded", reportedWorkDisposition: "completed" } } });
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, phase: "committed", resultId });
   }
 
   it.each([false, true])("polls queued comments without transferring run snapshots (agent fallback: %s)", async fallback => {
@@ -932,6 +950,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await db.update(heartbeatRuns).set({ runtimeMode: runtime, status: "succeeded",
       finishedAt: new Date("2026-08-22T15:03:00.000Z"),
     }).where(eq(heartbeatRuns.id, seeded.runId));
+    if (runtime === "native") await commitNativeSuccess(seeded);
     await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
     // Occupy this agent on a different task so the actual successor remains
     // queued and the test never launches a provider.
@@ -2163,6 +2182,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     // successor stays queued and the test never launches a provider.
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, seeded.runId));
+    if (runtime === "native") await commitNativeSuccess(seeded);
     await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
     await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
       status: "running", contextSnapshot: { issueId: randomUUID() },

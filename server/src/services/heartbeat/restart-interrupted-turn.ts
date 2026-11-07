@@ -10,7 +10,7 @@ import { logger } from "../../middleware/logger.js";
  * sandbox lease or plugin task is gone, or the remote runner process is not
  * there to verify. This is infrastructure, not the task's own failure. */
 const REATTACHMENT_LOST_ERRORS = ["native_remote_recovery_lease_mismatch", "native_plugin_recovery_lease_mismatch",
-  "runner_remote_process_identity_unavailable"];
+  "runner_remote_process_identity_unavailable", "runner_continuity_break_archive_failed"];
 
 const TURN_STARTED_EVENTS = ["turn.submitted", "turn.started", "turn.accepted"];
 const TURN_SETTLED_EVENTS = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
@@ -45,7 +45,11 @@ type Outcome = { requested: true; requestId: string } | { requested: false; reas
  */
 export async function requestRestartInterruptedTurnRetry(db: Db, claim: NativeRestartRecoveryClaim): Promise<Outcome> {
   if (claim.kind !== "reattach_remote_runner") return { requested: false, reason: "not_reattachment" };
-  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, claim.runId));
+  return requestInterruptedNativeTurnRetry(db, claim.runId);
+}
+
+export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): Promise<Outcome> {
+  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   if (!run || run.runtimeMode !== "native" || run.status !== "failed" || !REATTACHMENT_LOST_ERRORS.includes(run.error ?? ""))
     return { requested: false, reason: "not_reattachment_loss" };
   const context = run.contextSnapshot ?? {};
