@@ -971,6 +971,12 @@ When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eage
 snapshot and any required drain complete while the database is still available;
 the coordinated shutdown path stops embedded PostgreSQL afterward.
 
+Shutdown first sets one process-wide flag that every `heartbeatService` instance
+reads, before its first await. From then on no queued run starts in that process:
+a run claimed in that window returns to the queue with its wake and the issue
+lock free, and new wakes stay queued for the next process. Runs that already
+execute follow the drain or hot-restart path above.
+
 The request command records the preflight set of running heartbeat IDs and writes
 an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
 This lets a previous server version capture its snapshot at the old path while

@@ -2021,6 +2021,8 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    // Before the first await: from here no heartbeat instance starts a queued run.
+    accountingHeartbeat.setShutdownInProgress();
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     setStartupRecoveryPhase("draining");
