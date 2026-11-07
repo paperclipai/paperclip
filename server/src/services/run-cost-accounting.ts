@@ -406,6 +406,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
           pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
         ...(lowerBoundProvenance ? { costStatus: "estimated", pricingProvenance: lowerBoundProvenance } : {}),
+        // The observed price became the accepted money; late reconciliation
+        // measures growth from it rather than posting the full total again.
+        ...(observedCostUsd ? { costUsdExact: observedCostUsd } : {}),
       })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
     if (closureTimedOut) await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting",

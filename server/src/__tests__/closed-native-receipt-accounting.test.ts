@@ -694,6 +694,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const [charge] = await f.charges();
     expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
     expect(charge?.costStatus).toBe("estimated");
+    // A complete receipt arriving later posts only its growth over the accepted price.
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 6,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "unknown-model", billingType: "metered_api", costUsd: 7, costStatus: "reported",
+        pricingProvenance: { source: "provider_reported", version: "test" },
+        usage: { inputTokens: 2400, cachedInputTokens: 0, outputTokens: 160 } } });
+    await accountRunCost(db, f.run.id);
+    const total = (await f.charges()).reduce((sum, row) => sum + Number(row.costCents), 0);
+    expect(total).toBeCloseTo(700, 5);
   });
 
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
