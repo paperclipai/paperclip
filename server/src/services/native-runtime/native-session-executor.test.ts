@@ -2274,6 +2274,14 @@ describe("remote provider pack manifest", () => {
         expect(managedBackend.providerAdmissionRequired?.()).toBe(true);
         await managedBackend.providerAdmissionPersisted!();
         expect(providerArtifactCapture.captureRemoteNativeProviderArtifacts).toHaveBeenCalledTimes(1);
+        expect(providerArtifactCapture.captureRemoteNativeProviderArtifacts).toHaveBeenCalledWith(
+          expect.objectContaining({ remoteCwd: "/workspace" }), expect.any(Function));
+        // Sandbox providers confine export sources to the workspace remote dir;
+        // the home-rooted launch files leave through a workspace staging copy.
+        const exportSources = (syncOut.mock.calls as unknown as Array<[Array<{ files: Array<{ kind: string; sourcePath: string }> }>]>)
+          .flatMap(([operations]) => operations.flatMap(operation => operation.files.map(file => file.sourcePath)));
+        expect(exportSources.length).toBeGreaterThan(0);
+        expect(exportSources.every(source => source.startsWith("/workspace/"))).toBe(true);
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");

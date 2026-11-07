@@ -16212,8 +16212,9 @@ async function createRunnerdBackendWithinSessionClaim(
       }
       if (!openCodeLaunchArtifacts) throw new Error("native_provider_artifacts_admission_missing");
       const signal = providerArtifactsSignal();
+      if (!remoteTarget) throw new Error("native_provider_artifacts_admission_missing");
       providerArtifacts = await captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
-        launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
+        remoteCwd: remoteTarget.remoteCwd, launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
         source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
     } : undefined,
     bindDiagnosticSession: session => {
