@@ -1,5 +1,25 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { codexShellEnvironmentKeys } from "./codex-shell-environment.js";
+
+it.each([true, false])("preserves Windows shell prerequisites with identity=%s", (identity) => {
+  const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+  try {
+    const names = codexShellEnvironmentKeys({}, {}, identity);
+    expect(names).toEqual(expect.arrayContaining([
+      "SystemRoot", "WINDIR", "SystemDrive", "ComSpec", "PATHEXT", "TEMP", "TMP",
+    ]));
+    expect(names).not.toContain("OPENAI_API_KEY");
+    expect(names).not.toContain("HOST_SERVICE_TOKEN");
+  } finally { platform.mockRestore(); }
+});
+
+it("does not add Windows-only names on other platforms", () => {
+  const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+  try {
+    const names = codexShellEnvironmentKeys({}, {}, false);
+    for (const key of ["SystemRoot", "WINDIR", "SystemDrive", "ComSpec", "PATHEXT"]) expect(names).not.toContain(key);
+  } finally { platform.mockRestore(); }
+});
 
 it("admits assigned service secrets by name while retaining unassigned secret exclusions", () => {
   const assigned = { SLACK_BOT_TOKEN: "slack-canary", SERVICE_API_KEY: "key-canary", APP_SECRET: "secret-canary" };
