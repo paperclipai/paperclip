@@ -139,6 +139,8 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 
 const MAX_INLINE_WAKE_ATTACHMENTS = 20;
 
+const MAX_WAKE_CUT_COMMENT_IDS = 20;
+
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -2364,25 +2366,36 @@ export async function buildPaperclipWakePayload(input: {
   const inlineIssueDescription = issueDescriptionTruncated
     ? issueDescription.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS)
     : issueDescription;
-  const comments: Array<Record<string, unknown>> = [];
+  const selectedComments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
   let missingCommentCount = 0;
+  const cutExistingIds: string[] = [];
   const safeContinuationSummary =
     continuationSummary && !input.exposeLowTrustRaw
       ? redactQuarantinedBodyForHigherTrust(continuationSummary)
       : continuationSummary;
 
-  for (const commentId of commentIds) {
+  for (let index = commentIds.length - 1; index >= 0; index -= 1) {
+    const commentId = commentIds[index];
+    if (!commentId) continue;
     const row = commentsById.get(commentId);
     if (!row) {
       truncated = true;
       missingCommentCount += 1;
       continue;
     }
-    if (comments.length >= MAX_INLINE_WAKE_COMMENTS) {
+    const allowedBodyChars = Math.min(
+      MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
+      remainingBodyChars,
+    );
+    if (
+      selectedComments.length >= MAX_INLINE_WAKE_COMMENTS ||
+      allowedBodyChars <= 0
+    ) {
       truncated = true;
-      break;
+      cutExistingIds.push(row.id);
+      continue;
     }
 
     const deletedAt = row.deletedAt ?? null;
@@ -2391,15 +2404,6 @@ export async function buildPaperclipWakePayload(input: {
         ? row
         : sanitizeQuarantinedCommentForHigherTrust(row);
     const fullBody = deletedAt ? "" : row.origin === "fast_response" ? `[Paperclip acknowledgement; not agent work] ${safeRow.body}` : safeRow.body;
-    const allowedBodyChars = Math.min(
-      MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
-      remainingBodyChars,
-    );
-    if (allowedBodyChars <= 0) {
-      truncated = true;
-      break;
-    }
-
     const body =
       fullBody.length > allowedBodyChars
         ? fullBody.slice(0, allowedBodyChars)
@@ -2408,7 +2412,7 @@ export async function buildPaperclipWakePayload(input: {
     if (bodyTruncated) truncated = true;
     remainingBodyChars -= body.length;
 
-    comments.push({
+    selectedComments.push({
       id: row.id,
       issueId: row.issueId,
       authorType:
@@ -2432,6 +2436,12 @@ export async function buildPaperclipWakePayload(input: {
           : { type: "system", id: null },
     });
   }
+  const comments = selectedComments.reverse();
+  const cutCount = cutExistingIds.length;
+  const cutCommentIds = cutExistingIds
+    .slice()
+    .reverse()
+    .slice(0, MAX_WAKE_CUT_COMMENT_IDS);
 
   const attachmentCommentIds = comments.flatMap((comment) =>
     typeof comment.id === "string" &&
@@ -2441,7 +2451,7 @@ export async function buildPaperclipWakePayload(input: {
       ? [comment.id]
       : [],
   );
-  const attachmentRows =
+  const attachmentRowsDesc =
     !issueId || attachmentCommentIds.length === 0
       ? []
       : await input.db
@@ -2467,9 +2477,34 @@ export async function buildPaperclipWakePayload(input: {
               inArray(issueAttachments.issueCommentId, attachmentCommentIds),
             ),
           )
-          .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
+          .orderBy(desc(issueAttachments.createdAt), desc(issueAttachments.id))
           .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
-  if (attachmentRows.length > MAX_INLINE_WAKE_ATTACHMENTS) truncated = true;
+  let cutAttachmentCount = 0;
+  if (issueId && attachmentRowsDesc.length > MAX_INLINE_WAKE_ATTACHMENTS) {
+    truncated = true;
+    const counted = await input.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issueAttachments)
+      .innerJoin(
+        assets,
+        and(
+          eq(issueAttachments.assetId, assets.id),
+          eq(assets.companyId, input.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issueAttachments.companyId, input.companyId),
+          eq(issueAttachments.issueId, issueId),
+          inArray(issueAttachments.issueCommentId, attachmentCommentIds),
+        ),
+      );
+    const attachmentTotal = Number(counted[0]?.count ?? attachmentRowsDesc.length);
+    cutAttachmentCount = Math.max(0, attachmentTotal - MAX_INLINE_WAKE_ATTACHMENTS);
+  }
+  const attachmentRows = attachmentRowsDesc
+    .slice(0, MAX_INLINE_WAKE_ATTACHMENTS)
+    .reverse();
   const attachmentsByCommentId = new Map<
     string,
     Array<{
@@ -2480,10 +2515,7 @@ export async function buildPaperclipWakePayload(input: {
       contentPath: string;
     }>
   >();
-  for (const attachment of attachmentRows.slice(
-    0,
-    MAX_INLINE_WAKE_ATTACHMENTS,
-  )) {
+  for (const attachment of attachmentRows) {
     if (!attachment.issueCommentId) continue;
     const descriptors =
       attachmentsByCommentId.get(attachment.issueCommentId) ?? [];
@@ -2846,6 +2878,9 @@ export async function buildPaperclipWakePayload(input: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
+      cutCount,
+      cutCommentIds,
+      cutAttachmentCount,
     },
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
