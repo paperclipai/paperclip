@@ -132,6 +132,9 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.textContent).toContain("Unable to load Paperclip");
     expect(container.querySelector("[data-redirect]")).toBeNull();
     expect(callsTo("/api/auth/get-session")).toBe(1);
+    client.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "authenticated", bootstrapStatus: "bootstrap_pending" });
+    await flushReact();
+    expect(container.textContent).toContain("Set up instance");
   });
 
   it("rechecks the session again when retrying a persistent 401", async () => {

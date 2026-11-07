@@ -171,7 +171,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   // A background outage must not unmount editors and discard drafts. Cached
   // access is only retained for transport failures; 401/403 still fail closed.
   const blockingError = activeQueries.find((query) => query.error && !isTemporaryApiError(query.error))?.error
-    ?? (isAuthenticatedMode && sessionQuery.data && accessDenied ? new ApiError("Access check denied", 401) : null);
+    ?? (isAuthenticatedMode && !isBootstrapPending && sessionQuery.data && accessDenied ? new ApiError("Access check denied", 401, null) : null);
   // Nothing cached yet and the check is retrying a transient failure, or is
   // paused because the connectivity store has confirmed an outage.
   const isWaitingForConnection = activeQueries.some((query) => query.data === undefined
