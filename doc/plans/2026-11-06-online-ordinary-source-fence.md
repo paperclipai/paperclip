@@ -152,3 +152,10 @@ service after the first start completed. Run-scoped reuse identity now includes
 the execution-workspace owner. The public scope ID and explicit project/agent
 sharing stay unchanged. The existing exposure-pair owner regression exercises
 real listeners, a disposable database and a fake broker.
+
+Local reopen acquires its declared and physical project source keys before the
+lifecycle transaction. It retains the recorded base and project-workspace source
+before reconstruction. Nested restore therefore cannot wait for the project
+source while holding the lifecycle lock. The actual reopen contention regression
+holds the project key on another connection, checks that no lifecycle key is
+held, then releases the source and checks the restored nested commit and files.

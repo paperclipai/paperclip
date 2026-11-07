@@ -220,6 +220,36 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
   });
 
+  it("takes the project fence before the lifecycle lock during an actual nested reopen", async () => {
+    const f = await nestedFixture(true, true);
+    expect(await f.expire({ expireBase: false })).toMatchObject({ expired: true, baseExpired: false });
+    await fs.rm(f.sharedBase, { recursive: true });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId!] }, async () => {
+      entered(); await pending;
+    });
+    await started;
+    const reopen = f.reopen().then(value => ({ value }), error => ({ error }));
+    let result: Awaited<typeof reopen> | undefined;
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(waiting[0].n).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+      const key = `execution_workspace_lifecycle:${f.workspaceId}`;
+      const granted = await db.execute(sql`select count(*)::int n from pg_locks where locktype='advisory' and granted
+        and classid=((hashtextextended(${key},0)>>32)&4294967295)::oid and objid=(hashtextextended(${key},0)&4294967295)::oid`);
+      expect(granted[0].n).toBe(0);
+      expect(await exists(f.cwd)).toBe(false);
+    } finally { release(); await owner; result = await reopen; }
+    expect(result).toMatchObject({ value: { ok: true, reopened: true } });
+    expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
+    expect(await fs.readFile(f.nestedSettingsPath)).toEqual(f.settings);
+    expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
+  });
+
   it("expires a nested workspace and its unused private base with the generated ignore entry", async () => {
     const f = await nestedFixture(false);
     await f.advance();
