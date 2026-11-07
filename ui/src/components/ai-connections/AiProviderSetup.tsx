@@ -158,7 +158,9 @@ export function AiProviderSetup({
   const name =
     reconnect?.name ??
     `${ownership === "personal" ? "My" : "Company"} ${
-      (provider === "gateway" || provider === "freellmapi") && baseUrl
+      provider === "freellmapi"
+        ? label
+        : provider === "gateway" && baseUrl
         ? (() => {
             try {
               return new URL(baseUrl).hostname;
