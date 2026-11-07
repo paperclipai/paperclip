@@ -35,7 +35,7 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { processStartsDefinitelyDiffer } from "../controller-process-identity.js";
+import { currentControllerBootId, currentProcessStartedAtMs, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -282,7 +282,6 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   return work !== undefined;
 }
 
-const controllerBootId = randomUUID();
 
 function processIsAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
@@ -324,14 +323,17 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+/** The native controller stamp of this process. The boot id is the single
+ * process boot id (`controller-process-identity.ts`) and the start time is read
+ * from the OS once, so claims and renewals on the turn path spawn no `ps`. */
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = await currentProcessStartedAtMs();
   const fallback = new Date(getServerProcessStartedAt());
   return {
-    bootId: controllerBootId,
+    bootId: currentControllerBootId(),
     pid: process.pid,
     processStartedAt:
-      observed ?? (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+      observed !== null ? new Date(observed) : (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
   };
 }
 
@@ -339,7 +341,7 @@ export function isCurrentNativeControllerProcess(owner: {
   controllerBootId: string | null;
   controllerPid: number | null;
 }): boolean {
-  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+  return owner.controllerBootId === currentControllerBootId() && owner.controllerPid === process.pid;
 }
 
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
