@@ -10872,11 +10872,12 @@ async function executePaperclipNativeSessionWithinScope(
         || remoteWarmRecovery || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
         || !target.runnerTask || runnerdBackend === null) return false;
       const retainedTaskId = target.sandboxLeaseAcquisition?.providerLeaseId;
+      // Attachment failure already quarantined the owner. Join its cleanup and
+      // checkpoint save before describe can replace the task on this lease.
+      await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
       const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
       if (description.kind !== "description" || description.taskId === retainedTaskId) return false;
-      // Attachment failure already quarantined the owner; join its checkpoint save.
-      await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
       existingWarmSession = undefined;
       pluginTaskDescription = undefined;
       await finishStartupContextForFallback();

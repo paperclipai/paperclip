@@ -231,7 +231,11 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         claims.push(operation.identity);
         return { kind: "resume", taskId, outcome: "resumed" };
       }
-      if (operation.kind === "stop") { await host.close(); }
+      if (operation.kind === "stop") {
+        // Old-owner cleanup outlasts the quarantine's short wait, so the fallback must join it before replacing the task.
+        if (mode === "after inspection" && taskId === taskA) await new Promise(done => setTimeout(done, 300));
+        await host.close();
+      }
       if (operation.kind === "complete") { expect(handles.get(taskId)?.isExitConfirmed?.()).toBe(true); }
       return { kind: "accepted", taskId };
     };
