@@ -1719,8 +1719,8 @@ boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
 different boot and its recorded controller process has exited or its PID now
 names another process. Only the executor's lease carries that controller
-identity; a finalizer, cleanup, or finalization-resume lease is never released
-this way and expires on its own short lease. The stored result is then
+identity; a finalizer or cleanup lease is never released this way and expires
+on its own short lease. The stored result is then
 finalized without another
 provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote

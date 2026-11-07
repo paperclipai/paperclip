@@ -346,6 +346,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
   it.each([
     { holder: "runner execution", leaseOwner: (runner: string) => `${runner}:${randomUUID()}` },
     { holder: "restart-claimed execution", leaseOwner: () => `${randomUUID()}:2:${randomUUID()}` },
+    // An executor that adopted a finalization-resume claim keeps that token.
+    { holder: "resumed execution", leaseOwner: (runner: string) => `${runner}:resume:${randomUUID()}` },
   ])("finalizes an accepted result promptly when a hard kill left its $holder lease to a dead controller", async ({ holder, leaseOwner }) => {
     // RC-41: K1 lands after run.result is committed but before finalization.
     // The dead boot's 20-minute lease must not hold the run `running`.
@@ -384,7 +386,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
   }, 60_000);
 
-  it.each(["native-finalizer", "native-cleanup", "runner:resume"])("keeps a %s lease whose controller identity names an earlier executor", async (prefix) => {
+  it.each(["native-finalizer", "native-cleanup"])("keeps a %s lease whose controller identity names an earlier executor", async (prefix) => {
     // These claims do not rewrite the controller identity, so the dead earlier
     // executor proves nothing about the process that holds the lease now.
     const f = await seedAcceptedResult(`ACCEPTED-${prefix}-OF-LIVE-CLAIMANT`, () => `${prefix}:${randomUUID()}`);

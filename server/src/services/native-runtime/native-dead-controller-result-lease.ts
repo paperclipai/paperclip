@@ -46,13 +46,13 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
       isNotNull(nativeRunFinalizations.resultId),
       notInArray(nativeRunFinalizations.phase, ["committed", "terminal_failure"]),
       isNotNull(nativeRunFinalizations.leaseOwner),
-      // Only the executor's lease is written with the controller identity
-      // probed below. Finalizer, cleanup, and finalization-resume claims keep
-      // the identity of an earlier executor, so a dead earlier executor proves
-      // nothing about them. Their own leases are short and expire normally.
+      // Only an executor's lease is written with the controller identity probed
+      // below, including an executor that adopted a resume claim (a pending
+      // resume claim never holds an accepted result). Finalizer and cleanup
+      // claims keep an earlier executor's identity, so a dead earlier executor
+      // proves nothing about them. Their own leases are short and expire.
       notLike(nativeRunFinalizations.leaseOwner, "native-finalizer:%"),
       notLike(nativeRunFinalizations.leaseOwner, "native-cleanup:%"),
-      notLike(nativeRunFinalizations.leaseOwner, "%:resume:%"),
       gt(nativeRunFinalizations.leaseExpiresAt, input.now),
       isNotNull(nativeRunFinalizations.controllerBootId),
       ne(nativeRunFinalizations.controllerBootId, controller.bootId),
