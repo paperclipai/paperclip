@@ -7,6 +7,8 @@
 //   - the per-wake decision, split into decideQueuedCommentAction and
 //     decideWakeOutcome, applied to the earliest deferred wake queued
 //     against the issue a run just released
+//   - the ownership decision (decideDeferredWakeOwnership), applied to each
+//     deferred wake before it can take the drain's single promotion
 //   - the release-recovery decision (decideReleaseRecovery), applied once
 //     the deferred-wake queue is empty and no wake was promoted
 // The caller reads the database and packs the result into a facts object.
@@ -196,6 +198,30 @@ export function decideWakeOutcome(facts: DeferredWakeOutcomeFacts): DeferredWake
   if (agent.paused) return { kind: "defer_agent_pause" };
 
   return { kind: "promote" };
+}
+
+export type DeferredWakeOwnershipFacts = {
+  /** False when the wake carries a bypass that lets run dispatch start it without owning the issue. */
+  requiresIssueOwnership: boolean;
+  /** Failed-chat retry or interaction resolution, which the drain authorizes on its own terms. */
+  hasIndependentAuthority: boolean;
+  issueIsTerminal: boolean;
+  wakeAgentIsAssignee: boolean;
+  wakeAgentIsReviewParticipant: boolean;
+};
+
+/**
+ * Decides whether a deferred wake still belongs to an agent that owns the
+ * issue. Run dispatch cancels a former owner's run as
+ * `issue_assignee_changed`, and the drain promotes at most one wake, so
+ * promoting a former owner's wake would strand the current owner's wake
+ * queued behind it.
+ */
+export function decideDeferredWakeOwnership(facts: DeferredWakeOwnershipFacts): "current_owner" | "former_owner" {
+  if (!facts.requiresIssueOwnership || facts.hasIndependentAuthority || facts.issueIsTerminal) {
+    return "current_owner";
+  }
+  return facts.wakeAgentIsAssignee || facts.wakeAgentIsReviewParticipant ? "current_owner" : "former_owner";
 }
 
 /** Shared between the review-participant and immediate branches; the caller derives every field from the same expression regardless of which branch applies. */
