@@ -1,6 +1,8 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte, or, sql } from "drizzle-orm";
+import { hostname } from "node:os";
+import { and, eq, gt, lte, or, sql } from "drizzle-orm";
+import { readProcessStartedAt } from "./hot-restart.js";
 import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
@@ -9,6 +11,85 @@ import { logger } from "../middleware/logger.js";
 import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
+
+// A live creator may still be waiting for the provider, and a provider may still
+// materialize an aborted request. Absence is conclusive only after this delay.
+const CREATION_SETTLE_FLOOR_MS = 30 * 60_000;
+const creationBootId = randomUUID();
+const creationHostHash = createHash("sha256").update(hostname()).digest("hex").slice(0, 32);
+let creationProcessStartedAt: Promise<string | null> | undefined;
+
+type CreationController = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+
+async function observedProcessStartedAt(pid: number): Promise<number | null> {
+  try {
+    const startedAt = Date.parse(await readProcessStartedAt(pid) ?? "");
+    return Number.isFinite(startedAt) ? startedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentCreationController(): Promise<CreationController> {
+  creationProcessStartedAt ??= observedProcessStartedAt(process.pid)
+    .then(value => value === null ? null : new Date(value).toISOString());
+  return { bootId: creationBootId, pid: process.pid, hostHash: creationHostHash, processStartedAt: await creationProcessStartedAt };
+}
+
+function readCreationController(value: unknown): CreationController | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.bootId !== "string" || typeof record.hostHash !== "string" ||
+      typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return null;
+  return { bootId: record.bootId, pid: record.pid, hostHash: record.hostHash,
+    processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null };
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+/** True only with same-host proof that the creating server process has exited.
+ * Another host, a missing identity, or an ambiguous process keeps the deadline. */
+async function creationControllerExited(controller: CreationController): Promise<boolean> {
+  if (controller.bootId === creationBootId || controller.hostHash !== creationHostHash) return false;
+  if (!processExists(controller.pid)) return true;
+  // The PID now belongs to a live process, possibly this restarted server.
+  // Only a definitely different start time proves the creator is gone.
+  const recorded = Date.parse(controller.processStartedAt ?? "");
+  const observed = await observedProcessStartedAt(controller.pid);
+  return Number.isFinite(recorded) && observed !== null && Math.abs(observed - recorded) >= 1_000;
+}
+
+/** After a restart, creation intents from an exited server cannot still be in
+ * flight there. Reconcile them now instead of at the settle deadline. Absence
+ * stays inconclusive until that deadline; see recoverSandboxCreations. */
+async function promoteAbandonedSandboxCreations(db: Db): Promise<void> {
+  const now = new Date();
+  const waiting = await db.select().from(sandboxCreationOperations).where(and(
+    eq(sandboxCreationOperations.state, "pending"), gt(sandboxCreationOperations.nextAttemptAt, now),
+    sql`${sandboxCreationOperations.metadata}->'creationController'->>'bootId' is distinct from ${creationBootId}`,
+    sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`,
+  )).limit(100);
+  for (const operation of waiting) {
+    const controller = readCreationController(operation.metadata.creationController);
+    if (!controller || !await creationControllerExited(controller)) continue;
+    await db.update(sandboxCreationOperations).set({ nextAttemptAt: now, updatedAt: now,
+      metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationControllerLost":true}'::jsonb` })
+      .where(and(eq(sandboxCreationOperations.id, operation.id), eq(sandboxCreationOperations.state, "pending"),
+        gt(sandboxCreationOperations.nextAttemptAt, now)));
+  }
+}
+
+function creationAbsenceInconclusive(operation: SandboxCreationOperation): boolean {
+  const settleAt = Date.parse(typeof operation.metadata.creationSettleAt === "string" ? operation.metadata.creationSettleAt : "");
+  return operation.metadata.creationControllerLost === true && Number.isFinite(settleAt) && Date.now() < settleAt;
+}
 
 export function recoverableTaskCreation(operation: Pick<SandboxCreationOperation, "metadata">): boolean {
   const metadata = operation.metadata;
@@ -52,6 +133,8 @@ export async function createOwnedSandbox(
   }
   const id = randomUUID();
   const runId = owner.heartbeatRunId ?? randomUUID();
+  const settleAt = new Date(Date.now() + Math.max(CREATION_SETTLE_FLOOR_MS, (owner.timeoutMs ?? 0) + 60_000));
+  const creationController = await currentCreationController();
   const operation = await db.transaction(async tx => {
     await notifyEnvironmentCleanup(tx, { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
     await assertEnvironmentCompanyBinding(tx as unknown as Db, owner.environmentId, owner.companyId);
@@ -59,8 +142,9 @@ export async function createOwnedSandbox(
       id, companyId: owner.companyId, environmentId: owner.environmentId, originalEnvironmentId: owner.environmentId,
       runId, requestKey: owner.requestKey ?? "run", issueId: owner.issueId, executionWorkspaceId: owner.executionWorkspaceId,
       provider: owner.provider, pluginId: owner.pluginId, driverKey: owner.driverKey,
-      config: owner.config, metadata: { ...owner.metadata, creationCredentialHashes: credentialHashes },
-      nextAttemptAt: new Date(Date.now() + Math.max(30 * 60_000, (owner.timeoutMs ?? 0) + 60_000)),
+      config: owner.config, metadata: { ...owner.metadata, creationCredentialHashes: credentialHashes,
+        creationController, creationSettleAt: settleAt.toISOString() },
+      nextAttemptAt: settleAt,
     }).onConflictDoNothing().returning();
     if (inserted) return inserted;
     const [existing] = await tx.select().from(sandboxCreationOperations).where(and(
@@ -152,6 +236,7 @@ export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
   onTaskRecovered?: (operation: SandboxCreationOperation) => void | Promise<void>,
 ): Promise<void> {
+  await promoteAbandonedSandboxCreations(db);
   const due = await db.select().from(sandboxCreationOperations).where(and(
     recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
   )).limit(100);
@@ -186,6 +271,10 @@ export async function recoverSandboxCreations(db: Db,
       if (cleanup && (cleanup.companyId !== candidate.companyId || cleanup.environmentId !== candidate.originalEnvironmentId ||
         cleanup.runId !== candidate.runId || cleanup.attemptId !== candidate.id || cleanup.providerLeaseId !== observation!.providerLeaseId)) {
         throw new Error("Sandbox creation recovery returned foreign ownership");
+      }
+      // An early lookup after a lost creator may precede provider materialization.
+      if (existingCompany && !cleanup && creationAbsenceInconclusive(candidate)) {
+        throw new Error("Sandbox creation has not settled yet");
       }
       await db.transaction(async tx => {
         const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).for("key share");
