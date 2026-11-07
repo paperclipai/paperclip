@@ -77,7 +77,7 @@ describe("reconstruction after confirmed native workspace loss", () => {
     await db.insert(issueAttachments).values({ id: attachmentId, companyId, issueId, assetId });
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const body = { actionId, runId, expectedStatusVersion: issue.statusVersion, attachmentIds: [attachmentId], missingWork: "The unexported patch is lost. Rebuild only from this earlier verified baseline.", actionOutcome: "not_performed" as const, outcomeEvidence: "The saved execution receipt and remote repository show no published PR or submitted external change.", acknowledgeLostWork: true as const };
-    const input = { db, companyId, issueId, actorId: userId, request: body };
+    const input = { db, companyId, issueId, actorId: userId, recordedByUserId: userId, request: body };
     return { ...input, body, agentId, leaseId, resultId, runId, actionId, providerLeaseId, attachmentId, assetId };
   }
   function app(actor: unknown = { type: "board", source: "local_implicit" }) {
@@ -130,7 +130,7 @@ describe("reconstruction after confirmed native workspace loss", () => {
     });
     await request(app()).post(`/api/issues/${f.issueId}/recovery-actions/reconstruct-workspace`).send(f.body).expect(202);
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
-    expect(action.evidence.executionReconciliation).toMatchObject({ workspaceReconstruction: {
+    expect(action.evidence.executionReconciliation).toMatchObject({ recordedByUserId: "board", workspaceReconstruction: {
       interveningExecutions: [{ runId: later.runId, recoveryActionId: later.actionId, evidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }],
     } });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, later.runId)))[0].status).toBe("cancelled");

@@ -64101,6 +64101,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "U-SAFE-PROGRESS",
         true,
       );
+      // The failed local run recorded its provider process. This process id
+      // is never live, so reconciliation can verify that the provider exited.
+      await db
+        .update(heartbeatRuns)
+        .set({ processPid: 2_000_000_000 })
+        .where(eq(heartbeatRuns.id, context.runId));
       const [action] = await db
         .insert(issueRecoveryActions)
         .values({

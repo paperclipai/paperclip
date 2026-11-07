@@ -2318,6 +2318,42 @@ The category and retryability describe provider evidence; they do not grant
 retry authority, prove stopped execution, or change the existing recovery budget.
 An HTTP 429 alone does not establish a quota reset time or a safe retry.
 
+The canonical recovery-resolution API accepts new execution evidence from the
+board, or from an agent that the existing recovery action authority admits:
+the issue assignee, the recovery owner, or an agent with an active checkout
+management override over one of them. An agent may continue an ordinary
+execution hold with a verified stop and a known action outcome. Two cases
+still need a board user, because a fresh attempt can repeat an external
+action: retiring an automatic no-replay hold (`automaticRecovery.replay` is
+`"blocked"`), and recording `actionOutcome: "unknown"`. An agent caller in
+those cases gets 403 and the hold stays. When
+no active recovery action remains and the request carries
+`executionReconciliation`, the server selects the current
+`executionBlocker.recoveryActionId` under the issue lock. The same source,
+ownership, termination and action-outcome validation applies as for an
+explicit `actionId`. Rejected evidence leaves the settled record and the hold
+intact.
+
+A board user may record `actionOutcome: "unknown"` when the audit cannot
+establish an outcome. It authorizes one fresh observable attempt,
+never a replay of an uncertain external action. The receipt records the source
+run, the provider stop confirmation, the action outcome, the evidence, the
+actor, the user who recorded it (null for an agent) and the time.
+`continuationDelivery` and `continuationRunId` track delivery through the
+existing execution-continuation delivery work and its idempotent wake. The
+continuation prompt includes these recovery outcomes as evidence. Existing
+task execution state, assignee, workspace binding and work products stay as
+they are.
+
+A matching duplicate resolution request selects the reconciled source receipt
+even without `actionId` and returns `replayed: true`. A request with a
+different run or outcome for that receipt returns 409. A local run without a
+process identity needs one of these proofs that it stopped: a verified unused
+admission, a cancellation before invocation, a server-authored local stop
+receipt (`native.local_process_stopped`) or a historical suspended native
+session. Terminal status and an operator assertion alone do not prove that
+the provider exited.
+
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
 Only text and an exactly receipted task-completion call qualify for this path;

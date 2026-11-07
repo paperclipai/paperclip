@@ -88,6 +88,7 @@ function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
 
 // Stranded-run fixtures began before anything the test later records.
 const LATEST_RUN_TIMES = { startedAt: new Date(), createdAt: new Date() };
+const EXITED_PROVIDER_PID = 2_000_000_000;
 
 describe("issueRecoveryActionService", () => {
   it.each(["unrelated unique constraint", "other SQLSTATE", "cyclic cause"])("does not retry %s errors", async kind => {
@@ -279,6 +280,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       invocationSource: "manual",
       status: input.status ?? "running",
       startedAt: new Date("2026-05-13T18:00:00.000Z"),
+      // A started run that reached a terminal status recorded its provider
+      // process. This process id is never live, so the stop probe finds it exited.
+      processPid: input.status === "failed" ? EXITED_PROVIDER_PID : null,
       contextSnapshot: input.issueId ? { issueId: input.issueId } : undefined,
     });
   }

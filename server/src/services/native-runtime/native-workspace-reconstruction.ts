@@ -157,7 +157,7 @@ export async function validateReconstructedWorkspaceDispatch(db: Db, run: typeof
 }
 
 export async function reconstructNativeWorkspace(input: {
-  db: Db; companyId: string; issueId: string; actorId: string;
+  db: Db; companyId: string; issueId: string; actorId: string; recordedByUserId: string | null;
   request: z.infer<typeof reconstructWorkspaceSchema>;
 }) {
   const request = reconstructWorkspaceSchema.parse(input.request);
@@ -181,7 +181,7 @@ export async function reconstructNativeWorkspace(input: {
       workspaceReconstruction: { schema: "paperclip.workspace-reconstruction.v1", leaseId: source.lease.id,
         resultId: source.result.id, descriptorSha256: source.reference.descriptorSha256, missingWork: request.missingWork, sources: files,
         ...(source.interveningExecutions.length ? { interveningExecutions: source.interveningExecutions } : {}) } };
-    await markExecutionReconciliation(db, source.action, decision, input.actorId);
+    await markExecutionReconciliation(db, source.action, decision, input.actorId, undefined, { recordedByUserId: input.recordedByUserId });
     const now = new Date();
     await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
