@@ -4,7 +4,6 @@ import { notifyIssueReviewState } from "../issue-review-state-notifications.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
   issues,
-  issueComments,
   heartbeatRuns,
   nativeRunFinalizations,
   companies,
@@ -411,7 +410,7 @@ export function createHeartbeatScheduling(
     const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.scheduledAtIso}`;
 
     const fallBackToRecoveryComment = async (reason: string) => {
-      await db.insert(issueComments).values({
+      await insertIssueComment(db, {
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
         body: `${monitorRecoveryComment({
