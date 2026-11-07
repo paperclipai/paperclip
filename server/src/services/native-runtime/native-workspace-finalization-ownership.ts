@@ -263,9 +263,9 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           )).returning({ id: heartbeatRuns.id });
           return claimedRun;
         };
-        // A stop receipt proves the old worker exited, not that its task is still
-        // current. Revalidate after the provider read and atomically with the CAS.
-        const claimedRun = platformProof ? await input.db.transaction(async tx => {
+        // A stop proof (platform or local) shows the old worker exited, not that its
+        // task is still current. Revalidate after the proof and atomically with the CAS.
+        const claimedRun = platformProof || localProof ? await input.db.transaction(async tx => {
           const result = await currentRecoveryResult(tx as unknown as Db);
           if (!result) return null;
           const claimedRun = await claimOwner(tx as unknown as Db);

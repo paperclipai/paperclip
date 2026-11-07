@@ -605,8 +605,20 @@ describe("native workspace finalization recovery", () => {
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
   });
 
+  it("does not let a locally proven stop restore files for a task that moved on", async () => {
+    const seed = await seedAbandonedCopyback();
+    const { owner } = await killedControllerOwner({ orphanChild: false });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date(), nativeIssueId: seed.issueId });
+    const work = vi.fn(async () => "stale restore");
+    expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "binding_changed" });
+    expect(work).not.toHaveBeenCalled();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    expect(run.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toEqual(owner);
+  });
+
   it("keeps copyback fenced while an orphaned child of this host's dead controller still runs", async () => {
-    const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Orphaned same-group copyback child" });
+    const seeded = await seedAbandonedCopyback();
     const { owner, childPid } = await killedControllerOwner({ orphanChild: true });
     expect(childPid).toBeGreaterThan(0);
     try {
