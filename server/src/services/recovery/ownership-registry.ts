@@ -110,11 +110,13 @@ const runOwner = (runId: string | null | undefined): RecordOwner => runId ? { ki
 
 type NrfRow = typeof nativeRunFinalizations.$inferSelect;
 
-/** NRF records the controller's boot, PID and start time but no host or PID
- * space, so a foreign boot is never provable here (inventory finding 2). */
+/** NRF records the controller's boot, PID, start time and, since #19868, its
+ * PID space (`controller_host_hash`). Rows written before that have no space
+ * and stay unprovable for a foreign boot (inventory finding 2). */
 function nrfStamp(row: NrfRow, scope: string): LocalOwnerStamp {
   return {
-    kind: "local", scope, generation: row.controllerGeneration ?? null, host: null, processSpace: null,
+    kind: "local", scope, generation: row.controllerGeneration ?? null, host: null,
+    processSpace: row.controllerHostHash ?? null,
     bootId: row.controllerBootId, pid: row.controllerPid,
     processStartedAt: row.controllerProcessStartedAt?.toISOString() ?? null, processGroupId: null,
   };
@@ -153,13 +155,15 @@ function nrfFenceOwner(row: NrfRow, scope: string): RecordOwner {
 // heartbeat_runs
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "issueId" | "status" | "controllerBootId"
-  | "controllerLeaseExpiresAt" | "processPid" | "processGroupId" | "processStartedAt" | "updatedAt" | "runnerProfileJson">;
+  | "controllerLeaseExpiresAt" | "processPid" | "processGroupId" | "processStartedAt" | "processHostHash" | "updatedAt"
+  | "runnerProfileJson">;
 
 const runColumns = {
   id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId, status: heartbeatRuns.status,
   controllerBootId: heartbeatRuns.controllerBootId, controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
   processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
-  processStartedAt: heartbeatRuns.processStartedAt, updatedAt: heartbeatRuns.updatedAt,
+  processStartedAt: heartbeatRuns.processStartedAt, processHostHash: heartbeatRuns.processHostHash,
+  updatedAt: heartbeatRuns.updatedAt,
   runnerProfileJson: heartbeatRuns.runnerProfileJson,
 };
 
@@ -178,11 +182,12 @@ function runKind(id: string, title: string, obligation: Obligation, where: SQL |
   };
 }
 
-/** heartbeat_runs records the adapter child's PID and start time but no host
- * or PID space, so those proofs are unprovable until Phase 2 stamps them. */
+/** heartbeat_runs records the adapter child's PID, start time and, since
+ * #19871, its PID space (`process_host_hash`). Older rows have no space and
+ * stay unprovable. */
 function runProcessStamp(row: RunRow, scope: string): LocalOwnerStamp {
   return {
-    kind: "local", scope, generation: null, host: null, processSpace: null, bootId: null,
+    kind: "local", scope, generation: null, host: null, processSpace: row.processHostHash ?? null, bootId: null,
     pid: row.processPid, processStartedAt: row.processStartedAt?.toISOString() ?? null,
     processGroupId: row.processGroupId,
   };
@@ -447,10 +452,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => {
       const owner = json(json(row.metadata).runtimeControlOwner);
       const pid = int(owner.pid);
-      // The owner stores a per-process UUID and PID, but no host, PID space or
-      // start time: never provable (inventory row 39).
+      // The owner stores a per-process UUID, a PID and, since #19868, its PID
+      // space; no start time, so a live PID stays unprovable.
       return pid ? { kind: "process", stamp: { kind: "local", scope: "workspace_runtime_control_operation",
-        generation: null, host: null, processSpace: null, bootId: str(owner.ownerId), pid,
+        generation: null, host: null, processSpace: str(owner.hostHash), bootId: str(owner.ownerId), pid,
         processStartedAt: null, processGroupId: null } } : { kind: "none" };
     }),
   operationKind("native_workspace_finalize_attempt", "Native workspace finalize attempt (copyback export)", "workspace_preservation",
