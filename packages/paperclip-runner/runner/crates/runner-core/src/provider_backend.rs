@@ -146,6 +146,11 @@ struct ProviderStartupAttempt {
     exit_code: Option<i32>,
     signal: Option<i32>,
     process_tree_retired: bool,
+    /// True from intent until the launch reaches the process spawn. Facts
+    /// written before this field existed omit it and stay fenced; a runner
+    /// that predates it rejects it as unknown, which also fails closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    before_spawn: bool,
 }
 
 impl ProviderStartupAttempt {
@@ -196,7 +201,14 @@ impl ProviderStartupAttempt {
                 None => false,
             },
         };
+        // Only an intent, or a launch whose checks failed before the spawn,
+        // can still be before the spawn.
+        let before_spawn_valid = !self.before_spawn
+            || self.phase == ProviderStartupPhase::Intent
+            || (self.phase == ProviderStartupPhase::InitializationFailed
+                && self.failed_stage == Some(ProviderStartupStage::Spawn));
         if self.schema != "paperclip.provider_startup.v1"
+            || !before_spawn_valid
             || uuid::Uuid::parse_str(&self.launch_id).is_err()
             || self.attempted_process_generation == 0
             || self.authenticated_thread_id.is_some()
@@ -2132,6 +2144,12 @@ impl CodexCommandExecutor {
     }
 
     fn save_startup_fact(&mut self) -> Result<(), DurableRunnerError> {
+        self.save_startup_state(true)
+    }
+
+    /// Persists the startup fence. `report` also queues the ownership
+    /// diagnostic; the spawn-start mark is internal and only needs fsync.
+    fn save_startup_state(&mut self, report: bool) -> Result<(), DurableRunnerError> {
         let outcome = (|| {
             let state = self
                 .state
@@ -2141,11 +2159,13 @@ impl CodexCommandExecutor {
                 .startup_attempt
                 .clone()
                 .ok_or_else(|| DurableRunnerError::invalid("provider startup intent missing"))?;
-            state.push_terminal_event(NormalizedProviderEvent {
-                event_type: "harness.diagnostic".to_owned(),
-                priority: EventPriority::P0,
-                payload: json!({"code":"provider_startup_ownership", "startup": attempt}),
-            })?;
+            if report {
+                state.push_terminal_event(NormalizedProviderEvent {
+                    event_type: "harness.diagnostic".to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({"code":"provider_startup_ownership", "startup": attempt}),
+                })?;
+            }
             self.save_state()
         })();
         if let Err(error) = &outcome {
@@ -2185,6 +2205,7 @@ impl CodexCommandExecutor {
             exit_code: None,
             signal: None,
             process_tree_retired: false,
+            before_spawn: true,
         });
         self.save_startup_fact()
     }
@@ -2198,11 +2219,21 @@ impl CodexCommandExecutor {
             .as_mut()
             .and_then(|state| state.startup_attempt.as_mut())
             .ok_or_else(|| DurableRunnerError::invalid("provider startup intent missing"))?;
+        let report = !matches!(observation, ProviderStartupObservation::SpawnStarting);
         match observation {
+            ProviderStartupObservation::SpawnStarting => {
+                if attempt.phase != ProviderStartupPhase::Intent || !attempt.before_spawn {
+                    return Err(DurableRunnerError::invalid(
+                        "provider spawn began outside its startup intent",
+                    ));
+                }
+                attempt.before_spawn = false;
+            }
             ProviderStartupObservation::Spawned {
                 process_id,
                 process_group_id,
             } => {
+                attempt.before_spawn = false;
                 attempt.phase = ProviderStartupPhase::Spawned;
                 attempt.process_id = Some(process_id);
                 attempt.process_group_id = Some(process_group_id);
@@ -2215,7 +2246,7 @@ impl CodexCommandExecutor {
                 attempt.signal = child_exit.as_ref().and_then(|fact| fact.signal);
             }
         }
-        self.save_startup_fact()
+        self.save_startup_state(report)
     }
 
     fn start_observed_provider(
@@ -2330,18 +2361,22 @@ impl CodexCommandExecutor {
         self.restore_provider_if_needed()
     }
 
-    /// A runner killed between spawning a provider and admitting it leaves a
-    /// `spawned` startup fence in durable state while the session is still
-    /// restorable. The executor that loads that state owns no provider
-    /// process. When the recorded process and its process group have both
-    /// exited, nothing can still act for the attempt, so this retires it with
-    /// a diagnostic and lets restore relaunch the provider through the normal
-    /// resume path.
+    /// A runner killed during a provider launch leaves an unadmitted startup
+    /// fence in durable state while the session is still restorable. The
+    /// executor that loads that state owns no provider process. The fence is
+    /// retired, with a diagnostic, when nothing can still act for it:
     ///
-    /// Every other fence stays closed: an intent with no recorded process, a
-    /// provider whose process or group may still run, a startup that failed
-    /// initialization or spawn (a real provider failure that needs
-    /// reconciliation), and a session that recovery deliberately closed.
+    /// - an intent still marked before the spawn (the runner died while
+    ///   checking the launch, so no process was ever started); or
+    /// - a `spawned` launch whose recorded process and process group have
+    ///   both exited.
+    ///
+    /// Restore then relaunches the provider through the normal resume path.
+    /// Every other fence stays closed: an intent that reached the spawn or
+    /// predates the before-spawn mark, a provider whose process or group may
+    /// still run, a startup that failed initialization or spawn (a real
+    /// provider failure that needs reconciliation), and a session that
+    /// recovery deliberately closed.
     fn retire_orphaned_startup_attempt(
         &mut self,
         process_gone: &dyn Fn(u32) -> bool,
@@ -2360,11 +2395,16 @@ impl CodexCommandExecutor {
             state.lifecycle.as_str(),
             "session_open" | "turn_active" | "provider_exited"
         );
-        let process_exited = match (attempt.process_id, attempt.process_group_id) {
-            (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
-            _ => false,
+        let orphaned = match attempt.phase {
+            // The runner died while checking the launch, before any spawn.
+            ProviderStartupPhase::Intent => attempt.before_spawn,
+            ProviderStartupPhase::Spawned => match (attempt.process_id, attempt.process_group_id) {
+                (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
+                _ => false,
+            },
+            ProviderStartupPhase::InitializationFailed => false,
         };
-        if attempt.phase != ProviderStartupPhase::Spawned || !restorable || !process_exited {
+        if !restorable || !orphaned {
             return Ok(());
         }
         let mut next = self
@@ -6001,13 +6041,23 @@ mod tests {
             exit_code: None,
             signal: None,
             process_tree_retired: false,
+            before_spawn: false,
         };
         attempt.validate().unwrap();
+        attempt.before_spawn = true;
+        attempt.validate().unwrap();
+        attempt.before_spawn = false;
         attempt.process_id = Some(123);
         attempt.process_group_id = Some(123);
         assert!(attempt.validate().is_err());
         attempt.phase = ProviderStartupPhase::Spawned;
         attempt.validate().unwrap();
+        attempt.before_spawn = true;
+        assert!(
+            attempt.validate().is_err(),
+            "a spawned launch is past the spawn"
+        );
+        attempt.before_spawn = false;
         attempt.direct_child_exit_observed = true;
         assert!(attempt.validate().is_err());
         attempt.phase = ProviderStartupPhase::InitializationFailed;
@@ -6240,12 +6290,75 @@ mod tests {
         }
 
         #[test]
-        fn restart_keeps_the_fence_for_an_intent_without_a_recorded_process() {
-            // Only intent was saved: a process may exist that no record names.
+        fn restart_retires_an_intent_that_never_reached_the_spawn() {
+            // The runner died while it was still checking the launch.
             let directory =
                 orphaned_startup_fixture("orphaned-startup-intent", "turn_active", |_| {});
-            let restarted = reload_and_retire(&directory);
-            assert!(restarted.assert_startup_admitted().is_err());
+            let saved: Value = serde_json::from_slice(
+                &fs::read(directory.join(CODEX_PROVIDER_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(saved["startupAttempt"]["phase"], "intent");
+            assert_eq!(saved["startupAttempt"]["beforeSpawn"], true);
+            let mut restarted = reload_and_retire(&directory);
+            assert!(restarted.assert_startup_admitted().is_ok());
+            assert!(restarted.retained_events().unwrap().iter().any(|event| {
+                event.payload["code"] == "provider_startup_retired"
+                    && event.payload["startup"]["phase"] == "intent"
+            }));
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn restart_keeps_the_fence_for_an_intent_that_reached_the_spawn() {
+            // The spawn began: a process may exist that no record names.
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-spawning", "turn_active", |executor| {
+                    executor
+                        .observe_startup(ProviderStartupObservation::SpawnStarting)
+                        .unwrap();
+                });
+            let saved: Value = serde_json::from_slice(
+                &fs::read(directory.join(CODEX_PROVIDER_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(saved["startupAttempt"]["phase"], "intent");
+            assert!(saved["startupAttempt"].get("beforeSpawn").is_none());
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn restart_keeps_the_fence_for_an_intent_without_the_before_spawn_mark() {
+            // An intent written before the mark existed cannot prove anything.
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-legacy", "turn_active", |_| {});
+            let path = directory.join(CODEX_PROVIDER_STATE_FILE);
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved["startupAttempt"]
+                .as_object_mut()
+                .unwrap()
+                .remove("beforeSpawn");
+            fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn a_spawn_cannot_begin_twice_or_outside_its_intent() {
+            let directory =
+                orphaned_startup_fixture("spawn-starting-twice", "turn_active", |executor| {
+                    executor
+                        .observe_startup(ProviderStartupObservation::SpawnStarting)
+                        .unwrap();
+                    assert!(executor
+                        .observe_startup(ProviderStartupObservation::SpawnStarting)
+                        .is_err());
+                });
             fs::remove_dir_all(directory).unwrap();
         }
 
