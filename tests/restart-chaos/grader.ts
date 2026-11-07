@@ -104,16 +104,14 @@ export function gradeR3(record: TaskRecord): RuleResult {
 }
 
 /**
- * R4: at most one active run (queued, running or scheduled_retry) per issue in
- * any sample, and no comment consumed twice. A wake comment may be reused only
- * by a run that follows a run which did not succeed (an explicit retry or
- * continuation after a failure); reuse after a successful run is a replay.
- */
-/**
  * R4 is about duplicate execution. A queued or scheduled wake waiting behind a
  * running run (for example a follow-up comment, cancelled when the running run
  * finished) never executed, so it is not a duplicate. Fail only when two runs
- * of the issue actually executed at the same time, or a side effect repeated.
+ * of the issue actually executed at the same time (both running in a sample,
+ * or overlapping started→finished windows), or when a comment is consumed
+ * twice: a wake comment may be reused only by a run that follows a run which
+ * did not succeed (an explicit retry or continuation after a failure); reuse
+ * after a successful run is a replay.
  */
 export function gradeR4(record: TaskRecord): RuleResult {
   for (const sample of reachable(record.samples)) {
