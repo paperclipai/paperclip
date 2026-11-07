@@ -119,7 +119,15 @@ This replaces the per-subsystem startup sweeps gradually, by deleting each one o
 
 ### F. Work-based attempt budgets
 
-Charge an attempt only on evidence that the attempt started provider work. That evidence is the start-intent records from B. The rules from #19720 and #19747 then become one rule over those records, instead of watermark heuristics.
+Charge an attempt only on a recorded outcome that proves provider work started. An intent alone is not that proof. Use the outcome records from B:
+
+- **Not charged:**
+  - a startup intent that is still marked `beforeSpawn`, because no process started;
+  - a startup that was spawned but never admitted;
+  - a `turn.start` that the provider did not accept.
+- **Charged:** an attempt whose provider accepted a turn (the accepted `turn.start` outcome or `turn.started`), and which then made no progress before the next failure. Progress is defined as in #19720: completed work for that turn.
+
+The rules from #19720 and #19747 then become one rule over these outcome records, instead of watermark heuristics. The on-demand crash-point suite asserts this at the pre-spawn and pre-accept crash points.
 
 ### G. Generation stamping
 
