@@ -2339,6 +2339,10 @@ export async function executeNativeSession(
       const attach = async (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         await options.existingSession!.attachRun!({ identity,
+        completionContract: {
+          revision: input.completionContract.contract.revision,
+          criterionIds: input.completionContract.contract.criteria.map((criterion) => criterion.id),
+        },
         ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
           ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
               instructions: nativeSystemInstructions(input) } }

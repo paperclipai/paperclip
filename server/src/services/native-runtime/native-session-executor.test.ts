@@ -17573,6 +17573,8 @@ describe("runnerd provider runtime wiring", () => {
     "ambiguous turn start",
     "state symlink",
     "newer provider checkpoint",
+    "warm reconnect grace expired",
+    "other recoverable failure",
   ])(
     "automatically recovers only a proven settled local session: %s",
     async (scenario) => {
@@ -17728,6 +17730,13 @@ describe("runnerd provider runtime wiring", () => {
             join(root, "runner", "runner-state.json"),
             JSON.stringify({
               ...durableRunnerState(identity, "ready"),
+              // An idle warm runner whose controller died exits after its
+              // reconnect grace with this settled, preserved state.
+              ...(scenario === "warm reconnect grace expired"
+                ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_grace_exceeded" }
+                : scenario === "other recoverable failure"
+                  ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_deadline_exceeded" }
+                  : {}),
               outbox:
                 scenario === "unacknowledged events" ? [{ sourceSeq: 10 }] : [],
               pendingTerminalDelivery: null,
@@ -17839,6 +17848,7 @@ describe("runnerd provider runtime wiring", () => {
           "empty retry shell",
           "unsuspended current",
           "active goal",
+          "warm reconnect grace expired",
         ].includes(scenario);
         if (shouldRecover) {
           await createRunnerdBackend({
@@ -17891,7 +17901,7 @@ describe("runnerd provider runtime wiring", () => {
                 "utf8",
               ),
             ).lifecycle,
-          ).toBe("ready");
+          ).toBe(scenario === "other recoverable failure" ? "recoverable_failure" : "ready");
           expect(onLog).not.toHaveBeenCalled();
           expect(state.createBackend).not.toHaveBeenCalled();
         }
