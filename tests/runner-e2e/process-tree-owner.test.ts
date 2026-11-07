@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { expect, it } from "vitest";
-import { createProcessTreeOwner } from "./process-tree-owner.js";
+import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { readProcessTable, type ProcessObservation } from "./process-tree.js";
 
 function row(pid: number, parentPid: number, processGroupId: number, started = `start-${pid}`, state = "S"): ProcessObservation {
@@ -207,5 +207,53 @@ it.skipIf(process.platform === "win32")("keeps EPERM fatal while the group still
   try {
     await f.owner.observe();
     await expect(f.owner.signal("SIGKILL")).rejects.toThrow("kill EPERM");
+  } finally { f.owner.stopObserving(); }
+});
+
+function turnoverFixture(uncertainReads: number) {
+  // Server 100 owns runner group 200. Between two inspections the observed
+  // runner exits and a straggler nobody saw start (201) is left in group 200,
+  // reparented to init: its identity is unproven, so it must never be signaled.
+  const settledTable = () => [row(process.pid, 1, 10)];
+  let table = [row(process.pid, 1, 10), row(100, process.pid, 100), row(200, 100, 200)];
+  const killed: NodeJS.Signals[] = [];
+  const signals: Array<[number, NodeJS.Signals]> = [];
+  const child = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+    kill: (signal: NodeJS.Signals) => { killed.push(signal); return true; } };
+  let stopping = false;
+  let uncertain = 0;
+  const owner = createProcessTreeOwner(child as unknown as ChildProcess, {
+    readTable: async () => {
+      if (!stopping) return table;
+      if (uncertain < uncertainReads) {
+        uncertain += 1;
+        return [row(process.pid, 1, 10), row(201, 1, 200, "unseen-start")];
+      }
+      child.exitCode = 0;
+      return settledTable();
+    },
+    signalGroup: (pid, signal) => { signals.push([pid, signal]); },
+  });
+  return { owner, child: child as unknown as ChildProcess, signals, killed, stop: () => { stopping = true; table = settledTable(); } };
+}
+
+it.skipIf(process.platform === "win32")("waits out a briefly uncertain group under load without signaling it", async () => {
+  const f = turnoverFixture(3);
+  try {
+    await f.owner.observe();
+    f.stop();
+    await stopOwnedProcessTree(f.child, f.owner, 2_000, 500);
+    expect(f.signals.filter(([pid]) => pid === 200)).toEqual([]);
+    expect(f.killed).toEqual([]);
+  } finally { f.owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("still fails without signaling the uncertain group when the uncertainty outlasts the deadline", async () => {
+  const f = turnoverFixture(Number.POSITIVE_INFINITY);
+  try {
+    await f.owner.observe();
+    f.stop();
+    await expect(stopOwnedProcessTree(f.child, f.owner, 300, 100)).rejects.toThrow("identity became uncertain");
+    expect(f.signals).toEqual([]);
   } finally { f.owner.stopObserving(); }
 });

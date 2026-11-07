@@ -28,6 +28,8 @@ export function restartProcessStartMatches(observed: string, expected: string, p
     : actualTime === expectedTime;
 }
 
+export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
+
 export function createProcessTreeOwner(root: ChildProcess, options: {
   readTable?: () => Promise<ProcessObservation[] | null>;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
@@ -67,7 +69,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       const lost = groups.filter(group => !retained.includes(group) && next.some(row => row.processGroupId === group.processGroupId && running(row)));
       const uncertain = lost.filter(group => next.some(row => row.processGroupId === group.processGroupId
         && running(row) && !ownedNow.has(row.pid)));
-      if (uncertain.length) throw new Error(`Owned process group identity became uncertain: ${uncertain.map(group => group.processGroupId).join(",")}`);
+      if (uncertain.length) throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: ${uncertain.map(group => group.processGroupId).join(",")}`);
       const refreshed = refreshContinuouslyLiveProcessGroups([...retained, ...lost], next)
         .filter(group => group.processGroupId !== callerGroup);
       const anchors = refreshed.flatMap(group => group.members.map(member => member.pid));
@@ -251,25 +253,44 @@ export async function stopOwnedProcessTree(
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const deadline = Date.now() + gracefulMs;
   const phase: { gracefulSent: boolean; forcedDeadline?: number } = { gracefulSent: false };
+  // Under load a whole group can turn over between two inspections: its
+  // observed members exit and a member nobody saw start is left behind,
+  // reparented away from every owned anchor. Its identity is then unproven,
+  // so the owner refuses to signal anything. That state is usually brief (the
+  // straggler exits with its group), so wait within the same deadline for a
+  // later inspection to settle it, never signaling meanwhile. If it persists,
+  // the original error stands.
+  const settled = async <T>(step: () => Promise<T>, until: () => number): Promise<T> => {
+    for (;;) {
+      try { return await step(); }
+      catch (error) {
+        if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
+        await wait(100);
+      }
+    }
+  };
   try {
     if (process.platform === "win32") {
       await stopKnownDirectChild(child, phase, deadline, forcedMs, gracefulSignal);
       return;
     }
-    const stopped = async () => {
-      await owner.observe();
+    const stopped = async (until: () => number) => {
+      await settled(() => owner.observe(), until);
       return (child.exitCode !== null || child.signalCode !== null) && owner.liveGroups().length === 0;
     };
+    const graceDeadline = () => deadline;
+    const forcedDeadline = () => phase.forcedDeadline ?? deadline;
     do {
-      await owner.signalGracefully(gracefulSignal);
+      await settled(() => owner.signalGracefully(gracefulSignal), graceDeadline);
       phase.gracefulSent ||= owner.directGraceDelivered();
-      if (await stopped()) return;
+      if (await stopped(graceDeadline)) return;
       await wait(50);
     } while (Date.now() < deadline);
-    await owner.signal("SIGKILL");
+    const killDeadline = Date.now() + forcedMs;
+    await settled(() => owner.signal("SIGKILL"), () => killDeadline);
     phase.forcedDeadline = Date.now() + forcedMs;
     do {
-      if (await stopped()) return;
+      if (await stopped(forcedDeadline)) return;
       await wait(50);
     } while (Date.now() < phase.forcedDeadline);
     throw new Error("Observed launcher descendants remained after bounded cleanup");
