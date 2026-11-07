@@ -1109,6 +1109,7 @@ export const issueCommentMetadataSchema = z
       contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().optional(),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
+    attachmentPreparation: z.object({ attachmentId: z.uuid() }).strict().optional(),
     sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
