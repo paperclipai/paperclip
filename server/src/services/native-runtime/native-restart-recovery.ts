@@ -35,6 +35,9 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-contract.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { OPERATOR_ATTESTED_CONTROLLER_HOST, requestNativeControllerStopConfirmation } from "./native-controller-host-recovery.js";
 import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -360,6 +363,26 @@ function definitivelyDifferentProcessStart(
   return processStartsDefinitelyDiffer(left, right);
 }
 
+export type NativeControllerTakeoverDecision = {
+  allowed: boolean;
+  reason: string;
+  /** The proof used the one-release local fallback for a row with no recorded host. */
+  legacyHostFallback?: true;
+};
+
+/** Run-log event for each use of the null-host fallback. The release that
+ * removes the fallback counts these to see whether any rows still need it. */
+export const LEGACY_HOST_FALLBACK_EVENT = "legacy_host_unknown_dead_pid_proof";
+
+export async function recordLegacyHostFallbackProof(db: Db, run: { companyId: string; id: string; agentId: string },
+  decision: NativeControllerTakeoverDecision, source: string) {
+  if (!decision.legacyHostFallback) return;
+  await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+    eventType: LEGACY_HOST_FALLBACK_EVENT, stream: "system", level: "warn",
+    message: "Controller takeover used the one-release local proof for a row with no recorded host.",
+    payload: { reason: decision.reason, source } });
+}
+
 export async function evaluateNativeControllerTakeover(input: {
   owner: Pick<
     typeof nativeRunFinalizations.$inferSelect,
@@ -368,8 +391,10 @@ export async function evaluateNativeControllerTakeover(input: {
     | "controllerPid"
     | "controllerProcessStartedAt"
   > & {
-    /** Absent for owners without a stored PID space (receipts, rows saved
-     * before the column existed): those keep the previous local proof. */
+    /** PID space of controllerPid. Absent for owners built from receipts
+     * that never stored one. Null on coordinator rows saved before the column
+     * existed: those keep the previous local proof for one release, outside
+     * ephemeral mode only (see LEGACY_HOST_FALLBACK_EVENT). */
     controllerHostHash?: string | null;
   };
   now: Date;
@@ -381,7 +406,7 @@ export async function evaluateNativeControllerTakeover(input: {
   readProcessStartedAt?: (pid: number) => Promise<Date | null>;
   requireStoppedController?: boolean;
   remoteLeaseFenced?: boolean;
-}): Promise<{ allowed: boolean; reason: string }> {
+}): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
   if (input.remoteLeaseFenced) {
     return owner.leaseExpiresAt && owner.leaseExpiresAt > now
@@ -404,12 +429,26 @@ export async function evaluateNativeControllerTakeover(input: {
           : "live_legacy_lease_without_controller_identity",
     };
   }
+  const recordsHost = Object.prototype.hasOwnProperty.call(owner, "controllerHostHash");
+  // A board operator confirmed this exact controller stopped (see
+  // confirmNativeControllerStopped); that attestation is the proof.
+  if (recordsHost && owner.controllerHostHash === OPERATOR_ATTESTED_CONTROLLER_HOST) {
+    return { allowed: true, reason: "operator_attested_controller_stopped" };
+  }
   // A PID can only be judged in the PID space that recorded it. A controller
   // on another host or namespace (or an unreadable local space) is never
   // proven gone by a local probe; its lease or fence decides instead.
   if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
     return { allowed: false, reason: "controller_host_unprovable" };
   }
+  // A row saved before the host column existed. An ephemeral (multi-host)
+  // server can never assume it was written here; a board operator decides.
+  if (recordsHost && owner.controllerHostHash == null && ephemeralServerEnabled()) {
+    return { allowed: false, reason: "controller_host_unrecorded" };
+  }
+  // Single-host servers keep the previous local proof for one release, and
+  // every use is recorded so the release that removes it can check for rows.
+  const fallback = recordsHost && owner.controllerHostHash == null ? { legacyHostFallback: true as const } : {};
   if (!isAlive(priorPid)) {
     return {
       allowed: true,
@@ -417,6 +456,7 @@ export async function evaluateNativeControllerTakeover(input: {
         owner.leaseExpiresAt !== null && owner.leaseExpiresAt <= now
           ? "expired_lease_controller_process_dead"
           : "controller_process_dead",
+      ...fallback,
     };
   }
 
@@ -429,7 +469,7 @@ export async function evaluateNativeControllerTakeover(input: {
       observedStartedAt,
     )
   ) {
-    return { allowed: true, reason: "controller_pid_recycled" };
+    return { allowed: true, reason: "controller_pid_recycled", ...fallback };
   }
 
   const coordinated = input.coordinatedPreviousController;
@@ -1110,6 +1150,10 @@ export async function claimNativeRestartRecoveries(input: {
         coordinatedPreviousController:
           input.coordinatedPreviousController ?? null,
       });
+      await recordLegacyHostFallbackProof(tx as unknown as Db, row.run, takeover, "native_restart_recovery");
+      if (!takeover.allowed && takeover.reason === "controller_host_unrecorded") {
+        await requestNativeControllerStopConfirmation(tx as unknown as Db, row.coordinator);
+      }
       if (!takeover.allowed) {
         const previous = row.coordinator.recoveryHistory.at(-1);
         const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;

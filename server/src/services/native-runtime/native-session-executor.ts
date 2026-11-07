@@ -309,6 +309,8 @@ import {
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  recordLegacyHostFallbackProof,
+  type NativeControllerTakeoverDecision,
   proveNativeLocalRunnerStopped,
   nativeProviderProcessIdentities,
   NATIVE_PROVIDER_PROCESS_EVENT_TYPES,
@@ -5455,7 +5457,8 @@ const RETIREMENT_REASON_NAMES = {
     "recovery_needed"]),
   recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
   controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
-    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity"]),
+    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity",
+    "controller_host_unprovable", "controller_host_unrecorded"]),
   sandboxOutcome: new Set(["created", "resumed", "replacement"]),
 } as const;
 
@@ -5543,10 +5546,11 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   const finishedHere = () => isCurrentNativeControllerProcess(prior!.owner) &&
     !activeNativeSessions.has(identity.runId) && !nativeSessionStartups.has(identity.runId);
   const profile = record(prior.run.runnerProfileJson);
-  const stopped: { allowed: boolean; reason?: string } = finishedHere() ? { allowed: true } : await evaluateNativeControllerTakeover({ owner: prior.owner,
+  const stopped: NativeControllerTakeoverDecision = finishedHere() ? { allowed: true, reason: "finished_here" } : await evaluateNativeControllerTakeover({ owner: prior.owner,
     now: new Date(), requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
+  await recordLegacyHostFallbackProof(input.db, prior.run, stopped, "native_retirement");
   const provenFinishedHere = finishedHere();
   const proveLocalRunnerStopped = async (): Promise<NativeLocalRunnerStopProof> => {
     const run = prior!.run;

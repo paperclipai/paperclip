@@ -2,7 +2,7 @@ import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-li
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   subscribeDatabaseWork,
@@ -394,6 +394,24 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     const second = await heartbeat.sweepStaleIssueLocks();
     expect(first.cleared).toBe(1);
     expect(second.cleared).toBe(0);
+  });
+
+  it.each([[false, true], [true, false]] as const)(
+    "judges a pre-upgrade pid with no recorded space only on a single-host server (ephemeral: %s)", async (ephemeral, terminalized) => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", ephemeral ? "true" : "");
+    try {
+      const { companyId, agentId, runningRunId } = await seed();
+      await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: null })
+        .where(eq(heartbeatRuns.id, runningRunId));
+      await db.insert(issues).values({ id: randomUUID(), companyId, title: "Pre-upgrade orphan", status: "in_progress",
+        priority: "high", assigneeAgentId: agentId, checkoutRunId: runningRunId, executionRunId: runningRunId,
+        executionLockedAt: new Date() });
+      const result = await heartbeatService(db).sweepStaleIssueLocks();
+      expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
+      const events = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.runId, runningRunId), eq(heartbeatRunEvents.eventType, "legacy_host_unknown_dead_pid_proof")));
+      expect(events).toHaveLength(terminalized ? 1 : 0);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each([["local", true], ["remote", false]] as const)("stamps a %s process pid with its PID space", async (targetKind, local) => {

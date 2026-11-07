@@ -109,6 +109,8 @@ import {
   isProcessGroupAlive,
 } from "../local-service-supervisor.js";
 import { sameProcessSpace } from "../controller-process-identity.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-contract.js";
+import { LEGACY_HOST_FALLBACK_EVENT } from "../native-runtime/native-restart-recovery.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import {
@@ -6184,8 +6186,11 @@ export function recoveryService(
     // A recorded PID is judged only in the PID space that recorded it: a dead
     // local PID never proves that a process on another host, in another
     // namespace, or in a sandbox ("remote") is gone. Rows saved before the
-    // space was recorded keep the previous local proof for one release.
-    const processSpaceJudgeable = run.processHostHash == null || sameProcessSpace(run.processHostHash);
+    // space was recorded keep the previous local proof for one release, and
+    // only on a single-host server: an ephemeral server cannot assume the
+    // row was written here. Its operator path is the run's Stop control.
+    const legacyHostFallback = run.processHostHash == null && !ephemeralServerEnabled();
+    const processSpaceJudgeable = legacyHostFallback || sameProcessSpace(run.processHostHash);
     if (!hasLiveExecution && processSpaceJudgeable) {
       if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
@@ -6330,6 +6335,18 @@ export function recoveryService(
         { err: error, runId: run.id, previousStatus: run.status },
         "failed to append recovery run event after terminalizing orphaned run; run stays terminal and the sweep clears the lock",
       );
+    }
+    // Counted by the release that removes the null-host fallback. Best-effort
+    // like the audit event above: it never holds the terminal write back.
+    if (authority === "process_gone" && legacyHostFallback) {
+      try {
+        await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+          eventType: LEGACY_HOST_FALLBACK_EVENT, stream: "system", level: "warn",
+          message: "The orphan reaper used the one-release local proof for a process with no recorded host.",
+          payload: { reason: "orphaned_running_run", source: "orphan_reaper" } });
+      } catch (error) {
+        logger.error({ err: error, runId: run.id }, "failed to record the legacy host fallback event");
+      }
     }
     logger.warn(
       {
