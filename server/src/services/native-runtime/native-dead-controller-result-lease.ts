@@ -3,7 +3,7 @@ import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db"
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
-import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 
 type TakeoverProbe = Pick<Parameters<typeof evaluateNativeControllerTakeover>[0], "isProcessAlive" | "readProcessStartedAt">;
 
@@ -35,6 +35,7 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
     leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
     controllerBootId: nativeRunFinalizations.controllerBootId,
     controllerPid: nativeRunFinalizations.controllerPid,
+    controllerHostHash: nativeRunFinalizations.controllerHostHash,
     controllerProcessStartedAt: nativeRunFinalizations.controllerProcessStartedAt,
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
@@ -88,7 +89,12 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
           row.controllerPid === null ? isNull(nativeRunFinalizations.controllerPid)
             : eq(nativeRunFinalizations.controllerPid, row.controllerPid),
         ))
-        .returning({ runId: nativeRunFinalizations.runId });
+        .returning({ runId: nativeRunFinalizations.runId })
+        .then(async rows => {
+          if (rows.length) await recordLegacyHostFallbackProof(tx as unknown as Db,
+            { companyId: row.companyId, id: row.runId, agentId: row.agentId }, takeover, "dead_controller_result_lease");
+          return rows;
+        });
     });
     if (updated.length) released.push({ runId: row.runId, reason: takeover.reason });
   }

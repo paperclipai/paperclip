@@ -678,6 +678,40 @@ describe("durable task Retry admission", () => {
     expect(wakes.find(row => row.id === first.requestId)?.status).toBe("failed");
     expect(wakes.filter(row => row.status === "deferred_issue_execution")).toHaveLength(1);
   });
+  it("accepts Retry for an old-release retained-export hold whose source ownership could not be verified", async () => {
+    // State saved by an earlier release: a board-owned export hold whose only
+    // attempt ended with a permanent ownership refusal. The task UI now offers
+    // Retry for it; Retry must open one new bounded generation that re-verifies
+    // the source, keep the hold in place, and never resolve or bypass it.
+    const input = await seed();
+    const previous = { ...failSystemRecovery({ ...createSystemRecovery(input.observedRunId), revision: 4 },
+      new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required")), revision: 5 };
+    expect(previous.state).toBe("exhausted");
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId: input.companyId, sourceIssueId: input.issueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted", fingerprint: randomUUID(),
+      nextAction: "Automatic recovery of saved work stopped after 1 attempts (last failure: allocation_ownership_ambiguous).",
+      evidence: { runId: input.observedRunId, systemRecovery: previous,
+        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: input.observedRunId, stage: "verifying_stop",
+          status: "blocked", attempt: 1, attemptLimit: 6, requestIds: [], retryable: true, message: "Retry recovery." },
+        coordinatorAttempt: 1, originalFailureCode: "native_workspace_sync_out_failed",
+        workspaceFinalizeAttempt: 3, previousWorkspaceRecovery: null },
+    }).returning();
+    const receipt = await requestTaskRetry(input);
+    expect(receipt).toMatchObject({ accepted: true, stale: false, observedRunId: input.observedRunId });
+    const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(updated.status).toBe("active");
+    expect(updated.resolvedAt).toBeNull();
+    expect(readSystemRecovery(updated.evidence)).toMatchObject({ generationId: receipt.requestId, sourceRunId: input.observedRunId,
+      attempts: 0, failure: null, revision: 6, freshAttemptRunId: null, preservationOperationIds: [] });
+    // File recovery is queued again for the worker, which re-verifies the source.
+    expect(updated.evidence.workspaceRecovery).toMatchObject({ runId: input.observedRunId, status: "queued",
+      stage: "verifying_stop", attemptLimit: 6, retryable: true });
+    // A replayed click is idempotent and does not open another generation.
+    expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
+    const [replayed] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(readSystemRecovery(replayed.evidence)?.revision).toBe(6);
+  });
   it("binds a key to its company, task and actor across all statuses", async () => {
     const input = await seed();
     const receipt = await requestTaskRetry(input);

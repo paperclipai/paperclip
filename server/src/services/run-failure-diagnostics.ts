@@ -220,6 +220,8 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   if (remoteRunnerRecovery) {
     execution.remoteRunnerRecoveryStage = remoteRunnerRecovery.stage;
     execution.remoteRunnerRecoveryReason = remoteRunnerRecovery.reason;
+    if (remoteRunnerRecovery.runnerLifecycle) execution.remoteRunnerLifecycle = remoteRunnerRecovery.runnerLifecycle;
+    if (remoteRunnerRecovery.runnerSettled !== undefined) execution.remoteRunnerSettled = remoteRunnerRecovery.runnerSettled;
   }
   const configuration = read(result, "configurationIncomplete");
   if (run.errorCode === "configuration_incomplete" && read(configuration, "reason") === "workspace_base_ref_unresolved") {

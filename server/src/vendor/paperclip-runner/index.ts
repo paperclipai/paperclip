@@ -170,6 +170,8 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const runnerProviderLaunchRequirements = runner.runnerProviderLaunchRequirements;
+export const createRunnerProviderLaunch = runner.createRunnerProviderLaunch;
 export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;

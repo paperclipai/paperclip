@@ -110,7 +110,7 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -129,6 +129,7 @@ export class CodexHarnessSession
         turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
         itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.assertProtocolIntegrity();
       if (transportOwnsQuiescence) {
@@ -152,6 +153,7 @@ export class CodexHarnessSession
       this.resultTurnId = null;
       this.dispositionOnlyRecoveryConsumed = false;
       this.dispositionOnlyRecoveryTurnId = null;
+      this.restartContinuationTurnId = null;
       this.terminal = false;
       this.terminalTurns.clear();
       this.turnStarted = false;
@@ -368,6 +370,7 @@ export class CodexHarnessSession
     if (dispositionOnlyRecovery) {
       this.dispositionOnlyRecoveryTurnId = turnId;
     }
+    this.restartContinuationTurnId = dispositionOnlyRecovery && continuationTurn ? turnId : null;
     this.emit("turn.accepted", { turnId }, { turnId });
     if (this.interruptQueued) {
       this.interruptQueued = false;
@@ -376,6 +379,7 @@ export class CodexHarnessSession
     return {
       turnId,
       effectiveCollaborationMode,
+      ...(this.restartContinuationTurnId === turnId ? { borrowedDispositionMarker: true as const } : {}),
     };
   }
 

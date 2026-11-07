@@ -1,3 +1,4 @@
+import { isContextCompactionRun } from "./context-compaction.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -150,6 +151,23 @@ export async function prepareConversationTurn(
       .for("update");
     if (!isConversation(issue))
       return { context, reset: false, conversation: false };
+    let generation = issue.conversationSessionGeneration;
+    if (
+      typeof context.conversationSessionGeneration === "number" &&
+      context.conversationSessionGeneration !== generation
+    ) {
+      throw new Error(
+        "Conversation session changed; this older turn cannot resume",
+      );
+    }
+    // Compaction maintains this session; it is not a new conversation turn.
+    // Keep the parked state and unanswered interactions while carrying the
+    // same session-generation context into the normal native runtime.
+    if (isContextCompactionRun(context)) {
+      const next = { ...context, conversationSessionGeneration: generation, conversationMode: true };
+      await tx.update(heartbeatRuns).set({ contextSnapshot: next }).where(eq(heartbeatRuns.id, run.id));
+      return { context: next, reset: false, conversation: true };
+    }
     const commentId =
       typeof context.wakeCommentId === "string"
         ? context.wakeCommentId
@@ -171,15 +189,6 @@ export async function prepareConversationTurn(
     const reset = Boolean(
       comment && comment.authorUserId && isConversationReset(comment.body),
     );
-    let generation = issue.conversationSessionGeneration;
-    if (
-      typeof context.conversationSessionGeneration === "number" &&
-      context.conversationSessionGeneration !== generation
-    ) {
-      throw new Error(
-        "Conversation session changed; this older turn cannot resume",
-      );
-    }
     // The boundary lives on the command comment. A crash/retry reuses it instead of resetting twice.
     if (reset && comment && comment.conversationSessionGeneration == null) {
       await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });

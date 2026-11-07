@@ -10,9 +10,14 @@ import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES, nativeHarnes
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
+import { hasValidNativeHarnessFilesystemIndependence } from "./native-harness-filesystem-independence.js";
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
-  const rows = await db.execute(sql`select 1 from agent_task_sessions s
+  let afterSession = "", afterScope = "";
+  for (;;) {
+    const rows = await db.execute<{ company_id: string; selected_session_id: string; scope_digest: string; has_receipt: boolean }>(sql`select distinct
+    s.company_id, s.id::text as selected_session_id, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '') as scope_digest,
+    r.runner_profile_json ? 'nativeHarnessFilesystemIndependence' as has_receipt from agent_task_sessions s
     join heartbeat_runs r on r.id = s.last_run_id and r.company_id = s.company_id and r.agent_id = s.agent_id
     join environment_leases e on e.company_id = r.company_id and e.issue_id = r.native_issue_id
       and e.metadata->'nativeHarnessBackup'->>'normalizedSessionId' = r.native_session_id::text
@@ -20,8 +25,14 @@ export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean>
       and e.metadata->'nativeHarnessBackup'->>'schema' = 'paperclip.native-harness-backup-stamp.v2'
       and not exists (select 1 from native_harness_backups b where b.company_id = r.company_id
         and b.scope_digest = e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256' and b.status = 'current')
-    limit 1`);
-  return rows.length > 0;
+      and (s.id::text, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '')) > (${afterSession}, ${afterScope})
+    order by selected_session_id, scope_digest limit 100`);
+    for (const row of rows) if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
+      companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
+    })) return true;
+    if (rows.length < 100) return false;
+    afterSession = rows.at(-1)!.selected_session_id; afterScope = rows.at(-1)!.scope_digest;
+  }
 }
 
 const MAX_PARALLEL_BACKUPS = 4;
