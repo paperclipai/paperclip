@@ -38,7 +38,14 @@ repeating the failed step. A Retry never silently drops the agent's work:
 
 Either choice consumes the generation's one alternative attempt. Preparing the
 same attempt again after a restart reuses the directory that attempt already
-created and bound; it does not ask for another fresh directory.
+created and bound; it does not ask for another fresh directory. A native
+restart re-prepares from its admitted workspace. When that is the task's
+current task directory, it keeps the directory strategy; a task directory is
+never the base of a new git worktree. A git worktree base is always the
+project's checkout or the task's own worktree. If a restart's re-preparation
+still fails before the provider starts, the run settles its native coordinator
+as a terminal failure, so a later Retry is admitted instead of waiting on an
+open recovery claim.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
