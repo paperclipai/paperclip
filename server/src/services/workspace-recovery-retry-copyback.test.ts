@@ -507,7 +507,7 @@ describe("automatic retained workspace recovery", () => {
       const stable = (row: typeof after) => ({ ...row, updatedAt: null, ownerType: null, nextAction: null,
         evidence: { ...row.evidence, workspaceRecovery: { ...(row.evidence.workspaceRecovery as object), message: null } } });
       if (spent) {
-        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry recovery/) });
+        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry to try again/) });
         expect(stable(after)).toEqual(stable(before));
       } else expect(after).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");
