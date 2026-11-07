@@ -181,6 +181,9 @@ async function main() {
     phases: { type: "string", default: "coldwarm,restart" },
     out: { type: "string" },
     report: { type: "string" },
+    // Runner lifecycle forced onto every seeded agent (per_turn or warm). Absent keeps the catalog profile's setting.
+    lifecycle: { type: "string" },
+    "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
     const data = JSON.parse(await readFile(values.report, "utf8")) as { runs: BaselineRun[]; faults: BaselineFault[] };
@@ -193,6 +196,11 @@ async function main() {
   const restarts = Math.max(0, Number(values.restarts));
   const missing = requested.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]).filter(key => !process.env[key]);
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}; run: set -a; source ~/.secrets; set +a`);
+  const lifecycle = values.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm") throw new Error("--lifecycle must be per_turn or warm");
+  const adapterConfigOverrides = lifecycle === "warm"
+    ? { lifecycleMode: "warm", idleTimeoutMs: Math.max(1, Number(values["idle-ms"])) }
+    : lifecycle === "per_turn" ? { lifecycleMode: "per_turn" } : undefined;
   const waveId = `ttft-${new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15)}`;
   const outDir = path.resolve(values.out ?? path.join(import.meta.dirname, "results", waveId));
   await mkdir(outDir, { recursive: true, mode: 0o700 });
@@ -218,7 +226,7 @@ async function main() {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: "local", adapters: requested, concurrency: requested.length, budgetCents: 3000,
-      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline });
+      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides });
     const adapters = await readyAdapters(api, lab, requested, timeline);
     if (!adapters.length) throw new Error("No agent passed lifecycle verification");
 
@@ -297,7 +305,7 @@ async function main() {
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
       }
     }
-    const data = { waveId, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+    const data = { waveId, lifecycle: lifecycle ?? "default", adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
       timedOutTasks: timedOutIssues.size, samples, restarts, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
