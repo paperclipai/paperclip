@@ -441,6 +441,24 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       details: expect.objectContaining({ reason: "environment_deleted" }) });
   });
 
+  it("tries every cleanup of a deleted environment once, past one sweep page", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const cooling = { [ATTEMPTS_KEY]: 1, pendingCleanupRetryAfterMs: Date.now() + 4 * 60_000 };
+    for (let index = 0; index < SWEEP_PAGE_SIZE + 5; index++) {
+      await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(), metadata: cooling });
+    }
+    const teardown = vi.fn(async () => {});
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+
+    const result = await service.sweepPendingCleanupLeases({ environmentRetry: { environmentId, actorId: "admin-1" } });
+
+    expect(result.destroyed).toBe(SWEEP_PAGE_SIZE + 5);
+    expect(teardown).toHaveBeenCalledTimes(SWEEP_PAGE_SIZE + 5);
+    expect((await db.select().from(environmentLeases)).every(lease => lease.status === "expired")).toBe(true);
+  });
+
   it("starts escalation and the long cooldown on the fifth failed attempt", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({ companyId, environmentId,

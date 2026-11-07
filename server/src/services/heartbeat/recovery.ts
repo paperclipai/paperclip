@@ -187,6 +187,9 @@ const NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE =
 
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
+// An environment delete tries each of that environment's cleanups once, from
+// one snapshot, so the request does not stop after a sweep page.
+const ENVIRONMENT_CLEANUP_RETRY_LIMIT = 1_000;
 
 const pendingCleanupAttemptsInFlight = new Set<string>();
 
@@ -1757,7 +1760,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         ),
       )
       .orderBy(asc(environmentLeases.updatedAt))
-      .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+      .limit(opts?.environmentRetry ? ENVIRONMENT_CLEANUP_RETRY_LIMIT : PENDING_CLEANUP_SWEEP_PAGE_SIZE);
 
     let destroyed = 0;
     let capped = 0;
