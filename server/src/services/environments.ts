@@ -32,6 +32,7 @@ import {
   ENVIRONMENT_LEASE_POLICIES,
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_STATUSES,
+  isUuidLike,
   type CreateEnvironment,
   type Environment,
   type EnvironmentDeleteBlastRadius,
@@ -985,6 +986,7 @@ export function environmentService(db: Db) {
     },
 
     getLeaseById: async (id: string): Promise<EnvironmentLease | null> => {
+      if (!isUuidLike(id)) return null;
       const row = await db
         .select()
         .from(environmentLeases)
