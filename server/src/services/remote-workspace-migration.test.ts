@@ -857,12 +857,18 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     }
     if (state === "missing-base-uploaded-retry") {
-      const get = storage.getObject.bind(storage); let reads = 0;
-      storage.getObject = async (...args) => {
-        if (args[1].includes("/workspace-snapshots/") && ++reads === 2) throw new Error("restore reply lost");
-        return get(...args);
-      };
-      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("restore reply lost");
+      const transaction = db.transaction.bind(db); let interrupted = false;
+      const fault = vi.spyOn(db, "transaction").mockImplementation(async (action, config) => {
+        const result = await transaction(action, config);
+        if (!interrupted && result && typeof result === "object" && "status" in result && result.status === "uploaded") {
+          interrupted = true; throw new Error("uploaded checkpoint reply lost");
+        }
+        return result;
+      });
+      try {
+        await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("uploaded checkpoint reply lost");
+        expect(interrupted).toBe(true);
+      } finally { fault.mockRestore(); }
       expect((await db.select().from(executionWorkspaceSnapshots))[0]?.status).toBe("uploaded");
     }
     const interrupted = state.startsWith("missing-base-") || state.startsWith("nested-")
@@ -1099,6 +1105,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(1);
     expect(await db.select().from(activityLog)).toHaveLength(1);
   });
+  it("keeps the existing download path for Windows imports", async () => {
+    const f = await seed(), get = vi.spyOn(storage, "getObject"), platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+      expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+    } finally { platform.mockRestore(); }
+  });
   it.each([false, true])("removes plaintext verification files with read-only folders after import (source changed: %s)", async sourceChanged => {
     const f = await seed(), protectedDir = path.join(f.cwd, "protected"), scratchRoot = path.join(root, "scratch");
     await fs.mkdir(protectedDir); await fs.mkdir(scratchRoot);
@@ -1107,13 +1122,14 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     vi.stubEnv("TMPDIR", scratchRoot);
     const get = storage.getObject.bind(storage); let reads = 0;
     if (sourceChanged) storage.getObject = async (...args) => {
-      if (++reads === 2) await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local work\n");
+      if (++reads === 1) await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local work\n");
       return get(...args);
     };
     try {
       const migration = migrateRemoteWorkspace({ db, storage, ...f, apply: true });
       if (sourceChanged) {
         await expect(migration).rejects.toThrow("remote_workspace_migration_source_changed");
+        expect(reads).toBe(1);
         expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
       } else {
         await expect(migration).resolves.toMatchObject({ applied: true, alreadyMigrated: true });
@@ -1452,29 +1468,32 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   it("rechecks a service that becomes unresolved during snapshot verification", async () => {
     const f = await seed(), get = storage.getObject.bind(storage); let reads = 0;
     storage.getObject = async (...args) => {
-      if (++reads === 2) await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId,
+      if (++reads === 1) await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId,
         executionWorkspaceId: f.workspaceId, scopeType: "execution_workspace", scopeId: f.workspaceId,
         serviceName: "Late synthetic preview", status: "running", lifecycle: "shared", provider: "local_process", cwd: f.cwd });
       return get(...args);
     };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_runtime_service_unsettled");
+    expect(reads).toBe(1);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
   it("rechecks a writer that appears while the restored copy is being verified", async () => {
     const f = await seed(), get = storage.getObject.bind(storage); let reads = 0;
     storage.getObject = async (...args) => {
-      if (++reads === 2) await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      if (++reads === 1) await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
         phase: "workspace_command", status: "running" });
       return get(...args);
     };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_operation_unresolved");
+    expect(reads).toBe(1);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("preserves a local edit made during verification and refuses activation", async () => {
     const f = await seed(), get = storage.getObject.bind(storage); let reads = 0;
-    storage.getObject = async (...args) => { if (++reads === 2) await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local work\n"); return get(...args); };
+    storage.getObject = async (...args) => { if (++reads === 1) await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local work\n"); return get(...args); };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("source_changed");
+    expect(reads).toBe(1);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("new local work\n");
   });
