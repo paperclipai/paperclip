@@ -2405,6 +2405,13 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
+These checks can refuse the exact checkpoint before the retry claims a new
+provider attempt. For example, the interrupted attempt can leave the provider
+state not suspended. The run error then names the interrupted attempt first, as
+`<original failure code>: <original message>; exact checkpoint resume refused:
+<refusal>`. The run result keeps the same facts in `nativeExactResumeRefusal`.
+The error code, recovery owner, and retry eligibility do not change.
+
 Reattachment readies the exact retained sandbox lease through the provider's
 bounded lifecycle resume before running short preparation commands such as the
 managed project-authentication check. The resume receipt must confirm the same

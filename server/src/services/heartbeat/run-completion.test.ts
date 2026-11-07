@@ -716,6 +716,55 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
   });
 
+  describe("a same-run exact-checkpoint resume refused before its provider claim", () => {
+    const originalMessage = "PRP command turn.start failed: ACPX turn start failed closed: classification=session_resume_required";
+    const refusal = "Plugin Runner retained session is not authorized";
+    async function resumeClaim(recoveryHistory: Array<Record<string, unknown>>, attempt = 1) {
+      const f = await fixture({ runtimeMode: "native" });
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Native resume" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      const leaseOwner = `runner:resume:${randomUUID()}`;
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id,
+        phase: "observed", attempt, leaseOwner, leaseExpiresAt: new Date(Date.now() + 20 * 60_000), recoveryHistory });
+      return { f, issue, leaseOwner, attempt };
+    }
+    const interruption = { at: "2099-01-01T00:00:00.000Z", disposition: "retryable_failure", reason: "native_session_interrupted",
+      providerAttempt: 1, stderrTail: originalMessage, providerSessionEstablished: true, checkpointExists: true };
+
+    it("reports the interrupted first attempt in the terminal error, result and coordinator detail", async () => {
+      const { f, leaseOwner, attempt } = await resumeClaim([interruption]);
+      await f.completion.failRun(f.failure(new Error(refusal)));
+      const expected = `native_session_interrupted: ${originalMessage}; exact checkpoint resume refused: ${refusal}`;
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: expected });
+      expect(failed.resultJson).toMatchObject({ nativeExactResumeRefusal: {
+        originalFailureCode: "native_session_interrupted", originalMessage, interruptedAttempt: 1, refusal } });
+      const [errorEvent] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.run.id),
+        eq(heartbeatRunEvents.eventType, "error")));
+      expect(errorEvent?.message).toBe(expected);
+
+      // The dispatcher then releases its unstarted claim; the coordinator keeps
+      // the same named cause and its unchanged eligibility fields.
+      const { settleUnstartedNativeSessionResume } = await import("../native-runtime/native-failed-run-owner-release.js");
+      await expect(settleUnstartedNativeSessionResume(db, { runId: f.run.id, leaseOwner, attempt })).resolves.toBe(true);
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "adapter_failed",
+        failureDetail: { message: expected, originalFailureCode: "adapter_failed" } });
+    });
+
+    it.each([
+      ["has no prior interruption", [], 0],
+      ["follows a bootstrap retry", [{ ...interruption, checkpointExists: false, providerSessionEstablished: false }], 1],
+      ["already claimed a later provider attempt", [interruption], 2],
+    ])("keeps the thrown error unchanged when the run %s", async (_name, history, attempt) => {
+      const { f } = await resumeClaim(history, attempt);
+      await f.completion.failRun(f.failure(new Error(refusal)));
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: refusal });
+      expect(failed.resultJson).not.toHaveProperty("nativeExactResumeRefusal");
+    });
+  });
+
   it("persists a project denial without provider work or an automatic retry", async () => {
     const f = await fixture();
     const projectId = randomUUID();
