@@ -375,14 +375,14 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
-export class ToolGatewayHttpError extends Error {
+export class ToolGatewayHttpError extends HttpError {
   constructor(
-    public readonly status: number,
+    status: number,
     message: string,
     public readonly reasonCode: string,
     public readonly details: Record<string, unknown> = {},
   ) {
-    super(message);
+    super(status, message, details);
   }
 }
 
