@@ -1857,6 +1857,44 @@ describe("native incomplete-bootstrap evidence", () => {
   it("stays fail-closed after session.open for a runner whose processes are on another host", async () => {
     expect(await provesLocally(drainedAfterSessionOpen(await deadPid()), false)).toBe(false);
   });
+
+  // OpenCode records provider startup ownership twice while session.open
+  // runs: first before launch (no process yet, ids null), then with the
+  // launched server's process and process group.
+  const openCodeStartup = (sourceSeq: number, processId: number | null) => ({
+    sourceSeq, priority: 0, eventType: "harness.diagnostic", envelope: { kind: "event", payload: {
+      eventType: "harness.diagnostic", payload: { code: "provider_startup_ownership", startup: {
+        attemptedProcessGeneration: 1, authenticatedThreadId: null, directChildExitObserved: false, exitCode: null,
+        failedStage: null, command: { commandType: "session.open", controllerSeq: 2 },
+        processId, processGroupId: processId,
+      } } } },
+  });
+  const drainedOpenCodeAfterSessionOpen = (pid: number) => {
+    const fixture = drainedAfterSessionOpen(pid);
+    fixture.runner.nextSourceSeq = 6;
+    fixture.runner.outbox = [openCodeStartup(4, null), openCodeStartup(5, pid)];
+    return fixture;
+  };
+
+  it("allows a fresh bootstrap after a drain once OpenCode opened its session before the first turn", async () => {
+    expect(await provesLocally(drainedOpenCodeAfterSessionOpen(await deadPid()))).toBe(true);
+  });
+
+  it.each<[string, (fixture: ReturnType<typeof connectedBeforeSessionOpen>) => void]>([
+    ["the OpenCode server process is alive", f => {
+      (f.runner.outbox as unknown[])[1] = openCodeStartup(5, process.pid);
+    }],
+    ["a startup process id is not a number", f => {
+      const startup = openCodeStartup(5, null);
+      (startup.envelope.payload.payload.startup as Record<string, unknown>).processId = "8174";
+      (f.runner.outbox as unknown[])[1] = startup;
+    }],
+    ["OpenCode started a turn", f => { (f.runner.outbox as unknown[]).push(sessionEvent(6, "turn.started")); }],
+  ])("stays fail-closed for OpenCode when %s", async (_label, mutate) => {
+    const fixture = drainedOpenCodeAfterSessionOpen(await deadPid());
+    mutate(fixture);
+    expect(await provesLocally(fixture)).toBe(false);
+  });
 });
 
 describe("native provider usage normalization", () => {

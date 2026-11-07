@@ -97,7 +97,9 @@ function collectRecordedProcessIds(value: unknown, into: Array<{ id: unknown; gr
   if (Array.isArray(value)) return value.every(entry => collectRecordedProcessIds(entry, into, depth + 1));
   if (!value || typeof value !== "object") return true;
   for (const [key, entry] of Object.entries(value)) {
-    if (key === "processId" || key === "pid") into.push({ id: entry, group: false });
+    // A null id records a launch that had not produced a process yet, so
+    // there is nothing to prove gone. Any other non-number fails the proof.
+    if (key === "processId" || key === "pid") { if (entry !== null) into.push({ id: entry, group: false }); }
     else if (key === "processGroupId") { if (entry !== null) into.push({ id: entry, group: true }); }
     else if (!collectRecordedProcessIds(entry, into, depth + 1)) return false;
   }
