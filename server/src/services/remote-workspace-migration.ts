@@ -33,10 +33,11 @@ const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
 type OnlineRecoveryHold = OnlineLegacyWorkspaceRecoveryHold & { actionId: string };
-async function lockMigrationParents(db: ReadDb, companyId: string, issueId: string | null) {
+async function lockMigrationParents(db: ReadDb, companyId: string, issueId: string | null, recoveryIssueIds: readonly string[] = []) {
   await db.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("key share");
-  if (issueId) await db.select({ id: issues.id }).from(issues).where(and(
-    eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+  for (const id of [...new Set([...(issueId ? [issueId] : []), ...recoveryIssueIds])].sort())
+    await db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, id))).for("update", recoveryIssueIds.length ? { noWait: true } : undefined);
 }
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -458,7 +459,10 @@ export async function migrateRemoteWorkspace(input: {
       await lock.execute(sql`select 1`);
       const publicationDb = onlineSource ? lock as unknown as Db : input.db;
       const publication = await publicationDb.transaction(async tx => {
-        await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId);
+        await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource ? [
+          ...reserved.legacyRecoverySources.map(source => source.issueId),
+          ...onlineSource.companions.flatMap(proof => proof.sources.map(source => source.issueId)),
+        ] : []);
         for (const actionId of [...new Set([...reserved.finalizedRecoveryHolds, ...reserved.onlineRecoveryHolds].map(held => held.actionId))].sort()) {
           await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
             eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, actionId))).for("update", { noWait: true });
