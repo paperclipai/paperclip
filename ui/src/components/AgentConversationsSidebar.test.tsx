@@ -7,7 +7,7 @@ import type { Agent } from "@paperclipai/shared";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
 import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
 import { queryKeys } from "@/lib/queryKeys";
-const state = vi.hoisted(() => ({ companyId: "company-a", navigate: vi.fn(), closeSidebar: vi.fn(), ensure: vi.fn(), getAgent: vi.fn(), newAgent: vi.fn() }));
+const state = vi.hoisted(() => ({ companyId: "company-a", pathname: "/A/chats/alice", navigate: vi.fn(), closeSidebar: vi.fn(), ensure: vi.fn(), getAgent: vi.fn(), newAgent: vi.fn(), terminate: vi.fn(), pushToast: vi.fn(), listAgents: vi.fn(), listChats: vi.fn() }));
 const sidebarInputs = vi.hoisted(() => [] as Pick<AgentConversationSidebarProps, "existingChatAgentIds" | "unreadAgentIds" | "unreadMessageCounts">[]);
 vi.mock("./AgentConversationSidebar", async importOriginal => {
   const original = await importOriginal<typeof import("./AgentConversationSidebar")>();
@@ -21,11 +21,15 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompan
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: true, setSidebarOpen: state.closeSidebar }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true, loaded: true }) }));
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/A/chats/alice" }), useNavigate: () => state.navigate,
+  useLocation: () => ({ pathname: state.pathname }), useNavigate: () => state.navigate,
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
 }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(), get: state.getAgent } }));
-vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure } }));
+vi.mock("@/api/agents", () => ({ agentsApi: { list: state.listAgents, get: state.getAgent, terminate: state.terminate } }));
+vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: vi.fn() } }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: vi.fn() } }));
+vi.mock("@/api/builtInAgents", () => ({ builtInAgentsApi: { list: vi.fn() } }));
+vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: state.pushToast }) }));
+vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: state.listChats, ensure: state.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
 vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => null }));
 const memberships = vi.hoisted(() => ({ agentMemberships: {} as Record<string, string> }));
@@ -37,6 +41,8 @@ let container: HTMLDivElement;
 let client: QueryClient;
 const roster = ["alice", "bob"].map(id => ({ id, companyId: "company-a", name: id, urlKey: id, role: "general", title: "Teammate", status: "idle" } as Agent));
 const chat = (id: string) => ({ id: `chat-${id}`, companyId: "company-a", conversationAgentId: id, conversationUserId: "user-a", updatedAt: id === "bob" ? "2026-09-02T00:00:00Z" : "2026-09-01T00:00:00Z" });
+const boardAccess = (membershipRole: string) => ({ userId: "user-a", isInstanceAdmin: false, source: "session", keyId: null, user: null, companyIds: ["company-a"],
+  memberships: [{ companyId: "company-a", membershipRole, status: "active" }] });
 async function render() {
   await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar /></QueryClientProvider>); });
 }
@@ -46,7 +52,11 @@ async function openContact(name: string) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
-  state.companyId = "company-a";
+  state.companyId = "company-a"; state.pathname = "/A/chats/alice";
+  state.terminate.mockReset(); state.pushToast.mockReset();
+  // Refetches after an archive read whatever the test last cached.
+  state.listAgents.mockReset().mockImplementation(async () => client.getQueryData(queryKeys.agents.list("company-a")));
+  state.listChats.mockReset().mockImplementation(async () => client.getQueryData(queryKeys.agentChats.list("company-a", "user-a")));
   state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset(); state.newAgent.mockReset(); localStorage.clear();
   sidebarInputs.length = 0;
   state.ensure.mockImplementation(async (_company, id) => chat(id));
@@ -54,6 +64,8 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
   client.setQueryData(queryKeys.agents.list("company-a"), roster);
+  client.setQueryData(queryKeys.access.currentBoardAccess, boardAccess("operator"));
+  client.setQueryData(queryKeys.instance.experimentalSettings, { enableBuiltInAgents: false });
   client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("alice")]);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -166,11 +178,16 @@ it("reuses chat indexes for 500 agents across unchanged parent renders and refre
   } finally { parse.mockRestore(); }
 });
 
-it("retains terminated agents' history by id without offering them for new chats", async () => {
+it("lists a terminated agent's history only while its chat is open, by id, without offering it for new chats", async () => {
   const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated", urlKey: "alice" };
   client.setQueryData(queryKeys.agents.detail(retired.id), retired);
   client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat(retired.id), chat("alice")]);
   await render();
+  expect(container.querySelector('a[href="/chats/retired-id"]')).toBeNull();
+  expect(state.getAgent).not.toHaveBeenCalled();
+  state.pathname = "/A/chats/retired-id";
+  await render();
+  expect(container.querySelector('[aria-label="Open actions for Retired"]')).toBeNull();
   const historyLink = container.querySelector<HTMLAnchorElement>('a[href="/chats/retired-id"]')!;
   expect(historyLink.textContent).toContain("RetiredTerminated");
   await act(async () => historyLink.click());
@@ -181,6 +198,7 @@ it("retains terminated agents' history by id without offering them for new chats
 it("keeps healthy chats usable while a historical lookup fails and retries", async () => {
   const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated" };
   state.getAgent.mockRejectedValueOnce(new Error("Unavailable")).mockResolvedValue(retired);
+  state.pathname = "/A/chats/retired-id";
   client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat(retired.id), chat("alice")]);
   await render();
   await vi.waitFor(async () => {
@@ -221,4 +239,69 @@ it("lists every eligible agent: open chat, then conversations by recency, then t
     expect([...container.querySelectorAll('nav[aria-label="Agent conversations"] a')].map(link => link.getAttribute("href")))
       .toEqual(["/chats/alice", "/chats/bob", "/chats/carol", "/chats/zed"]); // the open chat (alice) is pinned first
   });
+});
+
+async function openArchiveDialog(name: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`[aria-label="Open actions for ${name}"]`)!;
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: false, pointerType: "mouse" } as PointerEventInit));
+  });
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(element => element.textContent === "Archive agent")!;
+  await act(async () => item.click());
+}
+function dialogButton(label: string) {
+  return [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === label)!;
+}
+
+it("offers Archive agent only to boards that can manage agents, and never for built-in agents", async () => {
+  client.setQueryData(queryKeys.access.currentBoardAccess, boardAccess("viewer"));
+  await render();
+  expect(container.querySelector('[aria-label="Open actions for bob"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Pin bob"]')).not.toBeNull();
+  client.setQueryData(queryKeys.access.currentBoardAccess, boardAccess("operator"));
+  client.setQueryData(queryKeys.instance.experimentalSettings, { enableBuiltInAgents: true });
+  client.setQueryData(queryKeys.builtInAgents.list("company-a"), [{ agentId: "bob", status: "ready" }]);
+  await render();
+  expect(container.querySelector('[aria-label="Open actions for alice"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Open actions for bob"]')).toBeNull();
+});
+
+it("archives only after confirmation, then drops the agent from the chat list", async () => {
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("alice"), chat("bob")]);
+  state.terminate.mockImplementation(async (id: string) => {
+    client.setQueryData(queryKeys.agents.list("company-a"), roster.map(agent => agent.id === id ? { ...agent, status: "terminated" } : agent));
+    return { ...roster.find(agent => agent.id === id)!, status: "terminated" };
+  });
+  await render();
+  await openArchiveDialog("bob");
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("Archive bob?");
+  await act(async () => dialogButton("Cancel").click());
+  expect(state.terminate).not.toHaveBeenCalled();
+  await openArchiveDialog("bob");
+  await act(async () => dialogButton("Archive agent").click());
+  await vi.waitFor(() => expect(container.querySelector('a[href="/chats/bob"]')).toBeNull());
+  expect(state.terminate).toHaveBeenCalledWith("bob", "company-a");
+  expect(state.navigate).not.toHaveBeenCalled();
+  expect(container.querySelector('a[href="/chats/alice"]')).not.toBeNull();
+});
+
+it("keeps an open chat readable by id after archiving its agent", async () => {
+  state.terminate.mockImplementation(async (id: string) => {
+    const archived = { ...roster.find(agent => agent.id === id)!, status: "terminated" };
+    client.setQueryData(queryKeys.agents.list("company-a"), roster.map(agent => agent.id === id ? archived : agent));
+    return archived;
+  });
+  await render();
+  await openArchiveDialog("alice");
+  await act(async () => dialogButton("Archive agent").click());
+  await vi.waitFor(() => expect(state.navigate).toHaveBeenCalledWith("/chats/alice", { replace: true }));
+});
+
+it("reports a failed archive and keeps the agent listed", async () => {
+  state.terminate.mockRejectedValue(new Error("Forbidden"));
+  await render();
+  await openArchiveDialog("bob");
+  await act(async () => dialogButton("Archive agent").click());
+  await vi.waitFor(() => expect(state.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn’t archive agent", body: "Forbidden", tone: "error" })));
+  expect(container.querySelector('a[href="/chats/bob"]')).not.toBeNull();
 });
