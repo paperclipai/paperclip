@@ -521,7 +521,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
-        .from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.status, "pending")).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
+        .from(executionWorkspaceSnapshots).where(inArray(executionWorkspaceSnapshots.status, ["pending", "uploaded"])).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.sourceRunId, issueId: null,
