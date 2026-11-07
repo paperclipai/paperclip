@@ -350,8 +350,8 @@ describeEmbeddedPostgres("remote MCP connection through a SOCKS5 proxy", () => {
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Proxy issue", status: "in_progress" }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id, contextSnapshot: { issueId: issue!.id }, status: "running" }).returning();
     const accessSvc = toolAccessService(db);
-    const profile = await accessSvc.createProfile(company.id, { profileKey: "proxy-agent", name: "Proxy agent", defaultAction: "allow" });
-    await accessSvc.bindProfile(profile.id, { targetType: "agent", targetId: agent!.id });
+    const profile = await accessSvc.createProfile(company.id, { profileKey: "proxy-agent", name: "Proxy agent", status: "active", defaultAction: "allow" });
+    await accessSvc.bindProfile(profile.id, { targetType: "agent", targetId: agent!.id, priority: 100 });
     const connection = await accessSvc.createConnection(company.id, {
       name: "Proxied remote",
       transport: "mcp_remote",
