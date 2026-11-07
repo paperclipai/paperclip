@@ -386,6 +386,11 @@ settles, including after the raw socket closes. Detached startup reconciliation
 for built-in agents, managed homes and persisted runtime services also remains
 counted after readiness until its writes settle.
 
+Retained native response presentation also continues after web readiness. Its
+fair scheduler and persisted retry deadlines remain in effect; in-flight work
+stays counted for idle and is joined at shutdown. Web readiness does not require
+the retained reply queue to become idle.
+
 Scheduler work already in flight remains counted until its promise settles.
 Idle holds pause new scheduler admissions. Database backup promises remain
 counted through success or failure. Configured periodic backups block sleep by

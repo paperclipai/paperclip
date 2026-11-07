@@ -1,3 +1,4 @@
+import { currentRunFailureText } from "./native-runtime/native-exact-resume-failure.js";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
@@ -369,7 +370,9 @@ async function captureTerminalRunFailure(
 ): Promise<void> {
   try {
     const snapshot = redactRunFailureSecretValues({
-      errorMessage: run.error ?? "",
+      // A refused exact resume keeps the interrupted attempt's provider text
+      // in `error` for operators only; Sentry gets the current refusal.
+      errorMessage: currentRunFailureText(run) ?? "",
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([

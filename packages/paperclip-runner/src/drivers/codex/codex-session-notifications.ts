@@ -655,8 +655,12 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         const runDeltaComplete = validCount(reported.inputTokens) && validCount(reported.outputTokens)
           && Object.entries(reported).every(([key, value]) => !key.endsWith("Tokens") || validCount(value))
           && Object.keys(state.codexUsageBaseline?.latest ?? {}).every(key => !key.endsWith("Tokens") || validCount(reported[key]));
+        // Usage reported before this session's first turn, with no baseline,
+        // is the thread's earlier work. Record it as history, not this run's.
+        const beforeFirstTurn = state.activeTurnId === null && state.codexUsageBaseline === null
+          && !state.turnStartPending && state.terminalTurns.size === 0;
         if (Object.keys(reported).length > 0) {
-          state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, reported, false);
+          state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, reported, beforeFirstTurn);
           state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
         }
         state.usageSnapshot = { ...state.usageSnapshot, runDeltaComplete };

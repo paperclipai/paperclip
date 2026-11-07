@@ -305,6 +305,8 @@ export interface DurablePrpControlPlaneOptions {
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  /** Diagnostic only: called synchronously after each runner connection is authenticated. */
+  onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
 
@@ -2035,6 +2037,7 @@ export class DurablePrpControlPlane {
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
+  #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
@@ -2093,6 +2096,7 @@ export class DurablePrpControlPlane {
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
+    this.#onAuthenticatedConnection = options.onAuthenticatedConnection;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
@@ -3773,6 +3777,7 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    try { this.#onAuthenticatedConnection?.(); } catch { /* Diagnostics never change admission. */ }
     this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;

@@ -3,8 +3,9 @@ export interface IdleIncomingWakeCapability {
   version: 1;
   ownerId: string;
   generation: string;
-  routes: ("tenant-api-http-v2" | "github-broker-events-v1")[];
+  routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "mcp-oauth-http-v1")[];
   apiKeyProof?: { version: 1; challenge: string };
+  mcpOAuthProof?: { version: 1; challenge: string };
   githubBroker?: { instanceId: string; bindingsFingerprint: string };
 }
 export interface IdleCapabilities {
@@ -40,6 +41,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
         "routes",
         "githubBroker",
         "apiKeyProof",
+        "mcpOAuthProof",
       ]) ||
       v.version !== 1 ||
       typeof v.ownerId !== "string" ||
@@ -49,9 +51,9 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       !digest(v.generation) ||
       !Array.isArray(v.routes) ||
       v.routes.length < 1 ||
-      v.routes.length > 2 ||
+      v.routes.length > 3 ||
       v.routes.some(
-        (r) => !["tenant-api-http-v2", "github-broker-events-v1"].includes(r),
+        (r) => !["tenant-api-http-v2", "github-broker-events-v1", "mcp-oauth-http-v1"].includes(r),
       ) ||
       new Set(v.routes).size !== v.routes.length ||
       [...v.routes].sort().join() !== v.routes.join()
@@ -62,6 +64,11 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       if (!object(proof) || Object.keys(proof).length !== 2 || !exact(proof, ["version", "challenge"])
         || proof.version !== 1 || !digest(proof.challenge)) throw new Error("Invalid API wake challenge");
     } else if (v.apiKeyProof !== undefined) throw new Error("Unexpected API wake challenge");
+    if (v.routes.includes("mcp-oauth-http-v1")) {
+      const proof = v.mcpOAuthProof;
+      if (!object(proof) || Object.keys(proof).length !== 2 || !exact(proof, ["version", "challenge"])
+        || proof.version !== 1 || !digest(proof.challenge)) throw new Error("Invalid MCP OAuth wake challenge");
+    } else if (v.mcpOAuthProof !== undefined) throw new Error("Unexpected MCP OAuth wake challenge");
     if (v.routes.includes("github-broker-events-v1")) {
       const b = v.githubBroker;
       if (
@@ -80,6 +87,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
   if (parsed.incomingWake) {
     Object.freeze(parsed.incomingWake.routes);
     if (parsed.incomingWake.apiKeyProof) Object.freeze(parsed.incomingWake.apiKeyProof);
+    if (parsed.incomingWake.mcpOAuthProof) Object.freeze(parsed.incomingWake.mcpOAuthProof);
     if (parsed.incomingWake.githubBroker)
       Object.freeze(parsed.incomingWake.githubBroker);
     Object.freeze(parsed.incomingWake);
