@@ -22,7 +22,7 @@ import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, rea
 import { inspectArchivedGitMigrationSource, lockArchivedGitMigrationSources, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
-import { onlineOrdinarySourceBlockers, offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
+import { createNestedWorkspaceImportVerifier, onlineOrdinarySourceBlockers, offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 import { inspectOnlineWorkspaceSource, requiresOnlineWorkspaceSource, type OnlineWorkspaceSource } from "./online-workspace-source.js";
 import { withWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
@@ -403,6 +403,12 @@ export async function migrateRemoteWorkspace(input: {
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.companyId, workspaceId: input.workspaceId,
       operationId: operation.id, generation: 1, epoch: 1 });
     const scratch = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-")));
+    const childVerifier = onlineSource?.kind === "git" ? createNestedWorkspaceImportVerifier({
+      db: input.db, storage: input.storage, companyId: input.companyId, sourceLock: lock,
+      projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal,
+    }) : null;
+    const prepareChildren = (options: Parameters<typeof prepareNestedWorkspaceImports>[0]) =>
+      childVerifier ? childVerifier.prepare(options) : prepareNestedWorkspaceImports(options);
     try {
       input.signal?.throwIfAborted();
       const retained = reserved.retainedDirectory?.restorePoint;
@@ -424,7 +430,7 @@ export async function migrateRemoteWorkspace(input: {
       const recordedChildren = scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children)
         : scope.state === "pending" ? undefined : [];
       const nested = (input.writersStopped || onlineSource?.kind === "git") && !retained && !reserved.archivedGitSource
-        ? await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch, recordedChildren, gitSourceRoots: onlineSource?.gitSourceRoots }) : [];
+        ? await prepareChildren({ ...input, workspace: reserved.workspace, scratch, recordedChildren, gitSourceRoots: onlineSource?.gitSourceRoots }) : [];
       if (scope.state === "pending") {
         const [saved] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
           nestedWorkspaceScope: { version: 1, state: "fixed", children: nested } }, updatedAt: new Date() })
@@ -455,7 +461,8 @@ export async function migrateRemoteWorkspace(input: {
       }
       if (nested.length) {
         const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
-        const verified = await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch: verifyScratch, recordedChildren: nested });
+        const verified = await prepareChildren({ ...input, workspace: reserved.workspace, scratch: verifyScratch, recordedChildren: nested,
+          gitSourceRoots: onlineSource?.gitSourceRoots });
         if (canonical(verified) !== canonical(nested)) throw new Error("nested_workspace_source_changed");
       }
       input.signal?.throwIfAborted();
@@ -565,7 +572,7 @@ export async function migrateRemoteWorkspace(input: {
         else publishActivity(publication);
       }
       return { ...await inventoryRemoteWorkspaceMigration(publicationDb, input), applied: true, replayed: false };
-    } finally { await removeTaskDirectoryTree(scratch); }
+    } finally { await childVerifier?.close(); await removeTaskDirectoryTree(scratch); }
   };
   if (onlineSource) {
     const result = await withWorkspaceSourceLocks(input.db, {
