@@ -41,6 +41,8 @@ const coldTask = (nonce: string) => [
 ].join("\n");
 const warmFollowUp = (nonce: string) =>
   `Follow-up ${nonce}: reply with one more one-line comment that says \`AGAIN ${nonce}\`, then mark the task done again.`;
+/** The long call a restart sample must interrupt. */
+const RESTART_SLEEP_MARKER = "time.sleep(75)";
 const restartTask = (nonce: string) => [
   // Claude Code's Bash tool refuses a bare long \`sleep\`; a Python sleep is one ordinary shell call everywhere.
   `Baseline restart ${nonce}. First run the shell command \`python3 -c "import time; time.sleep(75)"\` and wait for it to finish.`,
@@ -97,20 +99,28 @@ async function allEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
   }
 }
 
-/** The running run of the task, when it is inside an open shell tool call. */
-async function runInShellCall(api: ChaosApi, issueId: string): Promise<string | null> {
+/**
+ * The running run of the task, when it is inside the long sleep call. A tool
+ * that exposes its command must show the sleep marker. A tool that exposes no
+ * command text (OpenCode's `bash`) counts as inside an open shell call, and the
+ * sample is marked `commandUnverified`.
+ */
+async function runInShellCall(api: ChaosApi, issueId: string): Promise<{ runId: string; commandUnverified: boolean } | null> {
   const active = (await runsFor(api, issueId)).find(run => String(run.status) === "running");
   if (!active) return null;
   const events = await allEvents(api, runIdOf(active)).catch(() => []);
-  return openShellExecutions(events).length ? runIdOf(active) : null;
+  const open = openShellExecutions(events, RESTART_SLEEP_MARKER);
+  if (open.some(call => call.matched)) return { runId: runIdOf(active), commandUnverified: false };
+  if (open.length && open.every(call => call.unlabelled)) return { runId: runIdOf(active), commandUnverified: true };
+  return null;
 }
 
 /** Wait until the run is inside its shell tool call (started, not ended). */
-async function waitForShellCall(api: ChaosApi, issueId: string): Promise<string | null> {
+async function waitForShellCall(api: ChaosApi, issueId: string): Promise<{ runId: string; commandUnverified: boolean } | null> {
   const deadline = Date.now() + 4 * 60_000;
   while (Date.now() < deadline) {
-    const runId = await runInShellCall(api, issueId);
-    if (runId) return runId;
+    const inside = await runInShellCall(api, issueId);
+    if (inside) return inside;
     await delay(1_500);
   }
   return null;
@@ -247,16 +257,24 @@ async function main() {
         const nonce = `${adapter}-r${index}-${Date.now().toString(36)}`;
         const issueId = await createTask(api, lab, adapter, `TTFT restart ${nonce}`, restartTask(nonce));
         tasks.push({ issueId, adapter, phase: "restart" });
-        return { issueId, adapter, runId: await waitForShellCall(api, issueId) };
+        const inside = await waitForShellCall(api, issueId);
+        return { issueId, adapter, runId: inside?.runId ?? null };
       }));
       // Recheck right before the fault: a fast adapter may have finished its call
       // while a slower one was still starting. Only runs still inside it count.
-      const stillInside = await Promise.all(inFlight.map(async entry =>
-        entry.runId && await runInShellCall(api, entry.issueId) === entry.runId ? entry.runId : null));
+      const stillInside = await Promise.all(inFlight.map(async entry => {
+        if (!entry.runId) return null;
+        const inside = await runInShellCall(api, entry.issueId);
+        return inside?.runId === entry.runId ? inside : null;
+      }));
       for (const [position, entry] of inFlight.entries()) {
-        if (!stillInside[position]) timeline.add("baseline_restart_sample_skipped", { adapter: entry.adapter, issueId: entry.issueId });
+        const inside = stillInside[position];
+        if (!inside) timeline.add("baseline_restart_sample_skipped", { adapter: entry.adapter, issueId: entry.issueId });
+        else if (inside.commandUnverified) {
+          timeline.add("baseline_restart_command_unverified", { adapter: entry.adapter, issueId: entry.issueId });
+        }
       }
-      const runIds = stillInside.flatMap(runId => runId ? [runId] : []);
+      const runIds = stillInside.flatMap(inside => inside ? [inside.runId] : []);
       for (const runId of runIds) runPhase.set(runId, "restart");
       const receipt = await supervisor.fault(kind, 0, `ttft-baseline-${index}`);
       faults.push({ kind, readyAt: receipt.readyAt ?? Date.now(), runIds });

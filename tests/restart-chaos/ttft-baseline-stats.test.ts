@@ -87,21 +87,41 @@ describe("restart sample guard", () => {
   const tool = (eventType: string, executionId: string, extra: Record<string, unknown> = {}): BaselineEvent => ({
     eventType, createdAt: at(0), payload: { prpEvent: { payload: { executionId, ...extra } } },
   });
+  const ids = (events: BaselineEvent[], marker?: string) => openShellExecutions(events, marker);
 
   it("keeps a shell call open until it ends, and ignores other tools", () => {
-    expect(openShellExecutions([
+    expect(ids([
       tool("tool.execution.started", "mcp-1", { name: "paperclip.issue.comment", operation: "unknown" }),
       tool("tool.execution.started", "sh-1", { name: "Bash", operation: "execute" }),
       tool("tool.execution.progressed", "sh-1"),
-    ])).toEqual(["sh-1"]);
+    ]).map(call => call.executionId)).toEqual(["sh-1"]);
   });
 
   it("closes a shell call on completion or failure", () => {
-    expect(openShellExecutions([
+    expect(ids([
       tool("tool.execution.started", "sh-1", { name: "/bin/zsh -lc 'python3 -c ...'" }),
       tool("tool.execution.completed", "sh-1"),
       tool("tool.execution.started", "sh-2", { name: "bash" }),
       tool("tool.execution.failed", "sh-2"),
     ])).toEqual([]);
+  });
+
+  it("matches the intended command from the name, subject or a later progress update", () => {
+    const marker = "time.sleep(75)";
+    expect(ids([
+      tool("tool.execution.started", "codex", { name: "/bin/zsh -lc 'python3 -c \"import time; time.sleep(75)\"'", operation: "execute" }),
+      tool("tool.execution.started", "claude", { name: "Bash", operation: "execute" }),
+      tool("tool.execution.progressed", "claude", { subject: "python3 -c \"import time; time.sleep(75)\"" }),
+      tool("tool.execution.started", "other", { name: "Bash", operation: "execute", subject: "ls -la" }),
+    ], marker)).toEqual([
+      { executionId: "codex", matched: true, unlabelled: false },
+      { executionId: "claude", matched: true, unlabelled: false },
+      { executionId: "other", matched: false, unlabelled: false },
+    ]);
+  });
+
+  it("marks a shell tool that exposes no command text as unlabelled", () => {
+    expect(ids([tool("tool.execution.started", "oc", { name: "bash", operation: "unknown" })], "time.sleep(75)"))
+      .toEqual([{ executionId: "oc", matched: false, unlabelled: true }]);
   });
 });

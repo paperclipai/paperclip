@@ -26,7 +26,7 @@ Plan: [`2026-11-07-durable-ownership-and-reconciliation.md`](2026-11-07-durable-
 - **Driver:** [`tests/restart-chaos/ttft-baseline.ts`](../../tests/restart-chaos/ttft-baseline.ts) starts one isolated control plane with the chaos supervisor: a temporary `PAPERCLIP_HOME`, an embedded Postgres owned by the wrapper, and the debug native runner. It seeds the Chaos Lab and then, per adapter:
   - **cold:** a new task (a fresh provider session);
   - **warm:** a follow-up comment on the same finished task (the provider session is reused);
-  - **restart:** a task inside a `sleep 75` tool call when the control plane is killed with `K1` (SIGKILL) or stopped with `K2` (SIGTERM).
+  - **restart:** a task inside a `python3 -c "import time; time.sleep(75)"` shell call when the control plane is killed with `K1` (SIGKILL) or stopped with `K2` (SIGTERM). The fault fires only while each tracked run has that call open, and every run is rechecked just before the fault. A tool that exposes its command (codex, claude) must show `time.sleep(75)`. OpenCode's `bash` tool exposes no command text, so for opencode any open shell call counts, and the sample is logged as `baseline_restart_command_unverified`.
 
   [`ttft-baseline-stats.ts`](../../tests/restart-chaos/ttft-baseline-stats.ts) computes every number below. Its unit tests are in `ttft-baseline-stats.test.ts`. To reproduce:
 
@@ -123,7 +123,7 @@ The inventory readers found these waits and writes on the path before `turn.star
 
 ### Measured by the driver (local)
 
-Run 4 is the source. In it, the driver injected each fault only while every tracked run was inside an open shell tool call, and it checked that again just before the fault. Run 3 had used `sleep 75`, which Claude Code's Bash tool refuses, so run 3's claude samples did not reliably interrupt a tool call and are not used. Run 3's codex and opencode samples agree with run 4 (codex 3.2–5.1 s, opencode 12.5–16.5 s).
+Run 4 is the source. In it, the driver injected each fault only while every tracked run was inside an open shell tool call, and it checked that again just before the fault. Run 3 had used `sleep 75`, which Claude Code's Bash tool refuses, so run 3's claude samples did not reliably interrupt a tool call and are not used. Run 3's codex and opencode samples agree with run 4 (codex 3.2–5.1 s, opencode 12.5–16.5 s). A replay of run 4's run log against the stricter command check found all 8 codex and claude samples inside `time.sleep(75)` at the fault. Each of the 4 opencode samples had exactly one open shell call, which exposes no command text.
 
 | Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |
 |---|---|---|---|---|---|---|

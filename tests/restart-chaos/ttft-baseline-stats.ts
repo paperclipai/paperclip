@@ -178,23 +178,41 @@ function toolPayload(event: BaselineEvent): Record<string, unknown> {
 
 const SHELL_TOOL = /\b(bash|sh|zsh|shell|terminal|python3?)\b/i;
 
+export interface OpenShellExecution {
+  executionId: string;
+  /** The tool exposed command text (name, subject or progress) that contains the marker. */
+  matched: boolean;
+  /** The tool exposed no command text at all, so the marker cannot be checked. */
+  unlabelled: boolean;
+}
+
 /**
  * Executions of a shell tool that started and have not ended. A restart sample
  * is valid only while one is open, so the fault lands inside the tool call.
+ * With `marker`, an execution is `matched` when its exposed command text
+ * contains the marker. Some tools (OpenCode's `bash`) expose no command text;
+ * those are `unlabelled`.
  */
-export function openShellExecutions(events: readonly BaselineEvent[]): string[] {
-  const open = new Map<string, boolean>();
+export function openShellExecutions(events: readonly BaselineEvent[], marker?: string): OpenShellExecution[] {
+  const open = new Map<string, { matched: boolean; labelled: boolean }>();
   for (const event of events) {
     if (!event.eventType.startsWith("tool.execution.")) continue;
     const payload = toolPayload(event);
     const id = typeof payload.executionId === "string" ? payload.executionId : null;
     if (!id) continue;
+    const commandText = [payload.subject, payload.progress].filter(value => typeof value === "string" && value).join(" ");
+    const label = `${String(payload.name ?? "")} ${commandText}`;
     if (event.eventType === "tool.execution.started") {
-      const label = `${String(payload.name ?? "")} ${String(payload.subject ?? "")}`;
-      if (payload.operation === "execute" || SHELL_TOOL.test(label)) open.set(id, true);
+      if (payload.operation === "execute" || SHELL_TOOL.test(label)) open.set(id, { matched: false, labelled: false });
     } else if (event.eventType !== "tool.execution.progressed") {
       open.delete(id);
+      continue;
     }
+    const entry = open.get(id);
+    if (!entry) continue;
+    // A shell name alone (\`bash\`) is not command text; a full command line in \`name\` is.
+    if (commandText || /\s/.test(String(payload.name ?? "").trim())) entry.labelled = true;
+    if (marker && label.includes(marker)) entry.matched = true;
   }
-  return [...open.keys()];
+  return [...open.entries()].map(([executionId, entry]) => ({ executionId, matched: entry.matched, unlabelled: !entry.labelled }));
 }
