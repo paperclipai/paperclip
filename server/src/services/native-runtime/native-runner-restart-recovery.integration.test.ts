@@ -2663,6 +2663,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
 
   // What a resumed turn records on restore before it does any new work.
   const restoreNoise = (round: number) => [
+    { eventType: "native.process_start_requested" },
     { eventType: "item.completed", kind: "thread_lineage" },
     { eventType: "turn.failed", turnId: "interrupted-turn" },
     { eventType: "tool.execution.completed", turnId: "interrupted-turn" },
@@ -2695,12 +2696,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   it("does not credit a resume's work to a later provider attempt started by a normal retry", async () => {
     const fixture = await seedInterruptedCheckpoint("PROGRESS-THEN-RETRY");
     await resumeThenCrash(fixture);
-    await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: "resumed" },
-      { eventType: "tool.execution.completed", turnId: "resumed" }]);
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: "resumed" }, { eventType: "tool.execution.completed", turnId: "resumed" }]);
     // The resume (attempt 2) did work. A transport failure then started a
     // normal local retry at attempt 3, which crashed before doing any work.
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" }]);
     const { disposition } = await resumeThenCrash(fixture);
     expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
   });
@@ -2721,6 +2723,65 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ]);
   });
 
+  // RC-22c: in a K6 crash loop the controller died again before the resumed
+  // execution requested a runner, and the next claim charged that resume.
+  it.each([
+    { label: "after the executor took its lease", leaseTaken: true },
+    { label: "before the executor took its lease", leaseTaken: false },
+  ])("does not charge for a resume killed before it started the provider ($label)", async ({ leaseTaken }) => {
+    const fixture = await seedInterruptedCheckpoint(`UNSTARTED-RESUME-${leaseTaken ? "LEASE" : "NO-LEASE"}`);
+    // The first restart resume runs and makes progress.
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await appendRunEvents(fixture, [...restoreNoise(1), { eventType: "tool.execution.completed", turnId: "continuation-1" }]);
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    // Four crash restarts in a row, each before the resumed execution started.
+    for (let round = 0; round < 4; round += 1) {
+      if (leaseTaken) {
+        const { disposition, attempt } = await resumeThenCrash(fixture);
+        outcomes.push({ kind: disposition?.kind, attempt });
+        continue;
+      }
+      const [disposition] = await claimNativeRestartRecoveries({
+        db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+      });
+      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      outcomes.push({ kind: disposition?.kind, attempt: coordinator.attempt });
+    }
+    expect(outcomes).toEqual(Array(4).fill({ kind: "resume_dead_runner", attempt: 2 }));
+    // A resume that starts and then fails before any work is charged again.
+    await appendRunEvents(fixture, [...restoreNoise(2), { eventType: "turn.failed", turnId: "continuation-2" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ disposition: { kind: "resume_dead_runner" }, attempt: 3 });
+  });
+
+  it("charges the owed attempt once when an unstarted first resume is replaced", async () => {
+    const fixture = await seedInterruptedCheckpoint("UNSTARTED-FIRST-RESUME");
+    // The first restart charges, but the controller dies before the executor
+    // takes its lease, so the charge was never applied.
+    await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    // The replacement carries that charge, once.
+    const { disposition, attempt } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "resume_dead_runner", chargesProviderAttempt: true });
+    expect(attempt).toBe(2);
+  });
+
+  it("bounds a crash loop that never starts the provider", async () => {
+    const fixture = await seedInterruptedCheckpoint("UNSTARTED-CRASH-LOOP");
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    for (let round = 1; round <= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT + 3; round += 1) {
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      outcomes.push({ kind: disposition?.kind, attempt });
+      if (disposition?.kind !== "resume_dead_runner") break;
+    }
+    expect(outcomes.at(-1)).toEqual({ kind: "blocked", attempt: undefined });
+    expect(outcomes.slice(0, -1).map(outcome => outcome.attempt))
+      .toEqual([2, ...Array(NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT - 2).fill(2), 3]);
+  });
+
   it("bounds a crash loop that makes progress before every crash", async () => {
     const fixture = await seedInterruptedCheckpoint("PROGRESS-CRASH-LOOP");
     const outcomes: Array<{ kind?: string; attempt?: number }> = [];
@@ -2728,7 +2789,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const { disposition, attempt } = await resumeThenCrash(fixture);
       outcomes.push({ kind: disposition?.kind, attempt });
       if (disposition?.kind !== "resume_dead_runner") break;
-      await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: `loop-${round}` },
+      await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+        { eventType: "turn.accepted", turnId: `loop-${round}` },
         { eventType: "item.completed", turnId: `loop-${round}`, kind: "assistant_message" }]);
     }
     // Generations 2..12 are claimed; credit stops at the generation limit and
