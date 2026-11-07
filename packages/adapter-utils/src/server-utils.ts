@@ -17,6 +17,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
   normalizeLegacyRunnerProvider,
+  paperclipRunnerFollowsLifecycleDefault,
 } from "./paperclip-runner-permissions.js";
 import type {
   AdapterExecutionContext,
@@ -4296,7 +4297,6 @@ export function normalizePaperclipRunnerAdapterConfig(
     provider: "codex",
     codexPermissionMode:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
-    lifecycleMode: "per_turn",
     ...config,
   };
   if (next.provider === "codex") {
@@ -4308,6 +4308,9 @@ export function normalizePaperclipRunnerAdapterConfig(
       next.model = resolvePaperclipRunnerModel("acpx", config.model);
     }
   }
+  // No stored lifecycle means the product default for these providers; never
+  // write the old per_turn default back on a configuration write.
+  if (next.lifecycleMode === undefined && !paperclipRunnerFollowsLifecycleDefault(next)) next.lifecycleMode = "per_turn";
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }
 

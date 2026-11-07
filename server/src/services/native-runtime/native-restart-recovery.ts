@@ -35,6 +35,10 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
+import { persistActivity } from "../activity-log.js";
+import { OPERATOR_ATTESTED_CONTROLLER_HOST, requestNativeControllerStopConfirmation } from "./native-controller-host-recovery.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -53,6 +57,9 @@ export type NativeControllerIdentity = {
   bootId: string;
   pid: number;
   processStartedAt: Date;
+  /** PID space of `pid`; "unknown" when this host's space cannot be read,
+   * which no later probe accepts. Optional for identities built in tests. */
+  hostHash?: string;
 };
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
@@ -281,7 +288,6 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   return work !== undefined;
 }
 
-const controllerBootId = randomUUID();
 
 function processIsAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
@@ -323,14 +329,18 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+/** The native controller stamp of this process. The boot id is the single
+ * process boot id (`controller-process-identity.ts`) and the start time is read
+ * from the OS once, so claims and renewals on the turn path spawn no `ps`. */
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = await currentProcessStartedAtMs();
   const fallback = new Date(getServerProcessStartedAt());
   return {
-    bootId: controllerBootId,
+    bootId: currentControllerBootId(),
     pid: process.pid,
     processStartedAt:
-      observed ?? (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+      observed !== null ? new Date(observed) : (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+    hostHash: currentProcessSpaceHash(),
   };
 }
 
@@ -338,7 +348,7 @@ export function isCurrentNativeControllerProcess(owner: {
   controllerBootId: string | null;
   controllerPid: number | null;
 }): boolean {
-  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+  return owner.controllerBootId === currentControllerBootId() && owner.controllerPid === process.pid;
 }
 
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
@@ -349,12 +359,29 @@ function definitivelyDifferentProcessStart(
   left: Date | null,
   right: Date | null,
 ): boolean {
-  if (left === null || right === null) return false;
-  // `ps -o lstart` has only whole-second precision on macOS and BSD. A
-  // sub-second disagreement can therefore be the same process when one probe
-  // fell back to a higher-precision spawn timestamp. Treat it as ambiguous and
-  // fail closed instead of declaring the live PID recycled.
-  return Math.abs(left.getTime() - right.getTime()) >= 1_000;
+  // Shared with every other owner proof: a sub-second gap is ambiguous.
+  return processStartsDefinitelyDiffer(left, right);
+}
+
+export type NativeControllerTakeoverDecision = {
+  allowed: boolean;
+  reason: string;
+  /** The proof used the one-release local fallback for a row with no recorded host. */
+  legacyHostFallback?: true;
+};
+
+/** Activity-log action for each use of the null-host fallback. The release
+ * that removes the fallback counts these to see whether any rows still need
+ * it. It is not a run-log event: run events are progress evidence for
+ * restart recovery, and this record must not change any recovery decision. */
+export const LEGACY_HOST_FALLBACK_EVENT = "legacy_host_unknown_dead_pid_proof";
+
+export async function recordLegacyHostFallbackProof(db: Db, run: { companyId: string; id: string; agentId: string },
+  decision: NativeControllerTakeoverDecision, source: string) {
+  if (!decision.legacyHostFallback) return;
+  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "native-restart-recovery",
+    action: LEGACY_HOST_FALLBACK_EVENT, entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+    details: { reason: decision.reason, source } });
 }
 
 export async function evaluateNativeControllerTakeover(input: {
@@ -364,7 +391,13 @@ export async function evaluateNativeControllerTakeover(input: {
     | "leaseExpiresAt"
     | "controllerPid"
     | "controllerProcessStartedAt"
-  >;
+  > & {
+    /** PID space of controllerPid. Absent for owners built from receipts
+     * that never stored one. Null on coordinator rows saved before the column
+     * existed: those keep the previous local proof for one release, outside
+     * ephemeral mode only (see LEGACY_HOST_FALLBACK_EVENT). */
+    controllerHostHash?: string | null;
+  };
   now: Date;
   coordinatedPreviousController?: {
     pid: number;
@@ -374,7 +407,7 @@ export async function evaluateNativeControllerTakeover(input: {
   readProcessStartedAt?: (pid: number) => Promise<Date | null>;
   requireStoppedController?: boolean;
   remoteLeaseFenced?: boolean;
-}): Promise<{ allowed: boolean; reason: string }> {
+}): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
   if (input.remoteLeaseFenced) {
     return owner.leaseExpiresAt && owner.leaseExpiresAt > now
@@ -397,6 +430,26 @@ export async function evaluateNativeControllerTakeover(input: {
           : "live_legacy_lease_without_controller_identity",
     };
   }
+  const recordsHost = Object.prototype.hasOwnProperty.call(owner, "controllerHostHash");
+  // A board operator confirmed this exact controller stopped (see
+  // confirmNativeControllerStopped); that attestation is the proof.
+  if (recordsHost && owner.controllerHostHash === OPERATOR_ATTESTED_CONTROLLER_HOST) {
+    return { allowed: true, reason: "operator_attested_controller_stopped" };
+  }
+  // A PID can only be judged in the PID space that recorded it. A controller
+  // on another host or namespace (or an unreadable local space) is never
+  // proven gone by a local probe; its lease or fence decides instead.
+  if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
+    return { allowed: false, reason: "controller_host_unprovable" };
+  }
+  // A row saved before the host column existed. An ephemeral (multi-host)
+  // server can never assume it was written here; a board operator decides.
+  if (recordsHost && owner.controllerHostHash == null && ephemeralServerEnabled()) {
+    return { allowed: false, reason: "controller_host_unrecorded" };
+  }
+  // Single-host servers keep the previous local proof for one release, and
+  // every use is recorded so the release that removes it can check for rows.
+  const fallback = recordsHost && owner.controllerHostHash == null ? { legacyHostFallback: true as const } : {};
   if (!isAlive(priorPid)) {
     return {
       allowed: true,
@@ -404,6 +457,7 @@ export async function evaluateNativeControllerTakeover(input: {
         owner.leaseExpiresAt !== null && owner.leaseExpiresAt <= now
           ? "expired_lease_controller_process_dead"
           : "controller_process_dead",
+      ...fallback,
     };
   }
 
@@ -416,7 +470,7 @@ export async function evaluateNativeControllerTakeover(input: {
       observedStartedAt,
     )
   ) {
-    return { allowed: true, reason: "controller_pid_recycled" };
+    return { allowed: true, reason: "controller_pid_recycled", ...fallback };
   }
 
   const coordinated = input.coordinatedPreviousController;
@@ -714,7 +768,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
-async function hasNativeExecutionStartEvidence(
+export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
   const [executionEvent] = await tx
@@ -1097,6 +1151,10 @@ export async function claimNativeRestartRecoveries(input: {
         coordinatedPreviousController:
           input.coordinatedPreviousController ?? null,
       });
+      await recordLegacyHostFallbackProof(tx as unknown as Db, row.run, takeover, "native_restart_recovery");
+      if (!takeover.allowed && takeover.reason === "controller_host_unrecorded") {
+        await requestNativeControllerStopConfirmation(tx as unknown as Db, row.coordinator);
+      }
       if (!takeover.allowed) {
         const previous = row.coordinator.recoveryHistory.at(-1);
         const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
@@ -1523,6 +1581,7 @@ export async function claimNativeRestartRecoveries(input: {
           leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
           controllerPid: controller.pid,
+          controllerHostHash: controller.hostHash ?? null,
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
           recoveryState:

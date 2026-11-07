@@ -1755,13 +1755,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       let { conversation: existingConversation, issue: existingIssue, latestConversation, isLinear } =
         await resolveInboundConversationBinding(db, {
           endpoint, thread,
-          isLinear: () => endpoint.provider === "speko" ? SPEKO_CONVERSATION_IS_LINEAR : surfaceKind !== "native_thread",
+          isLinear: () => endpoint.provider === "speko"
+            ? SPEKO_CONVERSATION_IS_LINEAR
+            : surfaceKind !== "native_thread" || (endpoint.provider === "slack" && thread.isDM),
           lookupConversation: endpoint.provider === "microsoft-teams"
             ? () => conversationForThread(endpoint.id, thread.id)
             : undefined,
           conversationIsComplete: endpoint.provider === "imessage-photon"
             ? (conversationId) => photonConversationBindingIsComplete(conversationId, hasCommittedTaskControlCompletion)
-            : undefined,
+            : endpoint.provider === "slack" && thread.isDM && surfaceKind === "native_thread"
+              ? async (conversationId, state) => state === "completed" && hasCommittedTaskControlCompletion(conversationId)
+              : undefined,
         });
       const telegramControls = endpoint.provider === "telegram"
         ? telegramInboundControls(message.text, surfaceKind)
