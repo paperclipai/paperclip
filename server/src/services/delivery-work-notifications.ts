@@ -23,6 +23,7 @@ export const DELIVERY_QUEUES = {
   resolvedDependencies: "resolved-dependencies",
   taskWatchdogs: "task-watchdogs",
   staleIssueLocks: "stale-issue-locks",
+  taskProjectReferences: "task-project-references",
   scheduledRetryDispatch: "scheduled-retry-dispatch",
   queuedRunDispatch: "queued-run-dispatch",
   statusCardEvaluation: "status-card-evaluation",

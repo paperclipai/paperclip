@@ -64,3 +64,5 @@ company deletion call. Settlement releases active charges but keeps each
 admission's complete project set for later retained-session resolution.
 Execution claims still belong to `services/heartbeat/queue.ts` and native
 review dispatch. See [execution admission accounting](../../../doc/DATABASE.md#execution-admission-accounting).
+The task-context owner reads a retained session's pinned admission through
+`readAdmittedProjects` and `retainedSessionProjects`; see [task project references](../../../doc/DATABASE.md#task-project-references).

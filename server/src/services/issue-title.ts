@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
@@ -80,6 +81,7 @@ export async function setIssueTitle(
   }
   await notifyStatusCardIssueChange(tx, companyId);
   await notifyAttentionRetentionWork(tx, { companyId });
+  await notifyTaskProjectReferences(tx, { companyId, issueId });
   await tx.update(issues).set({ title, titleNeedsGeneration: false, updatedAt: new Date() }).where(predicate);
   await issueReferenceService(tx).syncIssue(issueId, tx);
   const { publication } = await persistActivity(tx, {

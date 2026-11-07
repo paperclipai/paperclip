@@ -38,6 +38,8 @@ const describePostgres = support.supported ? describe : describe.skip;
 
 afterEach(async () => { while (cleanups.length) await cleanups.pop()?.(); });
 
+const caseReferenceTriggers = ["insert", "update", "delete"].map(operation => `paperclip_case_project_references_${operation}`);
+
 async function database() {
   const temporary = await startEmbeddedPostgresTestDatabase("paperclip-case-migration-");
   cleanups.push(temporary.cleanup);
@@ -91,11 +93,14 @@ describePostgres("case handoff migration upgrades", () => {
   it("preserves passive case data and backfills every retained source on a first upgrade", async () => {
     const { sql, connectionString } = await database();
     await sql`DROP TABLE case_handoffs, case_access_sources`;
+    // The later task-reference triggers read work_issue_id, so they are absent from this historical schema.
+    await sql.unsafe(`ALTER TABLE cases ${caseReferenceTriggers.map(name => `DISABLE TRIGGER ${name}`).join(", ")}`);
     await sql`ALTER TABLE cases DROP COLUMN work_issue_id, DROP COLUMN phase, DROP COLUMN handoff_version`;
     await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash IN ${sql(migrations.map(row => row.hash))}`;
     const row = await seed(sql);
     const before = await contentsWithoutRouting(sql);
     await applyPendingMigrations(connectionString);
+    await sql.unsafe(`ALTER TABLE cases ${caseReferenceTriggers.map(name => `ENABLE TRIGGER ${name}`).join(", ")}`);
     expect(await contentsWithoutRouting(sql)).toEqual(before);
     expect(await sql`SELECT work_issue_id, phase, handoff_version FROM cases WHERE id = ${row.caseId}`)
       .toEqual([{ work_issue_id: null, phase: null, handoff_version: 0 }]);

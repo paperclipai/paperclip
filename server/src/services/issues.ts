@@ -5,6 +5,7 @@ import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-re
 import { finishedIdleWake } from "./idle-work-proof.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
@@ -10820,6 +10821,7 @@ export function issueService(db: Db) {
         await notifyStatusCardIssueChange(tx, companyId);
         await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
+        await notifyTaskProjectReferences(tx, { companyId, issueId: values.id });
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -10922,6 +10924,7 @@ export function issueService(db: Db) {
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
       await db.transaction(async (tx) => {
+        await notifyTaskProjectReferences(tx, { companyId });
         // Self-correcting counter: seed from max(issue_number) so a drifted
         // company counter cannot mint colliding identifiers, then reserve the
         // whole range in one bump instead of one-per-issue.
@@ -11126,7 +11129,10 @@ export function issueService(db: Db) {
       const censorUsernameInLogs = (await instanceSettings.getGeneral())
         .censorUsernameInLogs;
       await db.transaction(async (tx) => {
-        for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
+        for (const companyId of new Set(rows.map(row => row.companyId))) {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await notifyTaskProjectReferences(tx, { companyId });
+        }
         const commentRows = rows.map((row) => {
           const createdAt = row.createdAt ? new Date(row.createdAt) : null;
           return {
@@ -11816,6 +11822,9 @@ export function issueService(db: Db) {
         }
         if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
           await notifyApprovalWork(tx, receiptExisting.companyId);
+        }
+        if (patch.title !== undefined || patch.description !== undefined || patch.projectId !== undefined) {
+          await notifyTaskProjectReferences(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId)
@@ -13076,6 +13085,7 @@ export function issueService(db: Db) {
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
         await notifyStatusCardIssueChange(tx, source.companyId);
+        await notifyTaskProjectReferences(tx, source);
         const [comment] = await tx
           .delete(issueComments)
           .where(eq(issueComments.id, commentId))
@@ -13116,6 +13126,7 @@ export function issueService(db: Db) {
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
         await notifyStatusCardIssueChange(tx, source.companyId);
+        await notifyTaskProjectReferences(tx, source);
         await notifyChatInboundWakeNotices(tx, source);
         const now = new Date();
         const [comment] = await tx

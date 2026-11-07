@@ -926,6 +926,86 @@ its charges, then budget reservations. Policy updates take the same project
 lock. Settlement takes no project lock. Only the project-set step is implemented
 so far; claim paths keep their current locks until they are integrated.
 
+## Task project references
+
+The task-context owner (`server/src/services/task-project-references.ts`)
+defines which projects a task's execution references. The set is the optional
+primary project union every structured `project://` link in content Paperclip
+supplies to that execution: title, description, undeleted comments, every issue
+document, plan-review annotation comments, thread interactions (text leaves of
+their JSON), workflow case facts, ancestor titles copied into the task context
+and the accepted plan revision chosen by the queued intent. A retained session
+adds its pinned admission's set. A link to another task does not import that
+task's references. Wake snapshots and handoff excerpts are bounded copies of
+these rows, so the full-source parse covers them.
+
+The caller describes the rest of the supplied context in a required
+`TaskContextSelection`. Agent instruction bundles and replayed run output are
+not covered yet: selecting either returns `unprojected_context_source`, never a
+smaller set.
+
+Migration `0439` adds triggers that run in the statement of every source write,
+whatever service, route, tool, import or direct SQL performs it. They rewrite
+that source's rows in `issue_project_references`: company-scoped candidates
+indexed by `(company_id, project_id)` for reverse lookup, including
+primaryless and `accepted_plan` rows from accepted plan confirmations. The SQL
+extractor returns every UUID inside a `project://` link, a tested superset of
+the shared parser. The migration backfills existing tasks.
+
+The triggers lock nothing but the changed source's own candidate rows, except
+that a new or moved document link share-locks its document before reading the
+body. That makes the link wait for an open body edit and index the committed
+body, and makes a later body edit wait for the link. Service writers link only
+documents created in the same transaction and edit the document before its
+link, so this adds no cycle. The table has no foreign keys. A per-task counter or a foreign-key check would lock
+the task inside source writes, while many writers lock the task before or after
+their source row (case PATCH against handoff apply, interaction expiry against
+accept, document PUT against runner writes). Task deletion removes the rows,
+and missing or foreign project IDs stay visible.
+
+The projection is only a candidate index. `resolveTaskProjectReferences` runs
+in the caller's transaction after the caller's locks and takes none. It
+reads the primary project and re-parses every linked source in one statement
+(one snapshot) with the shared parser. A selected accepted plan revision
+replaces the latest plan body. A retained session matches by the task's UUID or
+identifier, as heartbeat run state does.
+Summaries, truncation, pagination and workspace staging never shrink the set.
+It returns the complete set and a `contextRevision`, or one of these typed
+outcomes:
+
+- `lock_set_changed`: the set includes projects the caller did not lock.
+- `invalid_references`: counts of malformed (including empty) and unavailable
+  references.
+- `unauthorized`: checked by `project:read` for the execution's actor.
+- `too_many_projects`: above 100, never the first 100.
+- `context_too_large`: more than 8 MiB of linked source text.
+- `context_source_unavailable`: the accepted plan revision does not belong to
+  the task's plan.
+- `retained_context_mismatch`: the pinned session, run, agent, task and
+  admission do not agree.
+- `fresh_context_required`: the admitted set is unknown.
+- `unprojected_context_source`: the selection includes instructions or replayed
+  run output.
+
+Outcomes carry counts, never inaccessible IDs or names. `contextRevision` is a
+SHA-256 address of the outcome and the selection. Any write that changes a
+reference changes the recomputed revision; writes that change no reference
+leave it unchanged.
+
+Admission (C2) reads `readTaskProjectReferenceHint` for the same selection,
+locks those projects and resolves against that locked set. On
+`lock_set_changed` it rolls back and retries; it never appends a project lock.
+It stores `contextRevision` in `execution_admissions.context_revision`. A write
+that commits after the resolution read is detected when revalidation recomputes
+the revision. Delivery (C3) owns that comparison. Nothing calls the resolver
+from a claim path yet, so no capacity is enforced. Recording which admission
+produced a session is also later integration, so real sessions resolve to
+`fresh_context_required` until then.
+
+Issue, comment, document, case, annotation and import writers publish
+`task-project-references` work signals with the outer transaction. These are
+hints only; the sources remain the truth. Interaction writers are not wired yet.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
