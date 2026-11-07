@@ -776,6 +776,22 @@ async function reconcileNativeFinalizationsPass(
   return results;
 }
 
+/** Existing settled-work topics whose producers write registered kinds:
+ * run lifecycle and controller renewal, environment leases, settled native
+ * processes, legacy shutdown fences, native process sessions, deferred
+ * receipts, stale issue locks, queued dispatch and accounting. */
+const OWNERSHIP_REPORT_WAKE_QUEUES = [
+  DELIVERY_QUEUES.activeExecutionRecovery,
+  DELIVERY_QUEUES.orphanActiveLeases,
+  DELIVERY_QUEUES.settledNativeProcesses,
+  DELIVERY_QUEUES.legacyShutdownSettlement,
+  DELIVERY_QUEUES.nativeProcessSessions,
+  DELIVERY_QUEUES.deferredExecutionReceipts,
+  DELIVERY_QUEUES.staleIssueLocks,
+  DELIVERY_QUEUES.queuedRunDispatch,
+  DELIVERY_QUEUES.accounting,
+] as const;
+
 /** Interval between report passes while in-progress records keep changing. */
 export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
 
@@ -807,16 +823,22 @@ export function registerOwnershipReconciliationWork(
   let nextRunAt: number | null = null;
   let lastFingerprint: string | null = null;
   let lastReport: OwnershipReport | null = null;
+  // A wake is consumed only by a pass that actually ran, so a wake that lands
+  // during idle drain survives until dispatch reopens.
+  let pendingWake = true;
+  const unsubscribers: Array<() => void> = [];
   const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
     retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
     coalesceMs: OWNERSHIP_REPORT_INTERVAL_MS,
     pausePassiveMaintenance: true,
     run: async () => {
       if (!canRun()) return;
+      pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
-      const followUp = changing || report.awaitingSecondProof > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded
+        ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;
       nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
@@ -835,17 +857,20 @@ export function registerOwnershipReconciliationWork(
       lastReport = report;
       options.onReport?.(report);
     },
-    hasPending: async () => false,
+    hasPending: async () => pendingWake,
     nextRunAt: () => nextRunAt,
+    onStop: () => { for (const unsubscribe of unsubscribers.splice(0)) unsubscribe(); },
   });
-  const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.activeExecutionRecovery, () => worker.wake());
+  // Producers of the registered kinds that already publish settled work
+  // signals. Kinds whose writers publish none are read on any of these
+  // wakes and at startup (named in the report's coverage gaps).
+  for (const queue of OWNERSHIP_REPORT_WAKE_QUEUES) {
+    unsubscribers.push(subscribeDeliveryWork(db, queue, () => { pendingWake = true; worker.wake(); }));
+  }
   return {
     ready: worker.ready,
     wake: worker.wake,
     lastReport: () => lastReport,
-    async stop() {
-      unsubscribe();
-      await worker.stop();
-    },
+    stop: worker.stop,
   };
 }
