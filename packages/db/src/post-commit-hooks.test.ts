@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, registerPostCommitHook } from "./client.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
+import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -17,7 +21,7 @@ describePostgres("post-commit hooks on a createDb database", () => {
     db = createDb(database.connectionString);
     observer = createDb(database.connectionString);
     await db.execute(sql`create table post_commit_probe (id text primary key)`);
-  }, 60_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
     await db?.$client.end();
@@ -80,6 +84,40 @@ describePostgres("post-commit hooks on a createDb database", () => {
     expect(ran).toEqual([kept]);
     expect(await committed(kept)).toBe(true);
     expect(await committed(rolledBack)).toBe(false);
+  });
+
+  it("runs hooks in registration order across a savepoint and its outer transaction", async () => {
+    const ran: string[] = [];
+
+    await db.transaction(async (tx) => {
+      registerPostCommitHook(tx, () => { ran.push("outer before"); });
+      await tx.transaction(async (savepoint) => {
+        registerPostCommitHook(savepoint, () => { ran.push("savepoint"); });
+        registerPostCommitHook(tx, () => { ran.push("outer during savepoint"); });
+        await savepoint.transaction(async (inner) => {
+          registerPostCommitHook(inner, () => { ran.push("inner savepoint"); });
+        });
+      });
+      registerPostCommitHook(tx, () => { ran.push("outer after"); });
+    });
+
+    expect(ran).toEqual(["outer before", "savepoint", "outer during savepoint", "inner savepoint", "outer after"]);
+  });
+
+  it("drops the hooks of a savepoint nested in a savepoint that rolls back", async () => {
+    const ran: string[] = [];
+
+    await db.transaction(async (tx) => {
+      await expect(tx.transaction(async (savepoint) => {
+        await savepoint.transaction(async (inner) => {
+          registerPostCommitHook(inner, () => { ran.push("inner"); });
+        });
+        throw new Error("outer savepoint abort");
+      })).rejects.toThrow("outer savepoint abort");
+      registerPostCommitHook(tx, () => { ran.push("outer"); });
+    });
+
+    expect(ran).toEqual(["outer"]);
   });
 
   it("keeps the committed result when a hook fails and still runs the later hooks", async () => {
