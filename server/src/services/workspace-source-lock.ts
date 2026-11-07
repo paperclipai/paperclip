@@ -80,6 +80,7 @@ export async function retainManagedProjectSource(db: Db, companyId: string, cwd:
 }
 
 export async function workspaceSourceIdentities(companyId: string, cwd: string) {
+  cwd = await canonicalRepositoryRoot(cwd);
   const git = await readWorkspaceGitSourceRoots(cwd, { ancestors: true });
   const roots = [cwd, ...(git ? [git.root, git.gitDirectory.path, git.commonDirectory.path,
     ...git.objectDirectories.map(directory => directory.path)] : [])];

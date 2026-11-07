@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -235,6 +235,37 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
   return [];
 }
 
+async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace) {
+  const sourceRoot = rootOf(workspace);
+  if (!sourceRoot) return [];
+  const root = await physicalPath(sourceRoot);
+  const rows = await db.select({ operation: workspaceOperations, snapshot: executionWorkspaceSnapshots })
+    .from(workspaceOperations).innerJoin(executionWorkspaceSnapshots, and(
+      eq(executionWorkspaceSnapshots.companyId, workspaceOperations.companyId),
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
+      eq(executionWorkspaceSnapshots.sourceOperationId, workspaceOperations.id),
+    )).where(and(eq(workspaceOperations.companyId, workspace.companyId),
+      ne(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.phase, "remote_workspace_migration"),
+      eq(workspaceOperations.status, "succeeded"), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"]),
+      sql`${workspaceOperations.metadata}->>'snapshotId' = ${executionWorkspaceSnapshots.id}::text`,
+    )).orderBy(asc(workspaceOperations.id)).limit(10241);
+  if (rows.length > 10240) throw new Error("nested_workspace_scope_limit");
+  const located = [];
+  for (const row of rows) {
+    if (!row.operation.cwd) continue;
+    located.push({ ...row, sourcePath: await physicalPath(row.operation.cwd) });
+  }
+  return located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`))
+    .sort((a, b) => a.sourcePath.length - b.sourcePath.length || a.operation.id.localeCompare(b.operation.id));
+}
+
+export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace: Workspace) {
+  return (await importedWorkspaceCandidates(db, workspace)).map(({ operation, snapshot, sourcePath }) => ({
+    workspaceId: snapshot.executionWorkspaceId, operationId: operation.id, snapshotId: snapshot.id,
+    sourcePath, manifestDigest: snapshot.manifestDigest, operationManifestDigest: operation.metadata?.manifestDigest,
+  }));
+}
+
 /** Runtime-created nested task folders can be omitted only after an exact
  * committed import covers their current bytes. Ordinary user folders stay in
  * the parent archive. The snapshot owner retains the resulting dependencies. */
@@ -243,26 +274,10 @@ export async function prepareNestedWorkspaceImports(input: {
   recordedChildren?: ImportedWorkspaceChild[]; gitSourceRoots?: string[];
 }): Promise<ImportedWorkspaceChild[]> {
   const sourceRoot = rootOf(input.workspace);
-  if (!sourceRoot) return [];
-  if (input.recordedChildren && !input.recordedChildren.length) return [];
+  if (!sourceRoot || input.recordedChildren && !input.recordedChildren.length) return [];
   const root = await physicalPath(sourceRoot);
-  const rows = await input.db.select({ operation: workspaceOperations, snapshot: executionWorkspaceSnapshots })
-    .from(workspaceOperations).innerJoin(executionWorkspaceSnapshots, and(
-      eq(executionWorkspaceSnapshots.companyId, workspaceOperations.companyId),
-      eq(executionWorkspaceSnapshots.executionWorkspaceId, workspaceOperations.executionWorkspaceId),
-      eq(executionWorkspaceSnapshots.sourceOperationId, workspaceOperations.id),
-    )).where(and(eq(workspaceOperations.companyId, input.workspace.companyId),
-      ne(workspaceOperations.executionWorkspaceId, input.workspace.id), eq(workspaceOperations.phase, "remote_workspace_migration"),
-      eq(workspaceOperations.status, "succeeded"), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"]),
-      sql`${workspaceOperations.metadata}->>'snapshotId' = ${executionWorkspaceSnapshots.id}::text`,
-    ));
-  const located = [];
-  for (const row of rows) {
-    if (!row.operation.cwd || input.recordedChildren && !input.recordedChildren.some(child => child.operationId === row.operation.id)) continue;
-    located.push({ ...row, sourcePath: await physicalPath(row.operation.cwd) });
-  }
-  const candidates = located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`))
-    .sort((a, b) => a.sourcePath.length - b.sourcePath.length || a.operation.id.localeCompare(b.operation.id));
+  const candidates = (await importedWorkspaceCandidates(input.db, input.workspace)).filter(row =>
+    !input.recordedChildren || input.recordedChildren.some(child => child.operationId === row.operation.id));
   const covered: ImportedWorkspaceChild[] = [];
   for (const { operation, snapshot, sourcePath } of candidates) {
     input.signal?.throwIfAborted();

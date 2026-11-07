@@ -3,7 +3,7 @@ import path from "node:path";
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { inspectOnlineOrdinarySource, physicalPath, requiresOnlineOrdinarySource, type WorkspaceSourceScope } from "./remote-workspace-migration-tree.js";
+import { inspectImportedWorkspaceSourcePaths, inspectOnlineOrdinarySource, physicalPath, requiresOnlineOrdinarySource, type WorkspaceSourceScope } from "./remote-workspace-migration-tree.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceRecoverySource, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
@@ -17,6 +17,7 @@ type Identities = Awaited<ReturnType<typeof workspaceSourceIdentities>>;
 export type OnlineWorkspaceSource = WorkspaceSourceScope & {
   kind: "ordinary" | "git"; projectIds: string[];
   gitSourceFingerprints?: Array<{ workspaceId: string; fingerprint: string | null }>;
+  importedChildren?: Array<Awaited<ReturnType<typeof inspectImportedWorkspaceSourcePaths>>[number] & { gitFingerprint: string | null }>;
   companions: Array<{ workspaceId: string; sources: LegacyWorkspaceRecoverySource[];
     holds: Array<OnlineLegacyWorkspaceRecoveryHold & { actionId: string }> }>;
 };
@@ -89,6 +90,16 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     } catch { return null; }
   }
   const projectIds = new Set(selected.projectIds), physicalIssueIds = new Set(selected.issueIds), aliases = new Set<string>();
+  const importedChildren: NonNullable<OnlineWorkspaceSource["importedChildren"]> = [];
+  try {
+    for (const child of await inspectImportedWorkspaceSourcePaths(db, workspace)) {
+      const identities = await workspaceSourceIdentities(workspace.companyId, child.sourcePath);
+      if (identities.unownedPaths.length) return null;
+      for (const id of identities.projectIds) projectIds.add(id);
+      for (const id of identities.issueIds) physicalIssueIds.add(id);
+      importedChildren.push({ ...child, gitFingerprint: identities.git?.fingerprint ?? null });
+    }
+  } catch { return null; }
   for (;;) {
     let changed = false;
     for (const node of nodes) {
@@ -153,6 +164,6 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     physicalRoots: included.map(node => node.row.cwd ?? node.row.providerRef!).sort(),
     settledPreparedWorkspaceIds: settledPreparedWorkspaceIds.sort(), settledRecoveryIssueIds: [...settledRecoveryIssueIds].sort(),
     settledFinalizationRunIds: [...new Set(companions.flatMap(proof => proof.sources.map(source => source.runId)))].sort(),
-    gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.identities.git?.fingerprint ?? null })),
+    gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.identities.git?.fingerprint ?? null })), importedChildren,
   };
 }

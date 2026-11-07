@@ -24,6 +24,18 @@ async function repository(name = "repository") {
   return cwd;
 }
 describe("Git physical source roots", () => {
+  it.each([false, true])("maps a configured directory symlink before strict Git inspection (%s)", async isGit => {
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    const companyId = randomUUID(), projectId = randomUUID();
+    const cwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+    await fs.mkdir(cwd, { recursive: true });
+    if (isGit) await git(cwd, "init", "-q");
+    const alias = path.join(root, "configured-source");
+    await fs.symlink(cwd, alias);
+    expect(await workspaceSourceIdentities(companyId, alias)).toMatchObject({ projectIds: [projectId], unownedPaths: [] });
+    expect(await workspaceSourceIdentities(companyId, alias)).toEqual(await workspaceSourceIdentities(companyId, cwd));
+    await expect(readWorkspaceGitSourceRoots(alias)).rejects.toThrow("workspace_git_source_unproven");
+  });
   it("binds actual linked worktree administration and the full shared object-store root", async () => {
     const source = await repository(), cwd = path.join(root, "task worktree");
     await git(source, "worktree", "add", "-b", "task", cwd);

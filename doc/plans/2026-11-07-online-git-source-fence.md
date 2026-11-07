@@ -15,6 +15,11 @@ not a source closure. The bounds are 1,000 company records, 256 cohort records,
 128 source keys, 32 borrowed stores, and four alternate levels. Foreign minimal
 paths use the existing bounded scan of 256 records per page, at most 40 pages.
 
+Configured directory aliases resolve through the existing canonical path owner
+before Git inspection. Git pointer files and administration/object-store links
+retain their strict checks. A configured symlink does not make a direct symlink
+migration source admissible.
+
 Preparation, lifecycle, runtime-service, expiration, and reopen owners retain
 the same physical keys before filesystem mutation or lifecycle exclusion. The
 importer holds all cohort task/project and lifecycle keys through publication.
@@ -31,6 +36,13 @@ changed coverage remains blocked. The archive retains its three source walks,
 history normalization, Git/fsck checks, manifest ordering, and byte format. Its
 self-contained remote function checks that every Git store belongs to the held
 physical source roots. It preserves the original source files.
+
+Imported child paths come from the same exact completed migration/snapshot
+selector used by nested source verification. Their physical Git owners remain
+in the parent fence after their database rows become remote. The selector bounds
+company migration receipts to 10,240 and binds each child path, operation,
+snapshot, digest and Git metadata proof. Current remote child execution does not
+reacquire authority over those historical host files.
 
 A source metadata observation at `2026-11-06T23:15:08.979Z` examined 160 pending
 Git records and 120 unique paths. It found 92 Git pointers, 49 Git directories,
