@@ -102,19 +102,29 @@ function finalize(
   }
 
 /**
+ * ACPX closes, rather than restores, a turn that a restart interrupted after
+ * the runner had recorded its accepted semantic result.
+ */
+const ACPX_RESTART_CLOSED_TURN_CODE = "acpx_active_turn_recovery_closed";
+
+/**
  * The restored runner reports a turn lost on restore when it cannot prove the
- * turn's outcome itself. When Paperclip already holds the semantic result this
- * exact turn proposed, that result is the turn's outcome: the turn settles as
- * completed instead of failing the run and rerunning finished work. Live
- * notifications and recovery reads use the same rule. Any other terminal, or a
- * lost turn without a held result, is returned unchanged.
+ * turn's outcome itself, and ACPX closes the turn when its runner already
+ * recorded the accepted result. In both cases a restart lost only the provider
+ * turn. When Paperclip already holds the semantic result this exact turn
+ * proposed, that result is the turn's outcome: the turn settles as completed
+ * instead of failing the run and rerunning finished work. Live notifications
+ * and recovery reads use the same rule. Any other terminal, or a lost turn
+ * without a held result, is returned unchanged.
  */
 export function settleRestoreLostTurnWithHeldResult(
   state: CodexSessionState,
   turn: Record<string, unknown>,
   turnId = text(turn.id),
 ): Record<string, unknown> {
-  if (text(turn.status) !== "failed" || !isNativeRestartInterruption(turn.error) ||
+  const restartLost = isNativeRestartInterruption(turn.error) ||
+    record(turn.error).code === ACPX_RESTART_CLOSED_TURN_CODE;
+  if (text(turn.status) !== "failed" || !restartLost ||
       state.result === null || turnId.length === 0 || state.resultTurnId !== turnId) {
     return turn;
   }

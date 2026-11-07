@@ -1324,11 +1324,16 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it.each([true, false])("settles a live restore-lost terminal from its durable result only when one is held (held=%s)", async (held) => {
+  it.each([
+    { held: true, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: false, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: true, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+    { held: false, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+  ])("settles a live restart-lost terminal from its durable result only when one is held ($lost.code, held=$held)", async ({ held, lost }) => {
     // ACPX reports the lost turn as a live notification after the session
-    // reopens, not through thread/read. An accepted result for that exact turn
-    // must still finalize as a completed turn instead of a failed run.
-    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    // reopens, not through thread/read. When runnerd already recorded the
+    // accepted result, it closes the turn instead of restoring it. An accepted
+    // result for that exact turn must still finalize as a completed turn.
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
     second.readResponse = {
