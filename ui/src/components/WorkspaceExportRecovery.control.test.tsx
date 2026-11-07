@@ -316,6 +316,32 @@ describe("governed retained-file recovery", () => {
       expect(container.textContent).toContain("Restoring saved work…");
     });
 
+    it("offers the same action for retained saved-work recovery held by a stopped copyback owner", async () => {
+      api.resume.mockResolvedValue({ runId: "run-1", resultId: null, status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }] });
+      const held = { ...action, evidence: { ...action.evidence,
+        workspaceOwnerRecovery: { state: "operator_required", owner: { token: "retained-token", hostname: "secret-host", pid: 9 } } } } as IssueRecoveryAction;
+      await mount(held);
+      expect(button("Recover saved files")).toBeUndefined();
+      expect(container.textContent).not.toContain("secret-host");
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server process exited and was not restarted.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.resume).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+        ownerToken: "retained-token", controllerAndCopybackStopped: true,
+        stopEvidence: "The old server process exited and was not restarted." });
+      // Once confirmed or resuming, the ordinary retained recovery controls return.
+      await mount({ ...held, evidence: { ...held.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);
+      expect(button("Confirm the previous server stopped")).toBeUndefined();
+      expect(container.querySelector('[data-testid="retained-file-recovery"]')).not.toBeNull();
+    });
+
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
       // The default fixture is an operator: it may resolve other recovery but not attest a controller stop.
       await mount({ ...ownerAction, evidence: { ...ownerAction.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);

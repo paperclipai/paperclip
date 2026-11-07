@@ -19,6 +19,14 @@ import { Textarea } from "./ui/textarea";
 export function WorkspaceExportRecovery({ action, className, issueId, companyId, showStatus = true }: {
   className?: string; action: IssueRecoveryAction | null; issueId?: string; companyId?: string; showStatus?: boolean;
 }) {
+  // A restart killed the copyback owner of retained saved-work recovery. Recovery
+  // and any accepted Retry wait on its receipt; the confirmation is the one action.
+  const retainedOwnerToken = action && issueId && companyId && isRetainedExport(action, issueId, companyId)
+    ? retainedOwnerStopToken(action) : null;
+  if (action && issueId && companyId && retainedOwnerToken) {
+    return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}:${retainedOwnerToken}`}
+      action={action} ownerToken={retainedOwnerToken} issueId={issueId} companyId={companyId} className={className} />;
+  }
   if (action && issueId && companyId && isRetainedExport(action, issueId, companyId)) {
     return <RetainedFilesRecovery key={`${companyId}:${issueId}:${action.id}:${action.evidence.runId}`}
       action={action} issueId={issueId} companyId={companyId} className={className} />;
@@ -27,7 +35,8 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   // The task's interruption names this wait; the confirmation is its one action.
   if (ownerRecovery && issueId && companyId && isOwnerStopRequired(action, issueId, companyId)) {
     return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}`}
-      action={action} issueId={issueId} companyId={companyId} className={className} />;
+      action={action} ownerToken={asObject(action.evidence.owner).token as string}
+      issueId={issueId} companyId={companyId} className={className} />;
   }
   if (!showStatus) return null;
   if (!action || (!ownerRecovery && !isNativeWorkspaceExportRepairCause(action.cause)) || action.ownerType !== "board"
@@ -54,13 +63,20 @@ function isOwnerStopRequired(action: IssueRecoveryAction, issueId: string, compa
     && !action.evidence.workspaceOwnerStop && asObject(action.evidence.workspaceOwnerRecovery).state !== "resuming";
 }
 
+/** The exact receipt #19721 records when retained recovery waits on a stopped copyback owner. */
+function retainedOwnerStopToken(action: IssueRecoveryAction): string | null {
+  const hold = asObject(action.evidence.workspaceOwnerRecovery);
+  const token = asObject(hold.owner).token;
+  return hold.state === "operator_required" && !action.evidence.workspaceOwnerStop
+    && typeof action.evidence.runId === "string" && typeof token === "string" && token.length > 0 ? token : null;
+}
+
 /** A previous server that can no longer report cannot confirm its own stop.
  * The board confirms it once; the saved result then finishes without another agent turn. */
-function PreviousServerStopConfirmation({ action, issueId, companyId, className }: {
-  action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
+function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className }: {
+  action: IssueRecoveryAction; ownerToken: string; issueId: string; companyId: string; className?: string;
 }) {
   const runId = action.evidence.runId as string;
-  const ownerToken = asObject(action.evidence.owner).token as string;
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [evidence, setEvidence] = useState("");
