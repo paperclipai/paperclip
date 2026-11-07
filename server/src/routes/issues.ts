@@ -10308,7 +10308,7 @@ export function issueRoutes(
         }
 
         if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === "native_workspace_finalization_owner_unverified") {
-          throw conflict("Verify the previous controller and its copyback processes stopped, then use Resume saved result.", { code: "workspace_owner_stop_required" });
+          throw conflict("Paperclip is still confirming that the previous server stopped. Saving resumes without repeating the agent's work.", { code: "workspace_owner_stop_required" });
         }
 
         if (outcome === "restored" && isNativeWorkspaceExportRepairCause(activeRecoveryAction.cause)) {

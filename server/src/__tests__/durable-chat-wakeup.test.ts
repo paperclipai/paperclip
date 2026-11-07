@@ -133,7 +133,7 @@ describe("durable inbound chat scheduler receipts", () => {
       status: "running",
       // This fixture-owned slot has no provider process/work. Its retirement
       // must not impersonate an ambiguous legacy provider failure.
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       contextSnapshot: { issueId: deferred ? issueId : randomUUID() },
     });
     runningProcesses.set(activeRunId, {

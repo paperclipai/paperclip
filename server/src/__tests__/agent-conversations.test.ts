@@ -986,6 +986,13 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
@@ -993,6 +1000,12 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain('payload.target to { type: "issue_document", key: "plan", revisionId: latestRevisionId }');
     expect(AGENT_CHAT_DIRECTIVE).toContain("ordinary conversation replies and draft planning do not need confirmation");
     expect(AGENT_CHAT_DIRECTIVE).toContain("In Ask mode, discuss the plan without creating or revising documents or approval cards");
+  });
+
+  it("gives chat replies a usable route for both task and approval sources", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
   });
 
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {

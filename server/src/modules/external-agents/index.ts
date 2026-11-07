@@ -19,3 +19,5 @@ export function createDotPrincipalHttp(oauth: Parameters<typeof dotPrincipalCont
 } {
   return { bodyParser: dotPrincipalControlBodyParser(), matchesPost: isDotPrincipalControlPost, router: dotPrincipalControlRoutes(oauth) };
 }
+
+export { notifyMuseContactVerification, pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope } from "./muse-verification-work.js";
