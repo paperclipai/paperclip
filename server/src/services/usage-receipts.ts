@@ -340,7 +340,12 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        ...(reconciled && late?.receipt.complete && previous.accountingClosureTimedOut === true
+          ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }

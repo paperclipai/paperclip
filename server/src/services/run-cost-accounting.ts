@@ -1,6 +1,6 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
@@ -119,7 +119,7 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * blocking policy still counts it and the board sees which run it was. */
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
 const closureEvidenceTimedOut = sql`${heartbeatRuns.runtimeMode} = 'native'
-  and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
+  and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
   and coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
     <= now() - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`;
@@ -373,10 +373,15 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
     ) running_service_invocations`);
   // Wake when a run waiting for closure evidence reaches its bound.
   const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true),
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true), isNull(heartbeatRuns.costAccountedAt),
       sql`${heartbeatRuns.usageJson}->>'accountingReceiptReady' = 'false'`,
-      sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')`,
-      settledNativeCoordinator));
+      sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
+      sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')`,
+      settledNativeCoordinator,
+      // Only future bounds: a run already past it is in the actionable scan,
+      // and a past deadline must never schedule an immediate pass again.
+      sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
+        > now() - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`));
   const closureAt = closure?.at == null ? null : new Date(closure.at).getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1;
   const serviceAt = deadline?.at == null ? null : new Date(deadline.at).getTime();
   const nextRunAt = serviceAt === null ? closureAt : closureAt === null ? serviceAt : Math.min(serviceAt, closureAt);

@@ -500,6 +500,43 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.readRun()).costAccountingPending).toBe(true);
   });
 
+  it("bounds a succeeded run whose accepted result left its receipt incomplete", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: true });
+    expect(await f.block()).toBeNull();
+  });
+
+  it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
+    const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })
+      .where(eq(heartbeatRuns.id, past.run.id));
+    expect((await readCostAccountingWork(db, Date.now())).nextRunAt).toBeNull();
+  });
+
+  it("stops blocking once a complete late receipt accounts for a timed-out closure", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 6,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "claude-sonnet-5", billingType: "metered_api", costUsd: 0.25, costStatus: "reported",
+        pricingProvenance: { source: "provider_reported", version: "test" },
+        usage: { inputTokens: 1200, cachedInputTokens: 0, outputTokens: 80 } } });
+    await accountRunCost(db, f.run.id);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: false });
+    expect(await f.block()).toBeNull();
+  });
+
   it("keeps the blocking policy for a timed-out closure, since the run may still spend", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
