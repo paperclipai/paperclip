@@ -38,7 +38,7 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
-import { execute } from "./execute.js";
+import { execute, realFaultBeyondTeardown } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
@@ -224,5 +224,113 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
+  });
+});
+
+const TEARDOWN_STDERR = [
+  'Traceback (most recent call last):',
+  '  File "/opt/hermes/tools/code_execution_tool.py", line 673, in accept',
+  '    client, addr = sock.accept()',
+  '  File "/usr/lib/python3.11/socket.py", line 924, in accept',
+  '    return self._accept()',
+  'OSError: [Errno 9] Bad file descriptor',
+].join("\n");
+
+describe("realFaultBeyondTeardown", () => {
+  it("does not treat RPC socket teardown as a fault", () => {
+    expect(realFaultBeyondTeardown(TEARDOWN_STDERR)).toBe(false);
+  });
+
+  it("still reports a fault that appears alongside teardown", () => {
+    expect(
+      realFaultBeyondTeardown(
+        `${TEARDOWN_STDERR}\nValueError: could not parse tool arguments`,
+      ),
+    ).toBe(true);
+    expect(
+      realFaultBeyondTeardown(
+        `${TEARDOWN_STDERR}\nMemoryError`,
+      ),
+    ).toBe(true);
+    expect(
+      realFaultBeyondTeardown(
+        `${TEARDOWN_STDERR}\nJavaScript heap out of memory`,
+      ),
+    ).toBe(true);
+  });
+
+  it("reports a bare OSError that is not the teardown errno", () => {
+    expect(
+      realFaultBeyondTeardown("Traceback (most recent call last):\nOSError: [Errno 2] No such file or directory"),
+    ).toBe(true);
+  });
+
+  it("reports a traceback whose final exception line has no message", () => {
+    expect(
+      realFaultBeyondTeardown(`${TEARDOWN_STDERR}\nValueError`),
+    ).toBe(true);
+  });
+
+  it("reports a fault that appears before the teardown traceback", () => {
+    expect(
+      realFaultBeyondTeardown(
+        `Error: provider unavailable\n${TEARDOWN_STDERR}`,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("teardown-only stderr does not fail a run", () => {
+  async function runWith(stderr: string, exitCode: number) {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode,
+      signal: null,
+      timedOut: false,
+      stdout: "work produced\n",
+      stderr,
+      pid: null,
+      startedAt: null,
+    });
+    const { ctx } = makeCtx();
+    return execute(ctx as any);
+  }
+
+  it("stays clean when the only stderr is the RPC socket closing", async () => {
+    const result = await runWith(TEARDOWN_STDERR, 0);
+    expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("does not fail on a non-zero exit that is teardown only", async () => {
+    const result = await runWith(TEARDOWN_STDERR, 1);
+    expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("reports the exit code the run completion path uses for a teardown-only exit", async () => {
+    const result = await runWith(TEARDOWN_STDERR, 1);
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+    expect(result.signal ?? null).toBeNull();
+    expect(result.timedOut).toBe(false);
+  });
+
+  it("still fails when a real fault accompanies the teardown", async () => {
+    const result = await runWith(
+      `${TEARDOWN_STDERR}\nValueError: tool arguments were malformed`,
+      1,
+    );
+    expect(result.errorMessage).toBeDefined();
+  });
+
+  it("still reports a plain non-zero exit with no teardown", async () => {
+    const result = await runWith("", 130);
+    expect(result.errorMessage).toBe("Hermes exited with code 130");
+  });
+
+  it("keeps the real exit code when a fault accompanies the teardown", async () => {
+    const result = await runWith(
+      `${TEARDOWN_STDERR}\nValueError: tool arguments were malformed`,
+      1,
+    );
+    expect(result.exitCode).toBe(1);
   });
 });
