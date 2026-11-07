@@ -7276,11 +7276,15 @@ function harnessBackupRoot(root: string): string {
 async function restoreDurableHarnessForExecution(db: Db, execution: NativeExecutionInput, root: string) {
   const storage = durableNativeHarnessStorage();
   if (!storage) return;
-  // Stop during startup aborts this source; a completed startup's signal is not reused.
-  const stop = nativeSessionStartups.get(execution.binding.runId)?.providerPackSourceAbort.signal;
+  // Stop or lease loss during startup aborts this source, including before this
+  // restore begins. Only a completed startup's signal is not reused.
+  const startupSignal = nativeSessionStartups.get(execution.binding.runId)?.providerPackSourceAbort.signal;
+  const completed = startupSignal?.aborted && startupSignal.reason instanceof Error
+    && startupSignal.reason.message === "native_execution_startup_completed";
+  const stop = completed ? undefined : startupSignal;
   await restoreDurableNativeHarnessBackup({ db, storage, companyId: execution.binding.companyId,
     scopeDigest: createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex"),
-    backupRoot: harnessBackupRoot(root), signal: stop && !stop.aborted ? stop : undefined,
+    backupRoot: harnessBackupRoot(root), signal: stop,
     downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
 }
 

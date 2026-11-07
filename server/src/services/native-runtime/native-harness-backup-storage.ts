@@ -302,7 +302,7 @@ export const NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED = "native_harness_storage_
  * cancellation (Stop) keeps its own reason.
  */
 async function withDownloadProgressDeadline<T>(
-  input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number },
+  input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number; restoreMaxMs?: number },
   run: (storage: StorageService, signal: AbortSignal | undefined) => Promise<T>,
 ): Promise<T> {
   const idleMs = input.downloadIdleTimeoutMs;
@@ -310,7 +310,7 @@ async function withDownloadProgressDeadline<T>(
   if (!Number.isSafeInteger(idleMs) || idleMs <= 0) throw new Error("native_harness_storage_idle_timeout_invalid");
   const stall = new AbortController();
   const outer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED)),
-    Math.max(idleMs, NATIVE_HARNESS_RESTORE_MAX_MS));
+    input.restoreMaxMs ?? Math.max(idleMs, NATIVE_HARNESS_RESTORE_MAX_MS));
   outer.unref?.();
   const signal = input.signal ? AbortSignal.any([input.signal, stall.signal]) : stall.signal;
   const base = input.storage;
@@ -357,7 +357,7 @@ async function withDownloadProgressDeadline<T>(
 
 export async function restoreDurableNativeHarnessBackup(input: {
   db: Db; storage: StorageService; companyId: string; scopeDigest: string;
-  backupRoot: string; signal?: AbortSignal; downloadIdleTimeoutMs?: number;
+  backupRoot: string; signal?: AbortSignal; downloadIdleTimeoutMs?: number; restoreMaxMs?: number;
 }): Promise<boolean> {
   return withDownloadProgressDeadline(input, (storage, signal) => restoreCurrentNativeHarnessBackup({ ...input, storage, signal }));
 }
@@ -407,6 +407,8 @@ async function restoreCurrentNativeHarnessBackup(input: {
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
     try {
       await cp(restored, pending, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+      // A deadline or Stop that fired during the local copy must not publish.
+      input.signal?.throwIfAborted();
       await publishNativeHarnessBackup({ db: input.db, companyId: input.companyId, scopeDigest: input.scopeDigest,
         backupRoot: input.backupRoot, pendingRoot: pending });
     } finally { await removeNativeHarnessBackup(pending); }
