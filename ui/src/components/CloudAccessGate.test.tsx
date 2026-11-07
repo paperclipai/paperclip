@@ -202,6 +202,17 @@ describe("CloudAccessGate restart recovery", () => {
     await flushReact();
     await flushReact();
     expect(container.querySelector("textarea")).not.toBeNull();
+    const boot = (userId: string, companyIds: string[]) => ({
+      session: { id: `session-${userId}`, userId },
+      user: { id: userId, name: "Operator", email: `${userId}@example.com`, image: null },
+      boardBootstrap: { userId, companies: [], boardAccess: { userId, isInstanceAdmin: false, companyIds } },
+    });
+    client.setQueryData(queryKeys.auth.session, boot("other", ["other-company"]));
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, boot("user", []));
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("No organization access");
   });
 
   it.each(["401", "success"])("ignores a late %s from the previous account after an account change", async outcome => {

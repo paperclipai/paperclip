@@ -6,7 +6,7 @@ import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { boardAccessQueryOptions } from "@/api/board-access-query";
-import { useBootstrapQuery } from "@/api/bootstrap-query";
+import { markBootstrapSnapshotApplied, useBootstrapQuery } from "@/api/bootstrap-query";
 import { healthApi } from "@/api/health";
 import { isTemporaryApiError } from "@/api/response";
 import { useConnectivityStore } from "@/lib/connectivity";
@@ -131,6 +131,16 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
         let denied = deniedBootstrapAccounts.get(queryClient);
         if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Set());
         denied.add(sessionUserId);
+      },
+      () => {
+        const denied = deniedBootstrapAccounts.get(queryClient);
+        if (!sessionUserId || !denied?.has(sessionUserId)) return;
+        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+        if (current?.user.id !== sessionUserId) return;
+        if (current.boardBootstrap?.userId === sessionUserId && current.boardBootstrap.boardAccess.userId === sessionUserId) {
+          markBootstrapSnapshotApplied(queryClient, [...queryKeys.access.currentBoardAccess, sessionUserId], current.boardBootstrap);
+        }
+        denied.delete(sessionUserId);
       },
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,

@@ -9,6 +9,7 @@ export function boardAccessQueryOptions(
   updatedAt: number,
   onAccountChanged: () => void,
   onAccessDenied?: () => void,
+  onAccessVerified?: () => void,
 ) {
   const initialData = userId && bootstrap?.userId === userId && bootstrap.boardAccess.userId === userId
     ? bootstrap.boardAccess
@@ -32,6 +33,7 @@ export function boardAccessQueryOptions(
         onAccountChanged();
         throw new ApiError("The signed-in account changed. Checking your session again.", 401, { code: "session_changed" });
       }
+      onAccessVerified?.();
       return { userId: access.userId, isInstanceAdmin: access.isInstanceAdmin, companyIds: access.companyIds };
     },
   };
