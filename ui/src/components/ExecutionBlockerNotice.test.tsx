@@ -41,6 +41,12 @@ describe("ordinary task interruption", () => {
   it.each(["working", "resolved"] as const)("does not duplicate the thread indicator for %s", async state => {
     await render({ ...failed, state }); expect(container.textContent).toBe("");
   });
+  it("names the admission hold a task that has not started waits for", async () => {
+    await render({ ...failed, state: "working", canRetry: false, sourceRunIds: [], observedRunId: null,
+      retryWait: { reason: "budget.blocked", message: "Waiting for the budget to allow new work. The task starts automatically when it does." } });
+    expect(container.textContent).toBe("Waiting for the budget to allow new work. The task starts automatically when it does.");
+    expect(container.querySelector("button")).toBeNull();
+  });
   it("names the saved-work recovery step instead of a bare queue", async () => {
     await render({ ...failed, state: "working", canRetry: false, recoveryStep: "saving_previous_files" });
     expect(container.textContent).toBe("Saving files from the previous attempt…");
