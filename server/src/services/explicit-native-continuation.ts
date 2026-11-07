@@ -401,8 +401,20 @@ export async function admitExplicitNativeContinuation(input: {
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
         && await hasVerifiedWorkspaceRepair(db, run);
-      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled))
-        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
+        // Nothing finishes the saved result while a stopped copyback owner is
+        // unverified. The run's live retained recovery records that hold; name
+        // its board action instead of an endless finalizing wait (RC-50).
+        const [ownerHold] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'`,
+          sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).limit(1);
+        return ownerHold
+          ? blocked("workspace_owner_stop_required", "A board member must confirm that the previous server stopped copying files. Your Retry is saved.")
+          : blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      }
     }
     // A repaired export no longer blocks execution. Its machine receipt still
     // binds the saved user turn; finalized file state alone is insufficient.
