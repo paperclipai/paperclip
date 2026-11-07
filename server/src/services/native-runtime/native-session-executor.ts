@@ -856,15 +856,23 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   });
 }
 
+export async function prepareIdleWarmNativeSessionsForSleep(input: {
+  canRetire: () => boolean;
+}): Promise<{ closed: number; busy: number; failed: number }> {
+  return closeIdleWarmNativeSessions({ reason: "tenant idle sleep", canRetire: input.canRetire });
+}
+
 async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
+  canRetire?: () => boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
   let busy = 0;
   let failed = 0;
   for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.canRetire && !input.canRetire()) break;
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
@@ -890,7 +898,6 @@ async function closeIdleWarmNativeSessions(input: {
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
-      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       failed += 1;
     } finally {
       entry.busy = false;
@@ -898,6 +905,7 @@ async function closeIdleWarmNativeSessions(input: {
         closingWarmNativeSessions.delete(sessionId);
       }
     }
+    if (input.canRetire && !input.canRetire()) break;
   }
   return { closed, busy, failed };
 }
@@ -7391,7 +7399,6 @@ async function releaseWarmNativeSession(
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
       forgetWarmNativeSession(sessionId, entry);
     } catch (error) {
-      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       if (requireCleanClose) throw error;
     } finally { entry.busy = false; }
     return;
@@ -7418,7 +7425,7 @@ function armWarmNativeSessionIdleTimer(
     current.closeOnReleaseReason = "warm native session idle timeout";
     const closing = closeWarmNativeSession(current, current.closeOnReleaseReason)
       .then(() => { forgetWarmNativeSession(sessionId, current); })
-      .catch(() => { if (!current.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, current); })
+      .catch(() => {})
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);

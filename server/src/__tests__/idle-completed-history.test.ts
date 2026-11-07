@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import * as tables from "@paperclipai/db";
 import { isRuntimeExposureAppPort } from "@paperclipai/shared";
@@ -30,8 +30,9 @@ const DELETE_METHOD = "DELETE" as never;
   let db: ReturnType<typeof tables.createDb>;
   const now = new Date();
   const ownerId = randomUUID();
+  let holdExpiresAt: Date;
   const hold = () => ({ ownerId, draining: true, startedAt: new Date(now.getTime() - 1000),
-    expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 });
+    expiresAt: holdExpiresAt, activeRuns: 0, pendingWakes: 0 });
   const read = () => readIdleSleepSafety(db, hold, Date.now, ownerId, async () => "none");
   const blocked = async (reason: string) => {
     const check = completedHistoryChecks.find(check => check.reason === reason);
@@ -47,6 +48,7 @@ const DELETE_METHOD = "DELETE" as never;
     const [row] = await db.execute<{ blocked: boolean }>(sql`SELECT EXISTS (${sql.raw(query)} AND a.kind = ${kind}) AS blocked`);
     return row.blocked;
   };
+  beforeEach(() => { holdExpiresAt = new Date(Date.now() + 60_000); });
   beforeAll(async () => {
     if (!externalDatabaseUrl) database = await startEmbeddedPostgresTestDatabase("idle-history-");
     db = tables.createDb(externalDatabaseUrl ?? database!.connectionString, { maxConnections: 4 });

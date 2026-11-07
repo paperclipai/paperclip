@@ -334,6 +334,10 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
           deadlineCapability: domainDeadlines ? capabilities : undefined }),
         pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
         { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+          prepareLocalWork: async ({ canPrepare }) => {
+            const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
+            return result.busy || result.failed ? "present" : "none";
+          },
           ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
