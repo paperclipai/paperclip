@@ -314,7 +314,7 @@ const support = await getEmbeddedPostgresTestSupport();
   // Chaos waves: a run that had just succeeded was terminal for ~100 ms before
   // its charge committed. The evaluator read that gap as a hard stop, paused the
   // company and cancelled unrelated running work, which then never settled.
-  it("holds admission without a hard stop while a finished run's charge commits", async () => {
+  it("neither pauses nor holds admission while a succeeded run's charge commits", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
       usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptReady":true,"costUsd":0.1}'::jsonb` })
@@ -332,6 +332,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
     expect(policy.enforcementVersion).toBe(f.policy.enforcementVersion);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runningId)))[0].status).toBe("running");
+    // Its provider work is over and its observed cost counts, like a running run.
+    expect(await f.block()).toBeNull();
+    // A run that ended without succeeding still holds new work.
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
     expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
   });
 
@@ -449,6 +453,23 @@ const support = await getEmbeddedPostgresTestSupport();
         accountingReceiptSequence: 5 })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
     return f;
   }
+
+  // s7501 run 0a18c2d0: a succeeded ACPX run whose receipt stayed incomplete
+  // held all company work for the 10-minute closure bound, including tasks
+  // that never crossed a fault. Its provider work is over; only its usage
+  // report is outstanding, so it is bounded like a running run.
+  it("does not hold other work for a succeeded run with only usage outstanding", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ budgetExposure: { sourceId: f.sourceId, sequence: 5, costCents: "5.0512400" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await f.block()).toBeNull();
+    // Its observed cost still counts, so the hard stop still applies.
+    await db.update(heartbeatRuns).set({
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ budgetExposure: { sourceId: f.sourceId, sequence: 6, costCents: "600" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect((await f.block())?.reason).toMatch(/hard-stop|await accounting/);
+  });
 
   it("closes a result-accepted run's lost receipt once its local stop is verified", async () => {
     const f = await acceptedResultFixture();

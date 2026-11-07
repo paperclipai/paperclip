@@ -17,6 +17,9 @@ export type SpendPolicy = Pick<typeof budgetPolicies.$inferSelect, "companyId" |
 export type ObservedSpend = BudgetExposure & {
   windowStart: Date; windowEnd: Date; total: number; totalExact: string;
   pendingRunCount: number; recoveringRunCount: number;
+  /** Pending runs that hold admission: they ended without succeeding, so
+   * their provider may not have stopped, and no coordinator is recovering them. */
+  waitingRunCount: number;
 };
 
 export function budgetWindow(kind: string, now = new Date()) {
@@ -175,6 +178,12 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
     runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
+    // A succeeded run's provider work is over; only its usage report is
+    // outstanding. Like a running run, its observed cost counts toward spend
+    // and reservation capacity, and its settled charge can still reach the
+    // hard stop, but it does not hold the whole scope's new work.
+    runColumns[`waiting${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.status} <> 'succeeded'
+      and not (${heartbeatRuns.runtimeMode} = 'native' and ${recovering}))::int`;
   }
   // A single statement preserves hold-to-ledger atomicity even when a caller
   // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
@@ -206,7 +215,8 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     return { windowStart: windows[index].start, windowEnd: windows[index].end,
       ledgerCents, liveObservedCents, effectiveHeldCents: addCents(String(held[`held${index}`] ?? 0), String(runs[`unreserved${index}`] ?? 0), String(browser[`held${index}`] ?? 0)),
       total: Number(totalExact), totalExact, pendingRunCount, pendingTerminalRunCount: pendingRunCount,
-      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0) };
+      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0),
+      waitingRunCount: Number(runs[`waiting${index}`] ?? 0) };
   });
 }
 

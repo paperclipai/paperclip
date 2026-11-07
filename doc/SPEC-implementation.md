@@ -1763,10 +1763,15 @@ publication is fenced separately from settlement. Inputs arriving or committing
 later stay pending; no global sequence watermark consumes them. Limited-budget
 admission refuses relevant unevaluated inputs older than fifteen seconds.
 Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Completed runs that await accounting hold
-new work only: they never open a hard-stop incident, pause a scope, or stop
-running work. Only spend at the limit, or unpriced usage under a blocking
-policy, does that. Provider reporting and cancellation delays
+conservative admission restriction. Runs that ended without succeeding and
+await accounting hold new work only: they never open a hard-stop incident, pause
+a scope, or stop running work. Only spend at the limit, or unpriced usage under
+a blocking policy, does that. A succeeded run with only its usage report
+outstanding does not hold new work: its provider work is over, so it is bounded
+like a running run. Its observed cost counts toward spend and reservation
+capacity, and its settled charge can still reach the hard stop. A run that
+failed, was cancelled, timed out or was interrupted still holds new work,
+because its provider may not have stopped. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.
@@ -1953,7 +1958,11 @@ receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
 provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge. Raw provider errors and credentials are excluded from
+run, and the blocking unpriced-usage policy keeps counting that charge. A native
+turn that the restored Runner reports as lost on restore can never report its
+usage. It does not hold the run's receipt open: the receipt closes when the
+run's other turns do, and its provenance says the observed usage is a lower
+bound. Raw provider errors and credentials are excluded from
 cost details. ACP usage retains the runtime-selected model, including defaults;
 conflicting before/after model IDs do not authorize a single-model estimate.
 Remote OpenCode billing uses only credentials forwarded to the execution target.

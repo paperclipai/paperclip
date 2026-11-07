@@ -8,7 +8,7 @@ import { priceCodexReceipt } from "../codex-pricing.js";
 import { liveRunUsageCostCents } from "../budget-live-usage.js";
 import { receiptFingerprint } from "../receipt-fingerprint.js";
 import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipts.js";
-import { createNativeTurnAccounting, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
 
 const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 const uuid = (identity: string) => {
@@ -182,6 +182,9 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
         costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
         costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
           : input.provider.kind === "aws_agentcore" ? "estimated" : undefined,
+        ...(snapshot.usage?.accountingUsageLost === true ? { pricingProvenance: {
+          source: typeof snapshot.usage.accountingCostUsdExact === "string" ? "provider_reported" as const : "unknown" as const,
+          version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}),
       }));
       envelope.liveCostCents = liveRunUsageCostCents(envelope.receipt as AdapterUsageCheckpoint);
       pending = envelope;

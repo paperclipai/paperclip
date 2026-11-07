@@ -273,13 +273,14 @@ function hardStopReached(policy: PolicyRow, observed: Awaited<ReturnType<typeof 
   return compareCents(observed.totalExact, policy.amount) >= 0 || unpricedUsageBlocks(policy, observed);
 }
 
-/** Admission also waits while completed runs await accounting. That unknown
- * is a separate conservative restriction: it holds new work only. A run that
- * finishes moments before its charge commits must not pause the company or
- * cancel unrelated running work. */
+/** Admission also waits while runs that ended without succeeding await
+ * accounting. That unknown is a separate conservative restriction: it holds
+ * new work only. A run that finishes moments before its charge commits must
+ * not pause the company or cancel unrelated running work. A succeeded run with
+ * only usage outstanding is bounded like a running run and does not wait. */
 function observedBlocks(policy: PolicyRow, observed: Awaited<ReturnType<typeof computeObservedSpend>>) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return hardStopReached(policy, observed) || (observed.pendingRunCount - observed.recoveringRunCount) > 0;
+  return hardStopReached(policy, observed) || observed.waitingRunCount > 0;
 }
 export async function policyBlocks(db: Db, policy: PolicyRow) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
@@ -846,7 +847,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       for (const { policy, observed } of scoped) {
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
         if (context?.admittedRecovery ? hardStopReached(policy, observed) : observedBlocks(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name,
-          reason: observed.pendingRunCount > 0 ? `${title} cannot start work while completed runs await accounting.`
+          reason: observed.waitingRunCount > 0 ? `${title} cannot start work while completed runs await accounting.`
             : unpricedUsageBlocks(policy, observed) ? `${title} cannot start work because recorded usage has no reliable price.`
             : scopeType === "project" ? "Project cannot start work because its budget hard-stop is still exceeded."
               : `${title} is paused because its budget hard-stop was reached.` });
