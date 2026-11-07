@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
-import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import {
   deliverBudgetEnforcement,
   hasPendingBudgetEnforcement,
@@ -87,8 +87,13 @@ export function registerCostAccountingWork(db: Db, coordinator: Coordinator, rec
     if (event.type === "heartbeat.run.status" &&
         ["succeeded", "failed", "timed_out", "cancelled", "interrupted"].includes(String(event.payload.status))) worker.wake();
   });
+  // A released or stopped sandbox can close a terminal run's lost receipt.
+  // Those lease writers signal environment or retained-session cleanup.
+  const unsubscribeLeases = [DELIVERY_QUEUES.environmentCleanup, DELIVERY_QUEUES.retainedNativeSessionCleanup]
+    .map(queue => subscribeDeliveryWork(db, queue, worker.wake));
   const stop = () => {
     unsubscribe();
+    for (const unsubscribeLease of unsubscribeLeases) unsubscribeLease();
     if (accountingWakes.get(db) === worker.wake) accountingWakes.delete(db);
   };
   return { ...worker, stop };

@@ -1884,7 +1884,10 @@ to block budget admission.
 After native recovery reaches terminal failure, an incomplete receipt holds new
 work as recovering accounting; it does not open a hard-stop incident. When the
 run no longer records a provider process (recovery clears it only after a
-verified stop), no producer can deliver the receipt. Accounting then records
+verified stop), no producer can deliver the receipt. A remote run reaches the
+same point when every sandbox allocation it used carries a provider
+termination receipt (stopped or destroyed); a sandbox that may still run keeps
+the debt pending. Accounting then records
 its known part as an unpriced charge, so the unpriced-usage policy governs
 admission. A later receipt still posts through late-receipt reconciliation.
 A controller that detaches for server restart loses checkpoint and completion

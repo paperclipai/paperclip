@@ -5,6 +5,42 @@ rolling deployment while an agent works and new work is admitted. Enrollment mus
 preserve existing task files and historical recovery sources. It must not reset
 task workspaces, manufacture successful copyback, or weaken migration guards.
 
+## Online enrollment preparation
+
+`POST /api/instance/ephemeral-enrollment/prepare` accepts only a fresh, stack-bound
+Cloud control assertion naming `ephemeral-enrollment:prepare`. Tenant sessions,
+including instance admins, cannot export the original decision signing key.
+The strict request contains only an `attemptId` UUID. The owner first checks
+durable-data eligibility, validates the replacement's ephemeral configuration,
+and audits the attempt without storing its secret. It never creates a missing
+signing key or changes admission, process configuration, or workspace bindings.
+Preparation uses startup durability checks, so ordinary admission before skill
+pins are saved does not impose a global-idle requirement. Retention and migration
+checks keep their stronger pin requirements. Actual admitted local skill assets
+still require their owning preservation proof before volume removal.
+
+The existing audit owner accepts a caller-bound receipt UUID. Preparation derives
+it from the verified signed request ID and stack under its own namespace. The
+database primary key atomically consumes that assertion before returning the key,
+including concurrent replicas and process restarts. The process-local assertion
+fence remains an early refusal. Expired assertions cannot return a secret.
+
+The private, non-cacheable response binds the original key and its digest to the
+attempt, stack, stamped Core commit, Railway deployment, observation time, and
+current static ephemeral-mode setting. Cloud must deliver the key directly to
+its existing secret vault; do not print, persist in registry metadata, or return
+this response through an admin/browser API. HTTP diagnostics treat the entire
+enrollment namespace as secret-sensitive.
+
+This is an advisory preparation receipt, always `enrollmentReady: false`. It is
+not a writer fence, ownership-transfer receipt, or permission to detach a volume.
+The remaining Cloud transition must arm static ephemeral mode while retaining
+the original volume, verify that deployment and cessation of earlier local
+writers, repeat durable eligibility checks on the armed deployment, and use the
+qualified native handoff before detachment. Retain the original volume. Ordinary
+release selection must remain unpinned. No step may substitute a global-idle
+requirement for these ownership and durability checks.
+
 ## Evidence and remaining work
 
 | Required outcome | Current evidence | Remaining gap | Owner / next action |
@@ -288,6 +324,24 @@ recorded session and Runner, exact backup-stamp lease, and unchanged local
 manifest and suspended state. A concurrent turn, moved source, revoked stamp or
 changed owner defers that source. Unrelated executions continue unchanged.
 No lease, result, task or lifecycle state is rewritten to make a source eligible.
+
+Run the controller-only phase separately so it does not re-read provider
+archives that were already verified:
+
+```sh
+PAPERCLIP_NATIVE_HARNESS_PRESTAGE=true node --max-old-space-size=512 server/dist-runtime/native-harness-prestage.mjs --controllers-only
+```
+
+This finite entry adopts legacy controller checkpoints for successful
+retained sources whose finalizer is committed, has an accepted result, and has
+released its ownership. It locks only the source task and coordinator while
+reading and publishing the original controller state. Related queued/running
+work, checkout, failed sources, recovery state, or any remaining coordinator
+owner (including an expired owner) defers that source. Local controller and warm
+supervisor bytes are rechecked before commit; a changed source rolls back.
+Unrelated runs remain active. Existing controller checkpoint identity, artifact
+provenance, configuration and snapshot checks still apply. The `paperclip.native-controller-prestage.v1` counts describe this phase; neither successful prestaging
+nor zero deferred controller sources authorizes volume detachment.
 
 The final offline migration still stops all writers, verifies every durable
 object, imports deferred sources and all other data, and exports only its normal

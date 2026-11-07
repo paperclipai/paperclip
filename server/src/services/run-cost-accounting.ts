@@ -1,7 +1,7 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -39,25 +39,49 @@ async function readAccountingClosure(db: Db, runId: string) {
   return closure;
 }
 
-/** A failed native run's receipt source is closed only with positive stop
- * evidence: recovery ended in terminal failure, the run no longer records a
- * process identity, and its latest server-authored process event is the
- * verified local stop. A deadline failure whose process still runs keeps its
- * identity and has no stop event, so it stays pending. Missing identity alone is not proof. A cancelled run
- * keeps its accounting drain: Stop recovery can still deliver the final
- * receipt through the original or a reattached recorder. Remote runs keep
- * their debt until a receipt arrives. One predicate serves the reconciler
+/** Every remote allocation of the run carries a provider termination receipt
+ * bound to that exact lease and run (mirrors hasRemoteTerminationReceipt): the
+ * sandbox is stopped or destroyed, so no runner there can report usage. The
+ * per-lease check uses "is not true": a missing receipt makes it NULL, which
+ * must never count as proof. */
+const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases} remote_lease
+    where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id})
+  and not exists (select 1 from ${environmentLeases} remote_lease
+    where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id}
+      and (remote_lease.provider is not null and remote_lease.provider <> 'local'
+        and remote_lease.provider_lease_id is not null and remote_lease.released_at is not null
+        and remote_lease.cleanup_status = 'success' and remote_lease.status in ('released', 'expired', 'failed')
+        and remote_lease.metadata->'remoteExecutionTermination'->>'schema' = 'paperclip.remote-termination.v1'
+        and remote_lease.metadata->'remoteExecutionTermination'->>'companyId' = remote_lease.company_id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'runId' = remote_lease.heartbeat_run_id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'leaseId' = remote_lease.id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'provider' = remote_lease.provider
+        and remote_lease.metadata->'remoteExecutionTermination'->>'providerLeaseId' = remote_lease.provider_lease_id
+        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')) is not true)`;
+
+/** A native run's receipt source is closed only with positive stop evidence,
+ * after recovery ended in terminal failure without a result:
+ * - Local: the run no longer records a process identity and its latest
+ *   server-authored process event is the verified local stop. Only a failed
+ *   run closes this way; a cancelled local run keeps its accounting drain,
+ *   since Stop recovery can still reattach a recorder.
+ * - Remote: every allocation has a termination receipt for its sandbox, so
+ *   neither the original nor a reattached runner can report usage. That proof
+ *   does not clear the recorded remote process identity.
+ * Missing identity alone is never proof. One predicate serves the reconciler
  * scan and settlement so they cannot disagree. */
-const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
-  and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
   and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
     and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
     and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
-  and (select process_event.event_type from ${heartbeatRunEvents} process_event
-    where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
-      and process_event.source_event_id is null
-      and process_event.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
-    order by process_event.seq desc limit 1) = 'native.local_process_stopped'`;
+  and ((${heartbeatRuns.status} = 'failed'
+    and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+    and (select process_event.event_type from ${heartbeatRunEvents} process_event
+      where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
+        and process_event.source_event_id is null
+        and process_event.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by process_event.seq desc limit 1) = 'native.local_process_stopped')
+    or (${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted') and ${remoteExecutionTerminated}))`;
 
 async function nativeReceiptSourceClosed(db: Db, runId: string) {
   const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}` }).from(heartbeatRuns)

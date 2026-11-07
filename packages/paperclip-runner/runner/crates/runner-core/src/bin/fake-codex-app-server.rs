@@ -734,6 +734,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let exit_after_tool_call_completion = args
         .iter()
         .any(|value| value == "--exit-after-tool-call-completion");
+    // Keep the turn open after an accepted completion report, so a test can
+    // kill the runner between the durable proposal and the provider terminal.
+    let hold_after_terminal_result = args
+        .iter()
+        .any(|value| value == "--hold-after-terminal-result");
     let emit_tool_call_on_resume = args
         .iter()
         .any(|value| value == "--emit-tool-call-on-resume");
@@ -1112,6 +1117,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "terminal-result:rejected"
                 },
             )?;
+            if success && hold_after_terminal_result {
+                continue;
+            }
             finish_turn(
                 &state_path,
                 &mut state,
