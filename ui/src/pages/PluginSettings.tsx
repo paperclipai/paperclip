@@ -106,7 +106,7 @@ export function PluginSettings() {
     ? queryKeys.plugins.config(pluginId, selectedCompanyId)
     : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
 
-  const { data: configData, isLoading: configLoading } = useQuery({
+  const { data: configData, isLoading: configLoading, isSuccess: configLoaded } = useQuery({
     queryKey: configQueryKey,
     queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
     enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
@@ -279,6 +279,7 @@ export function PluginSettings() {
                   companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
+                  needsInitialSave={configLoaded && configData === null}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
@@ -957,6 +958,7 @@ interface PluginConfigFormProps {
   companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
+  needsInitialSave: boolean;
   isLoading?: boolean;
   /** Current plugin lifecycle status — "Test Configuration" only available when `ready`. */
   pluginStatus?: string;
@@ -971,7 +973,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsInitialSave, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -1011,14 +1013,15 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) => {
+    mutationFn: ({ pluginId, companyId, configJson }: { pluginId: string; companyId: string | null; configJson: Record<string, unknown> }) => {
       if (!companyId) throw new Error("Select an organization before saving plugin configuration.");
       return pluginsApi.saveConfig(pluginId, companyId, configJson);
     },
-    onSuccess: () => {
+    onSuccess: (savedConfig, { pluginId, companyId }) => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
       if (companyId) {
+        queryClient.setQueryData(queryKeys.plugins.config(pluginId, companyId), savedConfig);
         queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
       }
       // Clear success message after 3s
@@ -1062,8 +1065,8 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
       return;
     }
     setErrors({});
-    saveMutation.mutate(values);
-  }, [schema, values, saveMutation]);
+    saveMutation.mutate({ pluginId, companyId, configJson: values });
+  }, [schema, values, saveMutation, pluginId, companyId]);
 
   const handleTestConnection = useCallback(() => {
     // Validate before testing
@@ -1125,7 +1128,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
       <div className="flex items-center gap-2 pt-2">
         <Button
           onClick={handleSave}
-          disabled={saveMutation.isPending || !isDirty}
+          disabled={saveMutation.isPending || (!isDirty && !needsInitialSave)}
           size="sm"
         >
           {saveMutation.isPending ? (
