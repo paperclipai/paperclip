@@ -28,6 +28,7 @@ import { toApplication } from "../applications/projection.js";
 import { groupedActions } from "../catalog/action-summary.js";
 
 import { assertOAuthRedirectConstraints, assertOAuthCallbackIssuer } from "./authorization-constraints.js";
+import { resolveOAuthRedirectUri } from "./redirect-overrides.js";
 import type { createOrganizationGrantStore } from "../connections/organization-grant.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -99,6 +100,12 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // Same rule as startOAuth, so the code exchange presents the redirect URI the
+    // authorization request used.
+    input = {
+      ...input,
+      redirectUri: resolveOAuthRedirectUri(connection.config.url, input.redirectUri),
+    };
     // Reauthorization refreshes credentials and catalog without rebuilding the
     // operator's action profile, policy rules, or access bindings.
     const shouldFinalizeDefaults = connection.status === "draft";
