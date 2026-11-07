@@ -24,6 +24,7 @@ export type RemoteRecoveryLeaseMismatchField =
   | "lease_status"
   | "lease_expired"
   | "environment_driver"
+  | "adapter_type"
   | "provider"
   | "provider_lease_id"
   | "remote_cwd"

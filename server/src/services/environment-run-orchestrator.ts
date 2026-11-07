@@ -365,7 +365,8 @@ export function environmentRunOrchestrator(
         : lease.status !== "active" || lease.releasedAt !== null || lease.cleanupStatus !== null ? "lease_status"
         : lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now() ? "lease_expired"
         : expected.kind === "plugin_task"
-          ? environment.driver !== "plugin" || input.adapterType !== "paperclip_runner" ? "environment_driver"
+          ? environment.driver !== "plugin" ? "environment_driver"
+            : input.adapterType !== "paperclip_runner" ? "adapter_type"
             : lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
               || lease.metadata?.runnerTaskExecutionStopped === true ? "plugin_task" : null
         : environment.driver !== "sandbox" ? "environment_driver"

@@ -1065,4 +1065,15 @@ describe("live remote runner lease reattachment", () => {
       .rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease"));
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
+  it("names a changed adapter type, not the environment driver, for a plugin task reattachment", async () => {
+    mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
+    const lease = originalLease();
+    lease.metadata = { agentId: "agent-1", runnerTaskLease: true, runnerTaskDispatched: true };
+    mockGetLease.mockResolvedValue(lease);
+    const runtime = makeMockRuntime();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun({
+      ...input, adapterType: "codex_local", reattachRemoteLease: { kind: "plugin_task", leaseId: lease.id },
+    })).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=environment_acquire field=adapter_type"));
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
 });
