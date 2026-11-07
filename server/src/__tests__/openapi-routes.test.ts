@@ -557,6 +557,14 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("tells agents that archiving keeps a status card and where a person restores it", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const patch = res.body.paths["/api/status-cards/{id}"].patch;
+    expect(patch.description).toContain("it is not deleted");
+    expect(patch.description).toContain("give them the returned href as a Markdown link");
+    expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;
