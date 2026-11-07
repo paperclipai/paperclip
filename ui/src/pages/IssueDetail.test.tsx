@@ -6486,6 +6486,17 @@ describe("IssueDetail", () => {
     }
   });
 
+  it.each([false, true])("marks only desktop-width classic chat pages for keyboard viewport sizing (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector('[data-classic-task-shell]') !== null).toBe(!isMobile);
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+  });
+
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIssuePlanDecompositions: false,

@@ -152,7 +152,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);
-  const mobileViewportRef = useMobileVisualViewport(isMobile);
+  const mobileViewportRef = useMobileVisualViewport(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
