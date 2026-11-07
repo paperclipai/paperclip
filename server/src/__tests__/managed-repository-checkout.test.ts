@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../services/managed-repository-checkout.js";
+import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, readManagedRepositoryPreparationFailure } from "../services/managed-repository-checkout.js";
 
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
@@ -61,6 +61,29 @@ describe("atomic managed repository publication", () => {
     await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).rejects.toThrow("must not be a symlink");
     expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toBe(original);
   });
+  it.each([
+    { label: "timeout", code: null, killed: true, timedOut: true },
+    { label: "filesystem", code: "EACCES", killed: false, timedOut: false },
+    { label: "output limit", code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, timedOut: false },
+  ])("retains safe $label metadata without adding raw command causes", async ({ code, killed, timedOut }) => {
+    const { source, target } = await fixture();
+    const original = Object.assign(new Error("Git failed for https://user:fixture-password@example.test/repo.git"), {
+      code, killed, stderr: "private command output",
+    });
+    const failure = await materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://example.test/repo.git", localSource: source,
+      beforePublish: async () => { throw original; },
+    }).then(() => { throw new Error("Expected preparation to fail"); }, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(readManagedRepositoryPreparationFailure(failure)).toEqual({ code, timedOut });
+    expect(failure).not.toHaveProperty("code");
+    expect(failure).not.toHaveProperty("cause");
+    expect(failure).not.toHaveProperty("stderr");
+    expect(JSON.stringify(failure)).toBe("{}");
+    expect((failure as Error).message).not.toContain("fixture-password");
+    expect(await stat(target).catch(() => null)).toBeNull();
+  });
+
   it("writes the pinned receipt inside the clone before making it visible", async () => {
     const { source, target } = await fixture();
     const result = await materializeManagedProjectWorkspace(target, { repoUrl: "https://github.com/test/source", localSource: source, beforePublish: async clone => {

@@ -4539,6 +4539,10 @@ pair. Both are closed values: `step` names the failed stage (for example
 failure class (`remote_unavailable`, `auth_rejected`, `commit_unavailable`,
 `timeout`, `verification`, `filesystem`, `git_command` or `unknown`). They never
 contain paths, repository URLs or Git output.
+Nested checkout failures retain their original restore step. The checkout
+wrapper keeps process error codes and timeout flags privately for classification;
+it does not attach the raw command error as a cause or add those flags to the
+public error object.
 
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner

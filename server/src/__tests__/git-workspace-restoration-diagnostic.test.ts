@@ -15,6 +15,10 @@ describe("workspace restoration diagnostic", () => {
     ["fatal: unable to access 'https://example.test/repo.git/': Could not resolve host: example.test", "remote_unavailable"],
     ["fatal: '/srv/repo.git' does not appear to be a git repository", "remote_unavailable"],
     ["fatal: bad revision", "git_command"],
+    ["error: cannot open '.git/FETCH_HEAD': Permission denied", "filesystem"],
+    ["fatal: unable to access '/private/repository/.git/config': Permission denied", "filesystem"],
+    ["git@example.test: Permission denied (publickey).", "auth_rejected"],
+    ["git@example.test: Permission denied (publickey).\nerror: cannot open '.git/FETCH_HEAD': Permission denied", "filesystem"],
   ])("classifies %s", (stderr, kind) => {
     expect(classifyWorkspaceRestorationError(gitError(stderr))).toBe(kind);
   });

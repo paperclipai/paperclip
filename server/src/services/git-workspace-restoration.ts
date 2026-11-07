@@ -8,7 +8,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { materializeManagedProjectWorkspace, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
+import { materializeManagedProjectWorkspace, RepositoryRefNotFoundError, readManagedRepositoryPreparationFailure } from "./managed-repository-checkout.js";
 import { readGitConnectionFailure } from "./git-connection-failure.js";
 import { promisify } from "node:util";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
@@ -87,7 +87,7 @@ export async function verifiedManagedGitObjectSource(workspace: Workspace, sourc
 }
 
 export type GitCacheRestorationStep = "recipe" | "trash_recovery" | "source_check" | "source_materialize" | "source_verify"
-  | "restore_point" | "saved_commit";
+  | "restore_point" | "saved_commit" | "workspace_contents";
 export type WorkspaceRestorationFailureKind = "remote_unavailable" | "auth_rejected" | "commit_unavailable" | "timeout"
   | "verification" | "filesystem" | "git_command" | "unknown";
 
@@ -111,14 +111,23 @@ export function classifyWorkspaceRestorationError(error: unknown): WorkspaceRest
   }
   if (error instanceof RepositoryRefNotFoundError) return "commit_unavailable";
   const details = error as Error & { code?: unknown; killed?: unknown; stderr?: unknown };
-  const code = typeof details.code === "string" ? details.code : null;
-  if (details.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "git_command";
-  if (details.killed === true || details.code === "ETIMEDOUT" || error.name === "AbortError" || error.name === "TimeoutError") return "timeout";
+  const preparationFailure = readManagedRepositoryPreparationFailure(error);
+  const commandCode = preparationFailure?.code ?? details.code;
+  const code = typeof commandCode === "string" ? commandCode : null;
+  if (commandCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "git_command";
+  if (preparationFailure?.timedOut || details.killed === true || commandCode === "ETIMEDOUT" || error.name === "AbortError" || error.name === "TimeoutError") return "timeout";
   if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code ?? "")) return "remote_unavailable";
   if (["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ENOSPC", "EROFS", "EMFILE", "ENFILE", "ELOOP", "ENAMETOOLONG", "EBUSY", "EIO", "EDQUOT"].includes(code ?? "")) return "filesystem";
   const stderr = typeof details.stderr === "string" ? details.stderr.slice(0, 16_384)
     : Buffer.isBuffer(details.stderr) ? details.stderr.subarray(0, 16_384).toString("utf8") : error.message.slice(0, 16_384);
-  if (/authentication failed|could not read (username|password)|terminal prompts disabled|permission denied|returned error: 40[13]/i.test(stderr)) {
+  const lines = stderr.split(/\r?\n/).map(line => line.trim());
+  if (lines.some(line => /^(?:error|fatal): (?:cannot|could not|unable to) (?:open|create|write|lock|read|stat|mkdir|unlink|remove|rename)\b.*: (?:Permission denied|Operation not permitted|Read-only file system|No space left on device)\.?$/i.test(line)
+    || /^(?:error|fatal): unable to access ['"](?![a-z][a-z0-9+.-]*:\/\/)[^'"\r\n]+['"]: (?:Permission denied|Operation not permitted|Read-only file system)\.?$/i.test(line))) return "filesystem";
+  if (lines.some(line => /^fatal: Authentication failed for ['"][^'"\r\n]+['"]$/i.test(line)
+    || /^fatal: could not read (?:Username|Password) for ['"][^'"\r\n]+['"]: terminal prompts disabled$/i.test(line)
+    || /^fatal: unable to access ['"][^'"\r\n]+['"]: The requested URL returned error: 40[13]$/i.test(line)
+    || /^remote: (?:Invalid username or (?:password|token)|Permission [^\r\n]+ denied|Support for password authentication was removed|Password authentication is not supported)/i.test(line)
+    || /^(?:[^\s:@]+@)?[a-z0-9][a-z0-9.-]*: Permission denied \((?:publickey|password|keyboard-interactive)(?:,[a-z-]+)*\)\.?$/i.test(line))) {
     return "auth_rejected";
   }
   if (/not our ref|couldn't find remote ref|no such remote ref|unadvertised object|did not send all necessary objects/i.test(stderr)) {
@@ -127,11 +136,11 @@ export function classifyWorkspaceRestorationError(error: unknown): WorkspaceRest
   if (/could not resolve host|unable to access|could not read from remote repository|does not appear to be a git repository|repository .*not found|connection (refused|timed out|reset)/i.test(stderr)) {
     return "remote_unavailable";
   }
-  if (typeof details.stderr === "string" || typeof details.code === "number") return "git_command";
+  if (typeof details.stderr === "string" || typeof commandCode === "number") return "git_command";
   return "unknown";
 }
 
-function restorationFailureAt(step: GitCacheRestorationStep, error: unknown) {
+export function restorationFailureAt(step: GitCacheRestorationStep, error: unknown) {
   if (error instanceof GitCacheRestorationFailure && error.step) return error;
   return new GitCacheRestorationFailure({ step, kind: classifyWorkspaceRestorationError(error) });
 }
