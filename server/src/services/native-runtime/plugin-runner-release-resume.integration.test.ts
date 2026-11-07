@@ -216,6 +216,10 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
       const pid = handle!.child.pid;
+      const { heartbeatService } = await import("../heartbeat.js");
+      expect(await heartbeatService(db).prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
+        .toEqual({ closed: 0, busy: 0, failed: 0 });
+      expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
       if (adopted) {
         await new Promise(done => setTimeout(done, 5_200));
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);

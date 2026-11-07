@@ -153,8 +153,10 @@ that a cold launch is safe. Confirmed claim or physical cleanup clears only the
 matching proof. Raw tickets are never stored in this record.
 
 These Core paths do not advertise the capability or opt ordinary tasks into a
-private host channel. Provider recovery, bounded host retention and deployment
-qualification are still required before activation. Recovery from a Core crash
+private host channel. Existing durable lease and plugin-worker idle checks still
+apply; retaining a released Runner does not by itself make a tenant safe to sleep.
+Provider recovery, bounded host retention and deployment qualification are still
+required before activation. Recovery from a Core crash
 between claim and source authentication is not qualified by this integration.
 
 ## Error codes
