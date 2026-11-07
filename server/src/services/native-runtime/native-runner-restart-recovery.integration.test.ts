@@ -62,6 +62,7 @@ import {
   NativeControllerDetachedForRestartError,
   restoreRemoteBootstrapCheckpointForRecovery,
   runnerdStateProvesIncompleteBootstrap,
+  runnerdStateProvesNoRemoteProviderTurn,
 } from "./native-session-executor.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -2364,6 +2365,72 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     const fixture = await seedClaimedRemoteBootstrap(label.replace(/\W+/g, "-"), options);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([{ kind: "blocked", runId: fixture.runId, reason }]);
+  });
+
+  // RC-29d: a graceful drain suspended the run just after its sandbox runner
+  // opened the provider session. The controller record holds a completed
+  // session.open and session-open events, but no turn was ever sent.
+  const openSession = (core: DurablePrpControlPlane, eventTypes = ["session.started", "session.capabilities.updated",
+    "session.goal.snapshot"]) => {
+    const [prepare, open] = core.store.state.commands;
+    prepare!.status = "completed";
+    prepare!.result = { status: "prepared" } as never;
+    open!.status = "completed";
+    open!.result = { status: "started", processId: 608, providerSessionId: "provider-session" } as never;
+    core.store.state.commandDeliveryCounts = { [prepare!.commandId]: 1, [open!.commandId]: 1 };
+    const { runId, normalizedSessionId, runnerInstanceId, turnId, itemId } = core.store.state.identity;
+    core.store.state.committedEvents = eventTypes.map((eventType, index) => ({ sourceSeq: index + 1,
+      sourceEventId: `runner-session-event-${index + 1}`, eventType, priority: 1, deliveryCount: 1, logicalEffectCount: 1,
+      envelope: { kind: "event", payload: { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner",
+        sourceInstanceId: runnerInstanceId, sourceEventId: `runner-session-event-${index + 1}`, sourceSeq: index + 1, runId,
+        normalizedSessionId, turnId, itemId, eventType, priority: 1, emittedAt: "2026-11-07T00:49:52.000Z", payload: {} } },
+    })) as never;
+    core.store.state.ackedSourceSeq = eventTypes.length;
+  };
+
+  it("restarts a drained remote bootstrap whose runner opened its session but never got a turn", async () => {
+    const fixture = await seedClaimedRemoteBootstrap("SESSION-OPENED", { mutate: core => openSession(core) });
+    // The dying controller may already have projected the session-open event.
+    await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 902,
+      stream: "system", level: "info", eventType: "session.started" });
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ disposition: "bootstrap_incomplete",
+      reason: "remote_session_opened_without_turn" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null });
+  });
+
+  it("lets the executor prove a drained remote session had no turn from its restored checkpoint", async () => {
+    const fixture = await seedClaimedRemoteBootstrap("SESSION-OPENED-EXECUTOR", { mutate: core => openSession(core) });
+    const root = resolve(runtimeRoot, `opened-${fixture.runId}`);
+    try {
+      expect(await restoreNativeRunnerCheckpoint(fixture.db, { companyId, issueId: fixture.issueId, runId: fixture.runId },
+        root)).not.toBeNull();
+      // The local proof cannot see a sandbox provider process; the remote proof
+      // relies on the complete controller record instead.
+      expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(false);
+      expect(runnerdStateProvesNoRemoteProviderTurn(root)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each<[string, Parameters<typeof seedClaimedRemoteBootstrap>[1], { eventType: string } | null]>([
+    ["a turn was issued", { mutate: core => { openSession(core);
+      core.queueCommand("turn.start", { prompt: "Prior work must stay held." }); } }, null],
+    ["a turn event was committed", { mutate: core => openSession(core, ["session.started", "turn.started"]) }, null],
+    ["an acknowledged event is missing", { mutate: core => { openSession(core); core.store.state.ackedSourceSeq = 4; } }, null],
+    ["a provider turn event was projected", { mutate: core => openSession(core) }, { eventType: "turn.started" }],
+  ])("keeps a drained remote session held when %s", async (label, options, projected) => {
+    const fixture = await seedClaimedRemoteBootstrap(`OPENED-${label.replace(/\W+/g, "-")}`, options);
+    if (projected) await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 902,
+      stream: "system", level: "info", ...projected });
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ kind: "blocked", runId: fixture.runId })]);
   });
 
   // RC-29b: a restart while the executor was still preparing a claimed Daytona

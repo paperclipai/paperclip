@@ -90,7 +90,7 @@ import { createNativeProviderFailureObservation } from "./native-provider-failur
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
-  runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
+  runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -5592,7 +5592,14 @@ async function migrateRunnerdStateRootForExecution(input: {
       // A local runner's process ids belong to this host, so a fresh provider
       // session it opened before any turn can be proven gone here.
       const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
-      if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })) {
+      const target = input.runnerExecutionTarget;
+      const remoteSandbox = target?.kind === "remote" && target.transport === "sandbox" && !target.runnerTask;
+      // A remote controller record restored from Postgres is complete once its
+      // lease expired. A runner that opened its session but got no turn there
+      // holds no provider work (RC-29d).
+      if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })
+        || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
+        if (remoteSandbox) await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
       }
@@ -6106,6 +6113,60 @@ export function runnerdStateProvesIncompleteBootstrap(
         localProcesses: options.localProcesses,
         processGone: (id, group) => localProcessDefinitelyGone(id, group),
       });
+  } catch {
+    return false;
+  }
+}
+
+const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
+
+/**
+ * The same-run bootstrap reuses the run's sandbox. A runner from the
+ * interrupted attempt can still be alive there (its reconnect grace is
+ * minutes) and still hold the runner ingress port, so the new runner would fail
+ * with runner_ingress_bind_conflict. Stop that exact runner first, using the
+ * same verified identity marker and process check as reattachment, which only
+ * signals a process whose identity matches this run. Best effort: if no prior
+ * runner can be verified there is nothing to stop, and a remaining conflict is
+ * still caught by the bounded same-run bootstrap retry.
+ */
+async function stopStaleRemoteRunnerBeforeBootstrap(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  identity: Record<string, unknown>;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<void> {
+  const target = input.runnerExecutionTarget;
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return;
+  const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
+  if (!providerLeaseId) return;
+  const runId = input.execution.binding.runId;
+  let runner: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
+  try {
+    runner = await verifyRemoteRunnerReattachment({
+      claim: { runId, remote: { providerLeaseId, remoteCwd: target.remoteCwd } },
+      target, identity: input.identity, runId, normalizedSessionId: nativeSessionKey(input.execution),
+    });
+  } catch {
+    return; // No verifiable prior runner in this sandbox.
+  }
+  try {
+    if (await runner.signal("SIGTERM")) {
+      const deadline = Date.now() + STALE_REMOTE_RUNNER_STOP_WAIT_MS;
+      while (Date.now() < deadline && await runner.isAlive()) await new Promise(done => setTimeout(done, 500));
+      if (await runner.isAlive()) await runner.signal("SIGKILL");
+    }
+    await input.onLog?.("stdout", `[paperclip-runner] Stopped the interrupted runner ${runner.pid} before restarting the bootstrap.\n`);
+  } catch (error) {
+    await input.onLog?.("stderr", `[paperclip-runner] Could not stop the interrupted runner before restarting the bootstrap: ${
+      error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
+/** The remote controller record proves its runner was never sent a turn. */
+export function runnerdStateProvesNoRemoteProviderTurn(root: string): boolean {
+  try {
+    return runnerdStateHasNoProviderTurn(readRunnerdControlPlaneState(root));
   } catch {
     return false;
   }
