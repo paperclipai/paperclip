@@ -647,10 +647,20 @@ export const resolveIssueRecoveryActionSchema = z
     if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }
+    const reconciliation = value.executionReconciliation;
+    const controllerContainment = reconciliation?.controllerStopped !== undefined
+      || reconciliation?.controllerAuthorityDigest !== undefined;
+    if (controllerContainment && (!value.actionId || value.outcome !== "restored"
+      || reconciliation?.controllerStopped !== true || !reconciliation?.controllerAuthorityDigest)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["executionReconciliation"],
+        message: "Controller containment requires the exact recovery action, both stop confirmations, and its authority digest" });
+      return;
+    }
     if (value.outcome === "restored") {
-      // A retained-source repair records evidence without changing task state.
-      // The route verifies the exact server-owned source and unchanged status.
-      if (value.executionReconciliation?.workspaceRepairEvidence) return;
+      // Source repair and complete controller containment record evidence
+      // without changing task state. The route checks the exact locked source,
+      // unchanged status, board authority, lease expiry, and cleanup evidence.
+      if (value.executionReconciliation?.workspaceRepairEvidence || controllerContainment) return;
       if (
         value.sourceIssueStatus !== "todo" &&
         value.sourceIssueStatus !== "done" &&

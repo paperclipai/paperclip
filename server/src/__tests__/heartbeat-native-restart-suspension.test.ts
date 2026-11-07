@@ -899,7 +899,14 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         const retried = await request(app).post(`/api/issues/${f.issueId}/retry`).send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
         expect(retried.status, JSON.stringify(retried.body)).toBe(202);
         expect(retried.body.requestId).not.toBe(oldClick.requestId);
-        await waitForCondition("normal explicit Retry execution and wakes to settle", () => services.every(service => service.getTaskDrainStatus().quiescent));
+        await waitForCondition("normal explicit Retry terminal successor and wakes to settle", async () => {
+          const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
+          if (!wake?.runId || wake.runId === f.runId) return false;
+          const [successor] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId));
+          return !!successor?.finishedAt
+            && ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(successor.status)
+            && services.every(service => service.getTaskDrainStatus().quiescent);
+        });
         const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
         expect(wake.runId).not.toBeNull();
         expect(wake.runId).not.toBe(f.runId);
@@ -1045,7 +1052,11 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
           expect(retried.status, JSON.stringify(retried.body)).toBe(202);
           await waitForCondition("ordinary known-current setup Retry useful execution", async () => {
             const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
-            return !!wake?.runId && services.every(service => service.getTaskDrainStatus().quiescent);
+            if (!wake?.runId || wake.runId === f.runId) return false;
+            const [successor] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId));
+            return !!successor?.finishedAt
+              && ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(successor.status)
+              && services.every(service => service.getTaskDrainStatus().quiescent);
           });
           const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
           expect(wake.runId).not.toBe(f.runId);
