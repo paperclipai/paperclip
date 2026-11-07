@@ -12855,6 +12855,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
       }
       await uploadVerifiedProviderPack({
         root: configuredProviderPackRoot,
+        sourceDigest: readRemoteProviderPackIdentity(configuredProviderPackRoot, false).digest,
         expectedDigest: expectedProviderPackManifest.digest,
         runner: remoteCommandRunner,
         cwd: remoteTarget.remoteCwd,
