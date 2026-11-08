@@ -30,6 +30,18 @@ describe("filterInboxInReviewIssues", () => {
     expect(visible).toEqual(issues);
   });
 
+  it("treats a waiting chat like any other in-review task", () => {
+    const chats = [
+      { ...makeIssue("chat-waiting", "in_review"), conversationAgentId: "agent-1" },
+      { ...makeIssue("chat-with-open-card", "in_review"), conversationAgentId: "agent-2" },
+    ];
+    const visible = filterInboxInReviewIssues(chats, {
+      attentionTaskIds: new Set(["chat-with-open-card"]),
+      statuses: [],
+    });
+    expect(visible.map((issue) => issue.id)).toEqual(["chat-with-open-card"]);
+  });
+
   it("hides nothing until the attention index has loaded", () => {
     expect(filterInboxInReviewIssues(issues, { attentionTaskIds: null, statuses: [] })).toEqual(issues);
   });
