@@ -87,6 +87,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
 import {
   canBoardManageRuntime,
+  canBoardConfirmOwnerStop,
   canBoardResolveRecoveryAction,
   isRetainedWorkspaceExportCause,
   readRecoveryReconcileWorkspaceId,
@@ -3758,6 +3759,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     selectedCompanyId,
     boardAccess,
   );
+  const canConfirmOwnerStop = canBoardConfirmOwnerStop(selectedCompanyId, boardAccess);
   // Retained-file recovery reports whether it offers its own control. The task's
   // Retry stays visible whenever it does not, so a retryable hold never dead-ends.
   const [retainedRecoveryOwnsRetry, setRetainedRecoveryOwnsRetry] = useState(true);
@@ -8498,7 +8500,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
                 <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence?.controllerAuthority)}`} issue={issue}
-                  canManage={canResolveBoardRecoveryAction} onRecorded={() => {
+                  canManage={canConfirmOwnerStop} onRecorded={() => {
                     invalidateIssueCollections();
                     void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
                     void queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });

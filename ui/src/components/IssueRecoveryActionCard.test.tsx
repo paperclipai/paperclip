@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { canBoardConfirmOwnerStop } from "../lib/recovery-reconcile";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -1235,6 +1236,14 @@ describe("original-host controller containment in task recovery", () => {
     const node = mount(false);
     expect(node.querySelector("button")).toBeNull();
     expect(node.textContent).toContain("board operator");
+    expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
+  });
+  it.each(["owner", "admin", "operator", "viewer"] as const)("shows the containment form only for a board %s with owner-stop authority", role => {
+    const allowed = canBoardConfirmOwnerStop("company", { source: "session", user: null, userId: "board-user", keyId: null, companyIds: ["company"], isInstanceAdmin: false,
+      memberships: [{ companyId: "company", status: "active", membershipRole: role }] });
+    const node = mount(allowed);
+    expect(node.querySelectorAll('[role="checkbox"]').length).toBe(role === "owner" || role === "admin" ? 2 : 0);
+    expect(Boolean(node.querySelector("button"))).toBe(role === "owner" || role === "admin");
     expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
   });
   it("does not offer local containment for remote or unrelated recovery", () => {

@@ -10130,7 +10130,7 @@ export function issueRoutes(
       }
       if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
         assertBoard(req);
-        const permission = await access.decide({ actor: req.actor, action: "runtime:manage",
+        const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
           resource: { type: "company", companyId: existing.companyId } });
         if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
       }
@@ -10390,6 +10390,9 @@ export function issueRoutes(
           || executionReconciliation?.controllerAuthorityDigest !== undefined;
         if (controllerContainment) {
           assertBoard(req);
+          const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+            resource: { type: "company", companyId: lockedIssue.companyId } });
+          if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
           if (outcome !== "restored" || sourceIssueStatus !== lockedIssue.status || !actionId
             || activeRecoveryAction.id !== actionId || workspaceBaseRef || workspaceRetry)
             throw conflict("Containment only records the original execution. Keep the task unchanged, then use Retry separately.");
@@ -10623,7 +10626,7 @@ export function issueRoutes(
           issue = updatedIssue;
         }
 
-        const recordedOutcome =
+        const recordedOutcome = controllerContainment ? "restored" :
           outcome === "restored" &&
           issue.status === "todo" &&
           activeRecoveryAction.returnOwnerAgentId != null &&
