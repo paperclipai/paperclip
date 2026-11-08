@@ -769,6 +769,21 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
+/** Whether a runner or provider produced any event for this run. Unlike
+ * hasNativeExecutionStartEvidence, the controller's own process-start and
+ * identity records do not count: a relaunched runner that exited before run.prepare
+ * has those, but nothing the runner itself sent. */
+async function hasNativeRunnerOriginatedEvidence(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string },
+): Promise<boolean> {
+  const [event] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      or(isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "tool.execution.started"]))))
+    .limit(1);
+  return event !== undefined;
+}
+
 export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
@@ -1351,7 +1366,10 @@ export async function claimNativeRestartRecoveries(input: {
         && settledFailure?.checkpointExists === false && !settledFailure?.successorRunId
         && !row.run.sessionIdBefore && !row.run.sessionIdAfter
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
-        && !hasCheckpoint && !hasProviderEvidence;
+        && !hasCheckpoint && !hasProviderEvidence
+        // Fresh evidence wins over the saved failure: any event the runner or
+        // provider sent contradicts "no provider work".
+        && !(await hasNativeRunnerOriginatedEvidence(tx, row.run));
       if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork) && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));

@@ -2708,6 +2708,23 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(run).toMatchObject({ status: "running", errorCode: null });
   });
 
+  it.each(["a provider event committed after the failure", "a session checkpoint saved after the failure"])(
+    "keeps an exited remote runner's retry held when %s contradicts the saved failure", async (label) => {
+      // The saved failure still says no provider work; fresh evidence wins.
+      const fixture = await seedExitedRemoteRunner(`EXITED-FRESH-${label.split(" ")[1]}`);
+      if (label.includes("event")) {
+        await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 902,
+          stream: "system", level: "info", eventType: "item.updated", sourceEventId: "runner-event-after-failure" });
+      } else {
+        const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, sessionCheckpoint: {} } })
+          .where(eq(heartbeatRuns.id, fixture.runId));
+      }
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+        kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" })]);
+    });
+
   it.each<[string, Record<string, unknown>, number, string]>([
     ["the failure was not a runner exit", { originalFailureCode: "local_runtime_api_listener_unavailable" }, 2, "ambiguous_remote_recovery_evidence"],
     ["the provider session was established", { providerSessionEstablished: true }, 2, "ambiguous_remote_recovery_evidence"],
