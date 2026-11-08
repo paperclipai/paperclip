@@ -148,7 +148,8 @@ export async function listStalledDependencies(db: Db, input: { companyId: string
 
 export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerStallWakeup,
   opts: { companyId?: string | null; issueId?: string | null; maxStalls?: number } = {}) {
-  const result = { stalls: 0, woken: 0, alreadyWoken: 0, deferred: 0, failed: 0 };
+  const result = { stalls: 0, woken: 0, alreadyWoken: 0, deferred: 0, failed: 0, retryAt: null as number | null };
+  const retryAt = (at: number) => { result.retryAt = result.retryAt === null ? at : Math.min(result.retryAt, at); };
   const maxStalls = opts.maxStalls ?? MAX_STALLS_PER_PASS;
   let stalled: StallRow[];
   if (opts.issueId) {
@@ -210,13 +211,20 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
       // A delivered or pending wake ends it. A refused one (wake-on-demand off,
       // agent paused) is retried once the refusal is old, so re-enabling wakes
       // still delivers the stall.
-      const [existing] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      const [existing] = await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status,
+        requestedAt: agentWakeupRequests.requestedAt }).from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${waiter.id}`,
           eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
           or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES),
             gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
-      if (existing) { result.alreadyWoken += 1; continue; }
+      if (existing) {
+        result.alreadyWoken += 1;
+        // A recent refusal is retried once it is old; the worker comes back then.
+        if (!(DELIVERED_OR_PENDING_WAKE_STATUSES as readonly string[]).includes(existing.status))
+          retryAt(existing.requestedAt.getTime() + REFUSED_WAKE_RETRY_MS);
+        continue;
+      }
       // A resource wait cancels the stall wake's run and schedules a retry
       // with no idempotency key; the retry keeps the stall in its context.
       const [carried] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
@@ -226,7 +234,11 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
           sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`)).limit(1);
       if (carried) { result.alreadyWoken += 1; continue; }
-      if (!(await acceptsWakes(waiter.assigneeAgentId!))) { result.deferred += 1; continue; }
+      if (!(await acceptsWakes(waiter.assigneeAgentId!))) {
+        result.deferred += 1;
+        retryAt(Date.now() + REFUSED_WAKE_RETRY_MS);
+        continue;
+      }
       // A private stalled issue's details never reach an agent that cannot read it.
       const readable = await agentCanRead(waiter.assigneeAgentId!, waiter.responsibleUserId, stall);
       const context = readable ? stallContext(stall, waiter.relation) : redactedStallContext(stall, waiter.relation);

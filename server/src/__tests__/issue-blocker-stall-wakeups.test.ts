@@ -173,6 +173,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const { calls, enqueueWakeup } = wakeRecorder();
     const result = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(result).toMatchObject({ woken: 0, deferred: 1 });
+    expect(result.retryAt).toBeGreaterThan(Date.now() + 9 * 60_000);
     expect(calls).toEqual([]);
 
     // Wakes enabled again; an earlier refusal row exists for this stall.
@@ -181,8 +182,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const [refused] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.parentAgent, source: "automation",
       triggerDetail: "system", reason: "heartbeat.wakeOnDemand.disabled", payload: { issueId: f.parent.id }, idempotencyKey: key,
       status: "skipped" }).returning();
-    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    const refusedPass = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toEqual([]); // a fresh refusal is not retried at once
+    expect(refusedPass.retryAt).toBe(refused.requestedAt.getTime() + 10 * 60_000);
     await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(agentWakeupRequests.id, refused.id));
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(1);
