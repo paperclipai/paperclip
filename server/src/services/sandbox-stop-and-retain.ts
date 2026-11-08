@@ -155,7 +155,7 @@ function stopOnlyAttempt(lease: Lease, attemptId: string) {
 /** A warm sandbox kept running for reuse whose task moved to another workspace:
  * stop it through the stop-only contract so the provider confirms the stop
  * before anything destroys it. The ownership settle verifies the move. */
-export async function prepareSupersededWarmSandboxStop(db: Db, lease: Lease, recovery: Record<string, unknown>) {
+export async function prepareSupersededWarmSandboxStop(db: Db, lease: typeof environmentLeases.$inferSelect, recovery: Record<string, unknown>) {
   if (lease.status !== "retained" || lease.leasePolicy !== "reuse_by_environment" || !lease.heartbeatRunId
     || !lease.providerLeaseId || lease.metadata?.pendingCleanupInFlight === true) return null;
   return prepareStopAndRetain(db, lease, "retained", recovery);

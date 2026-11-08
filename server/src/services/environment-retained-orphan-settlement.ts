@@ -29,13 +29,13 @@ function newestRowForSandbox() {
       and newer.created_at > ${environmentLeases.createdAt})`;
 }
 
-/** The task now runs in a different workspace than this lease's, so reuse
- * (which matches the exact workspace) can never pick the sandbox again. */
+/** No task is bound to this lease's workspace any more (its own task moved to
+ * a fresh one, and no other task shares it), so reuse, which matches the exact
+ * workspace and agent, can never pick the sandbox again. */
 function taskMovedToAnotherWorkspace() {
   return and(sql`${environmentLeases.executionWorkspaceId} is not null`,
-    sql`exists (select 1 from issues task where task.id = ${environmentLeases.issueId}
-      and task.company_id = ${environmentLeases.companyId}
-      and task.execution_workspace_id is distinct from ${environmentLeases.executionWorkspaceId})`);
+    sql`not exists (select 1 from issues bound where bound.company_id = ${environmentLeases.companyId}
+      and bound.execution_workspace_id = ${environmentLeases.executionWorkspaceId})`);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -61,6 +61,7 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
     await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, issueId));
+    await db.delete(issues).where(ne(issues.id, issueId));
     await db.delete(executionWorkspaces);
   });
 
@@ -360,6 +361,12 @@ suite("retained orphan sandbox on the shared ownership path", () => {
         createdAt: new Date(Date.now() - 60_000) });
       const newer = await warmLease(await run("succeeded"), { workspaceId: current, providerLeaseId });
       return [older, newer];
+    }],
+    ["another task still shares its workspace", async () => {
+      const [shared, fresh] = [await workspace(), await workspace()];
+      await db.update(issues).set({ executionWorkspaceId: fresh }).where(eq(issues.id, issueId));
+      await db.insert(issues).values({ companyId, title: "Sibling on the shared workspace", executionWorkspaceId: shared });
+      return [await warmLease(await run("failed"), { workspaceId: shared })];
     }],
     ["the task still has a run in flight", async () => {
       const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
