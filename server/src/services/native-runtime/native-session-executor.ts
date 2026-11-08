@@ -738,6 +738,26 @@ export function readNativeSessionIdleWork(): IdleLocalWork {
 }
 registerIdleLocalWorkProbe(readNativeSessionIdleWork);
 
+/**
+ * How long a new run's admission waits for the warm session to stop being busy.
+ * A follow-up comment can wake the next run within milliseconds of the previous
+ * run settling, while that run's warm release is still finishing. Waiting out
+ * the release lets the follow-up reuse the session instead of failing. A
+ * session still busy at the deadline is a real concurrent owner and fails as
+ * before.
+ */
+export const warmSessionReleaseWait = { timeoutMs: 30_000, pollMs: 25 };
+
+async function waitForWarmNativeSessionSettled(scope: string): Promise<void> {
+  const deadline = Date.now() + warmSessionReleaseWait.timeoutMs;
+  // Wait while the owner's turn is over and it is releasing the session, until
+  // it has handed every scope back (its execution's final cleanup), so the
+  // follow-up's own admission does not meet the old owner's scopes either.
+  while (settlingNativeSessionScopes.has(scope) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, warmSessionReleaseWait.pollMs));
+  }
+}
+
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
  * task guidance. The final execution/configuration fence still owns admission. */
 export async function claimWarmNativeInstructionCopy(input: {
@@ -759,6 +779,9 @@ export async function claimWarmNativeInstructionCopy(input: {
       binding: { ...prior.binding, runId: input.runId, executionWorkspaceId: input.executionWorkspaceId }, workspace: input.workspace,
     })) || prior.workspace.cwd !== input.workspace.cwd) return null;
   const scope = nativeSessionScopeKey(prior);
+  const busyEntry = warmNativeSessions.get(scope);
+  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope)) await waitForWarmNativeSessionSettled(scope);
+  // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
   if (entry.busy) throw new Error("native_session_supervisor_busy");
@@ -1982,6 +2005,9 @@ const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
 const executingNativeIngressAllocations = new Map<string, symbol>();
+/** Session scope -> the run releasing it after its turn (warm release and
+ * hand-back), which a follow-up's instruction claim may wait for. */
+const settlingNativeSessionScopes = new Map<string, string>();
 
 export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
   const scopes = [
@@ -9366,84 +9392,90 @@ export async function executePaperclipNativeSession(input: {
     }
     throw error;
   } finally {
-    startup.providerPackSourceAbort.abort(new Error("native_execution_startup_completed"));
-    for (const lease of diagnosticLeases) lease.retire();
-    let startupUnsettled = false;
-    if (startup.executionContext) {
-      if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
-      startupUnsettled = !(await startup.executionContext.drain());
-      startup.executionContext.finish();
-    }
-    // Join preparation cleanup before release; keep cancellation reachable
-    // until the exact retained owner has finished the handover.
-    await startup.executionLeaseRenewal?.stop().catch(() => undefined);
-    if (startup.unstartedClaim && !nativeRunsDetachingForRestart.has(runId)) {
-      await releaseUnstartedNativeExecutionClaim({ db: input.db, runId, companyId: input.execution.binding.companyId,
-        issueId: input.execution.binding.issueId, ...startup.unstartedClaim }).catch(error => {
-        logger.warn({ err: error, runId }, "Native preparation claim release failed; the control deadline will settle it");
-      });
-    }
-    let stagedCleanupFailed = false;
     try {
-      await cleanupStagedAttachments();
-    } catch (cleanupError) {
-      stagedCleanupFailed = true;
-      // Cleanup is a confidentiality incident, but it occurs after the native
-      // provider may already have completed the turn. Reclassifying that turn
-      // as failed could replay provider side effects. Emit a private runtime
-      // health event while preserving the provider result/error disposition.
-      await input
-        .onEvent?.({
-          eventType: "native.attachment_staging_cleanup_failed",
-          level: "error",
-          message: "Native inbound attachment staging cleanup failed.",
-          payload: {
-            runId: input.execution.binding.runId,
-            issueId: input.execution.binding.issueId,
-            executionAlreadyFailed: executionFailure !== undefined,
-          },
-        })
-        .catch(() => undefined);
-    }
-    releaseRetainedNativeSessionCleanup(input.db, {
-      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
-      issueId: input.execution.binding.issueId });
-    const pendingRelease = ownsSessionScope && sessionScopeId
-      && executingRunnerdSessionScopes.get(sessionScopeId) === runId
-      ? warmNativeSessions.get(sessionScopeId) : undefined;
-    try {
-      if (pendingRelease?.runId === runId && pendingRelease.finishRelease) {
-        if (executionFailure !== undefined || startupUnsettled || stagedCleanupFailed) {
-          pendingRelease.closeOnReleaseReason = "warm native session final cleanup failed";
+      startup.providerPackSourceAbort.abort(new Error("native_execution_startup_completed"));
+      for (const lease of diagnosticLeases) lease.retire();
+      let startupUnsettled = false;
+      if (startup.executionContext) {
+        if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
+        startupUnsettled = !(await startup.executionContext.drain());
+        startup.executionContext.finish();
+      }
+      // Join preparation cleanup before release; keep cancellation reachable
+      // until the exact retained owner has finished the handover.
+      await startup.executionLeaseRenewal?.stop().catch(() => undefined);
+      if (startup.unstartedClaim && !nativeRunsDetachingForRestart.has(runId)) {
+        await releaseUnstartedNativeExecutionClaim({ db: input.db, runId, companyId: input.execution.binding.companyId,
+          issueId: input.execution.binding.issueId, ...startup.unstartedClaim }).catch(error => {
+          logger.warn({ err: error, runId }, "Native preparation claim release failed; the control deadline will settle it");
+        });
+      }
+      let stagedCleanupFailed = false;
+      try {
+        await cleanupStagedAttachments();
+      } catch (cleanupError) {
+        stagedCleanupFailed = true;
+        // Cleanup is a confidentiality incident, but it occurs after the native
+        // provider may already have completed the turn. Reclassifying that turn
+        // as failed could replay provider side effects. Emit a private runtime
+        // health event while preserving the provider result/error disposition.
+        await input
+          .onEvent?.({
+            eventType: "native.attachment_staging_cleanup_failed",
+            level: "error",
+            message: "Native inbound attachment staging cleanup failed.",
+            payload: {
+              runId: input.execution.binding.runId,
+              issueId: input.execution.binding.issueId,
+              executionAlreadyFailed: executionFailure !== undefined,
+            },
+          })
+          .catch(() => undefined);
+      }
+      releaseRetainedNativeSessionCleanup(input.db, {
+        companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+      }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+        issueId: input.execution.binding.issueId });
+      const pendingRelease = ownsSessionScope && sessionScopeId
+        && executingRunnerdSessionScopes.get(sessionScopeId) === runId
+        ? warmNativeSessions.get(sessionScopeId) : undefined;
+      try {
+        if (pendingRelease?.runId === runId && pendingRelease.finishRelease) {
+          if (executionFailure !== undefined || startupUnsettled || stagedCleanupFailed) {
+            pendingRelease.closeOnReleaseReason = "warm native session final cleanup failed";
+          }
+          await pendingRelease.finishRelease();
         }
-        await pendingRelease.finishRelease();
+      } finally {
+        if (ownsPhysicalIngress && physicalIngressKey && executingNativeIngressAllocations.get(physicalIngressKey) === ownerToken) {
+          executingNativeIngressAllocations.delete(physicalIngressKey);
+        }
+        if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
+          executingNativeOwnerScopes.delete(ownerScope);
+        }
+        if (
+          ownsSessionScope &&
+          sessionScopeId !== null &&
+          executingRunnerdSessionScopes.get(sessionScopeId) ===
+            input.execution.binding.runId
+        ) {
+          executingRunnerdSessionScopes.delete(sessionScopeId);
+        }
+        startup.resolve(null);
+        startup.settle();
+        if (nativeSessionStartups.get(runId) === startup) {
+          nativeSessionStartups.delete(runId);
+          setNativeExecutionActive(runId, false);
+        }
       }
+      if (startupUnsettled) throw new NativeStartupCleanupPendingError(startup.executionContext!.id,
+        startup.executionContext!.deadlineAtMs, startup.leaseOwner!, startup.executionContext!.pluginSupported,
+        input.runnerExecutionTarget?.kind === "remote" ? input.runnerExecutionTarget.leaseId ?? undefined : undefined);
     } finally {
-      if (ownsPhysicalIngress && physicalIngressKey && executingNativeIngressAllocations.get(physicalIngressKey) === ownerToken) {
-        executingNativeIngressAllocations.delete(physicalIngressKey);
-      }
-      if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
-        executingNativeOwnerScopes.delete(ownerScope);
-      }
-      if (
-        ownsSessionScope &&
-        sessionScopeId !== null &&
-        executingRunnerdSessionScopes.get(sessionScopeId) ===
-          input.execution.binding.runId
-      ) {
-        executingRunnerdSessionScopes.delete(sessionScopeId);
-      }
-      startup.resolve(null);
-      startup.settle();
-      if (nativeSessionStartups.get(runId) === startup) {
-        nativeSessionStartups.delete(runId);
-        setNativeExecutionActive(runId, false);
-      }
+      // Always hand the settling mark back, even if a cleanup step throws.
+      const settledScope = nativeSessionScopeKey(input.execution);
+      if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
     }
-    if (startupUnsettled) throw new NativeStartupCleanupPendingError(startup.executionContext!.id,
-      startup.executionContext!.deadlineAtMs, startup.leaseOwner!, startup.executionContext!.pluginSupported,
-      input.runnerExecutionTarget?.kind === "remote" ? input.runnerExecutionTarget.leaseId ?? undefined : undefined);
   }
 }
 
@@ -10363,12 +10395,32 @@ async function executePaperclipNativeSessionWithinScope(
           const kind = firstMeaningfulAgentEventKind(event);
           if (kind) {
             firstAgentEventRecorded = true;
+            // The commit observation, read before any diagnostic write so a slow
+            // run-log sink never counts as time until the agent responded.
+            const activityAt = Date.now();
             await trace.record({
               name: "provider.time_to_first_agent_event",
               parentName: "agent.turn",
               startedAtMs: turnStartedAtMs,
               endedAtMs: milestoneAtMs,
               attributes: { eventKind: kind },
+            });
+            // The user-visible response (the speed budget's metric): the same
+            // anchor as time to first text, to this first visible agent event.
+            // Detached like TTFT, so the anchor read never delays the turn.
+            trace.defer(async () => {
+              const activityStart = resolveNativeTimeToFirstTokenStart({
+                traceStartedAtMs: trace.traceStartedAtMs,
+                preparationSpans,
+                wakeRequestedAtMs: await readNativeRunWakeRequestedAtMs(input.db, input.execution.binding.runId),
+              });
+              await trace.record({
+                name: "task.time_to_first_agent_activity",
+                parentName: "task.provider_session",
+                startedAtMs: activityStart.startedAtMs,
+                endedAtMs: activityAt,
+                attributes: { eventKind: kind, anchor: activityStart.anchor },
+              });
             });
           }
         }
@@ -11342,6 +11394,9 @@ async function executePaperclipNativeSessionWithinScope(
     clearSteeringDeliveries(input.execution.binding.runId);
     clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
   } catch (error) {
+    // A failed turn releases its warm session here, before the finally below:
+    // mark the scope settling first so a follow-up waits for that release too.
+    settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     executionContext?.abort(error instanceof Error ? error : new Error("native_execution_startup_failed"));
     const startupUnsettled = executionContext ? !(await executionContext.drain()) : false;
     if (startupUnsettled) throw new NativeStartupCleanupPendingError(executionContext!.id, executionContext!.deadlineAtMs,
@@ -12004,6 +12059,10 @@ async function executePaperclipNativeSessionWithinScope(
       if (protocolIntegrityFailure !== null) throw protocolIntegrityFailure;
     }
   } finally {
+    // The provider turn is over, whether it succeeded or threw: what follows is
+    // release and hand-back, which a follow-up's admission may wait for
+    // (`warmSessionReleaseWait`). The outer execution's finally clears it.
+    settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     releaseGitHubRun?.();
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
       await timeController("github_stop", () => githubAccess!.stop());

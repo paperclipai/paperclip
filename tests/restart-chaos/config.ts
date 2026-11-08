@@ -1,8 +1,12 @@
+import path from "node:path";
 import { parseArgs } from "node:util";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
+
+/** A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`). */
+export const STORM_DEFAULT_FAULTS: FaultKind[] = ["K1", "K2", "K4", "K6"];
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
   codex: "OPENAI_API_KEY",
@@ -90,13 +94,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       lifecycle: { type: "string" },
       "k4-hold-max-seconds": { type: "string" },
       "crash-point": { type: "string" },
+      "crash-point-hold-ms": { type: "string" },
+      "upgrade-from": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -131,9 +137,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices),
+    // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1")),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? FAULT_KINDS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
+    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -149,7 +156,31 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     ...(values["k4-hold-max-seconds"] !== undefined
       ? { k4HoldMaxMs: integer(values["k4-hold-max-seconds"], "k4-hold-max-seconds", 300, 120, 600) * 1000 } : {}),
     ...(crashPoint ? { crashPoint } : {}),
+    ...(crashPoint && values["crash-point-hold-ms"] !== undefined
+      ? { crashPointHoldMs: integer(values["crash-point-hold-ms"], "crash-point-hold-ms", 0, 0, 600_000) } : {}),
   };
+  if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  const upgradeFrom = values["upgrade-from"];
+  if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
+    throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
+  }
+  if (upgradeFrom !== undefined) {
+    // The remote runner must match its Daytona image, so an older build cannot run there.
+    if (env !== "local") throw new Error("--upgrade-from runs only with --env local");
+    if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
+    options.upgradeFrom = path.resolve(upgradeFrom);
+  }
+  // H1 pauses the whole company when its budget hard stop is crossed: no other task can share its
+  // wave, its tasks run one at a time, and the hard stop must be on.
+  if (options.workloads.includes("H1")) {
+    if (options.workloads.length !== 1) throw new Error("--workloads H1 pauses the whole company; run it in its own wave (--workloads H1)");
+    if (options.concurrency !== 1) throw new Error("--workloads H1 runs one task at a time; pass --concurrency 1");
+    if (options.masks?.includes("rc06")) throw new Error("--workloads H1 needs the budget hard stop; do not combine it with --rc06-masked");
+    if (stormMinutes) throw new Error("--workloads H1 does not combine with --storm-minutes");
+  }
+  if (options.workloads.includes("M1") && options.adapters.length < 2) {
+    throw new Error("--workloads M1 delegates between two agents; pass at least two --adapters");
+  }
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {

@@ -14,7 +14,7 @@ import {
 describe("speed budgets", () => {
   it("defines p50 below p95 for every adapter, metric and start", () => {
     for (const budgets of Object.values(LOCAL_SPEED_BUDGETS)) {
-      for (const budget of [budgets.ttft.cold, budgets.ttft.warm, budgets.agent_boot.cold, budgets.agent_boot.warm,
+      for (const budget of [budgets.time_to_first_activity.cold, budgets.time_to_first_activity.warm, budgets.agent_boot.cold, budgets.agent_boot.warm,
         budgets.restart_recovery]) {
         expect(budget.p50Ms).toBeGreaterThan(0);
         expect(budget.p50Ms).toBeLessThanOrEqual(budget.p95Ms);
@@ -31,20 +31,20 @@ describe("speed budgets", () => {
   });
 
   it("judges one run against p95 and uses the looser budget when the start kind is unknown", () => {
-    const codexCold = LOCAL_SPEED_BUDGETS.codex.ttft.cold.p95Ms;
-    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: "cold", measuredMs: codexCold }))
+    const codexCold = LOCAL_SPEED_BUDGETS.codex.time_to_first_activity.cold.p95Ms;
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "time_to_first_activity", start: "cold", measuredMs: codexCold }))
       .toBeNull();
-    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: "cold", measuredMs: codexCold + 1 }))
-      .toMatchObject({ metric: "ttft", adapter: "codex", startKind: "cold", budgetP95Ms: codexCold, percentile: "p95" });
-    const loose = speedBudgetFor("codex", "ttft", null);
-    expect(loose.p95Ms).toBe(Math.max(codexCold, LOCAL_SPEED_BUDGETS.codex.ttft.warm.p95Ms));
-    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: null, measuredMs: codexCold + 1 }))
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "time_to_first_activity", start: "cold", measuredMs: codexCold + 1 }))
+      .toMatchObject({ metric: "time_to_first_activity", adapter: "codex", startKind: "cold", budgetP95Ms: codexCold, percentile: "p95" });
+    const loose = speedBudgetFor("codex", "time_to_first_activity", null);
+    expect(loose.p95Ms).toBe(Math.max(codexCold, LOCAL_SPEED_BUDGETS.codex.time_to_first_activity.warm.p95Ms));
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "time_to_first_activity", start: null, measuredMs: codexCold + 1 }))
       .toBeNull();
   });
 
   it("does not judge remote runs or adapters without a baseline", () => {
-    expect(evaluateSpeedBudget({ adapter: "codex", environment: "remote", metric: "ttft", start: "cold", measuredMs: 1e9 })).toBeNull();
-    expect(evaluateSpeedBudget({ adapter: null, environment: "local", metric: "ttft", start: "cold", measuredMs: 1e9 })).toBeNull();
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "remote", metric: "time_to_first_activity", start: "cold", measuredMs: 1e9 })).toBeNull();
+    expect(evaluateSpeedBudget({ adapter: null, environment: "local", metric: "time_to_first_activity", start: "cold", measuredMs: 1e9 })).toBeNull();
   });
 });
 
@@ -66,7 +66,7 @@ describe("speed budget checks in the native run trace", () => {
     await trace.record({ name: "runner.turn.submit", startedAtMs: 100, endedAtMs: 100 + boot });
     // A second submit in the same run is not a second boot.
     await trace.record({ name: "runner.turn.submit", startedAtMs: 100, endedAtMs: 100 + boot * 2 });
-    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 1_000 });
+    await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: 1_000 });
     await trace.finish("ok");
 
     expect(breaches()).toEqual([expect.objectContaining({
@@ -78,25 +78,25 @@ describe("speed budget checks in the native run trace", () => {
   it("writes a breach for a slow TTFT recorded by deferred diagnostics before the trace closes", async () => {
     const { trace, breaches } = traced({ adapter: "claude", environment: "local" });
     trace.setBudgetStart("warm");
-    const ttft = LOCAL_SPEED_BUDGETS.claude.ttft.warm.p95Ms + 1;
+    const ttft = LOCAL_SPEED_BUDGETS.claude.time_to_first_activity.warm.p95Ms + 1;
     trace.defer(async () => {
-      await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: ttft });
+      await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: ttft });
     });
     await trace.finish("ok");
 
-    expect(breaches()).toEqual([expect.objectContaining({ metric: "ttft", adapter: "claude", startKind: "warm", measuredMs: ttft })]);
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "time_to_first_activity", adapter: "claude", startKind: "warm", measuredMs: ttft })]);
   });
 
   it("judges a follow-up's TTFT from run creation and reports the wait behind the live turn", async () => {
     // A comment posted while the previous turn runs waits for a run to exist;
     // the budget (idle follow-up baseline) judges the time after that.
-    const budget = LOCAL_SPEED_BUDGETS.claude.ttft.warm.p95Ms;
+    const budget = LOCAL_SPEED_BUDGETS.claude.time_to_first_activity.warm.p95Ms;
     const wait = 60_000;
     const quiet = traced({ adapter: "claude", environment: "local" });
     quiet.trace.setBudgetStart("warm");
     await quiet.trace.record({ name: "comment.to_run_created", startedAtMs: 0, endedAtMs: wait });
     await quiet.trace.record({ name: "heartbeat.queue", startedAtMs: wait, endedAtMs: wait + 100 });
-    await quiet.trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: wait + budget - 1 });
+    await quiet.trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: wait + budget - 1 });
     await quiet.trace.finish("ok");
     expect(quiet.breaches()).toEqual([]);
 
@@ -104,20 +104,32 @@ describe("speed budget checks in the native run trace", () => {
     slow.trace.setBudgetStart("warm");
     await slow.trace.record({ name: "comment.to_run_created", startedAtMs: 0, endedAtMs: wait });
     await slow.trace.record({ name: "heartbeat.queue", startedAtMs: wait, endedAtMs: wait + 100 });
-    await slow.trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: wait + budget + 1 });
+    await slow.trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: wait + budget + 1 });
     await slow.trace.finish("ok");
-    expect(slow.breaches()).toEqual([expect.objectContaining({ metric: "ttft", measuredMs: budget + 1, inputWaitMs: wait })]);
+    expect(slow.breaches()).toEqual([expect.objectContaining({ metric: "time_to_first_activity", measuredMs: budget + 1, inputWaitMs: wait })]);
   });
 
   it("still judges queueing after run creation (admission, dispatch) inside the TTFT budget", async () => {
     const { trace, breaches } = traced({ adapter: "codex", environment: "local" });
     trace.setBudgetStart("cold");
-    const budget = LOCAL_SPEED_BUDGETS.codex.ttft.cold.p95Ms;
+    const budget = LOCAL_SPEED_BUDGETS.codex.time_to_first_activity.cold.p95Ms;
     await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: budget });
-    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: budget + 1 });
+    await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: budget + 1 });
     await trace.finish("ok");
-    expect(breaches()).toEqual([expect.objectContaining({ metric: "ttft", measuredMs: budget + 1 })]);
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "time_to_first_activity", measuredMs: budget + 1 })]);
     expect(breaches()[0]).not.toHaveProperty("inputWaitMs");
+  });
+
+  it("judges first visible activity, not first text, so a tool-first turn is within budget", async () => {
+    const { trace, breaches } = traced({ adapter: "claude", environment: "local" });
+    trace.setBudgetStart("cold");
+    const budget = LOCAL_SPEED_BUDGETS.claude.time_to_first_activity.cold.p95Ms;
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 50 });
+    // The agent calls a tool at once and writes its first text much later.
+    await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: 5_000 });
+    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: budget * 2 });
+    await trace.finish("ok");
+    expect(breaches()).toEqual([]);
   });
 
   it("checks restart recovery latency once, from ready to the first provider event", async () => {
@@ -135,7 +147,7 @@ describe("speed budget checks in the native run trace", () => {
     const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
     await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 1 });
     await trace.record({ name: "runner.session.resume", startedAtMs: 1, endedAtMs: 120_000 });
-    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 120_000 });
+    await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: 120_000 });
     const at = LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1;
     trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: at, committedAtMs: at, disposition: "resume_dead_runner" });
     await trace.finish("ok");
@@ -189,7 +201,7 @@ describe("speed budget checks in the native run trace", () => {
       const { trace, breaches } = traced(budget);
       await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 1 });
       await trace.record({ name: "runner.turn.submit", startedAtMs: 1, endedAtMs: 10_000_000 });
-      await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 10_000_000 });
+      await trace.record({ name: "task.time_to_first_agent_activity", startedAtMs: 0, endedAtMs: 10_000_000 });
       await trace.finish("ok");
       expect(breaches()).toEqual([]);
     }

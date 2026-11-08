@@ -14,12 +14,24 @@ export interface WorkloadDefinition {
   /** Time budget for the task excluding outage time (R1). */
   budgetMs: number;
   title(nonce: string): string;
-  description(nonce: string): string;
+  description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
   /** Files and commands the observer must collect for the T-oracle. */
-  collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] }> };
-  grade(nonce: string, artifacts: OracleArtifacts): OracleResult;
+  collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] }>;
+    childDocuments?: string[] };
+  grade(nonce: string, artifacts: OracleArtifacts, agents?: WorkloadAgents): OracleResult;
 }
+
+export interface WorkloadAgents { self: { id: string; name: string }; other: { id: string; name: string }; companyId?: string }
+
+/** G1: the board's decision for this task, fixed by its nonce (about half approve, half reject). */
+export function g1Decision(nonce: string): "approve" | "reject" {
+  return Number.parseInt(nonce.slice(0, 1), 16) % 2 === 0 ? "approve" : "reject";
+}
+export const g1ApprovalTitle = (nonce: string) => `Approve G1-${nonce}`;
+export const g1ChildTitle = (nonce: string) => `Approved G1-${nonce}`;
+
+const partMarker = (nonce: string, part: number) => `PART${part}-${nonce}`;
 
 const briefMarker = (nonce: string) => `CHAOS-${nonce}`;
 const followUpMarker = (nonce: string) => `FOLLOWUP-${nonce}`;
@@ -66,7 +78,128 @@ const briefDescription = (nonce: string) => [
   "Do not create files or other tasks. When the document is saved, mark this task done.",
 ].join("\n");
 
+const delegateDescription = (nonce: string, agents?: WorkloadAgents) => {
+  const self = agents?.self.name ?? "yourself";
+  const other = agents?.other.name ?? "yourself";
+  return [
+    "Coordinate this task by delegating it to two subtasks, then summarize.",
+    `1. Create subtask "Part 1 ${nonce}" with this task as its parent, assigned to ${other}. Its description:`,
+    `   "Save this issue's document with key \`part\` (title \"Part\"), in markdown, containing the line \`${partMarker(nonce, 1)}\` exactly on its own line and one sentence on why retries need idempotency keys. Then mark this subtask done."`,
+    `2. Create subtask "Part 2 ${nonce}" with this task as its parent, assigned to ${self}. Same description, with the line \`${partMarker(nonce, 2)}\` instead.`,
+    "Do not do the subtasks' work yourself. Wait until both subtasks are done.",
+    `3. Then save this issue's document with key \`summary\` (title "Summary") containing both lines \`${partMarker(nonce, 1)}\` and \`${partMarker(nonce, 2)}\`, each on its own line.`,
+    "Then mark this task done.",
+  ].join("\n");
+};
+
+const approvalDescription = (nonce: string, agents?: WorkloadAgents) => [
+  "This task needs the board's approval before you act.",
+  "1. Request approval exactly once with the `call_api` tool: operationId `POST /api/companies/{companyId}/approvals`,"
+    + ` pathParams \`{ "companyId": "${agents?.companyId ?? "<your company id>"}" }\`, and this body:`,
+  `   \`{ "type": "request_board_approval", "issueIds": ["<this task's id>"], "payload": { "title": "${g1ApprovalTitle(nonce)}",`
+    + ` "summary": "Create the follow-up subtask for ${nonce}.", "recommendedAction": "Approve", "risks": [] } }\``,
+  "2. Then set this task's status to `blocked` and end your turn. Do not create anything else yet.",
+  `3. Only if you are woken because that approval was approved: create exactly one subtask titled "${g1ChildTitle(nonce)}"`,
+  "   with this task as its parent and status `backlog`, unassigned. Then mark this task done.",
+  "If the approval is rejected, do not create the subtask.",
+].join("\n");
+
+function approvalChecks(nonce: string, artifacts: OracleArtifacts) {
+  const decision = g1Decision(nonce);
+  const governance = artifacts.governance;
+  const approvals = (artifacts.approvals ?? []).filter(approval => approval.title === null || approval.title.includes(nonce));
+  const children = (artifacts.children ?? []).filter(child => (child.title ?? "").includes(g1ChildTitle(nonce)));
+  return [
+    { name: "issue_status", ok: artifacts.issueStatus === (decision === "approve" ? "done" : "cancelled"),
+      detail: `decision=${decision} status=${artifacts.issueStatus ?? "unknown"}` },
+    // The agent's create is not idempotent: a restart that makes it ask twice is a finding.
+    { name: "one_approval_requested", ok: approvals.length === 1, detail: `approvals=${approvals.length}` },
+    { name: "board_decided_after_restart", ok: governance?.decision !== undefined && governance.decision.error === null
+      && governance.decision.afterFault, detail: JSON.stringify(governance?.decision ?? null) },
+    { name: "approval_pending_across_restart", ok: governance?.decision?.pendingWhenDecided === true },
+    { name: "action_gated_by_approval", ok: governance?.childrenBeforeDecision === 0,
+      detail: `subtasks_before_decision=${governance?.childrenBeforeDecision ?? "not checked"}` },
+    { name: "approval_decided", ok: approvals.length === 1 && approvals[0]!.status === (decision === "approve" ? "approved" : "rejected"),
+      detail: approvals.map(approval => approval.status).join(",") },
+    { name: decision === "approve" ? "approved_action_ran_once" : "rejected_action_never_ran",
+      ok: children.length === (decision === "approve" ? 1 : 0), detail: `subtasks=${children.length}` },
+  ];
+}
+
+function budgetChecks(artifacts: OracleArtifacts) {
+  const governance = artifacts.governance;
+  return [
+    { name: "budget_set", ok: typeof governance?.budgetSetCents === "number" && !governance.budgetSetError,
+      detail: governance?.budgetSetError ?? `budget=${governance?.budgetSetCents ?? "unset"}` },
+    { name: "company_paused_for_budget", ok: typeof governance?.budgetPausedAt === "number" },
+    { name: "pause_held_until_resume", ok: typeof governance?.budgetPausedAt === "number" && !governance.pauseLostAt },
+    { name: "nothing_dispatched_while_paused", ok: governance?.runsStartedWhilePaused !== undefined && governance.runsStartedWhilePaused.length === 0,
+      detail: (governance?.runsStartedWhilePaused ?? ["not checked"]).join(",") },
+    { name: "board_resumed_after_restart", ok: governance?.resume !== undefined && governance.resume.error === null && governance.resume.afterFault,
+      detail: JSON.stringify(governance?.resume ?? null) },
+    { name: "company_active_at_rest", ok: governance?.companyActiveAtRest === true },
+  ];
+}
+
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
+  G1: {
+    id: "G1",
+    label: "Approval-gated action across a restart",
+    usesRepository: false,
+    // The `approval` trigger fires on the pending approval; a `time` fault lands around it.
+    fireWindowMs: [20_000, 90_000],
+    budgetMs: 15 * 60_000,
+    title: nonce => `Chaos G1 approval ${nonce}`,
+    description: approvalDescription,
+    collect: { documents: [], files: () => [], commands: [], childDocuments: [] },
+    grade(nonce, artifacts) {
+      return result(approvalChecks(nonce, artifacts));
+    },
+  },
+  H1: {
+    id: "H1",
+    label: "Budget hard stop crossed mid-run, across a restart",
+    usesRepository: false,
+    fireWindowMs: [15_000, 60_000],
+    budgetMs: 15 * 60_000,
+    title: nonce => `Chaos H1 budget ${nonce}`,
+    description: briefDescription,
+    collect: { documents: ["brief"], files: () => [], commands: [] },
+    grade(nonce, artifacts) {
+      return result([statusCheck(artifacts), ...briefChecks(artifacts.documents.brief, [briefMarker(nonce)]), ...budgetChecks(artifacts)]);
+    },
+  },
+  M1: {
+    id: "M1",
+    label: "Delegate to two subtasks",
+    usesRepository: false,
+    fireWindowMs: [20_000, 120_000],
+    budgetMs: 20 * 60_000,
+    title: nonce => `Chaos M1 delegation ${nonce}`,
+    description: delegateDescription,
+    collect: { documents: ["summary"], files: () => [], commands: [], childDocuments: ["part"] },
+    grade(nonce, artifacts, agents) {
+      const children = artifacts.children ?? [];
+      const holders = (n: number) => children.filter(child => (child.documents.part ?? "").includes(partMarker(nonce, n)));
+      const part1 = holders(1), part2 = holders(2);
+      const distinct = part1.length === 1 && part2.length === 1 && part1[0]!.id !== part2[0]!.id;
+      const summary = artifacts.documents.summary ?? "";
+      return result([
+        statusCheck(artifacts),
+        { name: "two_agents", ok: Boolean(agents) && agents!.self.id !== agents!.other.id,
+          detail: agents ? `self=${agents.self.id} other=${agents.other.id}` : "no agents" },
+        { name: "two_subtasks", ok: children.length === 2, detail: `children=${children.length}` },
+        { name: "subtasks_done", ok: children.length > 0 && children.every(child => child.status === "done"),
+          detail: children.map(child => child.status).join(",") },
+        { name: "parts_in_distinct_subtasks", ok: distinct, detail: `part1=${part1.length} part2=${part2.length}` },
+        { name: "part1_delegated", ok: distinct && Boolean(agents) && part1[0]!.assigneeAgentId === agents!.other.id,
+          detail: `assignee=${part1[0]?.assigneeAgentId ?? "none"}` },
+        { name: "part2_kept", ok: distinct && Boolean(agents) && part2[0]!.assigneeAgentId === agents!.self.id,
+          detail: `assignee=${part2[0]?.assigneeAgentId ?? "none"}` },
+        { name: "summary_has_both_parts", ok: summary.includes(partMarker(nonce, 1)) && summary.includes(partMarker(nonce, 2)) },
+      ]);
+    },
+  },
   A1: {
     id: "A1",
     label: "Brief to issue document",

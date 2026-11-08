@@ -1,17 +1,19 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
 
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6"] as const;
+/** K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`). */
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
 export type TaskFaultKind = FaultKind | "K13";
 
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
+/** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result"] as const;
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused"] as const;
 export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
@@ -62,6 +64,14 @@ export interface WaveOptions {
    * SIGKILLs itself at its nth hit and is restarted like K1.
    */
   crashPoint?: string;
+  /** Crash-point suite: hold the control plane down this long after each self-kill (K4-style). */
+  crashPointHoldMs?: number;
+  /**
+   * K14 upgrade mid-run (`--upgrade-from <dir>`): an older, prepared checkout. The wave's server starts
+   * from it; the first K14 stops it gracefully and starts the current checkout on the same database
+   * and instance directory. Later K14 faults restart the current build, like K2.
+   */
+  upgradeFrom?: string;
 }
 
 export interface StormFault {
@@ -193,6 +203,8 @@ export interface FaultReceipt {
   crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
   /** Crash-point suite: the server killed itself at this named point (no external signal). */
   crashPoint?: { name: string; hit: number; pid: number; token?: string };
+  /** K14: the build the stopped server ran and the build its replacement runs. */
+  upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -207,6 +219,39 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
+  children?: Array<{ id: string; title?: string | null; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
+  /** G1: approvals linked to the task. */
+  approvals?: Array<{ id: string; status: string; title: string | null }>;
+  /** G1 and H1: the board's actions and what the observer saw around them. */
+  governance?: GovernanceRecord;
+}
+
+/** What the board did for a governance task (G1, H1), and what the observer saw. */
+export interface GovernanceRecord {
+  /** G1: first time the observer saw the task's approval pending. */
+  approvalSeenAt?: number | null;
+  approvalId?: string | null;
+  /** G1: the board's decision, made once the task's faults fired and the server was ready. */
+  decision?: { kind: "approve" | "reject"; at: number; httpStatus: number | null; error: string | null;
+    /** The approval was still pending when the board decided (it survived the restart). */
+    pendingWhenDecided: boolean; afterFault: boolean };
+  /** H1: the company budget the harness set before launch, in cents (observed spend + 1). */
+  budgetSetCents?: number | null;
+  budgetSetError?: string | null;
+  /** H1: first time the observer saw the company paused for its budget. */
+  budgetPausedAt?: number | null;
+  /** H1: runs of the task that started while the company was paused (must be none). */
+  runsStartedWhilePaused?: string[];
+  /** H1: the board's raise-and-resume, made once the task's faults fired and the pause held. */
+  resume?: { at: number; amount: number | null; incidentId: string | null; httpStatus: number | null; error: string | null; afterFault: boolean;
+    /** When the resume request returned: the pause window ends here. */
+    doneAt?: number };
+  /** H1: the company was active again at rest. */
+  companyActiveAtRest?: boolean;
+  /** H1: the pause cleared on its own (before the board resumed it). */
+  pauseLostAt?: number | null;
+  /** G1: subtasks named after the nonce that existed before the board decided (must be 0). */
+  childrenBeforeDecision?: number | null;
 }
 
 export interface OracleResult { verdict: Exclude<Verdict, "n/a">; checks: Array<{ name: string; ok: boolean; detail?: string }> }
@@ -254,6 +299,9 @@ export interface TaskRecord {
   /** The run whose result armed the `result` trigger; the fault fires only while it is still running. */
   resultRunId?: string | null;
   triggerMissed?: TriggerId[];
+  governance?: GovernanceRecord;
+  /** K14 waves: the build serving when the task launched. */
+  serverBuildAtLaunch?: "upgrade_from" | "current";
 }
 
 export interface TaskGrade {

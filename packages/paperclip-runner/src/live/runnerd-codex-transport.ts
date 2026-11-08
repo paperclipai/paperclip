@@ -105,6 +105,7 @@ import {
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
+import { isTerminalOperation, staleTerminalCallResult, unseenReturnedToolCalls } from "./terminal-call-freshness.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -7108,6 +7109,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       call.correlation.turnId !== core.store.state.identity.turnId
     ) {
       throw new SemanticToolNotDispatchedError();
+    }
+    if (isTerminalOperation(call.operationId)) {
+      // A finish or block decided while earlier Paperclip calls of this turn
+      // had returned but not yet reached the agent (it was held across a
+      // controller restart) is stale: refuse it so the agent continues with
+      // those results instead of ending the task on a wait that is over.
+      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents, core.store.state.commands,
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId });
+      if (unseen.length) return staleTerminalCallResult(call.operationId, unseen);
     }
     const outcome = unwrapToolResponse(
       await this.#handler({

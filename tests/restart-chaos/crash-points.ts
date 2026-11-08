@@ -83,7 +83,7 @@ export function parseSuiteArgs(argv: readonly string[]): SuiteOptions {
     points: { type: "string" }, kinds: { type: "string" }, adapters: { type: "string" }, workloads: { type: "string" },
     env: { type: "string" }, nth: { type: "string" }, seed: { type: "string" }, list: { type: "boolean" },
     "daytona-image": { type: "string" }, "daytona-cpu": { type: "string" }, "budget-cents": { type: "string" },
-    "poll-ms": { type: "string" }, keep: { type: "boolean" }, lifecycle: { type: "string" },
+    "poll-ms": { type: "string" }, keep: { type: "boolean" }, lifecycle: { type: "string" }, "hold-ms": { type: "string" },
     "daytona-reuse-lease": { type: "boolean" },
   } });
   const env = values.env ?? "local";
@@ -100,6 +100,7 @@ export function parseSuiteArgs(argv: readonly string[]): SuiteOptions {
   for (const key of ["daytona-image", "daytona-cpu", "budget-cents", "poll-ms", "lifecycle"] as const) {
     if (values[key] !== undefined) passthrough.push(`--${key}`, values[key]!);
   }
+  if (values["hold-ms"] !== undefined) passthrough.push("--crash-point-hold-ms", values["hold-ms"]);
   if (values.keep) passthrough.push("--keep");
   if (values["daytona-reuse-lease"]) passthrough.push("--daytona-reuse-lease");
   return { points: csv(values.points), kinds: csv(values.kinds), adapters, workloads, env, nth, seed, list: values.list === true, passthrough };

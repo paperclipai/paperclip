@@ -500,3 +500,100 @@ it("adopts the in-flight turn when a restart lands just after turn.start (t77)",
     await rm(root, { recursive: true, force: true });
   }
 }, 40_000);
+
+it("starts a new turn when the lost turn's start reached the runner only after the controller detached (t48)", async () => {
+  // A graceful drain suspended the controller right after the runner accepted
+  // turn.start but before the provider started the turn. The runner recorded
+  // the provider's turn.started while no controller was attached, then died.
+  // The restored runner replays that undelivered turn.started and reports the
+  // turn lost; recovery must start a new turn instead of failing on the replay.
+  const root = await mkdtemp(join(tmpdir(), "runner-restart-late-start-"));
+  const identity = { runId: "run-late-start", sessionId: "session-late-start", companyId: "company-late-start", issueId: "issue-late-start", agentId: "agent-late-start" };
+  const execution: NativeExecutionInputV1 = {
+    schema: "paperclip.native-execution-input.v1",
+    binding: { runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "workspace-late-start" },
+    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    task: { identifier: "TEST-5", title: "Finish checks", description: null, prompt: "Watch the already running checks and finish the request.", workMode: "standard" },
+    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    provider: { kind: "codex", model: null },
+    completionContract: { id: "contract-late-start", sha256: "digest", schemaVersion: "paperclip.completion-contract.v1", contract: {
+      revision: "1", objective: "Finish checks", criteria: [{ id: "checks", requirement: "Check the outcome" }],
+    } },
+    interactionResponses: [], credentialBindings: [],
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn", "--turn-started-gate", join(root, "release-turn-started")],
+    stateDirectory: root,
+    turnStartTimeoutMs: 8_000,
+    prpIdentity: { runnerInstanceId: "runner-late-start", environmentLeaseId: "lease-late-start", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-late-start", itemId: "item-late-start" },
+  };
+  const first = createRunnerdCodexTransport(options);
+  let restored: ReturnType<typeof createRunnerdCodexTransport> | undefined;
+  const alive = (pid: number | null) => {
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const kill = (pid: number | null) => {
+    if (!pid) return;
+    try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  try {
+    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-late-start", transportFactory: () => first.transport });
+    const session = await backend.openSession({ identity, workingDirectory: root });
+    // The last checkpoint the controller persisted: no active turn yet.
+    const checkpoint = await session.snapshot();
+    expect(checkpoint.activeTurnId ?? null).toBeNull();
+    const starting = session.startTurn({ message: { role: "user", text: execution.task.prompt } }).catch((error: unknown) => error);
+    const controlPath = join(root, "control-plane", "control-plane-state.json");
+    await vi.waitFor(async () => {
+      const control = JSON.parse(await readFile(controlPath, "utf8"));
+      expect(control.commands.find((command: { type: string }) => command.type === "turn.start")).toMatchObject({ status: "completed" });
+    }, { timeout: 8_000, interval: 25 });
+    const owner = first.evidence();
+    // Graceful drain: the controller detaches while the runner and provider live on.
+    await first.detachControllerForRestart();
+    await starting;
+    await writeFile(join(root, "release-turn-started"), "");
+    // The provider starts the accepted turn while no controller is attached.
+    await vi.waitFor(async () => {
+      expect(await readFile(join(root, "runner", "runner-state.json"), "utf8")).toContain("turn.started");
+    }, { timeout: 8_000, interval: 25 });
+    kill(owner.runnerPid);
+    kill(owner.providerPid);
+    await vi.waitFor(() => { expect(alive(owner.runnerPid)).toBe(false); expect(alive(owner.providerPid)).toBe(false); });
+    const providerState = JSON.parse(await readFile(join(root, "fake-state.json"), "utf8"));
+    providerState.activeTurnId = null;
+    await writeFile(join(root, "fake-state.json"), JSON.stringify(providerState));
+    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: [], resumeActiveTurnId: null });
+    const recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-late-start", transportFactory: () => restored!.transport });
+    const events: PrpEvent[] = [];
+    const completion = await executeNativeSession({
+      input: execution, backend: recovering, persistedSession: checkpoint, resumeInterruptedTurn: true,
+      runnerInstanceId: "runner-late-start", controlPlaneInstanceId: "controller-late-start", timeoutMs: 15_000,
+      controlPlane: {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) { if (!("sourceSeq" in event)) throw new Error("Expected a durable PRP event"); events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async replayEvents(request) {
+          const source = events.filter(event => event.sourceInstanceId === request.sourceInstanceId);
+          return { events: source.filter(event => event.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: source.at(-1)?.sourceSeq ?? 0 };
+        },
+        async completeRun() {},
+      },
+    });
+    expect(completion).toMatchObject({ providerSessionId: checkpoint.providerSessionId, turnId: "provider-turn-2", terminal: { runTerminalState: "succeeded" } });
+    expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+    expect((await readFile(join(root, "calls.log"), "utf8")).match(/^turn\/start$/gm)).toHaveLength(2);
+  } finally {
+    await restored?.transport.close().catch(() => undefined);
+    for (const bundle of [first, restored]) {
+      if (!bundle) continue;
+      const evidence = bundle.evidence();
+      kill(evidence.runnerPid);
+      kill(evidence.providerPid);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 45_000);

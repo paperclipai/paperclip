@@ -93,18 +93,20 @@ earlier output timing. The event contains no text or provider identifiers.
 level `warn`) records one native run that exceeded its p95 speed budget. The
 budgets come from the Phase 0 local baseline and are listed in
 `doc/plans/2026-11-07-durable-ownership-and-reconciliation.md` ("Speed budgets").
-`metric` is `ttft` (`task.time_to_first_token`), `agent_boot` (end of
+`metric` is `time_to_first_activity` (`task.time_to_first_agent_activity`:
+the first text delta, tool-call start or reasoning item; named `ttft` and
+judged on `task.time_to_first_token` before 2026-11-08), `agent_boot` (end of
 `heartbeat.queue` to the end of `runner.turn.submit` or `runner.session.resume`)
 or `restart_recovery` (startup recovery `ready` to the recovered run's first
 provider event). The payload names `adapter` (`codex`, `claude` or `opencode`),
 `environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
 start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
 `percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
-For `ttft`, `measuredMs` counts from run creation: when the input waited for its
+For `time_to_first_activity`, `measuredMs` counts from run creation: when the input waited for its
 run to exist (for example a comment posted while the previous turn was still
 running), that wait is excluded from the judgment and reported as `inputWaitMs`.
 Each metric is checked at most once per dispatch. A restart-recovery dispatch is
-judged only on `restart_recovery`, because its TTFT and boot span the outage. Remote runs and other adapters have
+judged only on `restart_recovery`, because its first activity and boot span the outage. Time to first text (`task.time_to_first_token`) is reported without a budget. Remote runs and other adapters have
 no budget yet. The event is written in detached diagnostic work after the
 measurement, so it adds no wait before `turn.start`. It is a run-log row only
 and never goes to Telemetry.

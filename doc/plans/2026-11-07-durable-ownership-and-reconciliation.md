@@ -37,7 +37,7 @@ These become reconciler checks and crash-suite assertions. They should also be a
 5. **Work-based budgets:** a restart consumes run budget only when the resumed attempt started provider work and made no progress.
 6. **Generation fencing:** every runner and provider event carries its generation and turn. Events from an earlier generation are recorded as history and never fail the current turn.
 7. **Visible next action:** every non-terminal task has a next action, either automatic or a working control. "Waiting" with no owner is a violation.
-8. **Fast turns:** TTFT and agent boot stay within their measured budgets. Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
+8. **Fast turns:** time to first visible agent activity and agent boot stay within their measured budgets (TTFT, time to first text, is reported; since 2026-11-08 the budget judges first activity, because tool-first adapters call tools before writing text). Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
 
 ## Performance constraint: a turn must start as fast as possible
 
