@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -290,5 +290,33 @@ cp -R "${source}/." "$dest/"
     const receipt = await prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo });
     expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
     expect(await exists(cacheRoot, `${"e".repeat(64)}/junk`)).toBe(false);
+  });
+
+  it("two runs replacing a corrupt leftover at once both keep a usable cache", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
+    directories.push(root);
+    const skopeo = await fakeImage(root);
+    const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"f".repeat(64)}`;
+    const cacheRoot = path.join(root, "cache");
+    await mkdir(path.join(cacheRoot, "f".repeat(64)), { recursive: true });
+    await writeFile(path.join(cacheRoot, "f".repeat(64), "junk"), "partial");
+    const receipts = await Promise.all([1, 2].map(() => prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo })));
+    for (const receipt of receipts) expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
+    expect(await exists(cacheRoot, `${"f".repeat(64)}.lock`)).toBe(false);
+  });
+
+  it("reclaims a publish lock left by a crashed run", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
+    directories.push(root);
+    const skopeo = await fakeImage(root);
+    await writeFile(path.join(root, "barrier", "other"), "");
+    const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"9".repeat(64)}`;
+    const cacheRoot = path.join(root, "cache");
+    const lock = path.join(cacheRoot, `${"9".repeat(64)}.lock`);
+    await mkdir(lock, { recursive: true });
+    const old = new Date(Date.now() - 5 * 60_000);
+    await utimes(lock, old, old);
+    const receipt = await prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo });
+    expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
   });
 });

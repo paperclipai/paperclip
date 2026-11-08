@@ -327,19 +327,28 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
+const PUBLISH_LOCK_STALE_MS = 60_000;
+
 async function publishStaging(staging: string, finalDir: string): Promise<DaytonaImageArtifacts | null> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await rename(staging, finalDir);
-      return null;
-    } catch (error) {
+  const lock = `${finalDir}.lock`;
+  for (;;) {
+    try { await mkdir(lock); break; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const concurrent = await readReceipt(finalDir);
       if (concurrent) { await rm(staging, { recursive: true, force: true }); return concurrent; }
-      if (attempt > 0) throw error;
-      const stale = `${finalDir}.stale-${randomBytes(4).toString("hex")}`;
-      await rename(finalDir, stale).catch(() => undefined);
-      await rm(stale, { recursive: true, force: true });
+      const held = await stat(lock).then(info => Date.now() - info.mtimeMs, () => 0);
+      if (held > PUBLISH_LOCK_STALE_MS) await rm(lock, { recursive: true, force: true });
+      else await new Promise(resolve => setTimeout(resolve, 100));
     }
+  }
+  try {
+    const concurrent = await readReceipt(finalDir);
+    if (concurrent) { await rm(staging, { recursive: true, force: true }); return concurrent; }
+    await rm(finalDir, { recursive: true, force: true });
+    await rename(staging, finalDir);
+    return null;
+  } finally {
+    await rm(lock, { recursive: true, force: true });
   }
 }
 
