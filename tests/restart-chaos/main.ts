@@ -283,16 +283,18 @@ async function main(): Promise<number> {
       // Violations already present belong to earlier points, not this one.
       const before = await invariantsNow();
       const baseline = new Set(before.violations.map(violationKey));
-      // Arm before the batch launches: creating an assigned issue already queues
-      // its wake, so an early task can cross the point while later ones launch.
-      // The previous batch has rested, so only this batch's work can hit it.
+      // Stage the batch unassigned (no wake yet), arm the point, then assign:
+      // no task's work can start before the point is armed, and an early
+      // crash cannot fail a later task's creation. The previous batch has
+      // rested, so only this batch's work can hit the point.
+      for (const observer of batch) await observer.stage();
       const result = { point: spec, token: `p${String(index + 1).padStart(2, "0")}`, taskIds: batch.map(observer => observer.plan.taskId),
         armedAt: Date.now(), restedAt: null, fault: null, invariants: null, baseline };
       pointResults.push(result);
       supervisor.armCrashPoint(result.token, spec);
       for (const observer of batch) {
         launched.push(observer);
-        await observer.launch();
+        await observer.release();
         if (!observer.done) active.push(observer);
       }
       return result;

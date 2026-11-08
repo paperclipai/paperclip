@@ -98,7 +98,11 @@ export async function checkPlanInvariants(input: {
     const pass = (state: ReturnType<typeof createOwnershipReportState>, at: Date) =>
       withWaveInstance(input, () => runOwnershipReconciliationPass(db, { state, now: at, record: false }));
     const state = createOwnershipReportState();
-    await pass(state, now);
+    // I2 needs the same record proven gone on both passes: a kind that failed
+    // to list on the first pass has only one proof, so report it as incomplete.
+    const first = await pass(state, now);
+    for (const kind of first.kinds) if (kind.error) errors.push(`${kind.kind} (first I1/I2 pass): ${kind.error}`);
+    if (first.retryNeeded) errors.push("the first I1/I2 pass did not finish (retryNeeded)");
     const second = await pass(state, new Date(now.getTime() + 1_000));
     // A failed I3/I4/I7 query is only logged by the pass and sets retryNeeded.
     // Retry once; a pass that still could not finish is an incomplete check.
