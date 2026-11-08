@@ -708,6 +708,7 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     const newerTime = new Date("2026-02-01T00:00:00Z");
 
     // 1. Conflicting pair: legacy row (company_id = NULL) and company row (company_id = companyA)
+    // Legacy row is newer but has clientExternalId: null; target company row has the clientExternalId link
     await db.insert(pluginEntities).values({
       pluginId,
       companyId: null,
@@ -715,11 +716,11 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       scopeKind: "company",
       scopeId: companyA,
       externalId: "req-conflict",
-      title: "Legacy Request Title",
+      title: "Newer Legacy Title",
       status: "open",
-      data: { paperclipIssueId: "issue-123", legacyNote: "keep me" },
+      data: { paperclipIssueId: "issue-123", clientExternalId: null, legacyNote: "keep me" },
       createdAt: olderTime,
-      updatedAt: olderTime,
+      updatedAt: newerTime,
     });
 
     await db.insert(pluginEntities).values({
@@ -729,11 +730,11 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       scopeKind: "company",
       scopeId: companyA,
       externalId: "req-conflict",
-      title: "Newer Request Title",
+      title: "Older Target Title",
       status: "in_progress",
-      data: { operatorComment: "newer note" },
-      createdAt: newerTime,
-      updatedAt: newerTime,
+      data: { clientExternalId: "client-target-link", operatorComment: "older note" },
+      createdAt: olderTime,
+      updatedAt: olderTime,
     });
 
     // 2. Non-conflicting legacy row
@@ -769,12 +770,13 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     // Verify conflicting entity merged properly: preserved links and newer edits
     const merged = allRows.find(r => r.externalId === "req-conflict");
     expect(merged).toBeDefined();
-    expect(merged?.title).toBe("Newer Request Title");
-    expect(merged?.status).toBe("in_progress");
+    expect(merged?.title).toBe("Newer Legacy Title");
+    expect(merged?.status).toBe("open");
     expect(merged?.data).toMatchObject({
       paperclipIssueId: "issue-123",
+      clientExternalId: "client-target-link",
       legacyNote: "keep me",
-      operatorComment: "newer note",
+      operatorComment: "older note",
     });
 
     // Verify non-conflicting entity was backfilled

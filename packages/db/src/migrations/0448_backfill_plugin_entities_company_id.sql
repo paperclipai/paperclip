@@ -15,14 +15,32 @@ SET
     END
   )
   || CASE
-    WHEN ("target"."data"->>'paperclipIssueId') IS NULL AND ("source"."data"->>'paperclipIssueId') IS NOT NULL
-      THEN jsonb_build_object('paperclipIssueId', "source"."data"->'paperclipIssueId')
-    ELSE '{}'::jsonb
+    WHEN "source"."updated_at" > "target"."updated_at" THEN
+      COALESCE(
+        CASE WHEN "source"."data"->>'paperclipIssueId' IS NOT NULL THEN jsonb_build_object('paperclipIssueId', "source"."data"->'paperclipIssueId') END,
+        CASE WHEN "target"."data"->>'paperclipIssueId' IS NOT NULL THEN jsonb_build_object('paperclipIssueId', "target"."data"->'paperclipIssueId') END,
+        '{}'::jsonb
+      )
+    ELSE
+      COALESCE(
+        CASE WHEN "target"."data"->>'paperclipIssueId' IS NOT NULL THEN jsonb_build_object('paperclipIssueId', "target"."data"->'paperclipIssueId') END,
+        CASE WHEN "source"."data"->>'paperclipIssueId' IS NOT NULL THEN jsonb_build_object('paperclipIssueId', "source"."data"->'paperclipIssueId') END,
+        '{}'::jsonb
+      )
   END
   || CASE
-    WHEN ("target"."data"->>'clientExternalId') IS NULL AND ("source"."data"->>'clientExternalId') IS NOT NULL
-      THEN jsonb_build_object('clientExternalId', "source"."data"->'clientExternalId')
-    ELSE '{}'::jsonb
+    WHEN "source"."updated_at" > "target"."updated_at" THEN
+      COALESCE(
+        CASE WHEN "source"."data"->>'clientExternalId' IS NOT NULL THEN jsonb_build_object('clientExternalId', "source"."data"->'clientExternalId') END,
+        CASE WHEN "target"."data"->>'clientExternalId' IS NOT NULL THEN jsonb_build_object('clientExternalId', "target"."data"->'clientExternalId') END,
+        '{}'::jsonb
+      )
+    ELSE
+      COALESCE(
+        CASE WHEN "target"."data"->>'clientExternalId' IS NOT NULL THEN jsonb_build_object('clientExternalId', "target"."data"->'clientExternalId') END,
+        CASE WHEN "source"."data"->>'clientExternalId' IS NOT NULL THEN jsonb_build_object('clientExternalId', "source"."data"->'clientExternalId') END,
+        '{}'::jsonb
+      )
   END,
   "created_at" = LEAST("target"."created_at", "source"."created_at"),
   "updated_at" = GREATEST("target"."updated_at", "source"."updated_at")
@@ -49,5 +67,5 @@ UPDATE "plugin_entities"
 SET "company_id" = "scope_id"::uuid
 WHERE "company_id" IS NULL
   AND "scope_kind" = 'company'
-  AND "scope_id" ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND "scope_id" ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   AND "scope_id"::uuid IN (SELECT "id" FROM "companies");
