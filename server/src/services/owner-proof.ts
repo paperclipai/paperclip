@@ -10,6 +10,12 @@ import {
   UNKNOWN_PROCESS_SPACE,
 } from "./controller-process-identity.js";
 import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+
+/** `processSpace` value written when a board operator confirmed that this exact
+ * recorded owner stopped (native-controller-host-recovery.ts). The attestation
+ * is the proof. */
+export const OPERATOR_ATTESTED_PROCESS_SPACE = "operator_attested";
 
 /**
  * The owner recorded on an in-progress durable record (plan section A).
@@ -42,6 +48,14 @@ export type LocalOwnerStamp = {
   volumeId?: string | null;
   /** False when the owner's deployment was not volume-exclusive. Missing on older stamps. */
   exclusiveVolume?: boolean | null;
+  /**
+   * The record was saved before its kind stored a PID space (`processSpace`
+   * is null for that reason, not because the space is unknown). Such rows keep
+   * the previous local proof for one release on single-host servers only, and
+   * the proof says so (`legacyHostFallback`) so the caller can record each use.
+   * An ephemeral (multi-host) server never judges them.
+   */
+  processSpaceUnrecorded?: boolean;
 };
 
 export type RemoteOwnerStamp = {
@@ -55,7 +69,15 @@ export type RemoteOwnerStamp = {
 
 export type OwnerVerdict = "gone" | "alive" | "unprovable";
 
-export type OwnerProof = { verdict: OwnerVerdict; reason: OwnerProofReason };
+export type OwnerProof = {
+  verdict: OwnerVerdict;
+  reason: OwnerProofReason;
+  /** The local proof judged a row saved before its PID space was recorded. */
+  legacyHostFallback?: true;
+  /** The caller named every run this process executes, so a record of another
+   * run is not held here (`settleOwnableKind` with `currentProcessIdle`). */
+  localExecutionsKnown?: true;
+};
 
 export type OwnerProofReason =
   // gone
@@ -65,6 +87,11 @@ export type OwnerProofReason =
   | "generation_superseded"
   | "provider_stopped"
   | "deployment_replaced"
+  | "operator_attested"
+  /** This process owns the record and is not executing its run. Only a
+   * caller that knows this process's executions may conclude it
+   * (`settleOwnableKind` with `currentProcessIdle`); the prover never does. */
+  | "current_process_idle"
   // alive
   | "current_process"
   | "pid_alive"
@@ -76,6 +103,7 @@ export type OwnerProofReason =
   | "unknown_process_space"
   | "different_process_space"
   | "different_host"
+  | "process_space_unrecorded"
   | "pid_start_unreadable"
   | "pid_start_inconsistent"
   | "process_group_ambiguous"
@@ -208,7 +236,18 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
   // The platform stopped the owner's whole deployment, with every process and
   // orphaned child in it, before it started this one. Host and PID are moot.
   if (deploymentReplaced(stamp, probe.deployment)) return { verdict: "gone", reason: "deployment_replaced" };
-  if (!validPid(stamp.pid) || !stamp.processSpace) return { verdict: "unprovable", reason: "missing_identity" };
+  if (stamp.processSpace === OPERATOR_ATTESTED_PROCESS_SPACE) return { verdict: "gone", reason: "operator_attested" };
+  // A row saved before its kind stored a PID space: one-release local
+  // fallback on single-host servers; an ephemeral server cannot assume the
+  // PID was recorded here, so a board operator decides.
+  const legacy = !stamp.processSpace && stamp.processSpaceUnrecorded === true;
+  if (legacy && ephemeralServerEnabled()) return { verdict: "unprovable", reason: "process_space_unrecorded" };
+  if (!validPid(stamp.pid) || (!stamp.processSpace && !legacy)) return { verdict: "unprovable", reason: "missing_identity" };
+  if (legacy) {
+    const proof = await proveLocalOwnerGone({ ...stamp, processSpace: probe.processSpace, host: null,
+      processSpaceUnrecorded: false }, probe);
+    return proof.verdict === "gone" ? { ...proof, legacyHostFallback: true } : proof;
+  }
   if (stamp.processSpace === UNKNOWN_PROCESS_SPACE || probe.processSpace === UNKNOWN_PROCESS_SPACE) {
     return { verdict: "unprovable", reason: "unknown_process_space" };
   }

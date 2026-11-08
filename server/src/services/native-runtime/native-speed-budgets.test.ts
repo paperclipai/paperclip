@@ -87,6 +87,39 @@ describe("speed budget checks in the native run trace", () => {
     expect(breaches()).toEqual([expect.objectContaining({ metric: "ttft", adapter: "claude", startKind: "warm", measuredMs: ttft })]);
   });
 
+  it("judges a follow-up's TTFT from run creation and reports the wait behind the live turn", async () => {
+    // A comment posted while the previous turn runs waits for a run to exist;
+    // the budget (idle follow-up baseline) judges the time after that.
+    const budget = LOCAL_SPEED_BUDGETS.claude.ttft.warm.p95Ms;
+    const wait = 60_000;
+    const quiet = traced({ adapter: "claude", environment: "local" });
+    quiet.trace.setBudgetStart("warm");
+    await quiet.trace.record({ name: "comment.to_run_created", startedAtMs: 0, endedAtMs: wait });
+    await quiet.trace.record({ name: "heartbeat.queue", startedAtMs: wait, endedAtMs: wait + 100 });
+    await quiet.trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: wait + budget - 1 });
+    await quiet.trace.finish("ok");
+    expect(quiet.breaches()).toEqual([]);
+
+    const slow = traced({ adapter: "claude", environment: "local" });
+    slow.trace.setBudgetStart("warm");
+    await slow.trace.record({ name: "comment.to_run_created", startedAtMs: 0, endedAtMs: wait });
+    await slow.trace.record({ name: "heartbeat.queue", startedAtMs: wait, endedAtMs: wait + 100 });
+    await slow.trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: wait + budget + 1 });
+    await slow.trace.finish("ok");
+    expect(slow.breaches()).toEqual([expect.objectContaining({ metric: "ttft", measuredMs: budget + 1, inputWaitMs: wait })]);
+  });
+
+  it("still judges queueing after run creation (admission, dispatch) inside the TTFT budget", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local" });
+    trace.setBudgetStart("cold");
+    const budget = LOCAL_SPEED_BUDGETS.codex.ttft.cold.p95Ms;
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: budget });
+    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: budget + 1 });
+    await trace.finish("ok");
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "ttft", measuredMs: budget + 1 })]);
+    expect(breaches()[0]).not.toHaveProperty("inputWaitMs");
+  });
+
   it("checks restart recovery latency once, from ready to the first provider event", async () => {
     const { trace, breaches } = traced({ adapter: "opencode", environment: "local" });
     const late = LOCAL_SPEED_BUDGETS.opencode.restart_recovery.p95Ms + 1_000;

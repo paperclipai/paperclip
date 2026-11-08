@@ -87,6 +87,9 @@ export type SpeedBudgetBreach = {
   percentile: "p95";
   baseline: string;
   disposition?: string;
+  /** TTFT only: time the input waited for its run to exist (for example a
+   * comment posted while the previous turn was running). Not judged. */
+  inputWaitMs?: number;
 };
 
 /** A breach when one measured run exceeds its p95 budget, else null. */
@@ -97,6 +100,7 @@ export function evaluateSpeedBudget(input: {
   start: SpeedBudgetStart | null;
   measuredMs: number;
   disposition?: string;
+  inputWaitMs?: number;
 }): SpeedBudgetBreach | null {
   if (!input.adapter || input.environment !== "local" || !Number.isFinite(input.measuredMs) || input.measuredMs < 0) return null;
   const budget = speedBudgetFor(input.adapter, input.metric, input.start);
@@ -106,6 +110,7 @@ export function evaluateSpeedBudget(input: {
     startKind: input.start ?? "unknown", measuredMs: Math.round(input.measuredMs), budgetP50Ms: budget.p50Ms,
     budgetP95Ms: budget.p95Ms, percentile: "p95", baseline: SPEED_BUDGET_BASELINE,
     ...(input.disposition ? { disposition: input.disposition } : {}),
+    ...(input.inputWaitMs ? { inputWaitMs: Math.round(input.inputWaitMs) } : {}),
   };
 }
 

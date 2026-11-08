@@ -35,7 +35,7 @@ import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
 import * as adapterModule from "../adapters/index.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
-import { budgetPolicies } from "@paperclipai/db";
+import { budgetPolicies, costEvents } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleLocalWork } from "../services/idle-local-work.js";
@@ -66573,9 +66573,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (mode === "legacy_no_prior") await db.delete(chatActions).where(and(
         eq(chatActions.deliveryId, context.action.deliveryId!), eq(chatActions.kind, "github_response_comment")));
       if (realBudgetIngress) {
-        await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, context.runId));
+        // A reached hard stop the board later lifts. Pending accounting is no
+        // longer a budget hold (invariant 3).
         await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: context.fixture.assignedAgentId,
           metric: "billed_cents", windowKind: "lifetime", amount: 100, notifyEnabled: false });
+        await db.insert(costEvents).values({ companyId, agentId: context.fixture.assignedAgentId, provider: "openai", model: "gpt",
+          costCents: 100, occurredAt: new Date() });
         context.wakeup.mockImplementation(heartbeatService(db).wakeup);
       } else context.wakeup.mockImplementation(async (agentId, opts) => {
         const request = opts.durableChatRequest!;

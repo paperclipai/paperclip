@@ -1,11 +1,13 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
-import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
+import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
+import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -1568,7 +1570,8 @@ export function environmentService(db: Db) {
         releasedAt: null,
         failureReason: null,
         cleanupStatus: null,
-        metadata: withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata)),
+        // The holder stamp is written with the row that makes the lease active.
+        metadata: withEnvironmentLeaseController(withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata))),
         createdAt: now,
         updatedAt: now,
       };
@@ -1660,7 +1663,8 @@ export function environmentService(db: Db) {
                     expiresAt: input.expiresAt ?? null,
                     failureReason: null,
                     cleanupStatus: null,
-                    metadata: preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata)),
+                    metadata: withEnvironmentLeaseController(
+                      preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata))),
                     updatedAt: now,
                   })
                   .where(
@@ -1771,7 +1775,7 @@ export function environmentService(db: Db) {
           // Messages saved behind a finished run wait for its cleanup to
           // settle. Reconsider them through normal deferred admission.
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
-          if (previous.issueId) await notifyDeferredWakesForIssue(tx, { companyId: previous.companyId, issueId: previous.issueId });
+          await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId });
         }
         if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
           await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
@@ -1913,8 +1917,8 @@ export function environmentService(db: Db) {
           await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
-          if (run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId))
-            await notifyDeferredWakesForIssue(tx, { companyId: run.companyId, issueId: run.issueId });
+          await promoteDeferredWorkIntents(tx, { companyId: run.companyId, trigger: "lock_released",
+            issueId: run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId) ? run.issueId : null });
         }
         return tx.update(environmentLeases)
         .set({

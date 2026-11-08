@@ -463,6 +463,19 @@ function parseWikiLinkBody(body: string): ParsedWikiLink | null {
   };
 }
 
+/**
+ * Agents sometimes write a company link as `//PAP/agents/...`. A browser reads
+ * that as a protocol-relative URL for a host named after the company prefix,
+ * which leaves the app. When the "host" is exactly a known company prefix, the
+ * link can only mean the company path, so render it as `/PAP/agents/...`.
+ */
+export function companyPathFromProtocolRelativeHref(href: string | undefined, knownPrefixes?: readonly string[]): string | undefined {
+  if (!href || !knownPrefixes?.length) return href;
+  const match = /^\/\/([^/?#]+)((?:[/?#].*)?)$/.exec(href.trim());
+  if (!match || !knownPrefixes.includes(match[1]!)) return href;
+  return `/${match[1]}${match[2] || ""}`;
+}
+
 function encodeWikiLinkTarget(target: string): string | null {
   const trimmed = target.trim();
   if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
@@ -855,7 +868,8 @@ function MarkdownBodyImpl({
         {codeChildren}
       </code>
     ),
-    a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+    a: ({ node: _node, href: rawHref, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+      const href = companyPathFromProtocolRelativeHref(rawHref, knownPrefixes);
       const workspaceFileRef = parseWorkspaceFileHref(href);
       if (workspaceFileRef) {
         return (
@@ -997,7 +1011,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, t]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes, t]);
 
   return (
     <div

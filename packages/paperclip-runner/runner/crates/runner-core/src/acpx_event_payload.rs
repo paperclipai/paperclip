@@ -88,12 +88,9 @@ pub enum AcpxEventPayload {
     },
 }
 
-/// Validates event authority before it decodes the bounded sidecar payload.
-pub fn decode_acpx_event(
-    scope: &AcpxEventScope,
-    event: &AcpxSidecarEvent,
-) -> Result<AcpxEventPayload, LocalRunnerError> {
-    scope.validate_event(event)?;
+/// Applies the payload admission limit. Every sidecar event passes it, the
+/// history of a settled turn included.
+pub fn admit_acpx_event_payload_size(event: &AcpxSidecarEvent) -> Result<(), LocalRunnerError> {
     let payload_bytes = serde_json::to_vec(&event.payload).map_err(|error| {
         LocalRunnerError::invalid(format!("ACPX event payload is invalid: {error}"))
     })?;
@@ -102,6 +99,16 @@ pub fn decode_acpx_event(
             "ACPX event payload exceeds the 256 KiB admission limit",
         ));
     }
+    Ok(())
+}
+
+/// Validates event authority before it decodes the bounded sidecar payload.
+pub fn decode_acpx_event(
+    scope: &AcpxEventScope,
+    event: &AcpxSidecarEvent,
+) -> Result<AcpxEventPayload, LocalRunnerError> {
+    scope.validate_event(event)?;
+    admit_acpx_event_payload_size(event)?;
 
     match event.event_type {
         GeneratedAcpxSidecarEventType::RuntimeRichEvent => decode_rich_event(&event.payload),

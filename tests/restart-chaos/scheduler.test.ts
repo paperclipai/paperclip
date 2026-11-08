@@ -32,6 +32,20 @@ describe("scheduler determinism", () => {
     }
   });
 
+  it("raises the K4 hold upper end with --k4-hold-max-seconds, up to the 600 s outage cap", () => {
+    const command = parseCommand(["--faults", "K4", "--k4-hold-max-seconds", "600", "--seed", "5"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.k4HoldMaxMs).toBe(600_000);
+    const holds = planTasks({ ...command.options, tasks: 40 }).map(task => task.holdMs);
+    expect(Math.min(...holds)).toBeGreaterThanOrEqual(K4_HOLD_RANGE_MS[0]);
+    expect(Math.max(...holds)).toBeLessThanOrEqual(600_000);
+    expect(Math.max(...holds)).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    const storm = planStorm(5, 120, ["K4"], 600_000);
+    expect(Math.max(...storm.faults.map(fault => fault.holdMs))).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
+  });
+
   it("covers every workload × adapter × fault cell once per cycle", () => {
     const cells = options.workloads.length * options.adapters.length * options.faults.length;
     const tasks = planTasks({ ...options, tasks: cells });
