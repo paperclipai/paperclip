@@ -73,7 +73,7 @@ export type ExecutionPhase =
   | "workspace.checkout.cache_lookup" | "workspace.checkout.cache_publish"
   | "runtime_selection.review" | "runtime_selection.contract_read" | "runtime_selection.contract_ensure"
   | "runtime_selection.resume" | "runtime_selection.recovery_profile" | "runtime_selection.profile" | "runtime_selection.interactions"
-  | "runtime_selection.provider_discovery" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
+  | "runtime_selection.provider_discovery" | "runtime_selection.codex_cli_version" | "runtime_selection.runtime_context" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
   | "runtime_selection.transaction" | "runtime_selection.transaction.entry" | "runtime_selection.transaction.commit" | "runtime_selection.transaction.rollback"
   | "runtime_selection.row_lock" | "runtime_selection.workspace_sync" | "runtime_selection.skill_assets"
   | "runtime_context.instructions" | "runtime_context.skills" | "runtime_context.mcp"
@@ -212,7 +212,15 @@ function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T
       }));
     return operation;
   };
-  if (!endpointEnabled()) return withDatabaseOperation(name, async () => work());
+  if (!endpointEnabled()) {
+    // No tracer: still scope the run so nested measureRunPhase steps reach the run log.
+    const previous = ownership.getStore();
+    const owned: RunScope = { runId, phase: name, parent: undefined, ended: false,
+      details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>() };
+    return withDatabaseOperation(name, () => ownership.run(owned, async () => {
+      try { return await work(); } finally { owned.ended = true; }
+    }));
+  }
   try {
     const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
@@ -253,6 +261,20 @@ export function withRunResponsePresentationTiming<T>(runId: string, work: () => 
 export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   return withDatabaseOperation(phase, async () => {
     const owned = ownership.getStore();
+    if (!endpointEnabled() && owned && !owned.ended) {
+      const count = owned.details.get(phase) ?? 0;
+      if (count >= 16) return work();
+      owned.details.set(phase, count + 1);
+      const startedAtMs = Date.now();
+      let outcome: RecordedPreparationPhase["outcome"] = "failed";
+      try {
+        const value = await work();
+        outcome = "ok";
+        return value;
+      } finally {
+        recordPreparationPhase(owned.runId, { name: phase, startedAtMs, endedAtMs: Date.now(), outcome });
+      }
+    }
     if (!endpointEnabled() || !owned || owned.ended) return work();
     const count = owned.details.get(phase) ?? 0;
     if (count >= 16) return work();
