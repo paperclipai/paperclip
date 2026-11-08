@@ -14,7 +14,7 @@
  *           gaps with its own reasons. The chaos graders cover part of them:
  *           R3 (one Retry at most) bounds I5 and R1 (finished in budget) I8.
  */
-import { createDb } from "../../packages/db/src/index.js";
+import { createDb, type Db } from "../../packages/db/src/index.js";
 import {
   createOwnershipReportState,
   runOwnershipReconciliationPass,
@@ -23,8 +23,11 @@ import {
 
 export type PlanInvariant = "I1" | "I2" | "I3" | "I4" | "I5" | "I6" | "I7" | "I8";
 
+/** A violation with the state of its record and run, so a failure is diagnosable after the instance is gone. */
+export type EvidencedViolation = InvariantViolation & { evidence?: Record<string, unknown> };
+
 export interface InvariantCheck {
-  violations: InvariantViolation[];
+  violations: EvidencedViolation[];
   byInvariant: Partial<Record<PlanInvariant, number>>;
   inProgress: Record<string, { inProgress: number; gone: number; alive: number; unprovable: number }>;
   notMeasured: Partial<Record<PlanInvariant, string>>;
@@ -60,6 +63,31 @@ async function withWaveInstance<T>(instance: { paperclipHome: string; instanceId
   }
 }
 
+const clip = (value: unknown) => typeof value === "string" ? value.slice(0, 300) : value ?? null;
+
+async function withEvidence(db: Db, violations: InvariantViolation[]): Promise<EvidencedViolation[]> {
+  if (!violations.length) return violations;
+  const wakeIds = violations.filter(violation => violation.kind === "wake_request" || violation.kind === "wake_request_claimed")
+    .map(violation => violation.recordId);
+  const runIds = [...new Set(violations.flatMap(violation => violation.runId ? [violation.runId] : []))];
+  type Row = Record<string, unknown>;
+  const wakes = (wakeIds.length ? await db.$client.unsafe(
+    "select id::text, status, reason, error, run_id::text as \"runId\" from agent_wakeup_requests where id::text = any($1)", [wakeIds]) : []) as Row[];
+  const runs = (runIds.length ? await db.$client.unsafe(
+    "select id::text, status, error_code as \"errorCode\", error from heartbeat_runs where id::text = any($1)", [runIds]) : []) as Row[];
+  const wakeById = new Map(wakes.map(wake => [wake.id, wake]));
+  const runById = new Map(runs.map(run => [run.id, run]));
+  return violations.map(violation => {
+    const wake = wakeById.get(violation.recordId);
+    const run = violation.runId ? runById.get(violation.runId) : undefined;
+    const evidence = {
+      ...(wake ? { wake: { status: wake.status, reason: clip(wake.reason), error: clip(wake.error), runId: wake.runId } } : {}),
+      ...(run ? { run: { status: run.status, errorCode: run.errorCode, error: clip(run.error) } } : {}),
+    };
+    return Object.keys(evidence).length ? { ...violation, evidence } : violation;
+  });
+}
+
 export async function checkPlanInvariants(input: {
   connectionString: string; companyId: string | null; paperclipHome: string; instanceId: string; now?: Date;
 }): Promise<InvariantCheck> {
@@ -83,7 +111,7 @@ export async function checkPlanInvariants(input: {
       || violation.companyId === input.companyId;
     const fromClock = second.violations.filter(violation => violation.rule === "I1_owned" || violation.rule === "I2_settled");
     const fromShift = shifted.violations.filter(violation => violation.rule !== "I1_owned" && violation.rule !== "I2_settled");
-    const violations = [...fromClock, ...fromShift].filter(ownCompany);
+    const violations = await withEvidence(db, [...fromClock, ...fromShift].filter(ownCompany));
     const inProgress = Object.fromEntries(second.kinds.filter(kind => kind.inProgress > 0)
       .map(kind => [kind.kind, { inProgress: kind.inProgress, ...kind.verdicts }]));
     return {

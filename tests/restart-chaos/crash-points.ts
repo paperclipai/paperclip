@@ -39,7 +39,7 @@ export interface PointResult {
   reached: { name: string; hit: number; pid: number } | null;
   failedInvariants: Record<string, number>;
   failedTasks: Array<{ taskId: string; adapter: string; workload: string; signature: string | null; rules: Record<string, string> }>;
-  violations: Array<{ rule: string; kind: string; reason: string; recordId: string }>;
+  violations: Array<{ rule: string; kind: string; reason: string; recordId: string; evidence?: Record<string, unknown> }>;
   durationMs: number;
   error?: string;
 }
@@ -109,14 +109,15 @@ export type CrashPointEntry = {
   armedAt: number;
   restedAt: number | null;
   tasks: Array<{ taskId: string; adapter: string; workload: string; pass: boolean; signature: string | null; rules: Record<string, string> }>;
-  invariants: { violations: Array<{ rule: string; kind: string; reason: string; recordId: string }>; byInvariant: Record<string, number>; errors: string[] } | null;
+  invariants: { violations: Array<{ rule: string; kind: string; reason: string; recordId: string; evidence?: Record<string, unknown> }>; byInvariant: Record<string, number>; errors: string[] } | null;
 };
 
 /** Classifies one point from its entry; a point the wave never reached has none. */
 export function classifyPoint(point: CrashPointName, exitCode: number | null, entry: CrashPointEntry | null): Omit<PointResult, "waveDir"> {
   const base = { point, exitCode, reached: entry?.reached ?? null, failedInvariants: entry?.invariants?.byInvariant ?? {},
     failedTasks: (entry?.tasks ?? []).filter(task => !task.pass).map(({ pass: _pass, ...task }) => task),
-    violations: (entry?.invariants?.violations ?? []).map(({ rule, kind, reason, recordId }) => ({ rule, kind, reason, recordId })),
+    violations: (entry?.invariants?.violations ?? []).map(({ rule, kind, reason, recordId, evidence }) =>
+      ({ rule, kind, reason, recordId, ...(evidence ? { evidence } : {}) })),
     durationMs: entry?.restedAt ? entry.restedAt - entry.armedAt : 0 };
   if (!entry) return { ...base, outcome: "harness_error", error: `not run (wave exited ${exitCode})` };
   if (base.failedTasks.length > 0 || base.violations.length > 0) return { ...base, outcome: "fail" };
@@ -163,8 +164,11 @@ export function renderSummary(runId: string, options: SuiteOptions, results: rea
   }
   const violations = results.flatMap(result => result.violations.map(violation => ({ point: result.point, ...violation })));
   if (violations.length) {
-    lines.push("", "## Violations", "", "| Point | Rule | Kind | Reason | Record |", "|---|---|---|---|---|");
-    for (const violation of violations) lines.push(`| \`${violation.point}\` | ${violation.rule} | ${violation.kind} | ${violation.reason} | ${violation.recordId} |`);
+    lines.push("", "## Violations", "", "| Point | Rule | Kind | Reason | Record | Evidence |", "|---|---|---|---|---|---|");
+    for (const violation of violations) {
+      const evidence = violation.evidence ? `\`${JSON.stringify(violation.evidence).replace(/\|/g, "\\|")}\`` : "—";
+      lines.push(`| \`${violation.point}\` | ${violation.rule} | ${violation.kind} | ${violation.reason} | ${violation.recordId} | ${evidence} |`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }
