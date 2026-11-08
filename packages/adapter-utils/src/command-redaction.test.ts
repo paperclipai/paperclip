@@ -12,6 +12,7 @@ describe("explicit diagnostic credential forms", () => {
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
   looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
@@ -211,6 +212,29 @@ describe("diagnostic environment secret selection", () => {
     const key = "sk-fixturecredential12345";
     const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", FEATURE_FLAG: "false" }, ["D"]);
     expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
+  });
+
+  // Host env of a desktop agent session: short ordinary values under names
+  // the allowlist does not know. Treating "vi" as a credential redacted it
+  // inside "service" in Sentry reports.
+  it("does not treat short or bare-number host process values under unknown names as credentials", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CHILD_EDITOR: "vi", RUN_PHASE: "RUN", FEATURE_STATE: "off",
+      SESSION_PID: "67591", XPC_FLAGS: "0x0", ASK_TOOL: "true", BATCH_SIZE: "8", LONG_NUMBER: "123456789012",
+      CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1" }, [], { hostProcess: true })).toEqual([]);
+    // Credential names keep short values private, and long opaque values stay private.
+    expect(collectDiagnosticEnvironmentSecrets({ AWS_ACCESS_KEY_ID: "1", CUSTOM_BINDING: "opaque-host-secret" }, [],
+      { hostProcess: true }).sort()).toEqual(["1", "opaque-host-secret"]);
+    // An agent's configured environment keeps the fail-closed rule.
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+  });
+
+  it("keeps short host values private as whole tokens", () => {
+    const env = { CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", RUN_PHASE: "RUN", FEATURE_STATE: "off", LEVEL: "2",
+      SESSION_PID: "67591", LONG_SECRET: "opaque-host-secret", AWS_ACCESS_KEY_ID: "1" };
+    // Substring-private values are not repeated; only flag values (booleans, 0, 1) are exempt.
+    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi", "2"]);
+    expect(collectHostEnvironmentTokenSecrets({ SHORT_PIN: "482", COUNT_FLAG: "1", OFF_FLAG: "0", MODE_FLAG: "yes" })).toEqual(["482"]);
+    expect(collectHostEnvironmentTokenSecrets(null)).toEqual([]);
   });
 
   it("keeps unknown opaque values private without declarations", () => {
