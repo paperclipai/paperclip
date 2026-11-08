@@ -4,7 +4,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
-import { MAX_RUNTIME_BRIEF_WAIT_MS, readRuntimeTaskGate, releaseRuntimeWorker, taskBoundRuntimeGate, prepareRuntimeWorkerGate } from "./runtime-busy-worker.js";
+import { readRuntimeTaskGate, releaseRuntimeWorker, taskBoundRuntimeGate, prepareRuntimeWorkerGate } from "./runtime-busy-worker.js";
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
@@ -50,11 +50,7 @@ it("retains neutral cleanup release and refuses timeout widening", async () => {
   const f = await fixture(), gate = taskBoundRuntimeGate("cleanup"); await readRuntimeTaskGate(f.ctx, gate, "task", "worker");
   await releaseRuntimeWorker({ gate });
   expect(await readFile(gate.gate, "utf8")).toBe("The human ended this disposable fixture. Preserve any saved work and finish normally.");
-  expect(() => taskBoundRuntimeGate("too-long", MAX_RUNTIME_BRIEF_WAIT_MS + 1)).toThrow("bounded");
-  // A case may opt into a wait that still ends inside OpenCode's 600 s bash ceiling.
-  expect(MAX_RUNTIME_BRIEF_WAIT_MS).toBeLessThan(600_000);
-  expect(taskBoundRuntimeGate("long-chat", MAX_RUNTIME_BRIEF_WAIT_MS).script).toContain(`Date.now()+${MAX_RUNTIME_BRIEF_WAIT_MS}`);
-  expect(taskBoundRuntimeGate("default").script).toContain("Date.now()+300000");
+  expect(() => taskBoundRuntimeGate("too-long", 300001)).toThrow("bounded");
 });
 it("funds source and worker before task-bound history, without exposing an agent-home script or admitting work", async () => {
   const f = await fixture(); vi.stubEnv("PAPERCLIP_HOME", path.join(f.root, "paperclip-home")); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "owned-test");

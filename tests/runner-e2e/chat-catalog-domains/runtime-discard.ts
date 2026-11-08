@@ -7,7 +7,7 @@ import { pollUntil } from "../api.js";
 import { submitTaskReply } from "../user-actions.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
-import { MAX_RUNTIME_BRIEF_WAIT_MS, releaseRuntimeWorker } from "./runtime-busy-worker.js";
+import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { humanQueuedRuntime, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
@@ -40,8 +40,8 @@ export function gradeDiscard(value: unknown) {
   "A distinct saved instruction reaches one real later worker, updates the saved plan and preserves prior work/history without replaying the discarded request.");
   return c.result();
 }
-export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText, { briefWaitMs: MAX_RUNTIME_BRIEF_WAIT_MS }), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_800_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v3",
+export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v3",
   sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -87,7 +87,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     const message = `I later queued a different contact request on Website ${task.identifier ?? task.id}, comment ${second.comment.id}, and Morgan has already consumed it. Cancel that later contact requirement now by sending Morgan new direction to remove the contact section from the saved website plan while retaining the accessible-font requirement. Explain what happened to the already-delivered input; do not erase or rewrite it.`;
     const priorIds = consumed.runs.map(row => row.id);
     await sendChatMessage(ctx.input.page, message, chatCatalogNativePhaseRemainingBudget(ctx));
-    const final = await pollUntil({ label: "One real new-direction continuation after already-delivered cancellation", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 600_000),
+    const final = await pollUntil({ label: "One real new-direction continuation after already-delivered cancellation", deadlineAt: Date.now() + 300_000,
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), task: await ctx.input.api.get<Entity>(root), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(queuePath) }; },
       accept: v => v.source?.conversationState === "waiting" && v.runs.length === 5 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0,
       reject: v => v.runs.length > 5 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The declared later cancellation failed or duplicated execution" : undefined });
