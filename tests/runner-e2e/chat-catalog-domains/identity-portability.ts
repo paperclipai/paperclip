@@ -12,6 +12,12 @@ import { identityDefinition, identityObservation, identityWorker, observeIdentit
 
 const secretValues = new WeakMap<ChatCatalogContext, string>();
 interface AgentConfiguration { adapterType: string; adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown> }
+/** The saved configuration an import could overwrite. Lifecycle status and updatedAt change on their own
+ * after setup (agent preparation, harness budget funding), so they are not configuration; configurationRevision
+ * is the product's own content hash of the configuration and stays in the comparison. */
+export function savedAgentConfiguration(value: unknown) {
+  const { status: _status, updatedAt: _updatedAt, ...configuration } = (value ?? {}) as Record<string, unknown>; return JSON.stringify(configuration);
+}
 function text(entry: CompanyPortabilityFileEntry) { return typeof entry === "string" ? entry : Buffer.from(entry.data, "base64").toString("utf8"); }
 export function gradePortability(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-portability-evidence", !!o, "Actual package files, public provenance, permitted actor and independently saved resources are required."); if (!o) return c.result();
@@ -37,8 +43,10 @@ export function gradePortability(value: unknown) {
     const preview = o.state.preview as CompanyPortabilityPreviewResult | undefined; const conflict = entity(o.state, "existing");
     c.add("actual-conflict-before-mutation", !!preview && preview.errors.length === 0 && preview.targetCompanyId === o.companyId
       && preview.plan.agentPlans.some(plan => plan.slug === "morgan" && plan.existingAgentId === conflict.id && plan.action !== "update")
-      && o.state.beforeChoiceUnchanged === true && o.state.initialReplyAskedChoice === true && o.state.actualPackageAttached === true,
-      "The actual attached synthetic package produces a real Morgan collision preview and requests a consequential choice before changing company resources.");
+      && o.state.beforeChoiceUnchanged === true && o.state.firstTurnAwaitedHuman === true && o.state.actualPackageAttached === true
+      // The conflicting employee's name is a setup-chosen literal; the reply must surface it. How the agent phrases the conflict or the question is not graded.
+      && typeof o.state.firstReply === "string" && o.state.firstReply.includes("Morgan"),
+      "The actual attached synthetic package produces a real Morgan collision preview; the first turn names the conflicting employee and hands the decision back to the person before changing company resources.");
     c.add("explicit-human-rename-import", o.humanQueries.length === 2 && o.humanQueries[1]?.includes("Morgan Package") && o.state.importedAgentId !== conflict.id
       && o.agents.some(agent => agent.id === o.state.importedAgentId && agent.name === "Morgan Package" && agent.companyId === o.companyId)
       && o.state.existingConfigurationUnchanged === true && o.state.existingStillPresent === true && o.state.importedAgentVisible === true,
@@ -102,14 +110,17 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     return { sourceId: source.id, existing, existingConfiguration, sourcePackage, packageAttachment, actualPackageAttached: true,
       beforeAgentIds: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(row => row.id) };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources, queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v2", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await waitForReply(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
       const current = await ctx.input.api.get<Entity[]>(`${root}/agents`); state.beforeChoiceUnchanged = JSON.stringify(current.map(row => row.id).sort()) === JSON.stringify([...(state.beforeAgentIds as string[])].sort())
-        && JSON.stringify(state.existingConfiguration) === JSON.stringify(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`));
-      const o = await observeIdentity(ctx, state); state.initialReplyAskedChoice = /Morgan/i.test(o.reply) && /conflict|already exists|same name|collision/i.test(o.reply) && /rename|skip|which|choose|would you|should I/i.test(o.reply);
+        && savedAgentConfiguration(state.existingConfiguration) === savedAgentConfiguration(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`))
+        && !(await observeIdentity(ctx, state)).activity.some(row => row.action === "company.imported");
+      const o = await observeIdentity(ctx, state); state.firstReply = o.reply;
+      // waitForReply returned with the conversation waiting on the person and every run finished: the agent stopped after the preview instead of importing.
+      state.firstTurnAwaitedHuman = ctx.issue()?.conversationState === "waiting" && o.runs.length >= 1 && o.runs.every(run => run.status === "succeeded");
       state.preview = await ctx.input.api.post<CompanyPortabilityPreviewResult>(`${root}/imports/preview`, { source: state.sourcePackage, target: { mode: "existing_company", companyId: ctx.input.fixtures.company.id }, collisionStrategy: "rename", include: { company: false, agents: true, projects: false, issues: false, skills: false } });
-      if (!state.beforeChoiceUnchanged || !state.initialReplyAskedChoice) throw new Error("The consequential import conflict was not previewed without mutation and referred to the human");
+      if (!state.beforeChoiceUnchanged || !state.firstTurnAwaitedHuman) throw new Error("The consequential import conflict was not previewed without mutation and referred to the human");
       await sendChatMessage(ctx.input.page, "Import the package into this company. Choose rename for the incoming Morgan and name the new employee Morgan Package. Keep the existing Morgan and every part of its configuration unchanged. Do not run the imported employee.");
       const rows = await pollUntil({ label: "actual scoped renamed import", deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return { agents: await ctx.input.api.get<Entity[]>(`${root}/agents`), runs: await ctx.allRuns() }; },
         accept: value => value.agents.some(row => row.name === "Morgan Package" && row.id !== entity(state, "existing").id) && value.runs.length === 2 && value.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
@@ -121,7 +132,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     async observe(ctx, state) {
       const o = await observeIdentity(ctx, state); const imported = o.agents.find(row => row.name === "Morgan Package" && row.id !== entity(state, "existing").id);
       state.importedAgentId = imported?.id; state.existingStillPresent = o.agents.some(row => row.id === entity(state, "existing").id && row.name === "Morgan");
-      state.existingConfigurationUnchanged = JSON.stringify(state.existingConfiguration) === JSON.stringify(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`)); return o;
+      state.existingConfigurationUnchanged = savedAgentConfiguration(state.existingConfiguration) === savedAgentConfiguration(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`)); return o;
     },
     async verifyResult(ctx, state) {
       if (typeof state.importedAgentId !== "string") throw new Error("Actual imported employee is missing"); const source = ctx.input.page.url();
