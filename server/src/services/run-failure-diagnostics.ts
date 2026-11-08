@@ -186,14 +186,17 @@ export function redactRunFailureSecretValues<T>(input: T, values: readonly strin
   const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const forms = variants(values);
   // Short host values are private only as whole tokens: "vi" is redacted in
-  // "editor vi", never inside "service".
+  // "editor vi", never inside "service". One alternation ordered by length
+  // across both lists, so a longer complete match always wins over a shorter
+  // prefix that starts at the same position.
   const tokenForms = variants(tokenValues).filter((value) => !forms.includes(value));
   const alternatives = [
-    ...(forms.length ? [forms.map(escape).join("|")] : []),
-    ...(tokenForms.length ? [`(?<![\\p{L}\\p{N}_])(?:${tokenForms.map(escape).join("|")})(?![\\p{L}\\p{N}_])`] : []),
-  ];
+    ...forms.map((value) => ({ value, pattern: escape(value) })),
+    ...tokenForms.map((value) => ({ value,
+      pattern: `(?<![\\p{L}\\p{N}_])${escape(value)}(?![\\p{L}\\p{N}_])` })),
+  ].sort((a, b) => b.value.length - a.value.length);
   if (alternatives.length === 0) return input;
-  const pattern = new RegExp(alternatives.join("|"), "gu");
+  const pattern = new RegExp(alternatives.map((entry) => entry.pattern).join("|"), "gu");
   const redact = (value: unknown): unknown => {
     if (typeof value === "string") return value.replace(pattern, () => REDACTED_EVENT_VALUE);
     if (Array.isArray(value)) return value.map(redact);

@@ -603,6 +603,11 @@ describe("run failure diagnostics", () => {
       nested: ["(***REDACTED***)", "vim"] });
   });
 
+  it("lets a longer whole-token host value win over a shorter declared secret at the same position", () => {
+    expect(redactRunFailureSecretValues("upstream rejected 1aB9xQ; code 1", ["1"], ["1aB9xQ"]))
+      .toBe("upstream rejected ***REDACTED***; code ***REDACTED***");
+  });
+
   it("preserves ordinary settings while retaining declared secrets", () => {
     const env = { PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "1" };
     expect(collectRunFailureSecretValues(env)).toEqual([]);
