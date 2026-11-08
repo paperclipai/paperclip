@@ -57,21 +57,43 @@ export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
 }
 
-export function withoutOutage(run: BaselineRun, createdAtMs: number, windows: readonly OutageWindow[]):
-  { run: BaselineRun; adjusted: number; removedMs: number } {
+export function traceStartMs(run: BaselineRun): number | null {
+  let earliest: number | null = null;
+  for (const event of run.events) {
+    if (event.eventType !== "run.performance.span" || !event.payload) continue;
+    const written = Date.parse(event.createdAt);
+    const end = Number(event.payload.startOffsetMs) + Number(event.payload.durationMs);
+    if (!Number.isFinite(written) || !Number.isFinite(end)) continue;
+    const candidate = written - end;
+    if (earliest === null || candidate < earliest) earliest = candidate;
+  }
+  return earliest;
+}
+
+export function outageFreeClock(windows: readonly OutageWindow[]): (at: number) => number {
+  return at => at - windows.reduce((total, window) =>
+    total + Math.max(0, Math.min(at, window.readyAt) - window.startedAt), 0);
+}
+
+export function withoutOutage(run: BaselineRun, windows: readonly OutageWindow[]):
+  { run: BaselineRun; adjusted: number; removedMs: number; anchored: boolean } {
+  const traceStart = traceStartMs(run);
+  if (traceStart === null) return { run, adjusted: 0, removedMs: 0, anchored: false };
+  const clock = outageFreeClock(windows);
+  const origin = clock(traceStart);
   let adjusted = 0, removedMs = 0;
   const events = run.events.map(event => {
     const payload = event.payload;
     if (event.eventType !== "run.performance.span" || !payload) return event;
-    const start = createdAtMs + Number(payload.startOffsetMs), duration = Number(payload.durationMs);
-    if (!Number.isFinite(start) || !Number.isFinite(duration)) return event;
-    const overlap = windows.reduce((total, window) =>
-      total + Math.max(0, Math.min(start + duration, window.readyAt) - Math.max(start, window.startedAt)), 0);
-    if (overlap <= 0) return event;
-    adjusted += 1; removedMs += overlap;
-    return { ...event, payload: { ...payload, durationMs: Math.max(0, duration - overlap) } };
+    const offset = Number(payload.startOffsetMs), duration = Number(payload.durationMs);
+    if (!Number.isFinite(offset) || !Number.isFinite(duration)) return event;
+    const start = traceStart + offset, end = start + duration;
+    const startOffsetMs = clock(start) - origin, durationMs = clock(end) - clock(start);
+    if (startOffsetMs === offset && durationMs === duration) return event;
+    if (durationMs !== duration) { adjusted += 1; removedMs += duration - durationMs; }
+    return { ...event, payload: { ...payload, startOffsetMs, durationMs } };
   });
-  return { run: { ...run, events }, adjusted, removedMs };
+  return { run: { ...run, events }, adjusted, removedMs, anchored: true };
 }
 
 export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly BaselineRun[], faults: readonly BaselineFault[],
@@ -92,6 +114,17 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + runBudgetExceeded;
   return { environment, rows, recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null).length,
     runBudgetExceeded, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
+}
+
+async function runEventsWithRetry(api: ChaosApi, runId: string, attempts = 3): Promise<BaselineEvent[]> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await runEvents(api, runId); } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw lastError;
 }
 
 async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]> {
@@ -119,8 +152,8 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
     for (const [index, run] of ordered.entries()) {
       try {
         const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
-          events: await runEvents(api, run.id) };
-        const trimmed = withoutOutage(raw, Date.parse(run.createdAt!), windows);
+          events: await runEventsWithRetry(api, run.id) };
+        const trimmed = withoutOutage(raw, windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
         runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });
@@ -145,6 +178,6 @@ export function speedMarkdown(speed: WaveSpeed): string {
     lines.push(`| ${row.adapter} | ${row.metric} | ${row.start} | ${row.measured.n} | ${s(row.measured.p50)} | ${s(row.measured.p95)} | `
       + `${row.budget ? `${s(row.budget.p50Ms)} / ${s(row.budget.p95Ms)}` : "no budget"} | ${row.breaches.join(", ") || "—"} |`);
   }
-  if (speed.errors.length) lines.push("", `Run logs not read: ${speed.errors.length}.`);
+  if (speed.errors.length) lines.push("", `Speed grade incomplete: ${speed.errors.length} run logs not read; the wave fails.`);
   return `${lines.join("\n")}\n`;
 }

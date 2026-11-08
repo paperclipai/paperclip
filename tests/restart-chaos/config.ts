@@ -154,6 +154,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       ? { crashPointHoldMs: integer(values["crash-point-hold-ms"], "crash-point-hold-ms", 0, 0, 600_000) } : {}),
   };
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  if (options.workloads.includes("M1") && options.adapters.length < 2) {
+    throw new Error("--workloads M1 delegates between two agents; pass at least two --adapters");
+  }
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {

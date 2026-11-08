@@ -9,7 +9,7 @@ import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.j
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
-  InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
+  AdapterId, InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
@@ -505,6 +505,20 @@ export class TaskObserver {
     const self = this.lab.agents[this.plan.adapter];
     const other = Object.values(this.lab.agents).find(agent => agent.id !== self.id) ?? self;
     return { self, other };
+  }
+
+  async childSpeedTasks(): Promise<Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }>> {
+    if (!this.definition.collect.childDocuments || !this.record.issueId) return [];
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`);
+    const tasks: Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }> = [];
+    for (const row of (rows ?? []).filter(child => child.parentId === this.record.issueId)) {
+      const adapter = (Object.entries(this.lab.agents) as Array<[AdapterId, { id: string }]>)
+        .find(([, agent]) => agent.id === row.assigneeAgentId)?.[0];
+      if (!adapter) continue;
+      const runs = await this.api.get<Json[]>(`/api/issues/${row.id}/runs`, 15_000);
+      tasks.push({ issueId: String(row.id), adapter, samples: [{ runs: (runs ?? []).map(toRunSample) }] });
+    }
+    return tasks;
   }
 
   async collectChildren(issueId: string): Promise<NonNullable<OracleArtifacts["children"]>> {

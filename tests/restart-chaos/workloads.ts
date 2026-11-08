@@ -97,16 +97,22 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
     collect: { documents: ["summary"], files: () => [], commands: [], childDocuments: ["part"] },
     grade(nonce, artifacts, agents) {
       const children = artifacts.children ?? [];
-      const part = (n: number) => children.find(child => (child.documents.part ?? "").includes(partMarker(nonce, n)));
+      const holders = (n: number) => children.filter(child => (child.documents.part ?? "").includes(partMarker(nonce, n)));
+      const part1 = holders(1), part2 = holders(2);
+      const distinct = part1.length === 1 && part2.length === 1 && part1[0]!.id !== part2[0]!.id;
       const summary = artifacts.documents.summary ?? "";
       return result([
         statusCheck(artifacts),
+        { name: "two_agents", ok: Boolean(agents) && agents!.self.id !== agents!.other.id,
+          detail: agents ? `self=${agents.self.id} other=${agents.other.id}` : "no agents" },
         { name: "two_subtasks", ok: children.length === 2, detail: `children=${children.length}` },
         { name: "subtasks_done", ok: children.length > 0 && children.every(child => child.status === "done"),
           detail: children.map(child => child.status).join(",") },
-        ...[1, 2].map(n => ({ name: `part${n}_document`, ok: part(n) !== undefined })),
-        { name: "part1_delegated", ok: !agents || part(1)?.assigneeAgentId === agents.other.id,
-          detail: `assignee=${part(1)?.assigneeAgentId ?? "none"}` },
+        { name: "parts_in_distinct_subtasks", ok: distinct, detail: `part1=${part1.length} part2=${part2.length}` },
+        { name: "part1_delegated", ok: distinct && Boolean(agents) && part1[0]!.assigneeAgentId === agents!.other.id,
+          detail: `assignee=${part1[0]?.assigneeAgentId ?? "none"}` },
+        { name: "part2_kept", ok: distinct && Boolean(agents) && part2[0]!.assigneeAgentId === agents!.self.id,
+          detail: `assignee=${part2[0]?.assigneeAgentId ?? "none"}` },
         { name: "summary_has_both_parts", ok: summary.includes(partMarker(nonce, 1)) && summary.includes(partMarker(nonce, 2)) },
       ]);
     },

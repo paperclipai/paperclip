@@ -205,6 +205,14 @@ describe("T-oracles", () => {
     const pending = { ...artifacts, children: [child(1, "other", "in_progress"), child(2, "self")] };
     expect(workloadDefinitions.M1.grade("abcd1234", pending, agents).verdict).toBe("fail");
     expect(workloadDefinitions.M1.grade("abcd1234", { ...artifacts, children: [child(1, "other")] }, agents).verdict).toBe("fail");
+    const both = { ...artifacts, children: [{ ...child(1, "other"), documents: { part: "PART1-abcd1234\nPART2-abcd1234" } },
+      { ...child(2, "self"), documents: { part: "nothing" } }] };
+    expect(workloadDefinitions.M1.grade("abcd1234", both, agents).checks.find(check => check.name === "parts_in_distinct_subtasks")?.ok).toBe(false);
+    const wrongPart2 = { ...artifacts, children: [child(1, "other"), child(2, "other")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", wrongPart2, agents).checks.find(check => check.name === "part2_kept")?.ok).toBe(false);
+    const single = { self: agents.self, other: agents.self };
+    expect(workloadDefinitions.M1.grade("abcd1234", { ...artifacts, children: [child(1, "self"), child(2, "self")] }, single)
+      .checks.find(check => check.name === "two_agents")?.ok).toBe(false);
   });
 
   it("grades A1 and C1 markers", () => {

@@ -432,16 +432,18 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
-    const speed = await collectWaveSpeed(api, plan.options.env, launched.flatMap(observer => observer.record.issueId
-      ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), faults)
-      .catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); return null; });
+    const speed = await (async () => {
+      const childTasks = (await Promise.all(launched.map(observer => observer.childSpeedTasks()))).flat();
+      return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
+        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
+    })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
     if (speed) {
       speedSection = speedMarkdown(speed);
       await writeFile(path.join(waveDir, "speed.json"), `${JSON.stringify(speed, null, 2)}\n`, { mode: 0o600 });
       timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded,
         rows: speed.rows.map(row => ({ adapter: row.adapter, metric: row.metric, start: row.start, n: row.measured.n,
           p50: row.measured.p50, p95: row.measured.p95, breaches: row.breaches })) });
-      if (speed.breaches > 0) anyFailure = true;
+      if (speed.breaches > 0 || speed.errors.length > 0) anyFailure = true;
     }
     if (crashPoint) {
       if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
