@@ -5749,10 +5749,9 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })
         || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
         if (remoteSandbox) {
-          const stopped = await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
-          if (stopped === "absent_confirmed" || stopped === "stopped" || stopped === "killed") {
-            noteRemoteBootstrapRestartProven(input.execution.binding.runId, stopped);
-          }
+          takeRemoteBootstrapRestartProof(input.execution.binding.runId);
+          recordRemoteBootstrapRestartProof(input.execution.binding.runId,
+            await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity }));
         }
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
@@ -6296,6 +6295,18 @@ const provenRemoteBootstrapRestarts = new Map<string, "absent_confirmed" | "stop
 
 export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent_confirmed" | "stopped" | "killed"): void {
   provenRemoteBootstrapRestarts.set(runId, stopped);
+}
+
+export function recordRemoteBootstrapRestartProof(runId: string,
+  stopped: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>): boolean {
+  provenRemoteBootstrapRestarts.delete(runId);
+  if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
+  provenRemoteBootstrapRestarts.set(runId, stopped);
+  return true;
+}
+
+export function hasRemoteBootstrapRestartProof(runId: string): boolean {
+  return provenRemoteBootstrapRestarts.has(runId);
 }
 
 export function takeRemoteBootstrapRestartProof(runId: string): boolean {
@@ -15521,8 +15532,9 @@ async function createRunnerdBackendWithinSessionClaim(
                       const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
                         && input.restartRecovery?.kind === "bootstrap_incomplete"
                         && state.notSuspendedRunId === input.execution.binding.runId
-                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
-                        && await moveInterruptedBootstrapSessionAside();
+                        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId);
                       if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
                           !(await claimUntouchedRemoteSession())) {
                         throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);

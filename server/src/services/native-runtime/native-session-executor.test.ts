@@ -402,6 +402,8 @@ import {
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
   noteRemoteBootstrapRestartProven,
+  recordRemoteBootstrapRestartProof,
+  hasRemoteBootstrapRestartProof,
   takeRemoteBootstrapRestartProof,
   unidentifiedLocalRunnerProvenAbsent,
   executePaperclipNativeSession,
@@ -661,6 +663,13 @@ describe("remote controller restart adoption", () => {
         { waitMs: 20, pollMs: 1 })).resolves.toBe("absent_confirmed");
       expect(signalled(execute)).toEqual([]);
     });
+    it.each([["absent_confirmed", true], ["stopped", true], ["killed", true], ["stop_failed", false], ["no_prior_runner", false]] as const)(
+      "records a bootstrap restart proof only for a confirmed stop: %s", (stopped, proven) => {
+        noteRemoteBootstrapRestartProven("run", "stopped");
+        expect(recordRemoteBootstrapRestartProof("run", stopped)).toBe(proven);
+        expect(hasRemoteBootstrapRestartProof("run")).toBe(proven);
+        takeRemoteBootstrapRestartProof("run");
+      });
     it("does not confirm absence when the process probe is uncertain", async () => {
       const { execute, target } = fixture();
       const verify = async () => { throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "probe_timeout" } as never); };
