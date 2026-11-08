@@ -5750,8 +5750,9 @@ async function migrateRunnerdStateRootForExecution(input: {
         || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
         if (remoteSandbox) {
           const stopped = await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
-          // A runner that could not be stopped may still own the session: no fresh claim over it.
-          if (stopped !== "stop_failed") noteRemoteBootstrapRestartProven(input.execution.binding.runId, stopped);
+          if (stopped === "absent_confirmed" || stopped === "stopped" || stopped === "killed") {
+            noteRemoteBootstrapRestartProven(input.execution.binding.runId, stopped);
+          }
         }
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
@@ -6291,19 +6292,12 @@ const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
  * runner can be verified there is nothing to stop, and a remaining conflict is
  * still caught by the bounded same-run bootstrap retry.
  */
-/**
- * Remote bootstrap restarts the pre-phase proved: the restored controller record shows no turn was
- * sent, and the interrupted runner was stopped (or none with this run's identity was alive). A
- * reusable sandbox lease then resumes with that runner's not-suspended state still on disk; this
- * proof lets the resumed check move it aside and claim a fresh session, for this run only.
- */
-const provenRemoteBootstrapRestarts = new Map<string, "no_prior_runner" | "stopped" | "killed">();
+const provenRemoteBootstrapRestarts = new Map<string, "absent_confirmed" | "stopped" | "killed">();
 
-export function noteRemoteBootstrapRestartProven(runId: string, stopped: "no_prior_runner" | "stopped" | "killed"): void {
+export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent_confirmed" | "stopped" | "killed"): void {
   provenRemoteBootstrapRestarts.set(runId, stopped);
 }
 
-/** Consumes the proof for `runId` (one fresh bootstrap per proof). */
 export function takeRemoteBootstrapRestartProof(runId: string): boolean {
   return provenRemoteBootstrapRestarts.delete(runId);
 }
@@ -6317,7 +6311,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   verify?: typeof verifyRemoteRunnerReattachment;
   waitMs?: number;
   pollMs?: number;
-} = {}): Promise<"no_prior_runner" | "stopped" | "killed" | "stop_failed"> {
+} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed"> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
   const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
@@ -6330,9 +6324,10 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
       claim: { runId, remote: { providerLeaseId, remoteCwd: target.remoteCwd } },
       target, identity: input.identity, runId, normalizedSessionId: nativeSessionKey(input.execution),
     });
-  } catch {
+  } catch (error) {
     // No runner with this run's exact identity and generation is alive here.
-    return "no_prior_runner";
+    return error instanceof RemoteRunnerRecoveryError && error.remoteRunnerRecovery.reason === "process_not_running"
+      ? "absent_confirmed" : "no_prior_runner";
   }
   try {
     let outcome: "stopped" | "killed" = "stopped";
@@ -6344,6 +6339,11 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
       if (await runner.isAlive()) {
         await runner.signal("SIGKILL");
         outcome = "killed";
+        const killDeadline = Date.now() + (options.waitMs ?? STALE_REMOTE_RUNNER_STOP_WAIT_MS);
+        while (Date.now() < killDeadline && await runner.isAlive()) {
+          await new Promise(done => setTimeout(done, options.pollMs ?? 500));
+        }
+        if (await runner.isAlive()) return "stop_failed";
       }
     }
     await input.onLog?.("stdout", `[paperclip-runner] Stopped the interrupted runner ${runner.pid} before restarting the bootstrap.\n`);
@@ -15094,7 +15094,6 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
     incompleteReason: "unavailable" | "not_suspended" | null;
-    /** `not_suspended`: the run that wrote the on-disk runner state. */
     notSuspendedRunId?: string | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
@@ -15230,17 +15229,14 @@ async function createRunnerdBackendWithinSessionClaim(
     return probe.exitCode === 0 && !probe.timedOut;
   };
 
-  /**
-   * A proven bootstrap restart: move the interrupted runner's remote session folder aside (kept as
-   * evidence, never deleted) so the fresh bootstrap can claim the session.
-   */
   const moveInterruptedBootstrapSessionAside = async (): Promise<boolean> => {
-    if (!remoteCommandRunner || !remoteSessionRoot) return false;
-    const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
-    const escapedArchive = `${remoteSessionRoot}.bootstrap-restart-${Date.now()}-${randomUUID()}`.replaceAll("'", "'\\''");
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
     const moved = await remoteCommandRunner.execute({
       command: "sh",
-      args: ["-c", `test -d '${escapedSource}' && test ! -L '${escapedSource}' && mv '${escapedSource}' '${escapedArchive}'`],
+      args: ["-c",
+        'set -eu; for directory in "$1" "$2" "$3"; do test -d "$directory" && test ! -L "$directory" || exit 1; done; mv -- "$3" "$4"',
+        "paperclip-runner-bootstrap-restart", remoteRuntimeRoot, posix.dirname(remoteSessionRoot), remoteSessionRoot,
+        `${remoteSessionRoot}.bootstrap-restart-${Date.now()}-${randomUUID()}`],
       bypassSession: true,
       timeoutMs: 30_000,
     });
@@ -15522,9 +15518,6 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      // A reusable lease resumes the sandbox of a bootstrap a restart interrupted:
-                      // its runner state is this run's, never suspended, and the pre-phase proved
-                      // no turn was sent and stopped that runner. Start the bootstrap again.
                       const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
                         && input.restartRecovery?.kind === "bootstrap_incomplete"
                         && state.notSuspendedRunId === input.execution.binding.runId

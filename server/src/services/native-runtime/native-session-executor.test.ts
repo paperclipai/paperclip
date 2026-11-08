@@ -629,8 +629,21 @@ describe("remote controller restart adoption", () => {
     });
     it("escalates to SIGKILL when the runner ignores SIGTERM", async () => {
       const { execute, target } = fixture();
+      const live = execute.getMockImplementation()!;
+      let killed = false;
+      execute.mockImplementation(async request => {
+        if (killed && request.args[1]!.includes("expected_pid")) return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+        if (request.args.at(-1) === "KILL") killed = true;
+        return live(request);
+      });
       await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
         { waitMs: 20, pollMs: 1 })).resolves.toBe("killed");
+      expect(signalled(execute)).toEqual(["TERM", "KILL"]);
+    });
+    it("reports a runner that outlives SIGKILL as not stopped", async () => {
+      const { execute, target } = fixture();
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 20, pollMs: 1 })).resolves.toBe("stop_failed");
       expect(signalled(execute)).toEqual(["TERM", "KILL"]);
     });
     it("signals nothing when the sandbox runner belongs to another identity", async () => {
@@ -645,7 +658,14 @@ describe("remote controller restart adoption", () => {
       execute.mockImplementation(async request => request.args[1]!.includes("expected_pid")
         ? { stdout: "", stderr: "", exitCode: 45, timedOut: false } : live(request));
       await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
-        { waitMs: 20, pollMs: 1 })).resolves.toBe("no_prior_runner");
+        { waitMs: 20, pollMs: 1 })).resolves.toBe("absent_confirmed");
+      expect(signalled(execute)).toEqual([]);
+    });
+    it("does not confirm absence when the process probe is uncertain", async () => {
+      const { execute, target } = fixture();
+      const verify = async () => { throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "probe_timeout" } as never); };
+      await expect(stopStaleRemoteRunnerBeforeBootstrap({ execution, runnerExecutionTarget: target as never, identity },
+        { waitMs: 20, pollMs: 1, verify: verify as never })).resolves.toBe("no_prior_runner");
       expect(signalled(execute)).toEqual([]);
     });
   });
@@ -19572,9 +19592,7 @@ describe("runnerd provider runtime wiring", () => {
     ["fresh", "external_checkpoint", "external_pending_turn", "external_wrong_identity", "external_unregistered", "existing_state", "symlink_parent", "wrong_identity", "wrong_runner", "wrong_lease", "missing_control_plane", "connected", "committed_event", "committed_command", "pending_turn", "remote_probe_failed", "backup_present"]
       .map((scenario) => ({ outcome, scenario, homeMode: "isolated" }))),
     ...["resumed", "replacement"].map(outcome => ({ outcome, scenario: "fresh", homeMode: "preconfigured" })),
-    // A reusable lease resumes the sandbox of a bootstrap a restart interrupted (t06): only this
-    // run's own never-suspended state, with the pre-phase's no-turn proof, starts it again.
-    ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven"]
+    ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven", "interrupted_bootstrap_symlink_parent"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
   ])(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario ($homeMode)", async ({ outcome, scenario, homeMode }) => {
@@ -19582,8 +19600,13 @@ describe("runnerd provider runtime wiring", () => {
     const runtimeRoot = join(remoteCwd, ".paperclip-runtime", "paperclip-runner");
     await mkdir(runtimeRoot, { recursive: true });
     const sessionRoot = join(runtimeRoot, "sessions", createHash("sha256").update(execution.session.normalizedSessionId!).digest("hex"));
-    if (scenario === "existing_state" || scenario.startsWith("interrupted_bootstrap")) await mkdir(sessionRoot, { recursive: true });
-    if (scenario === "symlink_parent") await symlink(isolatedStateDirectory, join(runtimeRoot, "sessions"));
+    if (scenario === "existing_state") await mkdir(sessionRoot, { recursive: true });
+    const symlinkTarget = scenario === "interrupted_bootstrap_symlink_parent" ? join(isolatedStateDirectory, "elsewhere") : isolatedStateDirectory;
+    if (scenario === "symlink_parent" || scenario === "interrupted_bootstrap_symlink_parent") {
+      await mkdir(symlinkTarget, { recursive: true });
+      await symlink(symlinkTarget, join(runtimeRoot, "sessions"));
+    }
+    if (scenario.startsWith("interrupted_bootstrap")) await mkdir(sessionRoot, { recursive: true });
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
       if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
@@ -19610,7 +19633,7 @@ describe("runnerd provider runtime wiring", () => {
       if (command.args?.[2] === "paperclip-runner-launch") {
         throw new Error("fixture_stop_after_launch_staging");
       }
-      if (command.args?.[1]?.includes("bootstrap-restart-")) {
+      if (command.args?.[2] === "paperclip-runner-bootstrap-restart") {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
@@ -19709,14 +19732,11 @@ describe("runnerd provider runtime wiring", () => {
       await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
-    if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_other_run") {
-      // What the pre-phase records once the restored controller record proves no turn was sent
-      // and the interrupted runner was stopped.
+    if (["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_symlink_parent"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
     if (scenario === "interrupted_bootstrap") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
-      // The interrupted runner's session folder is kept as evidence beside the new claim.
       const siblings = await readdir(dirname(sessionRoot));
       expect(siblings.filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`))).toHaveLength(1);
       expect((await lstat(sessionRoot)).isDirectory()).toBe(true);
@@ -19779,9 +19799,13 @@ describe("runnerd provider runtime wiring", () => {
       );
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
       expect(syncIn).not.toHaveBeenCalled();
-      // Nothing that is not this run's proven interrupted bootstrap is ever moved aside.
-      expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("bootstrap-restart-"))).toBe(false);
-      if (scenario === "interrupted_bootstrap_other_run") takeRemoteBootstrapRestartProof(execution.binding.runId);
+      if (scenario === "interrupted_bootstrap_symlink_parent") {
+        expect((await readdir(symlinkTarget)).some(name => name.includes(".bootstrap-restart-"))).toBe(false);
+        expect((await lstat(sessionRoot)).isDirectory()).toBe(true);
+      } else {
+        expect(remoteExecute.mock.calls.some(([command]) => command.args?.[2] === "paperclip-runner-bootstrap-restart")).toBe(false);
+      }
+      takeRemoteBootstrapRestartProof(execution.binding.runId);
     }
   });
 
