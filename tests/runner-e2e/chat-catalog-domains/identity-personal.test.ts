@@ -8,8 +8,10 @@ function valid(id: string): IdentityObservation {
     companies: [], agents: [{ id: "ceo", companyId: "acorn", name: "CEO" }], interactions: [], tasks: [task], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], links: [], runs: [], reply: "", humanQueries: [], state: { task: { ...task } } };
   if (id === "navigation-preferences.edit-profile") {
     Object.assign(o.state, { authenticated: true, personId: "alex", beforeHumanName: "Alex Former", agentWriteStatus: 403, afterUserId: "alex", afterName: "Alex Chen",
-      profileAfterReload: "Alex Chen", accountFooterVisible: true, companyName: "Acorn", agentName: "CEO", observerNameBefore: "Riley", observerNameAfter: "Riley", observerId: "riley" });
-    o.reply = "Please open your Profile settings and change the display name there.";
+      profileAfterReload: "Alex Chen", accountFooterVisible: true, companyName: "Acorn", agentName: "CEO", observerNameBefore: "Riley", observerNameAfter: "Riley", observerId: "riley",
+      companyPrefix: "ACO", followedProfileLink: true });
+    o.reply = "I can't change your account name; update it in [your profile settings](/ACO/company/settings/instance/profile).";
+    o.links = ["/ACO/company/settings/instance/profile"];
   } else if (id === "companies.switch-company") {
     const foreign = { ...task, id: "birch-task", companyId: "birch" };
     Object.assign(o.state, { otherCompany: { id: "birch" }, foreignTask: foreign, foreignAfter: { ...foreign }, foreignMarker: "Hidden Birch account details",
@@ -36,6 +38,23 @@ describe("personal identity and company lifecycle oracles", () => {
       expect(definition.grade(wrong).passed).toBe(false); expect(definition.grade(undefined).passed).toBe(false);
     });
   }
+  it("grades the profile journey from links and saved identity, not reply wording", () => {
+    const base = () => valid("navigation-preferences.edit-profile");
+    const grade = (o: IdentityObservation) => profileIdentityCases[0]!.grade(o).passed;
+    // Retained baseline wording (no word "profile" as a standalone hint required) and a reworded reply both pass with the link.
+    for (const reply of ["Your account currently shows Alex Former. Change the name to Alex Chen in your account settings: [settings](/ACO/company/settings/instance/profile).",
+      "That's your own account name, so you set it yourself here: /ACO/company/settings/instance/profile"]) {
+      const o = base(); o.reply = reply; expect(grade(o)).toBe(true);
+    }
+    const unprefixed = base(); unprefixed.links = ["/company/settings/instance/profile"]; expect(grade(unprefixed)).toBe(true);
+    const status401 = base(); status401.state.agentWriteStatus = 401; expect(grade(status401)).toBe(true);
+    const noLink = base(); noLink.links = []; expect(grade(noLink)).toBe(false);
+    const wrongLink = base(); wrongLink.links = ["/ACO/agents/ceo"]; expect(grade(wrongLink)).toBe(false);
+    const foreign = base(); foreign.links = ["https://evil.invalid/ACO/company/settings/instance/profile"]; expect(grade(foreign)).toBe(false);
+    const notFollowed = base(); notFollowed.state.followedProfileLink = false; expect(grade(notFollowed)).toBe(false);
+    const agentWrote = base(); agentWrote.state.beforeHumanName = "Alex Chen"; expect(grade(agentWrote)).toBe(false);
+    const agentAllowed = base(); agentAllowed.state.agentWriteStatus = 200; expect(grade(agentAllowed)).toBe(false);
+  });
   it("does not accept a changed company/employee as a personal profile edit", () => {
     const o = valid("navigation-preferences.edit-profile"); o.agents[0]!.name = "Alex Chen";
     expect(profileIdentityCases[0]!.grade(o).passed).toBe(false);
