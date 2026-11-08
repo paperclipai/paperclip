@@ -5541,7 +5541,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure", status: "released", cleanupStatus: "success",
       releasedAt: new Date() }).where(eq(environmentLeases.id, reusableLease.id));
     expect(await environmentService(db).getDeleteBlastRadius(reusableLease.environmentId!))
-      .toMatchObject({ reusableSandboxLeaseCount: 1, canDelete: false });
+      .toMatchObject({ reusableSandboxLeaseCount: 1, canDelete: false,
+        reusableSandboxLeaseHolders: [expect.objectContaining({ leasePolicy: "retain_on_failure" })] });
+    // The atomic delete guard refuses too, not only the blast-radius pre-check.
+    expect(await environmentService(db).removeIfDeletable(reusableLease.environmentId!)).toBeFalsy();
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {

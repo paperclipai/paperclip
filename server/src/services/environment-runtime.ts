@@ -60,7 +60,7 @@ import {
   runWithRuntimeParent,
   type StartupSpanContext,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
-import { environmentService } from "./environments.js";
+import { environmentService, KEPT_SANDBOX_LEASE_POLICIES } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
 import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
@@ -4324,7 +4324,7 @@ export function environmentRuntimeService(
             // Reusable sandboxes, and retain-on-failure sandboxes kept stopped as
             // workspace-restore sources: both outlive their run, so a deleted
             // environment must tear them down or they are orphaned.
-            inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "retain_on_failure"]),
+            inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]),
             // A failed run may have stopped its reusable sandbox without
             // destroying it; that provider handle still needs scoped teardown.
             inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
@@ -4364,7 +4364,7 @@ export function environmentRuntimeService(
           continue;
         }
         const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason, anyLeasePolicy: true,
-          scopeCondition: and(inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "retain_on_failure"])) });
+          scopeCondition: inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]) });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
