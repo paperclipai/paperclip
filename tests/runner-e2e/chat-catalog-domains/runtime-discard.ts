@@ -13,6 +13,14 @@ import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 
 const contactText = "Also add a contact section to the website.";
+/** Native prompts embed task comments as JSON, so a multi-line body appears with escaped newlines. */
+export function promptCarries(prompt: string | undefined, body: string) {
+  return !!prompt && (prompt.includes(body) || prompt.includes(JSON.stringify(body).slice(1, -1)));
+}
+/** Links the reply saved in Markdown, plus links already rendered when the reply was observed. */
+export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
+  return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
+}
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-pending-and-consumed-cancellation-evidence", !!o, "Both actual human discard and separately consumed input with later new direction are required."); if (!o) return c.result();
@@ -41,7 +49,7 @@ export function gradeDiscard(value: unknown) {
   return c.result();
 }
 export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v3",
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v4",
   sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -52,7 +60,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     const answered = await observeRuntime(ctx, state);
     const source = ctx.input.page.url(), task = state.task as Entity, root = `/api/issues/${task.id}`, queuePath = `${root}/queued-comments`;
     const initial = await ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), targetId = String(state.targetId);
-    state.queryReply = answered.reply; state.queryLinkedTask = hasLink(answered, "issues", task);
+    state.queryReply = answered.reply; state.queryLinkedTask = hasLink({ ...answered, links: replyLinkHrefs(answered.reply, answered.links) }, "issues", task);
     state.targetPendingAfterReply = initial.entries.some(row => row.comment.id === targetId && row.comment.body === contactText);
     state.agentDiscardStatus = await probeAgentPermission(ctx, `${queuePath}/${targetId}`, "DELETE", { queueId: initial.queueId, revision: initial.revision });
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
@@ -80,7 +88,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     state.consumerRunId = consumer.id;
     const detail = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`);
     state.consumedBeforeCancellation = detail.contextSnapshot?.wakeCommentIds?.includes(second.comment.id) === true
-      && detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(secondText) === true;
+      && promptCarries(detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt, secondText);
     state.discardedNeverDelivered = consumed.runs.every(row => !((row.contextSnapshot?.wakeCommentIds as string[] | undefined) ?? []).includes(targetId));
     state.lateDiscardStatus = await probeConsumedHumanQueue(ctx, String(state.humanId), `${queuePath}/${second.comment.id}`, "DELETE", { queueId: secondQueue.queueId, revision: secondQueue.revision });
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
@@ -95,13 +103,13 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     const sourceComments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = sourceComments.filter(row => !row.authorAgentId && row.body === message);
     const replies = sourceComments.filter(row => row.createdByRunId === lead?.id && row.authorAgentId === ctx.input.fixtures.agent.id);
     const leadInput = lead && await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${lead.id}`);
-    state.latePhaseAttributed = human.length === 1 && !!lead && replies.length > 0 && leadInput?.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true;
+    state.latePhaseAttributed = human.length === 1 && !!lead && replies.length > 0 && promptCarries(leadInput?.runnerProfileJson?.nativeExecutionInput?.task?.prompt, human[0]!.id);
     state.lateReply = replies.map(row => row.body).join("\n");
     const comments = await ctx.input.api.get<IssueComment[]>(`${root}/comments?order=asc`), direction = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.createdByRunId === lead?.id);
     const workerInput = worker && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; wakeCommentId?: string }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${worker.id}`);
     state.cancelDirectionRunBound = later.length === 2 && !!worker && direction.length === 1
       && [...(workerInput?.contextSnapshot?.wakeCommentIds ?? []), workerInput?.contextSnapshot?.wakeCommentId].includes(direction[0]!.id)
-      && workerInput?.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(direction[0]!.body) === true;
+      && promptCarries(workerInput?.runnerProfileJson?.nativeExecutionInput?.task?.prompt, direction[0]!.body);
     state.finalWorkerRunId = worker?.id; state.consumedStillReadable = comments.some(row => row.id === second.comment.id && row.body === secondText && !row.deletedAt);
     state.finalQueueEmpty = final.queue.entries.length === 0;
   },

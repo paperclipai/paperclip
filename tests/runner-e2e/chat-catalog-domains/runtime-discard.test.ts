@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeDiscard } from "./runtime-discard.js";
+import { gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -43,4 +43,16 @@ it("rejects overwriting the already-delivered historical request", () => { const
 
 it.each([403, 500])("rejects late discard status %s even when the human fixture otherwise looks valid", status => {
   const o = valid(); o.state.lateDiscardStatus = status; expect(gradeDiscard(o).passed).toBe(false);
+});
+
+it("recognises a multi-line direction carried as JSON in the native prompt, and rejects one that is absent", () => {
+  const body = "New direction.\n\n- Remove the contact section.\n- Keep the font guidance.";
+  const prompt = `{"messages":[{"body":${JSON.stringify(body)}}]}`;
+  expect(promptCarries(prompt, body)).toBe(true);
+  expect(promptCarries(prompt.replace("Remove", "Add"), body)).toBe(false);
+  expect(promptCarries(undefined, body)).toBe(false);
+});
+it("reads task links saved in the reply even before they render", () => {
+  expect(replyLinkHrefs("Discard it on [RUN-1](/RUN/issues/RUN-1).", [])).toEqual(["/RUN/issues/RUN-1"]);
+  expect(replyLinkHrefs("Discard it on RUN-1.", [])).toEqual([]);
 });
