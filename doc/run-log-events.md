@@ -68,15 +68,43 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an
 accepted run-result summary. Its
-`durationMs` starts at the native run trace's historical start (accepted ingress,
-otherwise queued run creation, or dispatch when history is absent) and ends at Core
-commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
-`reasoning`. It includes preparation and startup, but excludes browser
+`durationMs` starts at the earliest accepted input. The accepted comment or
+answered question is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run uses queued run creation. The durable wake request's `requested_at` replaces
+the start when it is earlier (deferred, coalesced and retried wakes). Without
+preparation history, the start is dispatch and the anchor is `run_created`. It ends at Core commit callback. `anchor` names the start:
+`comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
+zero, or negative when a wake request precedes the run trace. `eventKind` is
+`agentMessage` or `reasoning`. The wake request time is read after the first text,
+in detached diagnostic work bounded to 2 s (a
+transaction-local `statement_timeout`, so PostgreSQL cancels a stalled read), so the measurement adds no wait before
+`turn.start` and never delays event delivery. The span can appear after later
+run-log rows; the trace settles it before `task.provider_session.measured`. It includes preparation and startup, but excludes browser
 delivery/rendering. This measures text availability, not an exact model token.
 Empty text, item starts, tools, usage, result proposals, and duplicate replay do
 not qualify. No deliverable text means no timing sample. A recovered dispatch can
 record newly committed output from the original start; it does not reproduce
 earlier output timing. The event contains no text or provider identifiers.
+
+## Speed budget breaches
+
+`run.performance.budget_exceeded` (schema `paperclip.run-performance-budget.v1`,
+level `warn`) records one native run that exceeded its p95 speed budget. The
+budgets come from the Phase 0 local baseline and are listed in
+`doc/plans/2026-11-07-durable-ownership-and-reconciliation.md` ("Speed budgets").
+`metric` is `ttft` (`task.time_to_first_token`), `agent_boot` (end of
+`heartbeat.queue` to the end of `runner.turn.submit` or `runner.session.resume`)
+or `restart_recovery` (startup recovery `ready` to the recovered run's first
+provider event). The payload names `adapter` (`codex`, `claude` or `opencode`),
+`environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
+start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
+`percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
+Each metric is checked at most once per dispatch. A restart-recovery dispatch is
+judged only on `restart_recovery`, because its TTFT and boot span the outage. Remote runs and other adapters have
+no budget yet. The event is written in detached diagnostic work after the
+measurement, so it adds no wait before `turn.start`. It is a run-log row only
+and never goes to Telemetry.
 
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,
@@ -89,6 +117,30 @@ Harness startup also records `harness_state.inspect`, `harness_state.path_check`
 and `harness_state.launch_material` for remote state inspection and fresh launch
 material. These events retain the existing schema and carry no paths or exception strings.
 They also become native Observability spans only with an operator OTLP endpoint.
+
+## Local runner startup sub-steps
+
+`run.performance.span` splits a local Runner startup (`runner.session.bootstrap` or
+`runner.session.resume`) into three sequential children of `runner.session.startup`:
+
+- `runner.runtime.stage`: controller-side launch preparation before the Runner
+  process exists (runtime context, provider home, launch profiles; on resume, the
+  durable-state checks and authority rotation as well).
+- `runner.process.launch`: from spawning `paperclip-runnerd` until its first
+  authenticated connection to the PRP control plane. An exact adoption of a live
+  Runner records no launch, so this span keeps meaning a fresh Runner process
+  (see startup reuse above).
+- `provider.session.load`: from that authentication until the provider session
+  identity is confirmed. It covers `run.prepare` and `session.open`, or on resume
+  the `run.attach` that restores the provider and the recovery probe.
+
+Each carries `mode` (`bootstrap` or `resume`), `target: "local"`, and `outcome`
+(`failed` when startup fails inside the step). The Runner transport reports each
+milestone synchronously; the controller writes the row as deferred diagnostic
+work, so the run-log write never delays `turn.start`. Remote launchers keep their
+own `runner.runtime.stage` and `runner.process.launch` spans. These rows stay in
+the instance run log; with an operator OTLP endpoint they are also Observability
+spans. They are not Telemetry.
 
 ## Native PRP Run-Log Events
 

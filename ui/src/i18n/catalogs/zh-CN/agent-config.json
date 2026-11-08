@@ -1451,5 +1451,7 @@
   "unreadMessagesFromAgent_other": "来自 {{name}} 的 {{count}} 条未读消息",
   "chatContacts": "聊天联系人",
   "searchChats": "搜索聊天",
-  "createNewAgent": "创建新智能体"
+  "createNewAgent": "创建新智能体",
+  "runnerLifecycleAutomaticLabel": "自动",
+  "runnerLifecycleAutomaticHint": "自动模式会在运行结束后，让此计算机上的 Codex 和 OpenCode 保持就绪 5 分钟，以便更快启动后续任务；其他运行框架则逐轮运行。逐轮模式会在每次运行后挂起。保持会话模式会在受控运行之间保留同一个提供方进程。"
 }

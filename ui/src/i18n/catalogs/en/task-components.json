@@ -3492,5 +3492,21 @@
   "previousServerStopCancel": "Cancel",
   "previousServerStopConfirming": "Confirming…",
   "previousServerStopResume": "Confirm and resume",
-  "previousServerStopRejected": "The confirmation was not accepted. Refresh the task and try again."
+  "previousServerStopRejected": "The confirmation was not accepted. Refresh the task and try again.",
+  "sourceInspectionLimit": "Source not inspected: this record exceeds the inspection limit.",
+  "savedWorkNotRecovered": "Saved work is not recovered yet. The agent’s result is saved.",
+  "controllerStopRequired": "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
+  "controllerStopEvidenceLabel": "How did you confirm that the previous server stopped?",
+  "controllerStopEvidencePlaceholder": "For example: the old server container was replaced and is no longer running.",
+  "controllerStopResuming": "Resuming the run…",
+  "previousServerStopWaiting": "Paperclip is waiting to confirm that the previous server stopped.",
+  "fileRecoveryNotApplied": "File recovery has not finished. The saved files remain protected and are not applied.",
+  "fileRecoveryReplacedCheck": "This file recovery was replaced. Check its status to show the task’s current recovery.",
+  "fileRecoveryBoardMember": "A board member with task access can request file recovery.",
+  "fileSourceInspectionLimit": "Paperclip can’t check the saved files’ source here because the run recorded too many sources.",
+  "fileSourceOwnershipUnverified": "Paperclip can’t confirm that this run alone used the sandbox that holds the saved files.",
+  "fileSourceUnverified": "Paperclip can’t verify the saved files’ recorded source ({{code}}).",
+  "fileSourceVerificationFailed": "The saved files’ source could not be verified.",
+  "fileRecoveryReplacedShowing": "This file recovery was replaced. Showing the task’s current recovery.",
+  "fileSourceNotApplied": "Paperclip does not apply files it can’t verify."
 }

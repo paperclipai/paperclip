@@ -3062,5 +3062,18 @@
   "reviewBGitHubPermissions": "在 <strong>Repository permissions</strong> 中，将 <strong>Issues</strong> 和 <strong>Pull requests</strong> 设为 <strong>Read & write</strong>。其他所有权限保持默认设置。Metadata 保持只读。",
   "reviewBArcadeKeyInstructions": "在 <arcade>Arcade</arcade> 中为此网关所属的项目创建密钥。密钥会被安全存储，仅用于账号同步。",
   "reviewBAddConnectionInstructions": "从 <apps>应用</apps> 中添加一个连接，为你的智能体提供所需工具。",
-  "reviewBApproveTestInstructions": "请在<review>审批选项卡</review>中批准此操作以完成测试。你也可以取消请求。"
+  "reviewBApproveTestInstructions": "请在<review>审批选项卡</review>中批准此操作以完成测试。你也可以取消请求。",
+  "default_for_provider": "{{provider}} 的默认账号",
+  "your_provider_default": "你的 {{provider}} 默认账号",
+  "set_default_for_provider": "设为 {{provider}} 的默认账号",
+  "loadAiAccountDefaults": "加载 AI 账号默认设置",
+  "aiDefaultUnavailable": "默认账号不可用",
+  "your_default_for_provider": "你在 {{provider}} 下的默认账号",
+  "reconnect_before_default": "请先重新连接此账号，再将其设为默认账号。",
+  "change_default_failed": "无法更改你的 {{provider}} 默认账号",
+  "default_account_changed": "你的账号已更改。请刷新连接。",
+  "default_account_unavailable": "此账号无法用作默认账号。请刷新或重新连接后再试。",
+  "account_now_provider_default": "{{account}} 现已成为你的 {{provider}} 默认账号",
+  "provider_default_updated": "你的 {{provider}} 默认账号已更新",
+  "latest_default_in_connectors": "最新保存的选择会显示在连接器中。"
 }

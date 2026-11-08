@@ -7,7 +7,14 @@ import type { StorageService } from "../../storage/types.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import type { SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
-import { assertSkillSnapshotPath } from "../skill-snapshot.js";
+import { assertSkillSnapshotPath, MAX_SKILL_SNAPSHOT_FILES } from "../skill-snapshot.js";
+import { MAX_NATIVE_HARNESS_PATH_BYTES } from "./native-harness-backup-archive.js";
+
+export const NATIVE_CONTROLLER_WEB_LIMITS = {
+  entries: MAX_SKILL_SNAPSHOT_FILES,
+  metadataBytes: 4 * 1024 * 1024,
+  pathBytes: MAX_NATIVE_HARNESS_PATH_BYTES,
+} as const;
 
 export type NativeControllerHistoryEntry = { path: string; mode: number; type: "directory" }
   | { path: string; mode: number; type: "file"; content: string };
@@ -60,18 +67,22 @@ export function nativeControllerEvidenceDescriptor(source: { companyId: string; 
       }
     }
   }
+  if (source.web && source.web.entries.length > NATIVE_CONTROLLER_WEB_LIMITS.entries) {
+    throw new Error("native_controller_archive_authority_invalid");
+  }
   const web = source.web ? { bindingDigest: source.web.bindingDigest,
     entries: source.web.entries.map(entry => entry.type === "directory" ? { path: entry.path, mode: entry.mode, type: entry.type }
       : { path: entry.path, mode: entry.mode, type: entry.type, size: entry.size, sha256: entry.sha256 }) } : undefined;
   if (source.controllerDigest === null && !web) throw new Error("native_controller_archive_authority_invalid");
   if (web) {
     const paths = new Set<string>(); let bytes = 0;
-    if (source.purpose !== "filesystem_independence" || web.entries.length > 128 || !/^[a-f0-9]{64}$/.test(web.bindingDigest)) {
+    if (source.purpose !== "filesystem_independence" || !/^[a-f0-9]{64}$/.test(web.bindingDigest)) {
       throw new Error("native_controller_archive_authority_invalid");
     }
     for (const entry of web.entries) {
       assertSkillSnapshotPath(entry.path);
-      if (!/^(?:(web-home|web-state|web-manifests)(\/|$)|web-supervisor\.json$)/.test(entry.path) || paths.has(entry.path)
+      if (Buffer.byteLength(entry.path) > NATIVE_CONTROLLER_WEB_LIMITS.pathBytes
+        || !/^(?:(web-home|web-state|web-manifests)(\/|$)|web-supervisor\.json$)/.test(entry.path) || paths.has(entry.path)
         || !["directory", "file"].includes(entry.type)
         || !Number.isInteger(entry.mode) || entry.mode < 0 || (entry.mode & ~0o777) !== 0
         || entry.path.includes("/") && !paths.has(entry.path.slice(0, entry.path.lastIndexOf("/")))
@@ -80,6 +91,9 @@ export function nativeControllerEvidenceDescriptor(source: { companyId: string; 
         throw new Error("native_controller_archive_authority_invalid");
       }
       paths.add(entry.path);
+    }
+    if (Buffer.byteLength(JSON.stringify(web.entries)) > NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes) {
+      throw new Error("native_controller_archive_authority_invalid");
     }
   }
   const manifest = JSON.stringify({ schema: "paperclip.legacy-controller-archive.v1", companyId: source.companyId,
@@ -91,6 +105,9 @@ export function nativeControllerEvidenceDescriptor(source: { companyId: string; 
       ...(web ? Object.fromEntries(web.entries.filter(entry => entry.type === "file").map(entry => [entry.path, entry.sha256])) : {}) },
     ...(history ? { history, historyBindingDigest: source.historyBindingDigest } : {}),
     ...(web ? { web: { entries: web.entries, bindingDigest: web.bindingDigest, controllerAbsent: source.controllerDigest === null } } : {}) });
+  if (web && Buffer.byteLength(manifest) > NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes) {
+    throw new Error("native_controller_archive_authority_invalid");
+  }
   return { manifest, scopeDigest: sha256(manifest), manifestSha256: `sha256:${sha256(manifest)}` };
 }
 

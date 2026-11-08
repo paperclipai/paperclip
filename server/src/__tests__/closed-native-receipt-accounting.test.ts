@@ -620,6 +620,95 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  async function captureFailed(f: { run: { id: string } }, finishedMinutesAgo: number, extra: Record<string, unknown> = {}) {
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - finishedMinutesAgo * 60_000),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingCaptureFailed: true, accountingReceiptReady: false, ...extra })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+
+  // A failed usage capture never completes its receipt. It used to be skipped
+  // by accounting and held company admission until the UTC month rolled over.
+  it("settles a capture failure as unpriced at the closure bound and releases held work", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80 });
+    expect(await f.block()).not.toBeNull();
+    expect((await readCostAccountingWork(db, Date.now())).pending).toBe(true);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const run = await f.readRun();
+    expect(run).toMatchObject({ costAccountingPending: false });
+    expect(run.usageJson).toMatchObject({ accountingReceiptUnavailable: true, accountingClosureTimedOut: true });
+    const [charge] = await f.charges();
+    expect(charge).toMatchObject({ inputTokens: 1200, outputTokens: 80 });
+    expect(charge?.costStatus).not.toBe("reported");
+    expect(JSON.stringify(charge?.pricingProvenance)).toContain("usage capture failed");
+    expect(await f.block()).toBeNull();
+  });
+
+  it("waits for the closure bound before settling a capture failure", async () => {
+    const f = await fixture();
+    await captureFailed(f, 1);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    const next = (await readCostAccountingWork(db, Date.now())).nextRunAt;
+    expect(next).not.toBeNull();
+    expect(next!).toBeGreaterThan(Date.now());
+  });
+
+  it("keeps a settled capture failure under the blocking unpriced-usage policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model" });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("keeps a capture failure after a receipt-source handoff under the blocking policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model",
+      accountingReceiptSourceFences: { [f.sourceId]: 2 } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("settles a capture failure at no less than its observed live price", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+    // 600 cents exceeds the 500-cent policy: the hard stop still holds.
+    expect((await f.block())?.reason).toMatch(/hard-stop|budget/i);
+  });
+
+  it.each([["no raw cost", {}], ["a lower cache-adjusted cost", { cacheAdjustedCostUsd: 5 }]] as const)(
+    "settles a lost receipt at no less than its observed live price (%s)", async (_name, raw) => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      ...raw, inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+    // A complete receipt arriving later posts only its growth over the accepted price.
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 6,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "unknown-model", billingType: "metered_api", costUsd: 7, costStatus: "reported",
+        pricingProvenance: { source: "provider_reported", version: "test" },
+        usage: { inputTokens: 2400, cachedInputTokens: 0, outputTokens: 160 } } });
+    await accountRunCost(db, f.run.id);
+    const total = (await f.charges()).reduce((sum, row) => sum + Number(row.costCents), 0);
+    expect(total).toBeCloseTo(700, 5);
+  });
+
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
     const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })

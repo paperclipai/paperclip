@@ -1,21 +1,24 @@
 import { useTranslation } from "@/i18n";
 import { useState, type ReactNode } from "react";
-import { RefreshCw, Star, Unplug } from "lucide-react";
+import { RefreshCw, Unplug } from "lucide-react";
 import type { ConnectionGrant } from "@paperclipai/shared";
 import { RevokeGrantDialog } from "@/pages/apps/app-detail/IdentitiesSection";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AiConnectionSummary } from "./model";
+import { AI_PROVIDERS, type AiConnectionSummary } from "./model";
 import { describeError } from "@/api/errors";
+import { AiDefaultCrown } from "./AiConnectionDefault";
+import { isOwnAiAccount } from "./useAiConnectionDefaults";
 
 /** AI-only account controls; identity, access and navigation belong to AppDetail. */
 export function AiConnectionAccountControls({
-  account, grant, currentUserId, readOnly, onMakeDefault, onReconnect, onRevoke, revocationDetails,
+  account, grant, currentUserId, readOnly, defaultPending, onMakeDefault, onReconnect, onRevoke, revocationDetails,
 }: {
   account: AiConnectionSummary;
   grant: ConnectionGrant;
   currentUserId: string;
   readOnly?: boolean;
+  defaultPending?: boolean;
   onMakeDefault: () => void;
   onReconnect: () => void;
   onRevoke: () => void | Promise<void>;
@@ -25,22 +28,23 @@ export function AiConnectionAccountControls({
   const [revoking, setRevoking] = useState(false);
   const [revokePending, setRevokePending] = useState(false);
   const [revokeError, setRevokeError] = useState<string>();
-  const ownPersonal = account.ownership === "personal" && account.ownerUserId === currentUserId;
+  const eligibleForDefault = isOwnAiAccount(account, currentUserId);
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
+  const providerName = AI_PROVIDERS[account.provider].name;
   return (
     <section className="space-y-4" aria-label={t("ai_account_settings_483f1ce")}>
-      {ownPersonal && !account.routing && (
+      {eligibleForDefault && (
         <div className={cn(
           "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3",
           activeDefault && "border-(--status-task-done)/30 bg-(--status-task-done)/5",
         )}>
           <div className="flex items-center gap-3">
-            <Star aria-hidden className={cn("size-5 shrink-0", activeDefault ? "fill-current text-(--status-task-icon-done)" : "text-muted-foreground")} />
-            <h3 role={account.isDefault ? "status" : undefined} className={cn("text-sm font-semibold", account.isDefault && !available && "text-destructive")}>{account.isDefault && !available ? t("default_unavailable_fd8a931") : t("personal_default_400f61d")}</h3>
+            {account.isDefault && <AiDefaultCrown account={account} />}
+            <h3 role={account.isDefault ? "status" : undefined} className={cn("text-sm font-semibold", account.isDefault && !available && "text-destructive")}>{account.isDefault ? available ? t("default_for_provider", { provider: providerName }) : t("default_unavailable_fd8a931") : t("your_provider_default", { provider: providerName })}</h3>
           </div>
-          {!account.isDefault && (!readOnly ? (
-            <Button variant="outline" size="sm" disabled={!available} onClick={onMakeDefault}>{t("make_default_7b2628d")}</Button>
+          {!account.isDefault && (!readOnly && account.canSetDefault ? (
+            <Button variant="outline" size="sm" disabled={!available || Boolean(account.unavailableReason) || defaultPending} onClick={onMakeDefault}>{t("set_default_for_provider", { provider: providerName })}</Button>
           ) : <span className="text-xs text-muted-foreground">{t("not_default_683d5ad")}</span>)}
         </div>
       )}

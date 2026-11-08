@@ -3062,5 +3062,18 @@
   "reviewBGitHubPermissions": "Under <strong>Repository permissions</strong>, set <strong>Issues</strong> and <strong>Pull requests</strong> to <strong>Read & write</strong>. Leave every other permission at its default. Metadata remains read-only.",
   "reviewBArcadeKeyInstructions": "Create a key in <arcade>Arcade</arcade> for the same project as this gateway. The key is stored securely and used only for account sync.",
   "reviewBAddConnectionInstructions": "Add one from <apps>Apps</apps> to give your agents the tools they need.",
-  "reviewBApproveTestInstructions": "Approve it in the <review>Review tab</review> to finish the test. You can also cancel the request."
+  "reviewBApproveTestInstructions": "Approve it in the <review>Review tab</review> to finish the test. You can also cancel the request.",
+  "default_for_provider": "Default for {{provider}}",
+  "your_provider_default": "Your {{provider}} default",
+  "set_default_for_provider": "Set as default for {{provider}}",
+  "loadAiAccountDefaults": "load AI account defaults",
+  "aiDefaultUnavailable": "Default unavailable",
+  "your_default_for_provider": "Your default for {{provider}}",
+  "reconnect_before_default": "Reconnect this account before making it your default.",
+  "change_default_failed": "Couldn’t change your {{provider}} default",
+  "default_account_changed": "Your account changed. Refresh your connections.",
+  "default_account_unavailable": "This account is unavailable as your default. Refresh or reconnect it, then try again.",
+  "account_now_provider_default": "{{account}} is now your {{provider}} default",
+  "provider_default_updated": "Your {{provider}} default was updated",
+  "latest_default_in_connectors": "The latest saved selection is shown in Connectors."
 }

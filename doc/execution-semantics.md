@@ -1470,6 +1470,38 @@ recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
 
+`native_remote_recovery_lease_mismatch` carries a closed detail:
+`native_remote_recovery_lease_mismatch: stage=<stage> field=<field>`. The stage
+is `workspace_preparation`, `environment_acquire`, `environment_resume`,
+`workspace_sync` or `runner_verification`. The field names the identity that
+differed, for example `lease_status`, `adapter_type`, `provider_lease_id`, `remote_cwd` or
+`identity_run_id`. The detail contains no identifiers. Consumers match the code
+exactly or as the `code: ` prefix.
+
+A continuation run starts with its predecessor's saved provider session. For a
+warm session it also carries the predecessor's runner process identity. When the
+run fails before it asks for a runner of its own (for example while it stages
+its provider pack), a due same-run retry does not reattach: there is no runner
+of this run to reattach to. The server retires the inherited process identity
+and uses the ordinary same-run resume, which is the path the failed attempt
+took. The resume prepares the run again in its own retained sandbox when that
+sandbox lease is still active, and acquires one as an ordinary resume does when
+it is gone. The server does this only when all of these are true:
+
+- the failed attempt is a result-less exact-checkpoint retry that recorded
+  `providerEventsExist: false`, and no controller owns it;
+- the run has no runner start, process identity, adapter invocation, tool start,
+  runner event, controller checkpoint, provider event or provider session of
+  its own;
+- the saved session has no active turn and no pending runtime request; and
+- a settled predecessor of the same native session recorded the exact same
+  process identity.
+
+It records an `inherited_runner_never_launched` lifecycle event. Any other run,
+and any run saved by an older release without these facts, keeps verified
+reattachment. A reattachment that loses its runner still requests the user's
+Retry as described above.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
@@ -1779,6 +1811,23 @@ finalized without another
 provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
+
+A recorded process is judged only in the PID space that recorded it. Native
+controller rows store `controller_host_hash` and run processes store
+`process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
+never proves that a process on another host, in another PID namespace, or in a
+sandbox is gone; such a record keeps its lease, fence or staleness TTL.
+
+Rows saved before those columns existed have no recorded host. For one release
+only, a single-host server keeps the previous local proof for them, and each use
+writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
+removes this fallback can confirm that no rows still depend on it. An ephemeral
+server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
+controller rows with no recorded host wait as `controller_host_unrecorded`, with
+a board recovery action to confirm that the previous server stopped. Its run
+processes with no recorded host are left to the run's Stop control. The next
+release removes the fallback and treats every row with no recorded host as
+unprovable.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
@@ -3983,6 +4032,20 @@ transaction can retire that run's completed file-preservation hold only when
 its bound recovery and finalization receipts prove completion. Unrelated holds,
 later task blocks, normal dispatch admission, and the three-attempt budget remain
 effective.
+
+A native run can also fail before its first coordinator claim, for example
+while it restores the previous harness backup. The claim is the only gate to
+provider dispatch, so a coordinator still at attempt 0 and controller generation
+0 proves that no provider process, turn or tool started. The failure path records
+`native_continuation_requires_reconciliation` with a no-replay file hold. Once
+that hold's file recovery completes, or the run had no workspace to save, the
+same safe-replacement worker schedules one fresh-session continuation and
+retires the hold and its task block. It requires no process identity, no
+provider, turn, item or tool events, no tool invocations, no recorded provider
+work, no Stop, no explicit user continuation and no later run for the task.
+Holds recorded by earlier releases take this path. The successor is marked
+`nativePreClaimContinuationOf`; if it also fails, it keeps the ordinary
+reconciliation hold instead of chaining another continuation.
 
 Historical replacement discovery reads at most 100 candidates per pass and
 keeps a cursor only for the remaining scan. A work notification preserves forward

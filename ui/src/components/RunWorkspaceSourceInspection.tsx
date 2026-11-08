@@ -52,7 +52,7 @@ export function RunWorkspaceSourceInspection({ issueId, runId, companyId }: { is
         <p className="font-mono text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_aeaadaec152c" components={{ part1: <>{current.actionId}</> }} /></p>
         <p className="text-muted-foreground">{t("task-components:sentence_652889e29670")}</p>
         {current.status === "verified" ? <p>{t("task-components:sentence_0db2db4d805a")}</p>
-          : current.status === "not_inspected" ? <p>{t("task-components:sentence_f5ae2713b956")}</p>
+          : current.status === "not_inspected" ? <p>{t("task-components:sourceInspectionLimit")}</p>
           : <p>{t("task-components:blocked_3e75b484")}<code className="font-mono">{current.sourceVerification?.reason ?? current.failureCode}</code>
             {current.sourceVerification?.observedLeasePolicy ? <><Trans ns="task-components" i18nKey="sentence_2586ac826cb3" components={{ part1: <>{<code className="font-mono">{current.sourceVerification.observedLeasePolicy}</code>}</> }} /></> : null}</p>}
         <p className="font-mono text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_cac6245fce13" components={{ part1: <>{formatDateTime(current.observedAt)}</> }} /></p>

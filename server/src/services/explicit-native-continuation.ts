@@ -16,7 +16,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeRunRefusedBeforeLaunch, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -415,7 +415,7 @@ export async function admitExplicitNativeContinuation(input: {
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
           sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`));
         if (live.some(row => row.ownerHold))
-          return blocked("workspace_owner_stop_required", "A board member must confirm that the previous server stopped copying files. Your Retry is saved.");
+          return blocked("workspace_owner_stop_required", "Paperclip is waiting to confirm that the previous server stopped saving files. Your Retry is saved.");
         // A spent recovery budget finishes nothing by itself. Another Retry
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
@@ -508,6 +508,7 @@ export async function admitExplicitNativeContinuation(input: {
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run) &&
+            !await nativeRunRefusedBeforeLaunch(db, run) &&
             !(run.runtimeMode === "native" &&
               await recordUnidentifiedLocalRunnerStop(db, run, { record: !input.dryRun }))) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");

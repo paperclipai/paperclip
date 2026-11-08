@@ -2023,6 +2023,12 @@ Dismissal never creates an answer, decision, execution, or continuation wake.
 Raw runtime requests retain browser-local dismissal; reopening restores the
 original request and draft. A failed save leaves the request open with an error.
 
+Sending a separate message closes the current composer request immediately,
+before the send finishes. After a successful send, earlier requests stay in the
+feed and can be reopened manually; a newer request can still open normally.
+If sending fails, restore the previous form unless the person has opened a
+different request. This presentation change does not answer or approve a request.
+
 A saved ordinary question becomes historical after a newer human task message
 or explicit human dismissal. It remains answerable after completion without
 reopening work or waking the agent. Dismissed ordinary requests, including native

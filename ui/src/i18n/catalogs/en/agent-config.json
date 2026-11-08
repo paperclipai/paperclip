@@ -1451,5 +1451,7 @@
   "unreadMessagesFromAgent_other": "{{count}} unread messages from {{name}}",
   "chatContacts": "Chat contacts",
   "searchChats": "Search chats",
-  "createNewAgent": "Create a new agent"
+  "createNewAgent": "Create a new agent",
+  "runnerLifecycleAutomaticLabel": "Automatic",
+  "runnerLifecycleAutomaticHint": "Automatic keeps Codex and OpenCode warm on this computer for 5 minutes after a run, so a follow-up starts faster, and runs other harnesses turn by turn. Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
 }

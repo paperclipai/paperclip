@@ -3492,5 +3492,21 @@
   "previousServerStopCancel": "取消",
   "previousServerStopConfirming": "正在确认…",
   "previousServerStopResume": "确认并继续",
-  "previousServerStopRejected": "确认未被接受。请刷新任务后重试。"
+  "previousServerStopRejected": "确认未被接受。请刷新任务后重试。",
+  "sourceInspectionLimit": "未检查来源：此记录超出检查限制。",
+  "savedWorkNotRecovered": "已保存的工作尚未恢复。智能体的结果已保存。",
+  "controllerStopRequired": "本次运行的先前服务器记录早于 Paperclip 开始保存其所在主机的信息，因此 Paperclip 无法验证该服务器是否已停止。运行的已保存状态会保留。",
+  "controllerStopEvidenceLabel": "你如何确认先前的服务器已停止？",
+  "controllerStopEvidencePlaceholder": "例如：旧服务器容器已被替换，且不再运行。",
+  "controllerStopResuming": "正在恢复运行…",
+  "previousServerStopWaiting": "Paperclip 正在等待确认先前的服务器已停止。",
+  "fileRecoveryNotApplied": "文件恢复尚未完成。已保存的文件仍受保护，尚未应用。",
+  "fileRecoveryReplacedCheck": "此文件恢复已被替换。请检查其状态以显示任务当前的恢复情况。",
+  "fileRecoveryBoardMember": "有权访问任务的管理者可以请求恢复文件。",
+  "fileSourceInspectionLimit": "由于此次运行记录的来源过多，Paperclip 无法在此检查已保存文件的来源。",
+  "fileSourceOwnershipUnverified": "Paperclip 无法确认只有此次运行使用了存放已保存文件的沙箱。",
+  "fileSourceUnverified": "Paperclip 无法验证已保存文件的记录来源（{{code}}）。",
+  "fileSourceVerificationFailed": "无法验证已保存文件的来源。",
+  "fileRecoveryReplacedShowing": "此文件恢复已被替换。正在显示任务当前的恢复情况。",
+  "fileSourceNotApplied": "Paperclip 不会应用无法验证的文件。"
 }
