@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RunnerApi } from "../runner-e2e/api.js";
-import { runnerEnvironments, runnerProfiles } from "../runner-e2e/catalog.js";
+import { daytonaWarmEnvironment, runnerEnvironments, runnerProfiles } from "../runner-e2e/catalog.js";
 import { installFixtureDaytonaProvider, waitForFixtureDaytonaProvider } from "../runner-e2e/live-fixtures.js";
 import type { MatrixExecution, SecretReference, SecretReferenceMap } from "../runner-e2e/types.js";
 import type { ChaosApi } from "./api.js";
@@ -59,8 +59,9 @@ export function chaosDaytonaShape(cpu: number) {
 }
 
 async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; waveId: string;
-  secretRefs: SecretReferenceMap; timeline: Timeline }): Promise<string> {
-  const fixture = runnerEnvironments.find(candidate => candidate.id === "daytona");
+  secretRefs: SecretReferenceMap; timeline: Timeline; warm?: boolean }): Promise<string> {
+  // The warm fixture keeps a reusable sandbox and a warm runner between turns.
+  const fixture = input.warm ? daytonaWarmEnvironment : runnerEnvironments.find(candidate => candidate.id === "daytona");
   if (!fixture) throw new Error("runner-e2e catalog has no daytona environment fixture");
   const view = runnerApiView(input.api);
   await waitForFixtureDaytonaProvider(view, { companyId: input.companyId, deadlineAt: Date.now() + 120_000 });
@@ -117,6 +118,8 @@ export async function seedChaosLab(input: {
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
   adapterConfigOverrides?: Record<string, unknown>;
+  /** Use the reusable warm Daytona environment fixture (reuseLease, warm runner). */
+  daytonaWarm?: boolean;
   /** A real repository to use as the project's primary workspace instead of the tiny fixture. */
   repositoryPath?: string;
   /** Called as soon as the wave owns external resources that need cleanup. */
@@ -161,7 +164,7 @@ export async function seedChaosLab(input: {
   let environmentId: string;
   if (input.env === "daytona") {
     environmentId = await createDaytonaEnvironment({ api, companyId: company.id, image: input.daytonaImage!, cpu: input.daytonaCpu ?? 4,
-      waveId: input.waveId, secretRefs, timeline });
+      waveId: input.waveId, secretRefs, timeline, warm: input.daytonaWarm });
     input.onEnvironment?.({ companyId: company.id, environmentId, environmentKind: "daytona" });
     if (input.adapters.includes("codex")) await qualifyNativeCodex({ api, companyId: company.id, environmentId, timeline });
   } else {

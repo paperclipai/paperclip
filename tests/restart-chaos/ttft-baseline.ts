@@ -244,6 +244,8 @@ async function main() {
     env: { type: "string", default: "local" },
     "daytona-image": { type: "string" },
     "daytona-cpu": { type: "string", default: "4" },
+    // Use the reusable warm Daytona environment (reuseLease, warm runner) instead of the per-turn one.
+    "daytona-warm": { type: "boolean", default: false },
     "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
@@ -308,6 +310,7 @@ async function main() {
     const repositoryPath = values["workspace-repo"] ? path.resolve(values["workspace-repo"]) : undefined;
     projectScopedTasks = Boolean(repositoryPath);
     const lab = await seedChaosLab({ api, env, daytonaImage: values["daytona-image"], daytonaCpu: Number(values["daytona-cpu"]),
+      daytonaWarm: values["daytona-warm"],
       adapters: requested, concurrency: requested.length, budgetCents: 3000,
       masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides, repositoryPath,
       onEnvironment: owned => {
