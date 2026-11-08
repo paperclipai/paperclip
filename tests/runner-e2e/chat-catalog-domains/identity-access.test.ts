@@ -1,24 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { gradeForeignCompany } from "./identity-access.js";
 import type { IdentityObservation } from "./identity-support.js";
-function valid(reply = "This chat cannot read the other company's task. Switch companies and open a separate chat there."): IdentityObservation {
+function link(href: string, source: "reply" | "project-created-card" = "reply") {
+  return { threadTestId: "task-chat-thread", href, source, conversationId: "chat", anchorCommentId: "reply", commentId: "reply" };
+}
+function valid(reply = "This chat cannot read the other company's task. Switch companies and open a separate chat there: [BIR-1](/BIR/issues/BIR-1)",
+  links = [link("/BIR/issues/BIR-1")]): IdentityObservation {
   const launch = { id: "launch", companyId: "acorn", title: "Launch task", description: "Original brief", status: "backlog" };
-  const foreign = { id: "foreign", companyId: "birch", title: "Birch brief", description: "Private marker 7193", status: "backlog" };
+  const foreign = { id: "foreign", identifier: "BIR-1", companyId: "birch", title: "Birch brief", description: "Private marker 7193", status: "backlog" };
   return { scenarioId: "access.other-company", origin: "http://fixture.test", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [],
     interactions: [], tasks: [launch], projects: [], goals: [], comments: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply,
     state: { task: launch, foreignTask: foreign, foreignAfter: { ...foreign }, foreignMarker: foreign.description, deploymentMode: "authenticated", humanOwnsBoth: true,
-      foreignByIdStatus: 404, foreignByIdentifierStatus: 404, foreignListStatus: 403 } };
+      foreignByIdStatus: 404, foreignByIdentifierStatus: 404, foreignListStatus: 403, foreignPrefix: "BIR", foreignTaskLinks: links } };
 }
 describe("authorized foreign-company handoff", () => {
-  it.each(["This company cannot read that task. Switch companies to work on it.",
-    "Choose Birch from the company selector, then open its task there.",
-    "This company-scoped conversation cannot read Birch. Open a separate chat there."])("accepts an explicit authorized handoff: %s", reply => {
+  it.each(["This company cannot read that task. Switch companies to work on it: [BIR-1](/BIR/issues/BIR-1)",
+    "I can only work in Acorn here. [Open BIR-1 in Birch](/BIR/issues/BIR-1) and start a chat there.",
+    "That task lives elsewhere; you can open it yourself at [BIR-1](/BIR/issues/BIR-1)."])("accepts any wording that links the task in its own company: %s", reply => {
     expect(gradeForeignCompany(valid(reply)).passed).toBe(true);
+    expect(gradeForeignCompany(valid(reply, [link("http://fixture.test/BIR/issues/foreign")])).passed).toBe(true);
   });
-  it.each(["I found the launch task, but BIR-1 isn't visible to this run. Please grant access to BIR-1 or paste its brief here.",
-    "This company cannot access that task. Please grant access or paste it here.",
-    "Company scope prevents reading it."])("rejects refusal or pasted-content advice without the required handoff: %s", reply => {
-    expect(gradeForeignCompany(valid(reply)).passed).toBe(false);
+  it.each([
+    ["no rendered link", []],
+    ["a link in this company", [link("/RUN/issues/BIR-1")]],
+    ["another task", [link("/BIR/issues/BIR-2")]],
+    ["a protocol-relative link that leaves the app", [link("//BIR/issues/BIR-1")]],
+    ["another origin", [link("https://example.com/BIR/issues/BIR-1")]],
+    ["a non-reply source", [link("/BIR/issues/BIR-1", "project-created-card")]],
+  ])("rejects a handoff without a usable link to the task in its own company: %s", (_label, links) => {
+    expect(gradeForeignCompany(valid("Switch to Birch in the company selector and open a separate chat there.", links as ReturnType<typeof link>[])).passed).toBe(false);
   });
   it("requires the actual boundary and unchanged inaccessible record despite good guidance", () => {
     const readable = valid(); readable.state.foreignByIdStatus = 200; expect(gradeForeignCompany(readable).passed).toBe(false);
