@@ -218,6 +218,27 @@ echo '{}' > "$dest/manifest.json"
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("kills an attempt that stalls past its time bound and retries from an empty directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-skopeo-"));
+    try {
+      const script = path.join(root, "skopeo");
+      await writeFile(script, `#!/bin/sh
+dest="\${9#dir:}"
+n=$(cat "${root}/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${root}/count"
+if [ $n -eq 1 ]; then echo partial > "$dest/blob"; sleep 30; fi
+if [ -n "$(ls -A "$dest")" ]; then exit 1; fi
+echo '{}' > "$dest/manifest.json"
+`);
+      await chmod(script, 0o755);
+      const blobs = path.join(root, "blobs");
+      const started = Date.now();
+      await copyImageToDir({ skopeo: script, image: "i", blobs, attemptTimeoutMs: 500 });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(await readFile(path.join(root, "count"), "utf8")).toBe("2\n");
+      expect(await readFile(path.join(blobs, "manifest.json"), "utf8")).toBe("{}\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("gives up after the last attempt with skopeo's error", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "daytona-skopeo-"));
     try {
