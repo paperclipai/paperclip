@@ -633,6 +633,18 @@ describe("multi-page open inventory calibration", () => {
     o.reply = "All 501 open tasks:\n### Unassigned\n" + kept.map(row => row.identifier).join(", ");
     expect(gradeInternal(o).passed).toBe(false);
   });
+  it("accepts naming a closed task only where its line states it is closed", () => {
+    const o = valid("tasks.organize-open-work"); const done = { id: "done-task", projectId: "p", title: "Shipped", status: "done", assigneeAgentId: null };
+    o.tasks.push(done); o.state.originalTasks = structuredClone(o.tasks); o.links.push("/ACORN/issues/done-task");
+    const excluded = { ...o, reply: o.reply + "\n\nExcluded closed work: [Shipped](/ACORN/issues/done-task) (done)." };
+    expect(gradeInternal(excluded).passed).toBe(true);
+    expect(gradeInternal({ ...o, reply: o.reply + "\n- [Shipped](/ACORN/issues/done-task)" }).passed).toBe(false);
+  });
+  it("does not read an abbreviated identifier list as a stated shown count", () => {
+    const o = valid("tasks.organize-open-work"); o.links = o.links.slice(0, 4);
+    o.reply = "501 open tasks.\n## Unassigned\n" + o.tasks.slice(0, 4).map(row => `[${row.title}](/ACORN/issues/${row.id})`).join(", ") + " … every 3rd task: 1, 4, 7";
+    expect(gradeInternal(o).passed).toBe(false);
+  });
   it("rejects a blocked item placed after an ordinary item for the same owner", () => {
     const o = valid("tasks.organize-open-work");
     o.reply = "## Unassigned\n" + [...o.tasks.slice(2), ...o.tasks.slice(0, 2)].map(row => `- [${row.title}](/ACORN/issues/${row.id})`).join("\n");

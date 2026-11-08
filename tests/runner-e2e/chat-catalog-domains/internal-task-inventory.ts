@@ -47,8 +47,8 @@ function presentations(o: InventoryObservation, row: Entity) {
   });
   return found;
 }
-/** A stated count, not digits inside a task identifier such as RUN-491. */
-const statesCount = (text: string, count: number) => new RegExp(`(?<![\\w-])${count}(?![\\w-])`).test(text);
+/** A stated count: not digits inside a task identifier (RUN-491) or an element of a number list (RUN-1, 4, 7). */
+const statesCount = (text: string, count: number) => new RegExp(`(?<![\\w-]|,\\s?)${count}(?![\\w-]|,)`).test(text);
 function groupContext(text: string, at: number) {
   const lineStart = text.lastIndexOf("\n", at) + 1; const lineEnd = text.indexOf("\n", at);
   const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
@@ -71,7 +71,15 @@ export function gradeOpenInventory(value: unknown) {
   c.add("full-or-explicitly-bounded", linkedDeliverables && (shown.length === open.length || shown.length > 0
     && statesCount(o.reply, shown.length) && statesCount(o.reply, open.length)),
     "Every open task is presented (in chat or a deliverable linked from the reply), or the reply states its actual shown count and the full open count.");
-  c.add("terminal-and-other-project-excluded", excluded.every(row => !presentations(o, row).length), "Completed, cancelled and other-project work is excluded.");
+  // Naming a closed task is fine only where its line states that it is closed (its actual status), never as open work.
+  const statesClosed = (row: Entity, at: { text: string; at: number }) => {
+    const lineStart = at.text.lastIndexOf("\n", at.at) + 1; const lineEnd = at.text.indexOf("\n", at.at);
+    const line = [row.id, row.identifier].filter((token): token is string => !!token)
+      .reduce((text, token) => text.split(token).join(" "), at.text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd).replace(/\]\([^)]*\)/g, "]"));
+    return row.status === "done" ? /\b(?:done|completed?)\b/i.test(line) : row.status === "cancelled" && /\bcancell?ed\b/i.test(line);
+  };
+  c.add("terminal-and-other-project-excluded", excluded.every(row => presentations(o, row).every(at => row.projectId === p.id && statesClosed(row, at))),
+    "Completed, cancelled and other-project work is not presented as open work.");
   const owners = o.state.ownerLabels as Record<string, string>;
   const named = Object.entries(owners ?? {}).filter(([key]) => key !== "unassigned").map(([, label]) => label.toLowerCase());
   let correctlyGrouped = !!owners;
@@ -126,11 +134,25 @@ async function settledInventory(ctx: ChatCatalogContext, ids: readonly string[],
   if (last.some(row => !row)) throw new Error("Seeded inventory rows are missing");
   return last;
 }
+/** Deterministic integer mixing, so owners and statuses follow no arithmetic pattern. */
+function inventoryMix(value: number) {
+  let x = Math.imul(value + 0x9e3779b9, 0x85ebca6b) >>> 0;
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
+  return (x ^ (x >>> 16)) >>> 0;
+}
+// Real inventories cannot be summarized as "every 3rd task"; an even, shuffled
+// owner split keeps exactly 167 rows per group without a periodic rule.
+const INVENTORY_OWNER_RANK = (() => {
+  const order = Array.from({ length: 501 }, (_, index) => index).sort((a, b) => inventoryMix(a) - inventoryMix(b) || a - b);
+  const rank = new Array<number>(501); order.forEach((index, position) => { rank[index] = position; }); return rank;
+})();
 export function openInventoryTaskSeed(index: number, workerId: string, secondWorkerId: string) {
-  const owner = index % 3 === 0 ? workerId : index % 3 === 1 ? secondWorkerId : null;
+  const slot = (INVENTORY_OWNER_RANK[index] ?? index) % 3;
+  const owner = slot === 0 ? workerId : slot === 1 ? secondWorkerId : null;
+  const roll = inventoryMix(index + 1_000);
   return {
     title: `Launch work ${String(index + 1).padStart(3, "0")}`,
-    status: index % 7 === 0 ? "blocked" : index % 2 === 0 && owner ? "in_progress" : "todo",
+    status: roll % 7 === 0 ? "blocked" : roll % 2 === 0 && owner ? "in_progress" : "todo",
     assigneeAgentId: owner,
     description: "Existing launch work. This inventory fixture records current state and must not trigger execution.",
   };
@@ -170,7 +192,7 @@ function openInventory(): ChatCatalogCase {
     if ((await ctx.allRuns()).length) throw new Error("Seeding the paused-owner inventory unexpectedly admitted work");
     return { project: p, originalTasks, workerIds: [worker.id, secondWorker.id], ownerPauseReceipts, ownerLabels: { [worker.id]: "Morgan", [secondWorker.id]: "Riley", unassigned: "Unassigned" } };
   }, gradeOpenInventory);
-  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v3",
+  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v4",
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"], attemptTimeoutMs: 600_000,
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["inventory-owners-paused", "lead-ready", "inventory-settled"] },
     async verifySetup(ctx, state) {
@@ -184,8 +206,8 @@ function openInventory(): ChatCatalogCase {
         "Both actual owners were ready before manual pause and retain their exact completed paused lifecycle, version and manual hold; no provider work is admitted.");
       c.add("lead-ready", lead.lifecycleState === "ready" && ["idle", "active"].includes(lead.status ?? ""), "The CEO remains ready for the canonical inventory query.");
       const current = await ctx.input.api.getRunObservation<Entity[]>(`${companyPath(ctx)}/issues?includeAgentCreatedTasks=true&limit=1000`);
-      const originals = state.originalTasks as Entity[];
-      c.add("inventory-settled", originals.every(row => sameTask(row, current.find(now => now.id === row.id))),
+      const originals = Array.isArray(state.originalTasks) ? state.originalTasks as Entity[] : [];
+      c.add("inventory-settled", originals.length > 0 && originals.every(row => sameTask(row, current.find(now => now.id === row.id))),
         "The recorded inventory is still the current task state when the query is sent.");
       return c.result();
     },
