@@ -1314,7 +1314,9 @@ it.each([false, true])("refuses a terminal call decided before earlier results w
     };
     const write = { executionId: "exec-write", transport: "dynamic", name: "write_document" };
     commit("tool.execution.started", { ...write, status: "running" });
-    commit("item.completed", { item: { type: "tool_result", id: "exec-write", tool_use_id: "exec-write", result: { created: true } } });
+    // Paperclip's result, recorded as the controller records it for the Runner.
+    core.queueCommand("semantic_tool.result", { callId: "exec-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: true }, isError: false }, "command_tool_stale_terminal_write", true);
     if (seen) commit("tool.execution.completed", { ...write, status: "completed" });
     // The terminal call's own event bounds the history (in production its
     // semantic_tool.input event; any later event works the same way).

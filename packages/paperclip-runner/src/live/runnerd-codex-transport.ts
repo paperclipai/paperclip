@@ -7115,7 +7115,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // had returned but not yet reached the agent (it was held across a
       // controller restart) is stale: refuse it so the agent continues with
       // those results instead of ending the task on a wait that is over.
-      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents,
+      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents, core.store.state.commands,
         { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId });
       if (unseen.length) return staleTerminalCallResult(call.operationId, unseen);
     }

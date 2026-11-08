@@ -15,19 +15,19 @@ describe("unseenReturnedToolCalls", () => {
   it("names a call that returned but that the agent had not seen when it decided (restart chaos t03)", () => {
     const block = started("b", "paperclip_block");
     const events = [started("w", "write_document"), result("w"), block, completed("w", "write_document")];
-    expect(unseenReturnedToolCalls(events, { terminalSourceEventId: block.sourceEventId, turnId: "turn-1" }))
+    expect(unseenReturnedToolCalls(events, [], { terminalSourceEventId: block.sourceEventId, turnId: "turn-1" }))
       .toEqual(["write_document"]);
   });
 
   it("is empty once the agent saw the result before deciding", () => {
     const block = started("b", "paperclip_block");
     const events = [started("w", "write_document"), result("w"), completed("w", "write_document"), block];
-    expect(unseenReturnedToolCalls(events, { terminalSourceEventId: block.sourceEventId })).toEqual([]);
+    expect(unseenReturnedToolCalls(events, [], { terminalSourceEventId: block.sourceEventId })).toEqual([]);
   });
 
   it("leaves a long-running call with no result to the agent's judgement", () => {
     const block = started("b", "paperclip_block");
-    expect(unseenReturnedToolCalls([started("w", "write_document"), block], { terminalSourceEventId: block.sourceEventId }))
+    expect(unseenReturnedToolCalls([started("w", "write_document"), block], [], { terminalSourceEventId: block.sourceEventId }))
       .toEqual([]);
   });
 
@@ -37,8 +37,15 @@ describe("unseenReturnedToolCalls", () => {
       event("tool.execution.started", { executionId: "sh", transport: "process", name: "/bin/sh" }), result("sh"),
       started("f", "paperclip_finish"), result("f"),
     ];
-    expect(unseenReturnedToolCalls(events, { turnId: "turn-1" })).toEqual([]);
+    expect(unseenReturnedToolCalls(events, [], { turnId: "turn-1" })).toEqual([]);
   });
+});
+
+it("counts the controller's semantic_tool.result command as the returned result", () => {
+  const block = started("b", "paperclip_block");
+  const commands = [{ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }];
+  expect(unseenReturnedToolCalls([started("w", "write_document"), block], commands, { terminalSourceEventId: block.sourceEventId }))
+    .toEqual(["write_document"]);
 });
 
 describe("staleTerminalCallResult", () => {

@@ -11,10 +11,13 @@
  * run and return (for example the document is saved), then the stale block
  * arrives and would end a task that is no longer blocked (restart chaos t03).
  *
- * The evidence is in the committed run events of the turn:
- * - `tool.execution.started` with transport `dynamic`: the provider made a call;
- * - an `item.completed` tool_result for that call: Paperclip returned a result;
- * - `tool.execution.completed` for that call: the provider received the result.
+ * The evidence:
+ * - committed `tool.execution.started` with transport `dynamic`: the provider
+ *   made a call (its `executionId` is the provider call id);
+ * - the controller's `semantic_tool.result` command for that `callId`:
+ *   Paperclip returned a result to the Runner (an `item.completed` tool_result,
+ *   which some drivers commit, counts the same);
+ * - committed `tool.execution.completed` for that call: the provider received it.
  * A call with a result but no provider completion before the terminal call was
  * still pending from the agent's point of view. A call with no result yet (a
  * long-running tool) does not count: the agent's decision is still its own.
@@ -23,6 +26,7 @@
 const TERMINAL_OPERATIONS = new Set(["paperclip_finish", "paperclip_block"]);
 
 type CommittedEvent = { sourceEventId: string; envelope: Record<string, unknown> };
+type Command = { type: string; payload: Record<string, unknown> };
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -30,8 +34,11 @@ const record = (value: unknown): Record<string, unknown> =>
 /** Names of calls that returned before the terminal call but that the agent had not yet seen. */
 export function unseenReturnedToolCalls(
   events: readonly CommittedEvent[],
+  commands: readonly Command[],
   input: { terminalSourceEventId?: string | null; turnId?: string | null },
 ): string[] {
+  const returnedCallIds = new Set(commands.flatMap(command => command.type === "semantic_tool.result"
+    && typeof command.payload.callId === "string" ? [command.payload.callId] : []));
   const calls = new Map<string, { name: string; returned: boolean; seen: boolean }>();
   for (const saved of events) {
     if (input.terminalSourceEventId && saved.sourceEventId === input.terminalSourceEventId) break;
@@ -54,6 +61,7 @@ export function unseenReturnedToolCalls(
       if (call) call.returned = true;
     }
   }
+  for (const [id, call] of calls) if (returnedCallIds.has(id)) call.returned = true;
   return [...new Set([...calls.values()]
     .filter(call => call.returned && !call.seen && !TERMINAL_OPERATIONS.has(call.name))
     .map(call => call.name))];
