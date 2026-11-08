@@ -254,20 +254,43 @@ fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
     original
         .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
         .unwrap();
-    let opened = original
+    original
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
     original
-        .execute(&command(3, "turn.start", json!({"turnId": "provider-turn-0", "text": "Do the work."})))
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-0", "text": "Do the work."}),
+        ))
         .unwrap();
     original
         .execute(&command(4, "turn.stop", json!({})))
         .unwrap();
+    assert!(original
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-1"})
+        ))
+        .is_err());
+    assert!(!original
+        .poll_events()
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "session.resumed"));
     let started = original
-        .execute(&command(5, "turn.start", json!({"turnId": "provider-turn-1", "text": "Continue."})))
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Continue."}),
+        ))
         .unwrap();
     assert_eq!(started.result["status"], "accepted");
-    assert!(started.events.iter().any(|event| event.0 == "session.resumed"));
+    assert!(started
+        .events
+        .iter()
+        .any(|event| event.0 == "session.resumed"));
     original
         .execute(&command(6, "turn.stop", json!({})))
         .unwrap();
@@ -275,7 +298,11 @@ fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
         .execute(&command(7, "session.close", json!({})))
         .unwrap();
     assert!(original
-        .execute(&command(8, "turn.start", json!({"turnId": "provider-turn-2", "text": "Continue."})))
+        .execute(&command(
+            8,
+            "turn.start",
+            json!({"turnId": "provider-turn-2", "text": "Continue."})
+        ))
         .is_err());
     original.shutdown().unwrap();
 }
