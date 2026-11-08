@@ -606,8 +606,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("checks historical cancellation proofs without trusting unrelated settled runs", async () => {
     const agent = await hire();
-    // Historical successful runs may contain large execution transcripts. They
-    // have no bearing on a later cancellation's termination authority.
     for (let i = 0; i < 12; i++) {
       await db.insert(heartbeatRuns).values({
         companyId, agentId: agent.id, status: "succeeded",
@@ -623,7 +621,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
       executionStage: "settled",
     }).returning();
-    // A terminal, pid-less conversation run is not enough on its own.
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
     await db.update(heartbeatRuns).set({
       resultJson: { executionCancellation: { state: "acknowledged" } },
@@ -640,7 +637,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       providerLeaseId: "ssh://agent@test:22/work", status: "expired",
       releasedAt: new Date(),
     }).returning();
-    // An expired SSH lease remains blocked until real remote stop proof exists.
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
     await db.update(environmentLeases).set({
       cleanupStatus: "success",
