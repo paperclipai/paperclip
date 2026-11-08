@@ -16,6 +16,7 @@ import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-p
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -649,7 +650,7 @@ export function workspaceOperationService(db: Db) {
 
           try {
             let published = false;
-            const publish = async () => { await writeState(database => database.insert(workspaceOperations).values({
+            const insertRunning = (database: Db) => database.insert(workspaceOperations).values({
               id,
               companyId: input.companyId,
               executionWorkspaceId,
@@ -667,7 +668,21 @@ export function workspaceOperationService(db: Db) {
               ) as Record<string, unknown> | null,
               startedAt,
               updatedAt: startedAt,
-            })); published = true; };
+            });
+            const publish = async () => {
+              if (runtimeControlAction) {
+                // Wake the ownership worker (on any server) before the row it
+                // announces, so a quiet worker starts watching this owner.
+                await db.transaction(async tx => {
+                  await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport,
+                    JSON.stringify({ companyId: input.companyId, operationId: id }));
+                  await insertRunning(tx as unknown as Db);
+                });
+              } else {
+                await writeState(insertRunning);
+              }
+              published = true;
+            };
             if (recordInput.admit) await recordInput.admit(publish);
             else await publish();
             if (!published) throw new Error("Workspace operation admission did not publish its running row");
