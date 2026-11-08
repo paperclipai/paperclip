@@ -1019,18 +1019,27 @@ function refreshMentionPoolForActivity(
   if (!pool) return;
   const query = queryClient.getQueryCache().find({ queryKey, exact: true });
   if (!query) return;
+  // A pending invalidation (for example a rename while the picker was closed)
+  // must survive: writing data would clear it and make the old list look fresh.
+  if (query.state.isInvalidated) return;
   const index = entityId
     ? pool.findIndex((issue) => issue.id === entityId || issue.identifier === entityId)
     : -1;
-  if (index >= 0) {
-    if (index > 0) {
-      queryClient.setQueryData<Issue[]>(queryKey, [pool[index], ...pool.slice(0, index), ...pool.slice(index + 1)]);
-    }
+  if (query.getObserversCount() === 0) {
+    // Nobody shows the picker. A task outside the pool may now belong in it, so
+    // refetch on the next mount; a reorder alone can wait for that mount too.
+    if (index < 0) queryClient.invalidateQueries({ queryKey, refetchType: "none" });
     return;
   }
-  if (query.getObserversCount() === 0) {
-    // Nobody shows the picker; refetch on its next mount instead.
-    queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+  if (index >= 0) {
+    if (index > 0) {
+      // Keep the freshness clock: a reorder is not a fetch.
+      queryClient.setQueryData<Issue[]>(
+        queryKey,
+        [pool[index], ...pool.slice(0, index), ...pool.slice(index + 1)],
+        { updatedAt: query.state.dataUpdatedAt },
+      );
+    }
     return;
   }
   let refresh = mentionPoolRefreshes.get(queryClient);

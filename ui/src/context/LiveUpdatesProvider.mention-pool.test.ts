@@ -117,6 +117,38 @@ describe("LiveUpdatesProvider @task mention pool", () => {
     expect(client.getQueryState(POOL_KEY)?.isInvalidated).toBe(true);
   });
 
+  it("keeps a pending refresh when a later event reorders a closed picker's pool", async () => {
+    const pool = mountQuery(client, POOL_KEY, POOL);
+    await settle();
+    pool.unsubscribe();
+    const fetchedAt = client.getQueryState(POOL_KEY)?.dataUpdatedAt;
+    // A rename while the picker is closed marks the pool stale without a fetch.
+    emit(client, { entityId: "t1", action: "issue.updated", details: { title: "Renamed" } });
+    emit(client, authenticatedEvent("t3", "issue.comment_added", false));
+    await settle();
+    const state = client.getQueryState(POOL_KEY);
+    expect(state?.isInvalidated).toBe(true);
+    expect(state?.dataUpdatedAt).toBe(fetchedAt);
+
+    // Reopening the picker within staleTime still fetches the renamed list.
+    const reopened = mountQuery(client, POOL_KEY, POOL);
+    await settle();
+    expect(reopened.queryFn).toHaveBeenCalledTimes(1);
+    reopened.unsubscribe();
+  });
+
+  it("does not reset the freshness clock when it reorders in place", async () => {
+    const pool = mountQuery(client, POOL_KEY, POOL);
+    await settle();
+    const fetchedAt = client.getQueryState(POOL_KEY)?.dataUpdatedAt;
+    await settle(5_000);
+    emit(client, authenticatedEvent("t3", "issue.comment_added", false));
+    await settle();
+    expect(client.getQueryData<Issue[]>(POOL_KEY)?.[0]?.id).toBe("t3");
+    expect(client.getQueryState(POOL_KEY)?.dataUpdatedAt).toBe(fetchedAt);
+    pool.unsubscribe();
+  });
+
   it("coalesces a burst through the live-event batcher into one broad refresh", async () => {
     const batcher = createInvalidationBatcher(client);
     const coalescing = createCoalescingQueryClient(client, batcher);
