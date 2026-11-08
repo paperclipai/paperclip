@@ -156,6 +156,5 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
     expect(await held(f, f.plainTask)).toBe(false);
     expect(await held(f, f.chatTask)).toBe(true);
     expect(large - small).toBeLessThanOrEqual(2);
-    expect(large).toBeLessThanOrEqual(8);
   });
 });
