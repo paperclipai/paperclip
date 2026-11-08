@@ -2971,6 +2971,9 @@ export function buildHostServices(
         // so it resumes after a chat-driven decision. Only on a fresh decision
         // (applied) and only when a requester agent exists.
         if (applied && approval.requestedByAgentId) {
+          const linkedIssues = await issueApprovals.listIssuesForApproval(approval.id);
+          const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+          const primaryIssueId = linkedIssueIds[0] ?? null;
           void heartbeat.wakeup(approval.requestedByAgentId, {
             source: "automation",
             triggerDetail: "system",
@@ -2978,6 +2981,8 @@ export function buildHostServices(
             payload: {
               approvalId: approval.id,
               approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
             },
             requestedByActorType: "user",
             requestedByActorId: params.actorUserId,
@@ -2985,6 +2990,9 @@ export function buildHostServices(
               source: `plugin:${pluginKey}:approval.${params.action}`,
               approvalId: approval.id,
               approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              taskId: primaryIssueId,
               wakeReason: params.action === "approve" ? "approval_approved" : "approval_rejected",
             },
           }).catch((err) => logger.warn({
