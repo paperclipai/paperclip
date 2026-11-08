@@ -417,8 +417,8 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 /**
- * A queued comment can only be discarded by its author, and no board, admin or
- * agent override exists. Say so with the task link, so an agent that tried can
+ * Sent only to a caller that did not write the queued comment: its author is the
+ * only one who can discard it, and no board, admin or agent override exists. Say so with the task link, so an agent that tried can
  * relay the human route at once instead of searching for another endpoint.
  */
 function queuedCommentAuthorOnlyDenial(issue: { identifier?: string | null }) {
@@ -17580,8 +17580,22 @@ export function issueRoutes(
     validate(queuedCommentMutationTargetSchema),
     async (req, res) => {
       if (req.actor.type === "agent") {
+        // Agents never use this board route. Check visibility first so a denial
+        // never confirms a task the agent cannot read.
         const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
         if (!issue) return;
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
+        const comment = await svc.getComment(req.params.commentId as string);
+        if (!comment || comment.issueId !== issue.id) {
+          res.status(404).json({ error: "Comment not found" });
+          return;
+        }
+        if (comment.authorAgentId && comment.authorAgentId === req.actor.agentId) {
+          throw forbidden(
+            "Agents discard their own queued comments with "
+              + `DELETE /api/issues/${issue.id}/comments/${comment.id}?mode=cancel, not this board route.`,
+          );
+        }
         throw forbidden(queuedCommentAuthorOnlyDenial(issue));
       }
       assertBoard(req);
@@ -18872,6 +18886,7 @@ export function issueRoutes(
       : false;
     if (deleteMode === "cancel" || pendingQueueWake || isLegacyQueuedComment) {
       if (!actorOwnsComment) {
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
         res.status(403).json({
           error: queuedCommentAuthorOnlyDenial(issue),
         });

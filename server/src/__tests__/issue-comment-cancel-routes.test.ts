@@ -228,6 +228,9 @@ describe("issue comment cancel routes", () => {
         from: vi.fn(() => ({
           where: vi.fn(() => ({
             orderBy: vi.fn(async () => mockAuthoritativeQueueWakes),
+            // Agent mutation guards read a single row (no task-watchdog run here).
+            then: (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+              Promise.resolve([]).then(resolve, reject),
           })),
         })),
       })),
@@ -263,6 +266,9 @@ describe("issue comment cancel routes", () => {
       await options?.afterTombstone?.(deleted, "tx");
       return deleted;
     });
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+    }));
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
@@ -382,6 +388,59 @@ describe("issue comment cancel routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe(finalDenial);
     expect(res.body.error).not.toBe("Board access required");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 without task details when the agent cannot read the private task", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: false, reason: "deny_issue_private", explanation: "Private task",
+    }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
+  });
+
+  it("points an author agent at the cancel route it can use instead of claiming no route exists", async () => {
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+    expect(res.body.error).not.toContain("final");
+  });
+
+  it("lets an author agent discard its own queued comment through the cancel route", async () => {
+    // Another agent queued this comment behind the assignee's active run; it can read and write the task.
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: true, reason: "allow_default", explanation: "Assignee task",
+    }));
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    mockIssueService.removeComment.mockResolvedValue(makeComment({ authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333" }));
+    const agent = { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-9", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.removeComment).toHaveBeenCalledWith("comment-1");
+  });
+
+  it("returns 404 instead of the author-only denial when a non-author cannot read the task", async () => {
+    mockIssueService.getComment.mockResolvedValue(makeComment({ authorUserId: "someone-else" }));
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action, allowed: false, reason: "deny_issue_private", explanation: "Private task",
+    }));
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status).not.toBe(403);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
   });
 
