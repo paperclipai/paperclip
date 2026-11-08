@@ -460,6 +460,10 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
           on steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
         where steered.company_id = c.company_id
           and (steered.context_snapshot->>'issueId' = c.issue_id::text or steered.native_issue_id = c.issue_id)
+          and coalesce(steered.started_at, steered.created_at) <= c.created_at
+          and (steered.finished_at is null or steered.finished_at >= c.created_at)
+          and steer_event.event_type in ('item.started', 'item.completed')
+          and steer_event.created_at >= c.created_at
           and strpos(steer_event.payload::text, c.id::text) > 0)
       and exists (select 1 from heartbeat_runs prior where prior.company_id = c.company_id
         and (prior.context_snapshot->>'issueId' = c.issue_id::text or prior.native_issue_id = c.issue_id))
