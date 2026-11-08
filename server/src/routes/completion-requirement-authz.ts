@@ -17,7 +17,9 @@ export function assertNoAgentCompletionRequirementSupply(
   path: string,
 ) {
   if (req.actor.type !== "agent") return;
-  if (value === undefined || value === null) return;
+  // An explicit `null` is a supply too: on create it would skip the workspace
+  // default, so agents may only omit the field and inherit that default.
+  if (value === undefined) return;
   throw forbidden(`Agent keys cannot set ${path}.`, { code: PROTECTED_CODE });
 }
 

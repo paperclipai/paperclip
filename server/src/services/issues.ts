@@ -10962,8 +10962,11 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        // On create there is nothing to clear yet, so an explicit `null` and an
+        // omitted field mean the same thing: inherit the workspace default.
+        // Only a concrete value overrides it.
         const nextCompletionRequirement =
-          issueData.completionRequirement !== undefined
+          issueData.completionRequirement != null
             ? issueData.completionRequirement
             : targetProjectWorkspace?.defaultCompletionRequirement ?? null;
         if (issueData.status === "done" && nextCompletionRequirement === "workspace_delivery") {
