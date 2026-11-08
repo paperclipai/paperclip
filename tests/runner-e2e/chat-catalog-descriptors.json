@@ -5737,7 +5737,7 @@
       "chat-catalog-domains/internal-distinct-fixtures.ts",
       "chat-linked-question.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
