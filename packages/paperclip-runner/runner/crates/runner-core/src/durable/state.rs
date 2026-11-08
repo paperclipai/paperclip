@@ -591,6 +591,12 @@ impl DurableState {
             &payload,
             sanitize_value(&payload),
         )?;
+        let sanitized_payload = preserve_final_agent_message_text(
+            event_type.as_str(),
+            &payload,
+            sanitized_payload,
+            config.max_frame_bytes,
+        );
         // Restore authoritative tool arguments before checking protocol identities.
         // Their contents are execution data, not a redacted diagnostic preview.
         let sanitized_payload =
@@ -1967,6 +1973,54 @@ fn preserve_bounded_display_content(
     }
     Ok(sanitized)
 }
+
+/// A completed final answer is the reply the person receives. The generic
+/// diagnostic preview cap would turn it into a cut-off copy, so keep its
+/// complete redacted text when it fits comfortably inside one transport frame.
+/// Otherwise the bounded preview remains, still marked as truncated.
+fn preserve_final_agent_message_text(
+    event_type: &str,
+    original: &Value,
+    mut sanitized: Value,
+    max_frame_bytes: usize,
+) -> Value {
+    if event_type != "item.completed"
+        || !matches!(
+            original.get("kind").and_then(Value::as_str),
+            Some("agentMessage" | "assistant_message")
+        )
+        || original.get("channel").and_then(Value::as_str) != Some("final")
+    {
+        return sanitized;
+    }
+    let Some(text) = original.get("text").and_then(Value::as_str) else {
+        return sanitized;
+    };
+    let mut candidate = sanitized.clone();
+    let Some(object) = candidate.as_object_mut() else {
+        return sanitized;
+    };
+    object.insert(
+        "text".to_owned(),
+        Value::String(redact_sensitive_text_values(text)),
+    );
+    // Size the serialized payload, not the raw text: JSON escaping can double
+    // the text, and the secure frame hex-encodes the encrypted envelope,
+    // doubling it again. Keep the bounded preview unless the complete payload,
+    // its envelope and the secure-frame wrapper all fit in one frame.
+    let Ok(serialized_bytes) = serde_json::to_vec(&candidate).map(|bytes| bytes.len()) else {
+        return sanitized;
+    };
+    let budget = (max_frame_bytes / 2).saturating_sub(FINAL_AGENT_MESSAGE_FRAME_HEADROOM_BYTES);
+    if serialized_bytes > budget {
+        return sanitized;
+    }
+    candidate
+}
+
+/// Plaintext reserved for the event envelope fields around a final answer
+/// payload and for the secure-frame wrapper.
+const FINAL_AGENT_MESSAGE_FRAME_HEADROOM_BYTES: usize = 4_096;
 
 pub(crate) fn validate_semantic_tool_input(
     operation_id: &str,
@@ -4423,6 +4477,96 @@ mod tests {
             let persisted = sanitize_value(&json!({"text": input}));
             assert!(!persisted.to_string().contains(prefix));
         }
+    }
+
+    #[test]
+    fn keeps_the_complete_final_answer_instead_of_a_display_preview() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let answer = format!("token=secret-value {}", "Every open task. ".repeat(400));
+        assert!(answer.len() > 4_096);
+        for (channel, complete) in [("final", true), ("progress", false)] {
+            state
+                .enqueue_event(
+                    &config,
+                    "item.completed",
+                    EventPriority::P1,
+                    json!({"kind": "agentMessage", "channel": channel, "text": answer}),
+                )
+                .unwrap();
+            let text = state
+                .outbox
+                .last()
+                .unwrap()
+                .envelope
+                .pointer("/payload/payload/text")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned();
+            assert!(text.starts_with("token=[REDACTED] "), "{channel}");
+            assert!(!text.contains("secret-value"), "{channel}");
+            assert_eq!(!text.ends_with("…[truncated]"), complete, "{channel}");
+            if complete {
+                assert_eq!(text, answer.replace("secret-value", "[REDACTED]"));
+            }
+        }
+
+        // A frame too small for the complete answer keeps the marked preview.
+        let mut small_frame = config.clone();
+        small_frame.max_frame_bytes = 8_000;
+        let mut small = DurableState::new(&small_frame);
+        small
+            .enqueue_event(
+                &small_frame,
+                "item.completed",
+                EventPriority::P1,
+                json!({"kind": "agentMessage", "channel": "final", "text": answer}),
+            )
+            .unwrap();
+        assert!(small.outbox[0]
+            .envelope
+            .pointer("/payload/payload/text")
+            .and_then(Value::as_str)
+            .unwrap()
+            .ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn final_answer_frame_check_counts_json_escaping_and_hex_encoding() {
+        let mut frame = config(PathBuf::from("unused"));
+        frame.max_frame_bytes = 64 * 1024;
+        frame.max_outbox_bytes = 1024 * 1024;
+        let final_text = |answer: &str| {
+            let mut state = DurableState::new(&frame);
+            state
+                .enqueue_event(
+                    &frame,
+                    "item.completed",
+                    EventPriority::P1,
+                    json!({"kind": "agentMessage", "channel": "final", "text": answer}),
+                )
+                .unwrap();
+            let envelope = state.outbox[0].envelope.clone();
+            // The wire frame hex-encodes the encrypted envelope.
+            let envelope_bytes = serde_json::to_vec(&envelope).unwrap().len();
+            assert!(
+                envelope_bytes * 2 < frame.max_frame_bytes,
+                "{envelope_bytes}"
+            );
+            envelope
+                .pointer("/payload/payload/text")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned()
+        };
+
+        // 20,000 raw bytes, but about 40,000 once JSON-escaped: keep the preview.
+        let quotes = "\"".repeat(20_000);
+        assert!(final_text(&quotes).ends_with("…[truncated]"));
+
+        // The same length of plain prose fits and is kept complete.
+        let prose = "a".repeat(20_000);
+        assert_eq!(final_text(&prose), prose);
     }
 
     #[test]
