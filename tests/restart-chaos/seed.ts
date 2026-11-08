@@ -59,7 +59,7 @@ export function chaosDaytonaShape(cpu: number) {
 }
 
 async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; waveId: string;
-  secretRefs: SecretReferenceMap; timeline: Timeline; warm?: boolean }): Promise<string> {
+  secretRefs: SecretReferenceMap; timeline: Timeline; warm?: boolean; inherit?: boolean }): Promise<string> {
   // The warm fixture keeps a reusable sandbox and a warm runner between turns.
   const fixture = input.warm ? daytonaWarmEnvironment : runnerEnvironments.find(candidate => candidate.id === "daytona");
   if (!fixture) throw new Error("runner-e2e catalog has no daytona environment fixture");
@@ -67,6 +67,12 @@ async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: strin
   await waitForFixtureDaytonaProvider(view, { companyId: input.companyId, deadlineAt: Date.now() + 120_000 });
   const payload = fixture.buildEnvironment({ secretRefs: input.secretRefs, daytonaImage: input.image, executionId: input.waveId });
   const shape = chaosDaytonaShape(input.cpu);
+  // A user's default environment: the agent decides the lifecycle, and nothing pins lease reuse.
+  if (input.inherit) {
+    const config = payload.config as Record<string, unknown>;
+    delete config.runnerLifecycleMode;
+    delete config.reuseLease;
+  }
   const environment = await input.api.post<{ id: string; driver: string }>(`/api/companies/${input.companyId}/environments`,
     { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape } });
   input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape });
@@ -120,6 +126,8 @@ export async function seedChaosLab(input: {
   adapterConfigOverrides?: Record<string, unknown>;
   /** Use the reusable warm Daytona environment fixture (reuseLease, warm runner). */
   daytonaWarm?: boolean;
+  /** Use a Daytona environment that inherits the lifecycle and leaves lease reuse unset, as a user's default does. */
+  daytonaInherit?: boolean;
   /** A real repository to use as the project's primary workspace instead of the tiny fixture. */
   repositoryPath?: string;
   /** Called as soon as the wave owns external resources that need cleanup. */
@@ -164,7 +172,7 @@ export async function seedChaosLab(input: {
   let environmentId: string;
   if (input.env === "daytona") {
     environmentId = await createDaytonaEnvironment({ api, companyId: company.id, image: input.daytonaImage!, cpu: input.daytonaCpu ?? 4,
-      waveId: input.waveId, secretRefs, timeline, warm: input.daytonaWarm });
+      waveId: input.waveId, secretRefs, timeline, warm: input.daytonaWarm, inherit: input.daytonaInherit });
     input.onEnvironment?.({ companyId: company.id, environmentId, environmentKind: "daytona" });
     if (input.adapters.includes("codex")) await qualifyNativeCodex({ api, companyId: company.id, environmentId, timeline });
   } else {
