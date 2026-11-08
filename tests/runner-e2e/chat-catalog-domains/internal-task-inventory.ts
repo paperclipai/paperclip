@@ -221,7 +221,9 @@ function openInventory(): ChatCatalogCase {
     return { project: p, originalTasks, workerIds: [worker.id, secondWorker.id], ownerPauseReceipts, ownerLabels: { [worker.id]: "Morgan", [secondWorker.id]: "Riley", unassigned: "Unassigned" } };
   }, gradeOpenInventory);
   return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v6",
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"], attemptTimeoutMs: 600_000,
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"],
+    // Seeding 504 tasks under paused owners takes about 2.75 minutes of the attempt; the agent keeps about 12 minutes.
+    attemptTimeoutMs: 900_000,
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["inventory-owners-paused", "lead-ready", "inventory-settled"] },
     async verifySetup(ctx, state) {
       const c = checks();
