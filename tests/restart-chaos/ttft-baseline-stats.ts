@@ -16,7 +16,7 @@ export interface BaselineRun {
   adapter: string;
   environment: string;
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
-  phase: "cold" | "warm" | "restart" | "midturn" | "verify";
+  phase: "cold" | "warm" | "restart" | "midturn" | "verify" | "postfault";
   events: BaselineEvent[];
 }
 
@@ -149,8 +149,8 @@ export interface BaselineRow { adapter: string; environment: string; warmth: "co
 export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
   const groups = new Map<string, { adapter: string; environment: string; warmth: "cold" | "warm"; metrics: RunMetrics[] }>();
   for (const run of runs) {
-    // Restart samples and new-agent verification samples are reported on their own.
-    if (run.phase === "restart" || run.phase === "verify") continue;
+    // Restart, post-restart and new-agent verification samples are reported on their own.
+    if (run.phase === "restart" || run.phase === "verify" || run.phase === "postfault") continue;
     const warmth = runWarmth(run);
     const key = `${run.adapter}|${run.environment}|${warmth}`;
     const group = groups.get(key) ?? { adapter: run.adapter, environment: run.environment, warmth, metrics: [] };
@@ -234,4 +234,43 @@ export function openShellExecutions(events: readonly BaselineEvent[], marker?: s
     if (marker && label.includes(marker)) entry.matched = true;
   }
   return [...open.entries()].map(([executionId, entry]) => ({ executionId, matched: entry.matched, unlabelled: !entry.labelled }));
+}
+
+/**
+ * Whether finished tasks keep their Daytona sandbox for the idle window. The warm
+ * fixture always does. An inheriting environment defers to the agent, whose catalog
+ * profile pins per_turn unless --lifecycle warm or default (the product's warm
+ * default on a remote sandbox) replaces it.
+ */
+export function daytonaRetainsSandboxes(input: { warmEnvironment: boolean; inheritEnvironment: boolean; lifecycle: string | undefined }): boolean {
+  if (input.warmEnvironment) return true;
+  return input.inheritEnvironment && (input.lifecycle === "warm" || input.lifecycle === "default");
+}
+
+/** Daytona sandboxes a TTFT baseline can hold at once, for the vCPU budget check. */
+export function daytonaBaselineHolders(input: { adapters: number; samples: number; phases: ReadonlySet<string>; restarts: number;
+  retainsSandboxes: boolean }): number {
+  // The default fixture releases each sandbox after its turn, so only the concurrent tasks hold one.
+  if (!input.retainsSandboxes) return input.adapters;
+  // A warm sandbox outlives its task for the idle window and no other task reuses it.
+  const perTaskPhases = ["coldwarm", "midturn", "verify"].filter(phase => input.phases.has(phase)).length
+    + (input.phases.has("restart") ? Math.max(1, input.restarts) : 0);
+  return input.adapters * Math.max(1, input.samples) * Math.max(1, perTaskPhases);
+}
+
+/** Validates the TTFT driver's environment options; returns the environment. */
+export function parseBaselineEnvironment(input: { env: string | undefined; image: string | undefined; cpu: string | undefined;
+  warm: boolean; inherit: boolean }): { env: "local" | "daytona"; cpu: number } {
+  const env = input.env ?? "local";
+  if (env !== "local" && env !== "daytona") throw new Error(`--env must be local or daytona, got ${env}`);
+  const cpu = Number(input.cpu ?? "4");
+  if (env === "local") {
+    if (input.warm || input.inherit || input.image) throw new Error("--daytona-* options apply only to --env daytona");
+    return { env, cpu };
+  }
+  if (!input.image) throw new Error("--env daytona needs --daytona-image");
+  if (!Number.isInteger(cpu) || cpu < 1 || cpu > 4) throw new Error(`--daytona-cpu must be an integer from 1 to 4, got ${input.cpu}`);
+  // The warm fixture pins its lifecycle; inherit removes the pins. The two contradict.
+  if (input.warm && input.inherit) throw new Error("--daytona-warm and --daytona-inherit cannot be combined");
+  return { env, cpu };
 }

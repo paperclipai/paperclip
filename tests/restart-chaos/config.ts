@@ -84,6 +84,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
       "daytona-reuse-lease": { type: "boolean" },
+      // The reusable warm Daytona fixture, or an environment that inherits the lifecycle (a user's default).
+      "daytona-warm": { type: "boolean" },
+      "daytona-inherit": { type: "boolean" },
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
@@ -97,7 +100,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -143,7 +146,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     budgetCents,
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
-      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}) } : {}),
+      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}),
+      ...(values["daytona-warm"] ? { daytonaWarm: true } : {}), ...(values["daytona-inherit"] ? { daytonaInherit: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
     ...(lifecycle ? { lifecycle } : {}),
     // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
@@ -161,7 +165,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
     const budget = integer(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET, "RESTART_CHAOS_DAYTONA_VCPU_BUDGET", DAYTONA_VCPU_BUDGET, 1, 1_000);
-    if (options.concurrency * options.daytonaCpu > budget) {
+    // A warm sandbox outlives its task for the idle window, and a new task cannot reuse
+    // another task's sandbox, so with --daytona-warm every task can hold one at once.
+    const holders = options.daytonaWarm ? Math.max(options.concurrency, options.tasks) : options.concurrency;
+    if (holders * options.daytonaCpu > budget) {
+      if (options.daytonaWarm) throw new Error(`--daytona-warm keeps each task's sandbox for the idle window: ${holders} tasks × `
+        + `--daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget}. Lower --tasks or --daytona-cpu `
+        + "(RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
       throw new Error(`--concurrency ${options.concurrency} × --daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget} `
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
