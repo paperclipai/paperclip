@@ -115,6 +115,27 @@ describe("Daytona R6 reconciliation", () => {
   });
 
 
+  it("keeps a stopped sandbox behind a released reusable lease for reuse, but not a running one or an ephemeral one", () => {
+    const result = reconcileSandboxes(
+      [{ id: "r1", state: "stopped" }, { id: "r2", state: "started" }, { id: "e1", state: "stopped" }],
+      [{ id: "l1", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
+        { id: "l2", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r2" },
+        { id: "l3", status: "released", leasePolicy: "ephemeral", providerLeaseId: "e1" }],
+    );
+    expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["l1"]);
+    expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["r2", "e1"]);
+  });
+
+  it("judges a reused sandbox by its current lease row, whatever the listing order", () => {
+    const rows = [{ id: "old", status: "expired", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
+      { id: "new", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" }];
+    for (const leases of [rows, [...rows].reverse()]) {
+      const result = reconcileSandboxes([{ id: "r1", state: "stopped" }], leases);
+      expect(result.orphanSandboxes).toEqual([]);
+      expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["new"]);
+    }
+  });
+
   it("reports sandboxes with no lease and leases still active at rest", () => {
     const result = reconcileSandboxes(
       [{ id: "s9", state: "started", labels: { "paperclip-run-id": "r9" } }, { id: "s1", state: "started" }],
