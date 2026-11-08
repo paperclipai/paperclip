@@ -4275,7 +4275,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access.",
+    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access. Results are paged: limit defaults to 500 (maximum 1000) and offset to 0. Every page sets X-Paperclip-Has-More (true when more results exist) and X-Paperclip-Limit; a capped page also sets X-Paperclip-Next-Offset, or X-Paperclip-Next-After-Id for sortField=id&sortDir=asc cursor paging. Agent call_api results carry these as pagination.hasMore/nextOffset/nextAfterId. A page whose hasMore is true is not the complete list: repeat the request with the same filters and the next offset or afterId until hasMore is false.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -4283,6 +4283,11 @@ registry.registerPath({
       ids: z.string().optional().describe("One to 100 comma-separated task UUIDs; requires index or rows without attention."),
       parentIds: z.string().optional().describe("One to 100 comma-separated parent UUIDs; requires index or rows without attention."),
       oneChildPerParent: z.boolean().optional().describe("Return at most one readable child per parent; requires view=index and parentIds."),
+      limit: z.number().int().min(1).max(1000).optional().describe("Page size; defaults to 500, at most 1000. Check X-Paperclip-Has-More (call_api: pagination.hasMore) for more results."),
+      offset: z.number().int().min(0).optional().describe("Rows to skip; use X-Paperclip-Next-Offset (call_api: pagination.nextOffset) from the previous page."),
+      sortField: z.enum(["updated", "created", "id"]).optional(),
+      sortDir: z.enum(["asc", "desc"]).optional(),
+      afterId: z.string().uuid().optional().describe("Cursor paging: return rows after this task UUID; requires sortField=id, sortDir=asc and no offset. Use X-Paperclip-Next-After-Id (call_api: pagination.nextAfterId)."),
     }).passthrough(),
   },
   responses: {

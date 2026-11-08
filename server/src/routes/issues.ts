@@ -3003,6 +3003,19 @@ const ISSUE_LIST_STORM_WINDOW_MS = 500;
 const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
 
+/** Page position of a capped issue-list response, exposed as response headers. */
+export type IssueListPagination = {
+  limit: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+  nextAfterId: string | null;
+};
+
+export const ISSUE_LIST_HAS_MORE_HEADER = "X-Paperclip-Has-More";
+export const ISSUE_LIST_LIMIT_HEADER = "X-Paperclip-Limit";
+export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
+export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
+
 type IssueListPreparedResponse =
   | { kind: "inbox"; body: unknown }
   | {
@@ -3010,11 +3023,21 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      pagination?: IssueListPagination;
     }
   | {
       kind: "full";
       body: unknown[];
+      pagination?: IssueListPagination;
     };
+
+function setIssueListPaginationHeaders(res: Response, pagination: IssueListPagination | undefined) {
+  if (!pagination) return;
+  res.setHeader(ISSUE_LIST_HAS_MORE_HEADER, String(pagination.hasMore));
+  res.setHeader(ISSUE_LIST_LIMIT_HEADER, String(pagination.limit));
+  if (pagination.nextOffset !== null) res.setHeader(ISSUE_LIST_NEXT_OFFSET_HEADER, String(pagination.nextOffset));
+  if (pagination.nextAfterId !== null) res.setHeader(ISSUE_LIST_NEXT_AFTER_ID_HEADER, pagination.nextAfterId);
+}
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
 
@@ -8530,16 +8553,38 @@ export function issueRoutes(
     res.json(summaries);
   });
 
-  async function prepareIssueListForActor(req: Request, companyId: string, listFilters: IssueFilters, view: string | undefined): Promise<IssueListPreparedResponse> {
+  async function prepareIssueListForActor(
+    req: Request,
+    companyId: string,
+    listFilters: IssueFilters,
+    view: string | undefined,
+    options: { reportPagination?: boolean } = {},
+  ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
-    const rawResult = await svc.list(companyId, listFilters);
+    const pageLimit = options.reportPagination && typeof listFilters.limit === "number" ? listFilters.limit : null;
+    // Probe one row past the page so a capped response can say more exist.
+    // Pagination is decided on the raw page, before per-actor read filtering,
+    // so offsets stay aligned with the underlying query.
+    const probedResult = await svc.list(
+      companyId,
+      pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
+    );
+    const hasMore = pageLimit !== null && probedResult.length > pageLimit;
+    const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
+    const cursorOrder = listFilters.sortField === "id" && listFilters.sortDir === "asc" && !listFilters.offset;
+    const pagination: IssueListPagination | undefined = pageLimit === null ? undefined : {
+      limit: pageLimit,
+      hasMore,
+      nextOffset: hasMore && !listFilters.afterId ? (listFilters.offset ?? 0) + pageLimit : null,
+      nextAfterId: hasMore && cursorOrder ? rawResult[rawResult.length - 1]?.id ?? null : null,
+    };
     const visibleRows = await actorCanReadCompanyScope(req, companyId)
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
     const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
     if (view === "index") {
       const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
-      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
+      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate", pagination };
     }
     const issueIds = result.map((issue) => issue.id);
     const interruptions = await taskInterruptionPresentations(db, companyId, result);
@@ -8577,6 +8622,7 @@ export function issueRoutes(
         body: compactResult,
         etag: compactIssueListEtag(compactResult),
         cacheControl: "private, must-revalidate",
+        pagination,
       };
     }
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8607,6 +8653,7 @@ export function issueRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         interruption: interruptions.get(issue.id) ?? null,
       })),
+      pagination,
     };
   }
 
@@ -8970,7 +9017,7 @@ export function issueRoutes(
       allowTtlCache: view === "compact",
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        return prepareIssueListForActor(req, companyId, listFilters, view);
+        return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
       },
     });
 
@@ -8996,6 +9043,9 @@ export function issueRoutes(
       return;
     }
 
+    if (coordinated.response.kind !== "inbox") {
+      setIssueListPaginationHeaders(res, coordinated.response.pagination);
+    }
     if (coordinated.response.kind === "compact") {
       res.setHeader("Cache-Control", coordinated.response.cacheControl);
       res.setHeader("ETag", coordinated.response.etag);
