@@ -1886,7 +1886,10 @@ on the database clock (90 s TTL).
   use and extends the lease, but only if the boot stamped ownership in the last
   90 s or still has an in-progress record stamped with its boot id: an
   environment lease or cleanup claim, a sandbox creation intent, a workspace
-  finalize attempt, or an agent lifecycle step. Otherwise the lease lapses and
+  finalize attempt, an agent lifecycle step, a native finalizer or cleanup
+  lease, an open native coordinator claim, or a running legacy run. A stamp
+  whose ownership write may still be pending also counts until the server's
+  tracked work settles (at most 10 minutes). Otherwise the lease lapses and
   the worker issues no statements until the next stamp, so an idle server's
   database can sleep.
 - **Renewal failure.** Each renewal has a 10 s bound. A failed or timed-out
@@ -1911,9 +1914,33 @@ judged through that boot's row:
 - no row (a boot from before the lease): the record stays unprovable.
 
 A record with a recorded process group stays unprovable across hosts, because
-agent processes may outlive their server. The lease is off on Railway, which
-proves a replaced deployment from its own identity, and when
-`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off`.
+agent processes may outlive their server. The lease is off on a Railway
+deployment with an exclusive volume, which proves a replaced deployment from its
+own identity. A stateless Railway service keeps it.
+`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off` overrides this.
+
+A record saved before its owner was fully recorded (`no_owner_stamp`,
+`missing_identity`, `process_space_unrecorded`) stays unprovable and is never
+released on its own. For a settling kind that opts in, recovery asks the board
+on the record's task (`ownership_owner_unprovable`) to confirm that the previous
+server stopped. The board action (`POST /api/issues/{id}/recovery-actions/confirm-owner-gone`)
+is board-only, needs `runtime:confirm_owner_stop`, writes an
+`issue.ownership_owner_gone_confirmed` activity entry and wakes the reconciler.
+The confirmation then proves the owner gone (`operator_attested`) and the kind's
+own compare-and-swap settle releases the record:
+
+- The environment run lease stores the confirmation on the lease.
+- Every other opted-in kind (legacy controller lease, teardown claim, sandbox
+  creation intent, runtime-control operation, workspace finalize attempt,
+  native finalizer and cleanup leases) keeps it on the resolved recovery action,
+  bound to the record's last write. It applies only while the record is
+  unchanged and its recorded process is still unprovable for that legacy reason
+  (`missing_identity`, `process_space_unrecorded`). A record that changed since
+  is judged again, and recovery asks again about its current version. These
+  settles compare-and-swap on the recorded process, so a record of these kinds
+  with no owner stamp at all keeps its existing recovery path and is not offered.
+- Kinds that are unowned by design, such as queued pending cleanup and
+  accounting debt, are never offered.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 

@@ -516,7 +516,43 @@ describe("governed retained-file recovery", () => {
       await click("Confirm and resume");
       expect(api.confirmOwnerGone).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", recordId: "lease-1",
         stopEvidence: "The old server container was replaced and is not running." });
-      expect(container.textContent).toContain("Releasing the resource…");
+      expect(container.textContent).toContain("Releasing the sandbox lease…");
+    });
+
+    it("resets an open confirmation when the request is refreshed to a newer record version", async () => {
+      api.confirmOwnerGone.mockResolvedValue({ recordId: "run-1", status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      const at = (version: string) => ({ ...action, cause: "ownership_owner_unprovable", ownerType: "board",
+        evidence: { kind: "legacy_controller_lease", recordId: "run-1", runId: "run-1", recordUpdatedAt: version } }) as unknown as IssueRecoveryAction;
+      await mount(at("2026-11-08T10:00:00.000Z"));
+      await click("Confirm the previous server stopped");
+      expect(container.querySelector("textarea")).not.toBeNull();
+      // The record changed and the request now names its new version: the open form starts over.
+      await mount(at("2026-11-08T10:05:00.000Z"));
+      expect(container.querySelector("textarea")).toBeNull();
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server container was replaced and is not running.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.confirmOwnerGone).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", recordId: "run-1",
+        stopEvidence: "The old server container was replaced and is not running.", recordVersion: "2026-11-08T10:05:00.000Z" });
+    });
+
+    it("names the stuck record for a kind confirmed by record version, and a generic resource otherwise", async () => {
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      const ownerGone = (kind: string) => ({ ...action, cause: "ownership_owner_unprovable", ownerType: "board",
+        evidence: { kind, recordId: "run-1", runId: "run-1", recordUpdatedAt: "2026-11-08T10:00:00.000Z" } }) as unknown as IssueRecoveryAction;
+      await mount(ownerGone("legacy_controller_lease"));
+      expect(container.textContent).toContain("This task’s earlier run was recorded before Paperclip stored which server held it");
+      expect(button("Confirm the previous server stopped")).toBeDefined();
+      await mount(ownerGone("a_future_kind"));
+      expect(container.textContent).toContain("A resource from this task’s earlier run was recorded");
     });
 
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
