@@ -1,5 +1,8 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { agents, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
+import { agents, environments, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
+import { instanceSettingsService } from "./instance-settings.js";
+import { pluginHasAgentEnvironments, pluginServesAgentEnvironment } from "./plugin-environment-driver.js";
 import { heartbeatService } from "./heartbeat.js";
 import { listInvalidOrgChainDescendantIds } from "./agent-invokability.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -12,15 +15,24 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
   return {
     async onReady(agent) {
+      await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: agent.companyId, trigger: "pause_lifted" }));
       await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
     },
     async requiredPluginIds(agent) {
-      if (agent.lifecycleRequiredPluginIds !== null) return agent.lifecycleRequiredPluginIds;
+      const selected = agent.lifecycleRequiredPluginIds;
       const installed = await db.select().from(plugins).where(inArray(plugins.status, ["ready", "error", "installed", "upgrade_pending"]));
       const disabled = await db.select({ pluginId: pluginCompanySettings.pluginId }).from(pluginCompanySettings)
         .where(and(eq(pluginCompanySettings.companyId, agent.companyId), eq(pluginCompanySettings.enabled, false)));
-      return installed.filter(plugin => !disabled.some(row => row.pluginId === plugin.id) &&
-        plugin.manifestJson.agentLifecycle && plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")).map(plugin => plugin.id);
+      const candidates = installed.filter(plugin => !disabled.some(row => row.pluginId === plugin.id) &&
+        plugin.manifestJson.agentLifecycle && plugin.manifestJson.capabilities.includes("agents.lifecycle.manage"));
+      const [row] = await db.select({ environmentId: agents.defaultEnvironmentId }).from(agents).where(eq(agents.id, agent.id));
+      const environmentId = row?.environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)) : [];
+      if (selected !== null) {
+        const added = candidates.filter(plugin => pluginServesAgentEnvironment(plugin, environment) && !selected.includes(plugin.id));
+        return [...selected, ...added.map(plugin => plugin.id)];
+      }
+      return candidates.filter(plugin => !pluginHasAgentEnvironments(plugin) || pluginServesAgentEnvironment(plugin, environment)).map(plugin => plugin.id);
     },
     async runPlugin(agent, pluginId) {
       const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
@@ -50,7 +62,8 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
           ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
-        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) return "pending";
+        if (!await heartbeat.stopInvocationsForAgents(ids, reason,
+          { preservePauseDeferred: agent.lifecycleState === "pausing" })) return "pending";
       }
       return "complete";
     },

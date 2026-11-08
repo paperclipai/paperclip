@@ -12,6 +12,13 @@ already-known monitor deadline can fire earlier than the batching window.
 After all work settles, no periodic monitor scan remains. Pending claims and
 failed or deferred admissions retain their bounded deadlines.
 
+A monitor deadline is the earliest time for a check. An active native run or an
+unfinished finalization holds the check until the prior work settles. The task
+banner explains the active run wait instead of promising the next scheduler tick
+or showing it as overdue. Once the run clears, the banner resumes its countdown
+and offers Check now. Finalization notifications restore monitor scheduling from
+the saved rows; they do not bypass execution admission.
+
 Both idle drains and ordinary maintenance drains pause monitor dispatch. The
 worker retains its pending request without repeatedly reading monitor tables.
 After an explicit drain stop or TTL expiry, a bounded in-memory retry resumes

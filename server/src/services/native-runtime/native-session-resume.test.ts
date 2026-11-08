@@ -62,6 +62,7 @@ import { buildNativeExecutionInput } from "./native-execution-input.js";
 import {
   buildNativeExecutionWithCheckpoint,
   findNativeSessionResumeRun,
+  NATIVE_PROVIDER_SIDE_EFFECT_PENDING,
   NATIVE_PROVIDER_STATE_INCOMPATIBLE,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
@@ -276,6 +277,14 @@ describe("capability-gated connection tool refresh", () => {
     expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
     expect(result.execution.task.prompt).toContain("complete handoff");
     expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
+describe("a source stopped with a pending side-effecting call", () => {
+  it("does not rebind the saved session that still refuses attachment", () => {
+    const current = execution(currentRunId);
+    const source = { ...previousRun(), errorCode: NATIVE_PROVIDER_SIDE_EFFECT_PENDING };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
   });
 });
 

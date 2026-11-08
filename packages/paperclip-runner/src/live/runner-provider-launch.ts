@@ -100,6 +100,18 @@ export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunc
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
+function runnerLaunchPolicy(requirements: RunnerProviderLaunchRequirements): Record<string, unknown> {
+  return createRunnerProviderLaunch(requirements, {
+    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
+    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
+  });
+}
+
+/** Compare effective provider policy, including the factory's defaults. */
+export function runnerLaunchSettingsMatch(requirements: RunnerProviderLaunchRequirements, settings: RunnerProviderLaunchRequirements["settings"]): boolean {
+  return JSON.stringify(runnerLaunchPolicy(requirements)) === JSON.stringify(runnerLaunchPolicy({ ...requirements, settings }));
+}
+
 /** The environment may resolve paths, but it cannot change Core's selected policy. */
 export function validatePreparedRunnerLaunch(
   requirements: RunnerProviderLaunchRequirements,
@@ -138,10 +150,7 @@ export function validatePreparedRunnerLaunch(
       || descriptor.runId !== requirements.identity.runId
       || descriptor.normalizedSessionId !== requirements.identity.normalizedSessionId) reject();
   }
-  const expected = createRunnerProviderLaunch(requirements, {
-    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
-    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
-  });
+  const expected = runnerLaunchPolicy(requirements);
   const hostFields = new Set(["command", "args", "sidecarCommand", "sidecarArgs", "runtimeDirectory", "cwd",
     "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions"]);
   for (const [key, value] of Object.entries(expected)) {

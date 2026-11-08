@@ -55,17 +55,17 @@
     {
       "path": "schemas/event-v2.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
-      "sha256": "d7aef6f8ce3acf700462b30f52b38153a8a1b4ee86782cfa2991fff258c9e907"
+      "sha256": "8c1a4264a49b6f8d6713cab666747d2368f57136ebf1c0970a9c67a012bf480a"
     },
     {
       "path": "schemas/event-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/event.schema.json",
-      "sha256": "cee13d1d3c5de444722af5d83e2c96dbba17b1aef8eb6d4c036e9c71fb717f47"
+      "sha256": "e357c7b063595e6baa38617541d3b7361c4a54d5d1f8e3711fffc84d660e584e"
     },
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "67611b6d3adbd5731d94d01963e5a35924b7424063851bf60e394fe392685995"
+      "sha256": "ee66887550f3a940c34e91549433da8432ff1050f18e0c0a6c801c41fb82665a"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -90,7 +90,7 @@
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "14143d53f28969fa3f940def7331a45ee0eed560dd343506ac41b6a3dfe59985"
+      "sha256": "fcb55885300fd19fdcae26a754a7a3b3ccd76f6e05251367bec4c5b88d12f6b1"
     },
     {
       "path": "schemas/provider-failure.schema.json",
@@ -145,12 +145,12 @@
     {
       "path": "schemas/usage.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/usage.schema.json",
-      "sha256": "be9609768b224459546b800236045b375448f2cb2cb47ccb337e149e0b016361"
+      "sha256": "ed06a0b50c311e7d8ac6c6fe53f0178cc37a38b65831531efb53cb35c992319f"
     },
     {
       "path": "schemas/workspace-diff.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json",
-      "sha256": "f71b21f41cfc4c40aeaa503d1981d29355b4dd8b15036fcf3d8df5c35f8b8f6f"
+      "sha256": "883f9d8e40ec6af2d41bd2998e3e1146f35aab3a63f683ffdbcabe3d4e72479b"
     },
     {
       "path": "schemas/workspace-file-reference.schema.json",
@@ -185,7 +185,7 @@
     },
     {
       "path": "fixtures/evals/native-execution-seeded.json",
-      "sha256": "5ce8623132b60eb3e38214ebb75b98172c8a5cf177791a7a43ef75fe66c89db5",
+      "sha256": "bcd3daf392a00dc50eb78817097d84414810dc6bf4427298cab97915499a9a3e",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

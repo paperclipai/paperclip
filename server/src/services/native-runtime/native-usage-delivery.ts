@@ -8,7 +8,7 @@ import { priceCodexReceipt } from "../codex-pricing.js";
 import { liveRunUsageCostCents } from "../budget-live-usage.js";
 import { receiptFingerprint } from "../receipt-fingerprint.js";
 import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipts.js";
-import { createNativeTurnAccounting, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, NATIVE_TURN_LOST_ON_RESTORE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
 
 const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 const uuid = (identity: string) => {
@@ -46,20 +46,23 @@ export async function createNativeUsageDelivery(db: Db, input: NativeUsageDelive
  * and reconciliation rules; this grants no business/tool execution authority. */
 export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<NativeUsageDeliveryInput, "billing">) {
   const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
-  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson })
+  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   if (source?.runnerInstanceId !== input.runnerInstanceId || source.usage?.accountingReceiptOwner !== "native_producer"
     || source.usage.accountingReceiptSourceId !== sourceId) throw new Error("native_usage_continuation_source_mismatch");
   const saved = await loadNativeUsageReceipts(db, input, sourceId);
-  if (!saved.length) throw new Error("native_usage_continuation_receipts_missing");
-  const classification = (receipt: AdapterUsageCheckpoint) => ({
+  const classification = (receipt: Pick<AdapterUsageCheckpoint, "provider" | "biller" | "billingType">) => ({
     provider: receipt.provider, biller: receipt.biller, billingType: receipt.billingType,
   });
   const receipts = saved.map(row => (row.receipt as UsageReceiptEnvelope).receipt as AdapterUsageCheckpoint);
-  const billing = classification(receipts[0]);
+  const recorded = source.usage as Partial<AdapterUsageCheckpoint>;
+  if (!receipts.length && !recorded.biller) throw new Error("native_usage_continuation_receipts_missing");
+  const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
   if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
     || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
-  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true);
+  const terminalAcknowledged = source.finishedAt !== null && input.provider.kind === "codex"
+    && !saved.some(row => terminal.has((row.receipt as UsageReceiptEnvelope).producerEvent?.eventType ?? ""));
+  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true, terminalAcknowledged);
 }
 
 function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "companyId" | "runId">, sourceId: string) {
@@ -109,7 +112,7 @@ async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
 }
 
 function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
-  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false) {
+  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false, terminalAcknowledged = false) {
   const accepted = new Map<string, UsageReceiptEnvelope>();
   const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
   let observedUsage: Record<string, unknown> | null = null;
@@ -123,7 +126,8 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       && (input.provider.kind !== "codex" || fact.usage.runDeltaBasis === "run") } : undefined;
     const event = { sourceInstanceId: input.runnerInstanceId, sourceSeq: envelope.sequence,
       turnId: accountingTurn, eventType: fact.eventType,
-      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage } : {} } as PrpEvent;
+      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage }
+        : fact.lostOnRestore ? { error: { code: NATIVE_TURN_LOST_ON_RESTORE } } : {} } as PrpEvent;
     if (turnAccounting) {
       turnAccounting.observe(event);
       return turnAccounting.snapshot();
@@ -133,7 +137,8 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       observedUsage = interpretedUsage;
       observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? accountingTurn : undefined;
     }
-    return { usage: observedUsage, complete: terminal.has(fact.eventType) && observedTurn !== undefined && observedTurn === accountingTurn };
+    const closesRun = terminal.has(fact.eventType) || (terminalAcknowledged && interpretedUsage !== undefined);
+    return { usage: observedUsage, complete: closesRun && observedTurn !== undefined && observedTurn === accountingTurn };
   };
   for (const row of saved) {
     const envelope = row.receipt as UsageReceiptEnvelope;
@@ -159,10 +164,15 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
       ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true, runDeltaBasis: payload.runDeltaBasis,
         ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}) } } : {}),
+      ...(event.eventType === "turn.failed" && payload.error && typeof payload.error === "object"
+        && (payload.error as Record<string, unknown>).code === NATIVE_TURN_LOST_ON_RESTORE ? { lostOnRestore: true as const } : {}),
     };
     const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
+    // A receipt saved before the marker existed replays without it.
+    const { lostOnRestore: _marker, ...unmarked } = fact;
+    const comparable = previous?.producerEvent?.lostOnRestore ? fact : unmarked;
     if (previous && (previous.sequence !== event.sourceSeq || previous.receivedAt !== event.emittedAt
-      || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(fact))) throw new Error("native_usage_source_conflict");
+      || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(comparable))) throw new Error("native_usage_source_conflict");
     if (accepted.has(event.sourceEventId)) return;
     if (pending && pending.producerEvent?.sourceEventId !== event.sourceEventId) throw new Error("native_usage_report_pending");
     if (!pending) {
@@ -178,6 +188,9 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
         costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
         costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
           : input.provider.kind === "aws_agentcore" ? "estimated" : undefined,
+        ...(snapshot.usage?.accountingUsageLost === true ? { pricingProvenance: {
+          source: typeof snapshot.usage.accountingCostUsdExact === "string" ? "provider_reported" as const : "unknown" as const,
+          version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}),
       }));
       envelope.liveCostCents = liveRunUsageCostCents(envelope.receipt as AdapterUsageCheckpoint);
       pending = envelope;

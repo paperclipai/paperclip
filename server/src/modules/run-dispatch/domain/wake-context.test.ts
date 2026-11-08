@@ -16,6 +16,13 @@ describe("wake context", () => {
     expect(isResolvedInteractionContinuationWakeContext({ ...context, interactionKind: "request_confirmation" })).toBe(false);
     expect(isResolvedInteractionContinuationWakeContext({ ...context, connectionIntentResolution: undefined })).toBe(false);
   });
+  it("keeps a resolved interaction continuation through a Runner update wait", () => {
+    const context = { interactionId: "interaction-1", interactionStatus: "answered", mutation: "interaction", retryReason: "runner_revision_wait", wakeReason: "runner_revision_retry" };
+    expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, mutation: undefined })).toBe(false);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, interactionStatus: "pending" })).toBe(false);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, retryReason: "transient_failure" })).toBe(false);
+  });
   it("requires the subscription-specific non-assignee receipt for a subscription wait", () => {
     expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_busy", {
       aiConnectionBusyDeferredWhileAssignee: false,

@@ -621,6 +621,23 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("records an interrupt comment as the board user's acknowledged native Stop", async () => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, executionRunId: SOURCE_RUN_ID, status: "in_progress" });
+    const run = { id: SOURCE_RUN_ID, companyId: existing.companyId, agentId: ASSIGNEE_AGENT_ID, nativeIssueId: existing.id };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-interrupt-redirect", issueId: existing.id, companyId: existing.companyId, body: "Redirect" });
+    mockHeartbeatService.getRun.mockResolvedValue({ ...run, runtimeMode: "native", status: "running", contextSnapshot: { issueId: existing.id } });
+    mockHeartbeatService.cancelRun.mockResolvedValue({ ...run, status: "cancelled" });
+    const res = await request(await createApp()).post(`/api/issues/${existing.id}/comments`).send({ body: "Redirect", interrupt: true });
+    expect(res.status).toBe(201);
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    expect(stopMetadata).toMatchObject({ operatorInterrupted: true, cancelledByActorType: "user", cancelledByUserId: "local-board" });
+    expect(isAcknowledgedNativeStop({ ...run, status: "cancelled", resultJson: { ...stopMetadata,
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID, companyId: existing.companyId,
+        issueId: existing.id, scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+        intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" } } })).toBe(true);
+  });
+
   it("interrupts the active run without waking an agent when the handoff assigns a user", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,

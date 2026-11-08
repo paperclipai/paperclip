@@ -83,6 +83,7 @@ vi.mock("@/components/ai-connections/AiProviderSetup", () => ({
 vi.mock("./ConnectionSetupFlow", () => ({
   ConnectionSetupFlow: (props: {
     requestedAgentId?: string;
+    requiredAgentId?: string;
     existingConnections?: ToolConnection[];
     onUseExisting?: (id: string) => Promise<void>;
     onComplete?: (completion: { connectionId: string } | { resolvedByCallback: true }) => void;
@@ -91,6 +92,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
   }) => (
     <div data-testid="shared-connection-setup">
       <span data-testid="requested-agent">{props.requestedAgentId}</span>
+      <span data-testid="required-agent">{props.requiredAgentId}</span>
       <span data-testid="existing-count">
         {props.existingConnections?.length ?? 0}
       </span>
@@ -318,7 +320,7 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
-  it("shows loading, then passes existing choices and the locked requesting agent to the shared flow", async () => {
+  it("passes existing choices and requires the requester without locking tool setup to that agent", async () => {
     let resolveSetup!: (value: unknown) => void;
     setupOptionsMock.mockReturnValue(
       new Promise((resolve) => {
@@ -343,7 +345,10 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 
     expect(
       document.querySelector('[data-testid="requested-agent"]')?.textContent,
-    ).toBe("agent-requesting");
+    ).toBe("");
+    expect(document.querySelector('[data-testid="required-agent"]')?.textContent).toBe("agent-requesting");
+    expect(document.body.textContent).toContain("New connections default to all agents");
+    expect(document.body.textContent).not.toContain("Access is added only for this agent");
     expect(
       document.querySelector('[data-testid="existing-count"]')?.textContent,
     ).toBe("2");

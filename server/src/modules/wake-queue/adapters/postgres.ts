@@ -18,6 +18,7 @@ import { nativeManualAdmissionHoldsExecution } from "../../../services/native-ru
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import type { Db } from "@paperclipai/db";
+import { deliveredQueuedCommentIds } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
 import {
   activityLog,
@@ -314,14 +315,19 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queryableCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
-      const liveNonSelfCommentIds = queryableCommentIds.filter((commentId) => {
+      const liveAndUnauthored = queryableCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
         return Boolean(row && !row.deletedAt && (!targetsFinishingRunAgent || row.createdByRunId !== finishingRunId));
       });
+      // Promoting a saved wake whose comments a completed run already
+      // received would deliver them twice and can reopen finished work.
+      const delivered = await deliveredQueuedCommentIds(tx, { companyId, issueId, agentId: wakeAgentId,
+        commentIds: liveAndUnauthored });
+      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
-      return { liveNonSelfCommentIds, containedSelfAuthoredComment };
+      return { liveNonSelfCommentIds, containedSelfAuthoredComment, deliveredCommentIds: [...delivered] };
     },
 
     async cancelDeferredWake({ companyId, wakeId, agentId, reason, now }) {
@@ -929,6 +935,11 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            // A saved card response (interaction receipt) never absorbs user
+            // input. Skip it so a later message joins the existing message
+            // wake instead of starting another one behind the receipt.
+            sql`${agentWakeupRequests.payload} ->> 'interactionId' is null`,
+            sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> 'interactionId' is null`,
             ...(chatConversationId
               ? [
                   sql`coalesce(${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> ${CHAT_CONVERSATION_ID_KEY}::text, ${chatConversationId}) = ${chatConversationId}`,
@@ -1270,8 +1281,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             !interruptedQueue),
         };
         const preDrain = decidePreDrain(preDrainFacts);
+        // A deliberate stop does not promote the stopped agent's queued work.
+        // When a reassignment committed while that stop was still settling, the
+        // new assignee's wake parked behind this run; it is explicit new work
+        // and must run now, or the task is left with no run at all.
+        const handoffAssigneeAgentId = preDrain.kind === "released" &&
+          decidePreDrain({ ...preDrainFacts, executionCancellationAcknowledged: false }).kind === "proceed" &&
+          issueRow?.assigneeAgentId && !issueRow.assigneeUserId && issueRow.assigneeAgentId !== run.agentId
+          ? issueRow.assigneeAgentId : undefined;
 
-        if (preDrain.kind === "released") {
+        if (preDrain.kind === "released" && !handoffAssigneeAgentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1330,7 +1349,14 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           };
         }
 
-        if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        // A native run blocked for a rejected model or incomplete configuration waits for that
+        // change and a retry. The provider refused the request, so there is no execution to
+        // reconcile; a reconciliation incident would also hide the run's Retry.
+        if (!handoffAssigneeAgentId && run.runtimeMode === "native" && isConfigurationIncompleteFailedRun(run)
+          && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1352,7 +1378,8 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot,
+          recoveryOnly: recoveryOnly && !handoffAssigneeAgentId, ...(handoffAssigneeAgentId ? { handoffAssigneeAgentId } : {}) };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         // Explicit retry admission requires the exact source's task claim.
         // Preserve it only when the existing queue-first recovery policy

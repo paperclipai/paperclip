@@ -109,6 +109,9 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     const pinned = await svc.getIssueDocumentRevision(issueId, "plan", original!.latestRevisionId!);
     expect(pinned?.body).toBe("# Plan");
     expect(pinned?.id).toBe(original!.latestRevisionId);
+    const current = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(pinned).toMatchObject({ isLatest: false, latestRevisionId: current!.latestRevisionId, latestRevisionNumber: 2 });
+    expect(await svc.getIssueDocumentRevision(issueId, "plan", current!.latestRevisionId!)).toMatchObject({ isLatest: true, revisionNumber: 2, body: "# Newer plan" });
     expect(await svc.getIssueDocumentRevision(issueId, "other-document", original!.latestRevisionId!)).toBeNull();
     expect(await svc.getIssueDocumentRevision(randomUUID(), "plan", original!.latestRevisionId!)).toBeNull();
     expect(await svc.getIssueDocumentRevision(issueId, "plan", randomUUID())).toBeNull();

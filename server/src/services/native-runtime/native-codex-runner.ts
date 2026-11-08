@@ -171,12 +171,22 @@ function executableName(): string {
   return process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
 }
 
-export function resolvePaperclipRunnerBinary(
-  configuredPath = process.env.PAPERCLIP_RUNNER_BINARY,
-): string {
+function controllerPaperclipRunnerBinaryConfiguration(): string | undefined {
+  return process.env.PAPERCLIP_RUNNER_BINARY;
+}
+
+export function assertPaperclipRunnerBinaryConfiguration(
+  configuredPath = controllerPaperclipRunnerBinaryConfiguration(),
+): void {
   if (configuredPath && !isAbsolute(configuredPath)) {
     throw new Error("PAPERCLIP_RUNNER_BINARY must be an absolute path");
   }
+}
+
+export function resolvePaperclipRunnerBinary(
+  configuredPath = controllerPaperclipRunnerBinaryConfiguration(),
+): string {
+  assertPaperclipRunnerBinaryConfiguration(configuredPath);
   if (configuredPath) {
     try {
       accessSync(configuredPath, constants.R_OK | (process.platform === "win32" ? 0 : constants.X_OK));

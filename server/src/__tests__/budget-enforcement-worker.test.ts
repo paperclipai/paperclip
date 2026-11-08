@@ -147,6 +147,25 @@ describe("budget accounting delivery", () => {
     expect(work.accounting).toHaveBeenCalledTimes(3);
   });
 
+  // A sandbox stop or lease release can close a remote run's lost receipt.
+  it.each([DELIVERY_QUEUES.environmentCleanup, DELIVERY_QUEUES.retainedNativeSessionCleanup])(
+    "wakes accounting when %s work commits", async queue => {
+      const s = setup();
+      const recover = vi.fn(async () => {});
+      const worker = registerCostAccountingWork(s.db, s.coordinator, recover);
+      subscriptions.push(worker.stop);
+      await worker.ready;
+      const before = recover.mock.calls.length;
+      await s.owner.transaction(tx => notifyDeliveryWork(tx as object, queue));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(recover.mock.calls.length).toBeGreaterThan(before);
+      worker.stop();
+      const stopped = recover.mock.calls.length;
+      await s.owner.transaction(tx => notifyDeliveryWork(tx as object, queue));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(recover).toHaveBeenCalledTimes(stopped);
+    });
+
   it("replays durable spool work after a pre-transaction failure and releases its local wake on stop", async () => {
     const s = setup();
     const recover = vi.fn(async () => {});

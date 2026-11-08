@@ -1,3 +1,6 @@
+import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
+import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -87,6 +90,7 @@ import {
   isNull,
   lte,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -143,11 +147,18 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "../issue-rewake-throttle.js";
-import { logActivity } from "../activity-log.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  isIssueBlockersResolvedWakePayload,
+  issueBlockersResolvedWakePayloadSql,
+} from "../issue-dependency-wakeups.js";
+import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
+import {
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
+  pauseSuppressionResult,
 } from "../issue-tree-control.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -176,12 +187,14 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
-import type { issueService } from "../issues.js";
+import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
+import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import type { PostCommitEffect as WakeQueuePostCommitEffect, createWakeQueue } from "../../modules/wake-queue/index.js";
+import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
@@ -199,7 +212,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   Pick<HeartbeatRecoveryDependencies, "setRunStatus"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
-  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness">;
+  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
   treeControlSvc: Pick<ReturnType<typeof issueTreeControlService>, "getActivePauseHoldGate">;
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
@@ -219,7 +232,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
   applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
   publishRunLifecyclePluginEvent: (run: HeartbeatRun) => void;
-  cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
+  cancelRunInternal: (runId: string, reason?: string,
+    options?: { errorCode?: string; resultJson?: Record<string, unknown> }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
   resumeExecutionWaitComments: (scope?: DeferredReceiptRecoveryOptions) => Promise<unknown>;
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
@@ -799,6 +813,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
     deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
+    deferredCancellations?: Array<() => Promise<void>>,
   ) {
     if (run.status !== "queued") return run;
     const [caseHandoffReceipt] = run.wakeupRequestId ? await db.select().from(caseHandoffs).where(and(
@@ -899,6 +914,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     if (budgetBlock) {
       if (caseHandoffReceipt) return null;
+      // A temporary hold (accounting that is still settling) only delays
+      // accepted work. Cancelling the unstarted run would drop the user's
+      // message, Retry, or recovery it carries; keep it queued. Settling
+      // accounting re-notifies run dispatch. A reached hard stop is the board's.
+      if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }
@@ -952,32 +972,43 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           contextSnapshot: context,
         }));
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(
-          run.id,
-          "Cancelled because issue is held by an active subtree pause hold",
-        );
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          issueId: issueId,
-          details: {
-            issueId,
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: [
-              "Complete Mediation",
-              "Fail Securely",
-              "Secure Defaults",
-            ],
-          },
-        });
+        const refuse = async () => {
+          // Record the covering hold so its release re-dispatches this work once.
+          await cancelRunInternal(
+            run.id,
+            "Cancelled because issue is held by an active subtree pause hold",
+            { errorCode: ISSUE_PAUSED_ERROR_CODE, resultJson: pauseSuppressionResult(activePauseHold) },
+          );
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.tree_hold_run_interrupted",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            issueId: issueId,
+            details: {
+              issueId,
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              source: "heartbeat.claim_queued_run",
+              securityPrinciples: [
+                "Complete Mediation",
+                "Fail Securely",
+                "Secure Defaults",
+              ],
+            },
+          });
+          // A release that committed before this refusal did not see it.
+          await resumeIfPauseAlreadyReleased(db, { companyId: run.companyId, issueId,
+            holdId: activePauseHold.holdId, wakeup: (agentId, opts) => trackWakeup(agentId, opts) });
+        };
+        // Cancellation promotes the agent's next queued run under the agent
+        // start lock, so a caller holding that lock settles it after release.
+        if (deferredCancellations) deferredCancellations.push(refuse);
+        else await refuse();
         return null;
       }
 
@@ -1523,6 +1554,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     publishRunLifecyclePluginEvent(claimed);
 
     if (!nativeReviewContext) {
+      crashPoint("wake.claim.after_run_running_before_wakeup_claimed");
       await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
     }
 
@@ -1724,6 +1756,87 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         logger.warn({ err, queueId: wake.id }, "failed to resume interrupted comment queue");
       });
     }
+    // Work-intent outbox: a message refused by a pause waits for the pause to
+    // lift, not behind the run. Lifting the pause is the operator's explicit
+    // authorization to send what the pause refused, as Send is after a Stop:
+    // when the pause stopped the task's run, the release drain never promotes
+    // queued work behind that acknowledged stop, so the lifted pause issues the
+    // task's next explicit wake here. It reconsiders the exact saved receipt
+    // through normal admission (a refusal rewrites the receipt in place) and
+    // adopts it atomically, so it is delivered once. It runs before the
+    // stranded-queue pass, which touches each saved wake.
+    const pauseLifted = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId), isNull(issues.executionRunId),
+        notInArray(issues.status, ["done", "cancelled"])))
+      .innerJoin(companies, and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active")))
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        // Only messages the pause path saved (never a chat-inbound receipt,
+        // which resumes through its own live authorization), and only pauses
+        // this query can see lifted. A refusal by any other gate rewrites the
+        // receipt's reason, so it never retries in a loop here.
+        // A message the reconciler saved after its wake was lost waits on no
+        // hold, so the same explicit wake sends it.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' in ('pause_lifted', 'reconciler_backstop')`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable', 'wake_lost')`,
+        eq(agentWakeupRequests.requestedByActorType, "user"),
+        sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
+        sql`exists (select 1 from agents pause_agent where pause_agent.id = ${agentWakeupRequests.agentId}
+          and pause_agent.status not in ('paused', 'terminated', 'pending_approval'))`,
+        sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
+          WHERE live_issue_run.company_id = ${issues.companyId}
+            AND (live_issue_run.context_snapshot->>'issueId' = ${issues.id}::text
+              OR live_issue_run.native_issue_id = ${issues.id})
+            AND live_issue_run.status IN ('queued', 'running', 'scheduled_retry'))`,
+        cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const pauseLiftedIssues = new Set<string>();
+    for (const { wake } of pauseLifted) {
+      const issueKey = `${wake.companyId}:${String(wake.payload?.issueId)}`;
+      if (pauseLiftedIssues.has(issueKey)) continue;
+      pauseLiftedIssues.add(issueKey);
+      // Consumption is per comment. The wake adopts every saved message of
+      // the task for this agent, so each receipt drops the comments a
+      // completed run already received; a receipt left empty is consumed.
+      const issueKeyId = String(wake.payload?.issueId);
+      const saved = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.agentId, wake.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueKeyId}`));
+      for (const receipt of saved) {
+        const commentIds = queuedCommentIdsFromWakePayload(receipt.payload);
+        const delivered = await deliveredQueuedCommentIds(db, { companyId: wake.companyId, issueId: issueKeyId,
+          agentId: wake.agentId, commentIds: commentIds.filter(isUuidLike) });
+        if (delivered.size === 0) continue;
+        const remaining = commentIds.filter(commentId => !delivered.has(commentId));
+        const now = new Date();
+        await db.update(agentWakeupRequests).set(remaining.length === 0
+          ? { status: "cancelled", finishedAt: now, updatedAt: now, error: "Queued messages were already delivered to a completed run" }
+          : { payload: withQueuedCommentIdsInWakePayload(parseObject(receipt.payload), remaining), updatedAt: now })
+          .where(and(eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      }
+      const [current] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wake.id),
+        eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      if (!current) continue;
+      wake.payload = current.payload;
+      const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+      const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
+      await enqueueWakeup(wake.agentId, {
+        source: wake.source as WakeupOptions["source"], triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
+        reason: wake.reason ?? undefined, payload, contextSnapshot: context,
+        requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
+        requestedByActorId: wake.requestedByActorId ?? undefined,
+      }, wake.id).catch(err => {
+        if (err instanceof PersistedExecutionWaitRefusal) return;
+        scope.onError?.(err);
+        logger.warn({ err, requestId: wake.id }, "a message saved during a pause could not resume");
+      });
+    }
+
     // A server restart or a message/cleanup race can leave a deferred wake
     // after its owner has released the issue lock. Revisit it through the same
     // release admission, so recovery holds and operator Stops still apply.
@@ -1741,7 +1854,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         or(and(
           sql`jsonb_typeof(${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}') = 'array'`,
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
-        ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
+        ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
+        issueBlockersResolvedWakePayloadSql),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
           WHERE live_issue_run.company_id = ${issues.companyId}
@@ -1752,7 +1866,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
     for (const { wake } of strandedQueues) {
-      if (!queuedCommentIdsFromWakePayload(wake.payload).length &&
+      const dependencyWake = isIssueBlockersResolvedWakePayload(wake.payload);
+      if (!dependencyWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
       const [latest] = await db.select({
         id: heartbeatRuns.id,
@@ -1860,6 +1975,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  // Startup fast path: start queued turns that never executed, on agents with
+  // no run left `running` by the previous process and no queued retry or
+  // continuation. Those agents' runs depend on restart recovery and wait for
+  // the full queued-run pass. Every run still passes the ordinary per-agent
+  // claim and dispatch gates, exactly as a new wakeup during startup would.
+  async function resumeFreshQueuedRunsAtStartup() {
+    if ((await getSchedulingSuppression()).suppressed) return { agents: 0 };
+    const cutoff = await getWorktreeExecutionCutoff();
+    const rows = await db
+      .selectDistinct({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          eq(companies.status, "active"),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          sql`not exists (
+            select 1 from heartbeat_runs prior
+            where prior.agent_id = ${heartbeatRuns.agentId}
+              and (prior.status = 'running' or (prior.status = 'queued' and (
+                prior.started_at is not null or prior.retry_of_run_id is not null
+                or coalesce(prior.process_loss_retry_count, 0) > 0
+                or coalesce(prior.continuation_attempt, 0) > 0)))
+          )`,
+        ),
+      );
+    for (const { agentId } of rows) {
+      await startNextQueuedRunForAgent(agentId);
+    }
+    return { agents: rows.length };
+  }
+
   // A 403 from claimQueuedRun comes from the run's own persisted identity
   // (an unverifiable interrupt receipt, a manual wake with no user). Those rows
   // do not change, so the claim fails the same way on every pass and restart.
@@ -1906,6 +2054,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // agent's next queued run, which takes this same lock.
     const rejectedClaims: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }> = [];
     const deferredPostCommitEffects: WakeQueuePostCommitEffect[] = [];
+    const deferredCancellations: Array<() => Promise<void>> = [];
     let cancellationReason: string | undefined;
 
     return withAgentStartLock(agentId, async () => {
@@ -2018,7 +2167,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (claimedRuns.length >= availableSlots) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
-          claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
+          claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects, deferredCancellations);
         } catch (err) {
           if (isPermanentClaimRejection(err)) {
             rejectedClaims.push({ run: queuedRun, err });
@@ -2061,6 +2210,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       } finally {
         if (cancellationReason) await cancelActiveForAgentInternal(agentId, cancellationReason);
         await cancelRejectedQueuedRuns(rejectedClaims);
+        for (const cancel of deferredCancellations) {
+          await cancel().catch((err) => logger.warn({ err, agentId },
+            "queued heartbeat run refused by a pause hold could not be cancelled; the next claim retries it"));
+        }
       }
     });
   }
@@ -2120,10 +2273,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    const isManualContextCompactionWake = () => Boolean(
+      reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
+      && opts.manualUserWake === true && opts.requestedByActorType === "user"
+      && Boolean(opts.requestedByActorId) && opts.allowRunCoalescing === false
+      && payload?.intent === CONTEXT_COMPACTION_WAKE_REASON
+      && readNonEmptyString(payload.requestId) !== null
+      && readContextCompactionRequest(enrichedContextSnapshot)?.requestId === payload.requestId,
+    );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-      reason === CHAT_COMPLETION_WAKE_REASON,
+      reason === CHAT_COMPLETION_WAKE_REASON || isManualContextCompactionWake(),
     );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
@@ -2435,6 +2596,42 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     };
 
+    // Work-intent outbox (invariant 4): a user's message refused by a
+    // temporary hold is saved as a deferred intent that names the refusal and
+    // the hold-release event that promotes it, never written as a terminal
+    // skip. Promotion runs normal admission again, once.
+    // The release drain promotes a saved message behind the task's latest run,
+    // once that run is terminal; a run still stopping after a pause commits is
+    // that run. A task that never ran has none: its message stays in the task,
+    // and stranded-work recovery starts the task once the hold lifts.
+    const canSaveDeferredMessage = async () => {
+      if (executionWaitRequestId || caseRequest || durableRequest || !issueId || !isUuidLike(issueId) ||
+          opts.requestedByActorType !== "user" || !wakeCommentId) return false;
+      const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`))
+        .limit(1);
+      return Boolean(latest);
+    };
+    const saveDeferredMessage = async (refusal: string, message: string, details: Record<string, unknown> = {}) => {
+      const savedIssueId = issueId!;
+      const condition = deferredWorkIntentWait(refusal, `${message} Your message is saved.`, details);
+      await db.transaction(async tx => {
+        await tx.execute(sql`select id from issues where id = ${savedIssueId} and company_id = ${agent.companyId} for update`);
+        await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId, agentId, source, triggerDetail, reason,
+          payload: withQueuedCommentIdsInWakePayload({
+            ...payload, issueId: savedIssueId, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot, executionWait: condition,
+          }, [...new Set([...queuedCommentIdsFromRunContext(enrichedContextSnapshot), wakeCommentId!])]),
+          status: "deferred_issue_execution",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        });
+      });
+      return new PersistedExecutionWaitRefusal(message, details);
+    };
+
     const schedulingSuppression = await getSchedulingSuppression();
     // A task drain holds ADMISSION, not the request. The drain is a
     // process-local pre-restart hold, so a wake that arrives while it is
@@ -2470,6 +2667,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (caseRequest) return null;
       const companyStatus = company?.status ?? "missing";
       if (opts.requestedByActorType === "user") {
+        // A paused company is a temporary hold; an archived one is not.
+        if (companyStatus === "paused" && (await canSaveDeferredMessage()))
+          throw await saveDeferredMessage("company.inactive", "Company is not active", { status: companyStatus });
         throw conflict("Company is not active", { status: companyStatus });
       }
       await writeSkippedRequest("company.inactive", {
@@ -2654,6 +2854,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     );
     if (budgetBlock) {
+      // A budget block that is not a reached hard stop is an explicit pause.
+      if ((await canSaveDeferredMessage()) && !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock)))
+        throw await saveDeferredMessage("budget.blocked", budgetBlock.reason,
+          { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
@@ -2667,6 +2871,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
     if (!invokability.invokable) {
       if (caseRequest) return null;
+      // Only a pause defers through the release drain (wake-queue policy); a
+      // pending approval still fails a promoted wake, so it is not saved here.
+      if (invokability.reason === "paused" && (await canSaveDeferredMessage()))
+        throw await saveDeferredMessage("agent.not_invokable", invokability.message,
+          { status: agent.status, reason: invokability.reason });
       let waitSaved = false;
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         const wait = await writeSkippedRequest("agent.not_invokable", {
@@ -2768,6 +2977,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      const issueActivityPublications: ActivityPublication[] = [];
+      const issuePostCommitActions: IssuePostCommitAction[] = [];
 
       const outcome = await db
         .transaction(withDurableChatAdmission(durableRequest, async (tx) => {
@@ -2807,13 +3018,23 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               if (pending.id !== opts.taskRetryRequestId || retry?.generationId !== pending.id || retry.chatActionId ||
                   retry.actorId !== opts.requestedByActorId || retry.sourceRunId !== enrichedContextSnapshot.previousRunId)
                 return { kind: "deferred" as const };
+              // A declined Retry stays saved, but never silently: name the gate
+              // so the task explains it and a new click can replace this intent.
+              const declineRetry = async (reason: string, message: string) => {
+                await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
+                  requestId: pending.id }, { reason, message }, { replace: true });
+                logger.warn({ requestId: pending.id, issueId, reason }, "Task Retry could not start");
+                return { kind: "deferred" as const };
+              };
               if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: agent.companyId, issueId,
-                actorId: retry.actorId, actorSource: retry.actorSource })) return { kind: "deferred" as const };
+                actorId: retry.actorId, actorSource: retry.actorSource }))
+                return declineRetry("retry_authority_denied", "The user who requested Retry can no longer change this task.");
               if (retry.boardMessageOrigin) {
                 const origin = await readTaskRetryBoardMessageOrigin(tx as unknown as Db, { companyId: agent.companyId,
                   issueId, agentId, sourceRunId: retry.sourceRunId, actorId: retry.actorId });
                 if (!origin || origin.commentId !== retry.boardMessageOrigin.commentId ||
-                    origin.identityContextId !== retry.boardMessageOrigin.identityContextId) return { kind: "deferred" as const };
+                    origin.identityContextId !== retry.boardMessageOrigin.identityContextId)
+                  return declineRetry("retry_source_changed", "The saved message this Retry continues has changed.");
               }
             }
             if (opts.queuedCommentRequestId) {
@@ -3651,6 +3872,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
+          // Availability is advisory: competing clicks may both read it before
+          // admission. The existing issue lock serializes the run and deferred
+          // receipt checks with the admission below, without another lock owner.
+          if (isManualContextCompactionWake()) {
+            if (activeExecutionRun) {
+              const compacting = isContextCompactionRun(activeExecutionRun.contextSnapshot);
+              throw new ContextCompactionError(compacting ? "already_pending" : "agent_busy",
+                compacting ? "The agent is already compacting its context." : "Available when the agent finishes its current run.");
+            }
+            const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, agentId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]), isNull(agentWakeupRequests.runId),
+              executionWaitRequestId ? ne(agentWakeupRequests.id, executionWaitRequestId) : undefined,
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'intent' = ${CONTEXT_COMPACTION_WAKE_REASON}`,
+              sql`jsonb_typeof(${agentWakeupRequests.payload}->'requestId') = 'string'`,
+              sql`nullif(btrim(${agentWakeupRequests.payload}->>'requestId'), '') is not null`,
+              sql`${agentWakeupRequests.payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'contextCompactionRequestId' = ${agentWakeupRequests.payload}->>'requestId'`,
+            )).limit(1);
+            if (pending) throw new ContextCompactionError("already_pending", "The agent is already compacting its context.");
+          }
+
           const dependencyReadiness = await issuesSvc
             .listDependencyReadiness(issue.companyId, [issue.id], tx)
             .then((rows) => rows.get(issue.id) ?? null);
@@ -3718,7 +3961,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           if (
             isolatedWorkspacesEnabled &&
             !activeExecutionRun &&
-            issue.status !== "done" &&
+            (issue.status !== "done" || Boolean(opts.queuedCommentInterruptId)) &&
             issue.status !== "cancelled"
           ) {
             const issueSettings = parseIssueExecutionWorkspaceSettings(
@@ -3798,7 +4041,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
               if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
               await notifyRoutineExecutionStatus(tx, issue.id, issue.companyId);
-              await tx
+              if (issue.status === "done") {
+                const blocked = await issuesSvc.updateForCompany(issue.id, issue.companyId,
+                  { status: "blocked", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
+                if (!blocked) throw conflict("The task changed before its workspace settings could be checked");
+              } else await tx
                 .update(issues)
                 .set({
                   status: "blocked",
@@ -4187,6 +4434,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
+          if (opts.queuedCommentInterruptId && issue.status === "done") {
+            const reopened = await issuesSvc.updateForCompany(issue.id, issue.companyId,
+              { status: "todo", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
+            if (!reopened) throw conflict("The task changed before its saved message could start");
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId, actorType: "user", actorId: opts.requestedByActorId!,
+              action: "issue.updated", entityType: "issue", entityId: issue.id,
+              details: { status: "todo", previousStatus: "done", source: "queued_comment_send", queueId: opts.queuedCommentInterruptId },
+            }, issueActivityPublications);
+          }
+
           const wakeupValues = {
             ...durableReceiptFields,
             companyId: agent.companyId,
@@ -4379,6 +4637,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           throw error;
         });
 
+      for (const publication of issueActivityPublications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, issuePostCommitActions);
+
       // Telemetry for the cancelled runs is best-effort background work.
       // Fire it here and never await it: none of the lifecycle work below,
       // nor this function's return, depends on it, so a slow telemetry
@@ -4470,7 +4731,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A reviewed chat run attests one conversation, so never fold another
     // conversation's reply into it; that reply queues its own run instead.
     const coalescedTargetRun = rawCoalescedTarget &&
-      wakeChatConversationsConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot)
+      (hasRetainedExternalChatRetry(rawCoalescedTarget.contextSnapshot) ||
+        wakeChatConversationsConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot))
       ? null
       : filterZombieCoalesceTarget(rawCoalescedTarget, liveRunExecutions);
 
@@ -4970,6 +5232,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     resumeQueuedRuns,
     resumeDeferredExecutionReceipts,
     resumeQueuedRunsAfterDrain,
+    resumeFreshQueuedRunsAtStartup,
     parseHeartbeatPolicy,
     nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,

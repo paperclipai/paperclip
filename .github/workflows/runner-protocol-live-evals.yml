@@ -71,7 +71,6 @@ jobs:
       testops_enabled: ${{ steps.mode.outputs.testops_enabled }}
       accounting_mode: ${{ steps.mode.outputs.mode }}
       retry_count: ${{ steps.mode.outputs.retries }}
-      controller_lock_sha256: ${{ steps.mode.outputs.controller_lock_sha256 }}
       test_runner: ${{ steps.runner.outputs.runner }}
       max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
       max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
@@ -168,7 +167,6 @@ jobs:
           TESTOPS_REQUESTED: ${{ inputs.report_to_testops || inputs.ALLURE_JOB_RUN_ID != '' }}
           REQUESTED_ROSTERS: ${{ inputs.rosters }}
           RETRIES: ${{ inputs.max_infrastructure_retries || 0 }}
-          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
@@ -179,12 +177,6 @@ jobs:
               test "$TARGET_SHA" = "$GITHUB_SHA"
               test "$GITHUB_RUN_ATTEMPT" = 1
               test "$RETRIES" = 0
-              if ! jq -e '.schema == "paperclip.runner-eval.hosted-policy/v1"' <<< "${CONTROLLER_POLICY_JSON:-}" >/dev/null; then
-                echo 'Controlled runs require a reviewed RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON; no provider work started.' >&2
-                exit 1
-              fi
-              lock_sha="$(jq -er '.controllerLockSha256 | select(type == "string" and test("^[a-f0-9]{64}$"))' <<< "$CONTROLLER_POLICY_JSON")"
-              echo "controller_lock_sha256=$lock_sha" >> "$GITHUB_OUTPUT"
               ;;
             legacy) test "$EVENT_NAME" = workflow_dispatch ;;
             *) exit 1 ;;
@@ -415,15 +407,19 @@ jobs:
 
       - name: Enforce controlled limits against the selected catalog
         if: needs.authorize.outputs.accounting_mode == 'controlled'
-        env:
-          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
         run: |
           set -euo pipefail
           jq -e 'all(.cells[]; (.provider == "codex" and (.acpxAgent // "") == "" and .driver == "codex_app_server") or (.provider == "acpx" and .acpxAgent == "claude" and .driver == "acpx_runtime"))' runner-protocol-eval-catalog.json >/dev/null || {
             echo 'Controlled selection supports native Codex and ACPX Claude only; select their rosters explicitly.' >&2; exit 1;
           }
-          maximum="$(jq -er '.maxCells | select(type == "number" and floor == . and . > 0 and . <= 512)' <<< "$CONTROLLER_POLICY_JSON")"
-          jq -e --argjson maximum "$maximum" '.cells | length <= $maximum' runner-protocol-eval-catalog.json >/dev/null
+          # Every selected profile needs a committed allocation. No evals code has run in this job yet.
+          jq -e --slurpfile defaults packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json \
+            '($defaults[0].allocations | map([.provider, (.acpxAgent // ""), .model])) as $allowed | all(.cells[]; [.provider, (.acpxAgent // ""), .model] as $profile | any($allowed[]; . == $profile))' \
+            runner-protocol-eval-catalog.json >/dev/null || {
+            echo 'Controlled selection includes a profile without a committed allocation in hosted-defaults.json.' >&2; exit 1;
+          }
+          # The campaign size is the selected catalog; the spend cap is enforced when the manifest is prepared.
+          jq -e '(.cells | length) >= 1 and (.cells | length) <= 512' runner-protocol-eval-catalog.json >/dev/null
 
       - name: Require the chat-report renderer before paid execution
         run: |
@@ -549,7 +545,7 @@ jobs:
 
   build_controller:
     name: Build trusted controller without private archive access
-    needs: [authorize, target_lock]
+    needs: [authorize]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -579,26 +575,14 @@ jobs:
         with:
           version: 9.15.4
 
-      - name: Download resolved lockfile for review binding
-        if: needs.authorize.outputs.accounting_mode == 'controlled'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
-          path: ${{ runner.temp }}/runner-controller-lock
-
       - name: Build portable controller in an unprivileged job
         if: needs.authorize.outputs.accounting_mode == 'controlled'
         id: build
-        env:
-          EXPECTED_LOCK_SHA256: ${{ needs.authorize.outputs.controller_lock_sha256 }}
-          RESOLVED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$RESOLVED_LOCK_SHA256" = "$EXPECTED_LOCK_SHA256"
-          lock="$RUNNER_TEMP/runner-controller-lock/pnpm-lock.yaml"
-          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
-          cp "$lock" pnpm-lock.yaml
+          # The controller installs exactly the committed lockfile of the trusted revision.
+          git diff --quiet HEAD -- pnpm-lock.yaml
           pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/runner-controller-pnpm-store"
           node packages/paperclip-runner/scripts/controlled-evals/build-runtime.mjs \
             "$RUNNER_TEMP/runner-protocol-runtime" "$GITHUB_SHA" > "$RUNNER_TEMP/controller-runtime-receipt.json"
@@ -700,21 +684,27 @@ jobs:
 
       - name: Verify copied controller before private preparation
         if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: controller_lock
         env:
-          EXPECTED_LOCK_SHA256: ${{ needs.authorize.outputs.controller_lock_sha256 }}
           RUNTIME_RECEIPT_SHA256: ${{ needs.build_controller.outputs.runtime_receipt_sha256 }}
         run: |
           set -euo pipefail
           node packages/paperclip-runner/scripts/controlled-evals/verify-runtime.mjs "$RUNNER_TEMP/runner-protocol-runtime" "$GITHUB_SHA" "$RUNTIME_RECEIPT_SHA256"
-          test "$(jq -r '.inputs["pnpm-lock.yaml"]' "$RUNNER_TEMP/runner-protocol-runtime/runtime.json")" = "$EXPECTED_LOCK_SHA256"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          committed="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+          test "$(jq -r '.inputs["pnpm-lock.yaml"]' "$RUNNER_TEMP/runner-protocol-runtime/runtime.json")" = "$committed"
+          echo "sha256=$committed" >> "$GITHUB_OUTPUT"
 
-      - name: Compile requests and bind the reviewed operating policy
+      - name: Compile requests and derive the committed operating policy
         if: needs.authorize.outputs.accounting_mode == 'controlled'
         id: prepare
         env:
           PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
-          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
+          PAPERCLIP_RUNNER_EVAL_CONTROLLER_LOCK_SHA256: ${{ steps.controller_lock.outputs.sha256 }}
+          PAPERCLIP_RUNNER_EVAL_BRAINTRUST_PROJECT_ID: ${{ vars.RUNNER_E2E_BRAINTRUST_PROJECT_ID }}
+          # Optional campaign spend cap; the committed default applies when unset.
+          RUNNER_PROTOCOL_EVAL_MAX_USD: ${{ vars.RUNNER_PROTOCOL_EVAL_MAX_USD }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -723,12 +713,6 @@ jobs:
           (cd runner-protocol-build && sha256sum --check runner-protocol-build.tar.gz.sha256)
           mkdir runner-protocol-build/extracted
           tar -xzf runner-protocol-build/runner-protocol-build.tar.gz -C runner-protocol-build/extracted
-          policy="$RUNNER_TEMP/runner-controller-policy.json"
-          POLICY_PATH="$policy" python3 - <<'PYTHON'
-          import os
-          with os.fdopen(os.open(os.environ["POLICY_PATH"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as target:
-              target.write(os.environ["CONTROLLER_POLICY_JSON"])
-          PYTHON
           worker="/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}"
           python3 .paperclip-evals/evals/paperclip-runner/tools/prepare_controlled_campaign.py \
             --catalog runner-protocol-catalog/runner-protocol-eval-catalog.json \
@@ -739,8 +723,7 @@ jobs:
           control="$RUNNER_TEMP/runner-protocol-control"
           node "$RUNNER_TEMP/runner-protocol-runtime/controlled-evals/hosted.mjs" prepare \
             runner-protocol-catalog/runner-protocol-eval-catalog.json "$RUNNER_TEMP/prepared-requests.json" \
-            "$policy" runner-protocol-build/extracted "$control" > "$RUNNER_TEMP/control-preparation.json"
-          cp "$policy" "$control/hosted-policy.json"
+            runner-protocol-build/extracted "$control" > "$RUNNER_TEMP/control-preparation.json"
           echo "manifest_sha256=$(jq -r .manifestSha256 "$RUNNER_TEMP/control-preparation.json")" >> "$GITHUB_OUTPUT"
 
       - name: Obtain private archive credentials for transfer steps only
@@ -1294,12 +1277,16 @@ jobs:
           fi
           exit "$status"
 
-      - name: Render the same canonical grid from a public-safe evidence projection
+      - name: Project safe run records for reporting
         if: needs.authorize.outputs.accounting_mode == 'legacy' || needs.authorize.outputs.testops_enabled == 'true'
         run: |
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs sanitize \
             --runs-root runner-protocol-merged/runs \
             --output runner-protocol-merged/public-runs
+
+      - name: Render the same canonical grid from a public-safe evidence projection
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
+        run: |
           python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
             --runs-root runner-protocol-merged/public-runs \
             --output runner-protocol-merged/public-report \
@@ -1312,11 +1299,24 @@ jobs:
       - name: Create the closed TestOps projection inside the report boundary
         if: always() && !cancelled() && needs.authorize.outputs.testops_enabled == 'true' && needs.testops_selection.result == 'success'
         id: testops_projection
+        env:
+          ACCOUNTING_MODE: ${{ needs.authorize.outputs.accounting_mode }}
         run: |
           mkdir -m 700 runner-protocol-testops-projection
-          node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export \
-            runner-protocol-testops-selection/runner-protocol-testops-selection.json \
-            runner-protocol-merged/public-report runner-protocol-testops-projection/results
+          case "$ACCOUNTING_MODE" in
+            controlled)
+              node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export-runs \
+                runner-protocol-testops-selection/runner-protocol-testops-selection.json \
+                runner-protocol-merged/campaign.json runner-protocol-merged/public-runs \
+                runner-protocol-testops-projection/results
+              ;;
+            legacy)
+              node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export \
+                runner-protocol-testops-selection/runner-protocol-testops-selection.json \
+                runner-protocol-merged/public-report runner-protocol-testops-projection/results
+              ;;
+            *) exit 1 ;;
+          esac
 
       - name: Transfer only the closed TestOps results and receipt
         if: always() && steps.testops_projection.outcome == 'success'

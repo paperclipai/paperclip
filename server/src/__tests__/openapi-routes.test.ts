@@ -8,6 +8,7 @@ import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
@@ -49,6 +50,7 @@ const apiPrefixes: Record<string, string> = {
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
   "connection-event-wake.ts": "/",
+  "ephemeral-enrollment.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
@@ -118,6 +120,7 @@ const explicitOpenApiCoverageExclusions = new Set<string>();
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
+  "POST /api/instance/ephemeral-enrollment/prepare",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -131,6 +134,9 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
   "GET /api/mcp/setup.md",
+  "GET /.well-known/oauth-protected-resource",
+  "GET /.well-known/oauth-protected-resource/mcp/paperclip",
+  "GET /.well-known/oauth-protected-resource/mcp/runner",
   "GET /.well-known/oauth-authorization-server",
   "POST /mcp/oauth/register",
   "POST /mcp/oauth/device_authorization",
@@ -254,9 +260,13 @@ function loadActualRoutes() {
 
     if (file === "public-mcp.ts") {
       // The shared gateway mounts these protocol paths for each OAuth resource.
-      if (source.includes("router.get(metadataPath,")) {
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server");
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server/mcp/runner/oauth");
+      if (source.includes("mcpDiscoveryDocuments({") && source.includes("router.get(entry.path,")) {
+        for (const entry of mcpDiscoveryDocuments({ origin: "https://example.test",
+          authorizationOrigin: "https://example.test", profiles: ["personal-mcp", "dot-mcp"] })) {
+          const operation = `GET ${entry.path}`;
+          if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
+          else routes.add(operation);
+        }
       }
       for (const match of source.matchAll(/router\.(get|post)\(oauthPath \+ "([^"]+)"/g)) {
         for (const oauthPath of ["/mcp/oauth", "/mcp/runner/oauth"]) {
@@ -321,6 +331,25 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents the export include body so agents can request projects and skills", () => {
+    const spec = buildOpenApiSpec();
+    for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
+      const operation = spec.paths[path].post;
+      const body = operation.requestBody.content["application/json"].schema;
+      expect(body.properties.include.properties).toMatchObject({ projects: expect.anything(), skills: expect.anything() });
+      expect(operation.description).toMatch(/include\.projects/);
+    }
+  });
+  it("documents the safe company import body so agents can preview and resolve agent name conflicts", () => {
+    const spec = buildOpenApiSpec();
+    for (const path of ["/api/companies/{companyId}/imports/preview", "/api/companies/{companyId}/imports/apply"]) {
+      const operation = spec.paths[path].post;
+      const body = operation.requestBody.content["application/json"].schema;
+      expect(body.required).toEqual(expect.arrayContaining(["source", "target"]));
+      expect(body.properties).toMatchObject({ collisionStrategy: expect.anything(), nameOverrides: expect.anything(), include: expect.anything() });
+      expect(operation.description).toMatch(/replace/);
+    }
+  });
   it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
     const spec = buildOpenApiSpec();
     const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
@@ -468,13 +497,13 @@ describe("openapi routes", () => {
     expect(operation.responses["404"]).toBeDefined();
   });
 
-  it("documents strict run-attributed feedback and board-only commentary reads", () => {
+  it("documents strict run-attributed feedback and board-or-agent commentary reads", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
     expect(Object.keys(path)).toEqual(["get", "post"]);
     const detail = spec.paths["/api/companies/{companyId}/agent-commentary/{id}"].get;
     for (const read of [path.get, detail]) {
-      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentBearerAuth: [] }]);
       expect(read.responses["403"]).toBeDefined();
       expect(read.responses["404"]).toBeDefined();
     }
@@ -545,6 +574,14 @@ describe("openapi routes", () => {
       required: ["companyId"], additionalProperties: false,
     });
     expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
+  it("tells agents that archiving keeps a status card and where a person restores it", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const patch = res.body.paths["/api/status-cards/{id}"].patch;
+    expect(patch.description).toContain("it is not deleted");
+    expect(patch.description).toContain("give them the returned href as a Markdown link");
+    expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {

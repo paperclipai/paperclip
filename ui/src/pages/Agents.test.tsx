@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react
 import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents, filterAgents, filterOrgTree } from "./Agents";
@@ -321,9 +322,9 @@ describe("agent search", () => {
 function renderAgentsView(root: ReturnType<typeof createRoot> | null, queryClient: QueryClient) {
   root!.render(
     <QueryClientProvider client={queryClient}>
-      <ToastProvider>
+      <TooltipProvider><ToastProvider>
         <Agents />
-      </ToastProvider>
+      </ToastProvider></TooltipProvider>
     </QueryClientProvider>,
   );
 }
@@ -399,7 +400,7 @@ describe("Agents", () => {
       makeAgent({ id: "beta", name: "Beta", role: "designer" }),
     ]);
     root = createRoot(container);
-    await act(async () => root!.render(<QueryClientProvider client={queryClient}><ToastProvider><Agents /></ToastProvider></QueryClientProvider>));
+    await act(async () => root!.render(<QueryClientProvider client={queryClient}><TooltipProvider><ToastProvider><Agents /></ToastProvider></TooltipProvider></QueryClientProvider>));
     await flushReact();
     await flushReact();
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
@@ -426,9 +427,9 @@ describe("Agents", () => {
     await act(async () => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <ToastProvider>
+          <TooltipProvider><ToastProvider>
             <AgentList />
-          </ToastProvider>
+          </ToastProvider></TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -539,7 +540,7 @@ describe("Agents", () => {
     const row = findAgentRow(container, "Paperclip Engineer With A Much Longer Display Name");
     expect(row).not.toBeNull();
     expect(row?.querySelector(".sm\\:hidden")).toBeNull();
-    expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
+    expect(row?.closest("tr")?.textContent).toContain("idle");
 
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
@@ -842,7 +843,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
+      root!.render(<QueryClientProvider client={queryClient}><TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider></QueryClientProvider>);
     });
     await flushReact();
     await flushReact();
@@ -910,10 +911,10 @@ describe("Agents", () => {
     const checkbox = container.querySelector<HTMLButtonElement>('[aria-label="Select Alpha"]');
     expect(checkbox).not.toBeNull();
     await act(async () => { checkbox!.click(); });
-    expect(container.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
-    expect(container.textContent).toContain("Edit connection & model");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("Edit connection & model");
     expect(mockRouterState.navigate).not.toHaveBeenCalled();
-    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Harness", "Connection", "Default model"]);
+    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Chat", "Status", "Harness", "Connection", "Default model"]);
   });
 
   it.each([
@@ -924,9 +925,9 @@ describe("Agents", () => {
     await act(async () => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <ToastProvider>
+          <TooltipProvider><ToastProvider>
             <AgentList />
-          </ToastProvider>
+          </ToastProvider></TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -984,7 +985,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
+      root!.render(<QueryClientProvider client={queryClient}><TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider></QueryClientProvider>);
     });
     await flushReact();
     await flushReact();
@@ -996,7 +997,7 @@ describe("Agents", () => {
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     expect(row?.classList.contains("opacity-50")).toBe(false);
-    expect(row?.querySelector(".sm\\:hidden")?.textContent).toContain("paused");
+    expect(row?.closest("tr")?.textContent).toContain("paused");
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {
@@ -1024,9 +1025,9 @@ describe("Agents", () => {
       await act(async () => {
         root!.render(
           <QueryClientProvider client={queryClient}>
-            <ToastProvider>
+            <TooltipProvider><ToastProvider>
               <AgentList />
-            </ToastProvider>
+            </ToastProvider></TooltipProvider>
           </QueryClientProvider>,
         );
       });
@@ -1058,9 +1059,9 @@ describe("Agents", () => {
       await act(async () => {
         root!.render(
           <QueryClientProvider client={queryClient}>
-            <ToastProvider>
+            <TooltipProvider><ToastProvider>
               <AgentList />
-            </ToastProvider>
+            </ToastProvider></TooltipProvider>
           </QueryClientProvider>,
         );
       });
@@ -1088,9 +1089,9 @@ describe("Agents", () => {
         await act(async () => {
           root!.render(
             <QueryClientProvider client={queryClient}>
-              <ToastProvider>
+              <TooltipProvider><ToastProvider>
                 <AgentList />
-              </ToastProvider>
+              </ToastProvider></TooltipProvider>
             </QueryClientProvider>,
           );
         });

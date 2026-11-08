@@ -8,7 +8,7 @@ import { agents, companies, companyMemberships, createDb, environmentLeases, env
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
-import { registerPluginTaskCredentialHandoff } from "../services/plugin-task-credential-writeback.js";
+import { registerPluginTaskCredentialHandoff, settlePluginTaskCredentialHandoff } from "../services/plugin-task-credential-writeback.js";
 import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { secretService } from "../services/secrets.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -123,6 +123,14 @@ suite("durable plugin task credential handoff", () => {
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
   });
+  it("does not mark a replacement task's identical credential handoff complete", async () => {
+    const f = await fixture(false), prior = await f.lease();
+    await db.update(environmentLeases).set({ providerLeaseId: "replacement-task" }).where(eq(environmentLeases.id, f.leaseId));
+    await expect(settlePluginTaskCredentialHandoff(db, { companyId: f.companyId, leaseId: f.leaseId, expectedTaskId: "fixture-task" },
+      prior.metadata!, async () => { throw new Error("Undispatched task must not export credentials"); })).rejects.toThrow("handoff changed");
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+  });
+
   it("retires an undispatched task without exporting credentials and blocks a late submit", async () => {
     const f = await fixture(false);
     expect(await f.settle()).toBe(false);

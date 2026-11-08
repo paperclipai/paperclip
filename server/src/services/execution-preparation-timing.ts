@@ -75,7 +75,7 @@ export type ExecutionPhase =
   | "runtime_selection.resume" | "runtime_selection.recovery_profile" | "runtime_selection.profile" | "runtime_selection.interactions"
   | "runtime_selection.provider_discovery" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
   | "runtime_selection.transaction" | "runtime_selection.transaction.entry" | "runtime_selection.transaction.commit" | "runtime_selection.transaction.rollback"
-  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync"
+  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync" | "runtime_selection.skill_assets"
   | "runtime_context.instructions" | "runtime_context.skills" | "runtime_context.mcp"
   | "runtime_context.asset_read" | "runtime_context.asset_manifest" | "runtime_context.asset_cache" | "runtime_context.asset_materialize" | "runtime_context.asset_verify"
   | "workspace_sync.snapshot_git" | "workspace_sync.snapshot_baseline" | "workspace_sync.pack" | "workspace_sync.seed_verify" | "workspace_sync.stage_workspace" | "workspace_sync.restore"

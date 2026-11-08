@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
+import { ObjectJournalBusyError } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -481,5 +482,41 @@ describe("S3 run log store", () => {
     await Promise.all([first.committed, second]);
     await store.append(h, event(3));
     expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
+  });
+  it("bounds ordinary reads while explicit internal reads keep queuing", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({
+        provider: m.provider,
+        keyPrefix: "logs",
+        assertWriterAuthority: async () => undefined,
+      });
+    const handle = await store.begin(input);
+    await store.append(handle, event(1));
+    await store.finalize(handle);
+    const get = m.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    m.provider.getObject = async (i) => {
+      await gate;
+      return get(i);
+    };
+    const polls = Array.from({ length: 40 }, () => store.read(handle));
+    const excess = store.read(handle);
+    let rejected: unknown;
+    void excess.catch((error) => { rejected = error; });
+    let internal: ReturnType<typeof store.read> | undefined;
+    try {
+      await vi.waitFor(() => expect(rejected).toBeInstanceOf(ObjectJournalBusyError));
+      internal = store.read(handle, { priority: "background" });
+      open();
+      for (const poll of await Promise.allSettled(polls))
+        if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
+      expect((await internal).content.trim().split("\n")).toHaveLength(1);
+    } finally {
+      open();
+      await Promise.allSettled([...polls, excess, ...(internal ? [internal] : [])]);
+    }
   });
 });

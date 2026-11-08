@@ -14,6 +14,7 @@ export {
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  RUNNER_REVISION_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -22,6 +23,10 @@ export {
   wakeChatConversationsConflict,
   RESOLVED_INTERACTION_CONTINUATION_STATUSES,
   isNonAssigneeWorkspaceBusyRetry,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+  WORKSPACE_BUSY_WAIT_KEY,
+  readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
   extractWakeCommentIds,
   deriveCommentId,
   allowsIssueInteractionWake,
@@ -47,6 +52,9 @@ export type {
   CancelStaleQueuedRunOutcome,
 } from "./application/types.js";
 export { RunDispatchApplicationError } from "./application/types.js";
+
+export type { WorkspaceBusyWait } from "./domain/wake-context.js";
+export { wakeWorkspaceBusyWaitersInTx } from "./adapters/workspace-busy-wait.js";
 
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */

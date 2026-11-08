@@ -29,6 +29,7 @@ export interface OpenCodeMcpBridgeOptions {
   /** Runner-owned operations callable only by a trusted harness extension and never advertised to the model. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler: (call: OpenCodeMcpCall) => Promise<unknown>;
+  onRejectedCall?: (call: Pick<OpenCodeMcpCall, "tool" | "callId" | "arguments">, error: string) => void;
   /** Null leaves durable requests with the owning Runner lease and bridge close. */
   timeoutMs?: number | null;
   /** Human-gated private operations may remain pending much longer than model tool calls. */
@@ -92,7 +93,7 @@ export async function startOpenCodeMcpBridge(
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
-  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
+  const calls = new Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>();
   const controllers = new Map<string, AbortController>();
   const server = createServer((request, response) => {
     void handleRequest(request, response, {
@@ -103,6 +104,7 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
+      onRejectedCall: options.onRejectedCall,
       diagnoseFinishInput,
       timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -183,9 +185,10 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
-    calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
+    calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
+    onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
     timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
@@ -283,15 +286,18 @@ async function handleRequest(
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
+    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,
-      content: [{ type: "text", text: `Invalid tool input${detail ? `: ${detail}` : "."}` }],
+      content: [{ type: "text", text: error }],
     });
     return;
   }
   const fingerprint = canonicalJson({ tool, args });
   const existing = context.calls.get(callId);
   if (existing && existing.fingerprint !== fingerprint) {
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, "Duplicate call identity conflict."); } catch {}
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Duplicate call identity conflict." }] });
     return;
   }
@@ -303,9 +309,22 @@ async function handleRequest(
   );
   if (!existing) {
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
-    context.calls.set(callId, { fingerprint, promise: execution });
+    context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);
     void execution.finally(() => context.controllers.delete(callId)).catch(() => undefined);
+  }
+  // A client that drops its connection has abandoned the call just like one
+  // that sends notifications/cancelled. Abort once no connection still waits
+  // on this call identity, so a call still waiting to be handed to the
+  // controller is never dispatched after every client gave up. A live retry
+  // of the same call keeps it alive.
+  const waiting = (existing ?? context.calls.get(callId))?.waiting;
+  if (waiting && context.controllers.has(callId)) {
+    waiting.add(response);
+    response.once("close", () => {
+      waiting.delete(response);
+      if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
+    });
   }
   try {
     const result = await execution;

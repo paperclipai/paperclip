@@ -95,6 +95,16 @@ missing photos use the shared initials fallback. Match ownership by the stored
 author user ID and the authenticated viewer ID, never by display name or the bot
 that relayed a message from another channel.
 
+Images produced in a task turn appear as compact thumbnails in a wrapping grid.
+Keep the first image's row and each tile mounted as more results arrive. Documents,
+video, and authored messages retain their chronological positions and separate
+image batches. Open thumbnails in the existing gallery, with keyboard navigation
+and downloads. Images without an originating run stay separate. Generated native
+image preparation receipts are redundant with those tiles; identify them by the
+attachment-preparation marker and links to the image, author, and originating run,
+independent of receipt wording or image title. Older receipts use their exact
+historical preparation sentence as a fallback. Authored progress text stays visible.
+
 ## Contextual feedback
 
 Keep the runner turn's avatar, name, status header and current-activity slot
@@ -153,7 +163,7 @@ results in place; keep failures actionable inline. Notifications for other work
 remain useful. Repeated delivery of the same run outcome must refresh cached state
 without repeating its toast, including after reconnecting. A terminal outcome
 delivered more than five minutes after the run finished is historical and should
-refresh state silently. Expected cancellation is neutral gray, not an error. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
+refresh state silently. Expected cancellation is neutral gray, not an error. A busy workspace is a transient system wait with no user action. Show it only as a quiet status in the composer strip and the Workspace property row, never as a pinned banner, conversation notice or toast. The composer's Stop action stops the current response and leaves the composer available for a new message. Pause work is a separate explicit task or subtree action. A paused task replaces the composer with an amber takeover. It says “Task is
 paused.” and “Resume this task to send a message.” with a “Resume task” action.
 Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
 dismissed, retains drafts, and hides message inputs until the pause is released.
@@ -239,8 +249,8 @@ semantic tokens.
 
 Review **Design proposals → Foundations → Typography → Type specification**
 (`design-foundations-typography--type-specification`). The proposal and the
-opt-in design sandbox use Inter Variable for interface text and bundled Paper
-Mono for all monospace text, including IDs, code and run diagnostics.
+opt-in design sandbox use Inter Variable for interface text. All product
+monospace text uses bundled Paper Mono, including IDs, code and run diagnostics.
 
 **Conversation styles** (`design-foundations-typography--conversation-styles`)
 shows the same composition as the sandbox task detail page by mounting
@@ -407,9 +417,12 @@ Project, Parent Task, Tags, Worktree, Last updated**. The reusable
 width tokens and configurable column order. Review the complete composition in
 **Design proposals → Components → Task list → All columns**.
 
-- Created by is the recorded creator (human or agent); Assignee is the current
-  assignee. Both show names without avatars. Do not infer either from tree depth
-  or task status.
+- Created by is the recorded creator (human or agent) and shows a name. Assignee
+  shows the current agent's avatar or human's profile photo beside their name,
+  with the shared avatar fallback when an image is unavailable. Human photos load
+  only from Paperclip asset URLs; external profile URLs use initials. The avatar stays
+  visible while a long name reveals on hover or focus. Do not infer either
+  identity from tree depth or task status.
 - Task combines the status icon and title under one header and one Columns-menu
   choice. Sorting Task uses the title. Status sorting is unavailable for now.
 - Parent Task refers to the structural parent; it can show its ID and title.
@@ -951,7 +964,7 @@ Standard. Artifact type filters also support Compact for dense standalone uses. 
 patterns. Tabs contains only Playground, Standard and Compact. Playground
 compares the two sizes with local fixture state; narrow width remains a control.
 
-Accepted toolbar foundation for Design Proposals and the opt-in sandbox:
+Accepted toolbar foundation for all production inline collection and audit toolbars:
 
 - Use the shared `ToolbarSearch` and 44px control height, with one token-driven
   border, radius and horizontal padding across Tasks, Decisions, Skills and
@@ -976,6 +989,31 @@ Further consolidation proposals, pending visual review:
 - Use canonical Standard or Compact filled tabs for the compared label strips.
   Keep panel-switching tab semantics separate from exclusive collection
   filters. Closable document tabs retain their additional behavior.
+
+### Collection empty states and roster selection
+
+Projects uses the large artifact stack with a dark grey Paperclip mark on an off-white
+image front. The empty-state action is “Create project”. Artwork, message and
+primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
+fans the same artwork as hovering the graphic. Artifacts uses that stack for
+Tasks and the corresponding single full-size artifact for each other type filter.
+
+Agent lists give chat and status their own vertically centered cells. Chat has a
+screen-reader-only column label and a MessageCircleCheck icon action. Hover and
+focus highlight the entire row; the identity link has no separate background.
+Bulk actions portal to a fixed card centered in the viewport, 48px above the
+bottom safe area, with the shared border and a soft shadow. The card retains its
+contents during the quintic rise/drop transition; reduced motion removes travel.
+Selection never inserts space above the roster.
+
+Agent Overview's Profile uses the bulk-edit avatar/name chips for reporting
+relationships. Within raised modules, their background uses the Skills chip
+surface so they remain distinct from the module. Agent chips have hover/focus
+states and link to the agent's overview. Reports to precedes Direct reports:
+No manager opens the manager picker; an assigned manager has a linked chip and
+an adjacent edit control. The picker disables self/descendant choices to prevent
+reporting loops. The editable heading sizes to its live text so the primary-agent
+crown stays beside the name throughout editing.
 
 ### Segmented controller comparison
 
@@ -1024,3 +1062,39 @@ a visible Reload page action. Keep the character inline and embed the marked
 `offline-recovery` section from `ui/src/index.css` at build time so the page needs
 no network requests or cached assets. Preserve the supplied character palette
 through the offline tokens.
+
+### Agent overview and Identity editing
+
+Agent headers lead with the 24px custom title and crown on one line, followed by “harness • name.” The harness logo and label link to the agent’s Harness / Runtime subtab with hover and keyboard-focus feedback. The logo has a 4px gap before its label; Chat and New task share the default 40px button height. Header spacing is reduced by 4px at each vertical edge.
+The character renders in a 102px square (20% smaller than 128px, rounded to a whole pixel) with an 8px gap before the title, without CSS transform scaling. Reporting relationships live in Profile; its creation date shares the
+header metadata position with the Skills count. Empty Direct reports sections
+are hidden. The overview character tracks the page cursor, including paused
+agents, while respecting reduced-motion and custom-avatar fallbacks. Chat sits
+beside the text-only New task action. Recent tasks applies its raised surface to
+the table, leaving the section heading on the page background.
+
+Identity panels share 24px insets and gutters from the token layer. Advanced
+management contains the external-profile controls. New files accept a portable
+basename (letters, numbers, hyphens and underscores) with a fixed `.md` suffix.
+Clicking file content enters editing without creating a dirty draft. The Identity
+save footer slides from the viewport bottom only for unsaved changes or a save
+in progress; undoing or discarding changes hides it. Successful saves swap the
+orange-dot unsaved label for a rising green-dot saved label, hold it for two
+seconds after arrival, then dismiss the footer. Copy feedback appears beside
+the edit action for five seconds and then fades. File rows use monospaced,
+single-line truncated names, 4px row spacing, a filled ROOT chip, and borderless
+size labels. Hover uses the shared menu-option radius and muted highlight fill
+with foreground text. The preview title uses 18px Paper Mono at medium (500) weight. Creation dates come from
+recorded new-file saves; existing files without creation metadata show their
+last modification date. Disclosure panels animate height and opacity and respect
+reduced motion.
+
+Agent roster rows reveal a muted MessagesSquare icon and “Chat” action on row
+hover, using the task-list inline action treatment. Keyboard focus also reveals
+the action; its reserved cell prevents layout movement. Its tooltip waits for
+Radix’s standard 700ms hover delay on each entry, without the instant-tooltip
+provider or warm-up shortcut; keyboard focus retains immediate accessible help.
+
+Task-list titles use the remaining row width before truncating. Empty recovery,
+external-status, and metadata slots do not reserve space; populated details and
+trailing actions retain their existing layout.

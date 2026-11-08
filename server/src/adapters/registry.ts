@@ -1,4 +1,4 @@
-import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -440,7 +440,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider !== "cursor_cloud" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
-      return probePluginRunnerEnvironment(context);
+      // Managed connections probe through testManagedEnvironment. This path has
+      // none, which a plugin Runner-task environment never runs.
+      return pluginRunnerAiConnectionRequiredTestResult("paperclip_runner");
     }
     if (profile.provider === "cursor_cloud") {
       const failure = (code: string, message: string) => ({ adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code, level: "error" as const, message }] });

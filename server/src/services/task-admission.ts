@@ -14,6 +14,10 @@ export function subscribeTaskDrainChanges(listener: () => void) {
   changeListeners.add(listener);
   return () => { changeListeners.delete(listener); };
 }
+export function subscribeTaskDrainExpiry(listener: () => void) {
+  expiryListeners.add(listener);
+  return () => { expiryListeners.delete(listener); };
+}
 
 // The shared coordinator owns this process-local deadline and its shutdown.
 // Reading admission can also establish expiry, so both paths notify the same

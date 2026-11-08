@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { createProcessTreeOwner, incompleteTreeFallback, type RestartRunnerIdentity } from "./process-tree-owner.js";
+import { createProcessTreeOwner, incompleteTreeFallback, settleUncertainIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
 
 // The wrapper receives Playwright's group signal; only it signals Paperclip.
 export const runnerE2EServerDetached = process.platform !== "win32";
@@ -43,12 +43,16 @@ export function createRunnerE2EServerStopper(options: {
   }
   async function stopOnce(child: ChildProcess, state: State, signal: NodeJS.Signals, restarting = false) {
     state.gracefulDeadline ??= Date.now() + options.gracefulTimeoutMs;
-    await state.owner.observe();
+    // A provider group that tears itself down during the drain can be briefly
+    // unproven; wait within the phase deadline, never signaling it meanwhile.
+    const grace = () => state.gracefulDeadline!;
+    const observe = (until: () => number) => settleUncertainIdentity(() => state.owner.observe(), until);
+    await observe(grace);
     if (!exited(child) && !state.gracefulSent) {
       state.gracefulSent = child.kill(signal);
     }
     while (Date.now() < state.gracefulDeadline) {
-      await state.owner.observe();
+      await observe(grace);
       if (restarting && state.finalRequested) throw new Error("Final shutdown interrupted controller restart");
       if (exited(child)) {
         if (restarting) {
@@ -59,7 +63,7 @@ export function createRunnerE2EServerStopper(options: {
         // The leader is gone. Retire only descendants whose start identities
         // we observed while they belonged to this server, including private groups.
         const unsignaled = new Set((restarting ? [...state.owner.restartCleanupGroups()] : state.owner.liveGroups().map(group => group.processGroupId)).filter(pid => !state.groupSignals.has(pid)));
-        for (const pid of await state.owner.signal("SIGTERM", unsignaled)) state.groupSignals.add(pid);
+        for (const pid of await settleUncertainIdentity(() => state.owner.signal("SIGTERM", unsignaled), grace)) state.groupSignals.add(pid);
       }
       await wait(25);
     }
@@ -68,11 +72,12 @@ export function createRunnerE2EServerStopper(options: {
       options.log(`\nPaperclip did not stop within ${options.gracefulTimeoutMs}ms; sending SIGKILL\n`);
       state.escalationLogged = true;
     }
-    if (runnerE2EServerDetached) await state.owner.signal("SIGKILL");
-    else if (!exited(child)) child.kill("SIGKILL");
     state.forcedDeadline ??= finalForcedDeadline ?? Date.now() + options.forcedTimeoutMs;
+    const forced = () => state.forcedDeadline!;
+    if (runnerE2EServerDetached) await settleUncertainIdentity(() => state.owner.signal("SIGKILL"), forced);
+    else if (!exited(child)) child.kill("SIGKILL");
     do {
-      await state.owner.observe();
+      await observe(forced);
       if (exited(child) && !state.owner.liveGroups().length) { state.owner.stopObserving(); return; }
       await wait(25);
     } while (Date.now() < state.forcedDeadline);

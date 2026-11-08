@@ -136,7 +136,7 @@ describe("Scenario chat deployment boundary", () => {
   it("requires exact Origin and Fetch Metadata on every mutation", async () => {
     await withHttpRuntime(async ({ request }) => {
       const body = JSON.stringify({ scenarioId: SCENARIO_ID });
-      const invalidHeaders = [
+      const invalidHeaders: Record<string, string>[] = [
         { origin: `${PUBLIC_ORIGIN}/` },
         { "sec-fetch-site": "none" },
         { "sec-fetch-site": "cross-site" },

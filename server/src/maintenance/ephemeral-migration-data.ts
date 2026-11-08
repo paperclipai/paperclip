@@ -12,6 +12,7 @@ import { skillInstallationMaintenance } from "../services/skill-installation-mai
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { reconcileOfflineWorkspaceOperations } from "../services/offline-workspace-operation-reconciliation.js";
 import { migrateWorkspaceTrees } from "../services/remote-workspace-migration-batch.js";
 import { migrateNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
 import { migrateNativeControllers } from "../services/native-runtime/native-controller-migration.js";
@@ -47,6 +48,10 @@ export async function migrateEphemeralServerData(db: Db, input: {
   counts.nativeControllersPreservedFailed = controllers.preservedFailed;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
+  phase("workspace_operation_receipts");
+  const operations = await reconcileOfflineWorkspaceOperations(db, { writersStopped: true, signal });
+  counts.workspaceOperationsReconciled = operations.reconciled;
+  counts.workspaceOperationsHeld = operations.held.length;
   phase("workspaces");
   counts.workspaces = await migrateWorkspaceTrees(db, { storage, signal, phase });
 

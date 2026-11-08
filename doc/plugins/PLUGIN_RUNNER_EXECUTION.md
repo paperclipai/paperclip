@@ -4,6 +4,23 @@ Core can run `paperclip_runner` tasks in a plugin environment.
 The plugin owns the execution host and its files.
 Core owns run identity, selected policy, assigned tools, and the PRP journal.
 
+## Managed AI connection required
+
+A task-capable environment runs only agents with a managed AI connection.
+Core does not use an account installed on the plugin's execution host.
+Before it acquires a lease or calls the plugin, Core fails a new run that has
+no managed AI connection. A `homeMode: "preconfigured"` Runner home does not use
+the agent's AI connection, so Core refuses it in the same way. The run fails as
+`configuration_incomplete` with reason `ai_connection_required`. The task is
+blocked with a notice that names the fix: choose an AI connection, or switch to
+an isolated Runner home. Agent verification applies the same rule before it
+resolves the probe target, so it acquires no lease. The agent Test route also
+checks before it resolves secrets or allocates a test target. A setup probe without a
+managed AI connection, or with a preconfigured home, fails the
+`ai_connection_required` check and calls no task operation. Verification then
+waits for the configuration to change.
+A resumed native run keeps the contract it was admitted under.
+
 ## Required hooks
 
 Set `supportsTasks: true` on the environment driver.
@@ -214,6 +231,41 @@ Provider upgrades, activation, company re-enablement, and finalization settlemen
 wake cleanup transactionally. No table, independent timer, or background scan of
 all remote PR refs is required.
 
+### Workspace operation failures
+
+Core separates a failed `workspaceOperation` call by what it knows about the
+outcome:
+
+| Failure | Run error | Core behavior |
+| --- | --- | --- |
+| The worker was not running, so no request was sent | `Workspace storage provider is not running; retry the same workspace` | A run that has not started provider work is retried as `plugin_worker_unavailable`. |
+| The call timed out, or the worker exited with the call pending | A fixed timeout or stopped-provider message that says to retry the same workspace | The operation may have run, so the same workspace and operation identity must be retried. |
+| The provider threw an error with a known reason | The fixed message Core keeps for that reason | Only transient reasons tell the user to retry. |
+| The provider threw any other error | `Workspace storage provider reported a failure; retry the same workspace` | Unchanged setup failure. |
+
+To report a reason, throw `PluginWorkspaceOperationError` from
+`onWorkspaceOperation`, or any error with an own `workspaceFailureReason`
+property. The reason must come from `WORKSPACE_OPERATION_FAILURE_REASONS`:
+
+| Reason | Retrying the same workspace can help |
+| --- | --- |
+| `unsupported_operation`, `configuration_unavailable`, `credential_unavailable`, `storage_grant_unavailable`, `binding_mismatch`, `runtime_connection_invalid` | No |
+| `storage_pending`, `runtime_unavailable`, `remote_incomplete`, `context_changed`, `deadline_exceeded` | Yes |
+
+```ts
+import { PluginWorkspaceOperationError } from "@paperclipai/plugin-sdk";
+
+throw new PluginWorkspaceOperationError("storage_grant_unavailable", "Project mount grants unavailable");
+```
+
+The SDK sends only the reason. Core never reads the provider's message, so a
+message cannot reach the run, the API, or Core logs. The run keeps its
+`setup_failed` error code and records `resultJson.workspaceProviderFailure` with
+the failure `kind`, `reason`, and `retryable` flag. The
+`heartbeat execution setup failed` log carries the same fields. A provider may
+also record a `plugin.workspace.failure` span whose `plugin.failure_reason` is a
+reason from this set or `unknown`.
+
 ## Warm task retention
 
 A driver declares `warmTaskVersion: 1`, implements `onEnvironmentResumeLease`,
@@ -224,8 +276,7 @@ plugin runs without an explicit policy prefer warm execution. There is no
 provider-specific warm gate or additional setting. Existing runs retain their
 admitted lifecycle policy during restart recovery. The existing
 `runnerIdleTimeoutMs` controls bounded retention. Fresh warm admission requires
-a Core-managed credential identity before lease acquisition. Plugin-owned installed
-accounts continue per-turn until such an identity is available; the saved warm
+a Core-managed credential identity before lease acquisition. The saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 

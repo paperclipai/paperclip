@@ -35,6 +35,7 @@ import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, t
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -406,6 +407,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       }
     }
     event = redactRunnerApiEvent(event);
+    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
+    const pendingObservation = this.#deferredEventObservers.get(observerKey);
     const persisted = await this.#db.transaction(async tx => {
       this.#assertActive(options);
       const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
@@ -431,8 +434,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
-    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
-    let observation = this.#deferredEventObservers.get(observerKey);
+    let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
     if (!observation) observation = (async () => {
       try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
       if (persisted.disposition === "committed") {
@@ -631,6 +633,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       this.#assertActive(options);
       return true;
     });
+    if (insertedResult) crashPoint("native.result.after_accept_before_finalize");
     if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }

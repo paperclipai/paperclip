@@ -38,6 +38,7 @@ import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wa
 import { boundExternalChatProvider } from "./external-chat-provider.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { githubRunReplyState } from "../chat-run-publications.js";
+import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 
 // This boundary reads identity and wake authority, never launch renderings,
 // saved provider profiles, or run output. Keep the nested wake proof narrow too.
@@ -754,12 +755,14 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     : lockMode === "nonblocking"
       ? actorQuery.for("update", { noWait: true }).limit(1)
       : actorQuery.for("update").limit(1));
+  const preserved = run && run.status !== "running"
+    ? await readPreservedNativeResultFinalization(tx, binding) : null;
   if (
     !issue ||
     !actor ||
-    run.status !== "running" ||
+    (!preserved && run.status !== "running") ||
     issue.assigneeAgentId !== binding.agentId ||
-    issue.executionRunId !== binding.runId ||
+    (!preserved && issue.executionRunId !== binding.runId) ||
     ["paused", "terminated", "pending_approval", "error"].includes(
       actor.status,
     )
@@ -879,7 +882,7 @@ export async function readPublishedGitHubReviewCompletionContinuationInTransacti
     eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
-  if (!run || run.status !== "running") return null;
+  if (!run || run.status !== "running" && !await readPreservedNativeResultFinalization(tx, binding)) return null;
   const wait = await readInheritedGitHubReviewWait(tx, run);
   if (wait?.kind !== "published") return null;
   if (wait.reviewRunId !== run.id) {
@@ -1634,6 +1637,7 @@ export async function prepareReusedChatAttachment(input: {
       {
         attachmentIds: [attachment.id],
         authorizationReason: "paperclip_runner_protocol",
+        metadata: { version: 1, sections: [], attachmentPreparation: { attachmentId: attachment.id } },
       },
       input.db,
     );

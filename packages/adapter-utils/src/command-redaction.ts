@@ -147,3 +147,76 @@ export function redactDiagnosticText(
     .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
     .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);
 }
+
+const PUBLIC_ENV_KEYS = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+  "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME", "LOGNAME", "SHELL", "LANG",
+  "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "NODE_ENV",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+  "PWD", "OLDPWD", "INIT_CWD", "SHLVL", "_", "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM",
+  "NPM_LIFECYCLE_EVENT", "NPM_COMMAND", "NPM_EXEC_PATH", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
+  "NPM_PACKAGE_NAME", "NPM_PACKAGE_VERSION", "NPM_PACKAGE_JSON", "NPM_CONFIG_USER_AGENT",
+  "XPC_SERVICE_NAME", "VITEST_POOL_ID", "VITEST_WORKER_ID",
+  "REGION", "AWS_REGION", "AWS_DEFAULT_REGION", "KEYBOARD_LAYOUT", "PUBLIC_KEY_PATH", "PUBLIC_KEY",
+  "SORT_KEY", "CACHE_KEY", "ROUTING_KEY", "PARTITION_KEY", "IDEMPOTENCY_KEY",
+  "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
+]);
+const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
+  "OPENCODE_ALLOW_ALL_MODELS", "CLAUDE_CODE_USE_BEDROCK", "GOOGLE_GENAI_USE_GCA",
+  "CI", "NO_COLOR", "FORCE_COLOR",
+  "VITEST", "MALLOCNANOZONE", "CODEX_CI", "CODEX_SHELL", "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
+  "DEV", "PROD", "SSR", "PAPERCLIP_REQUIRE_SENTRY_TEST_SDK",
+  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_WORKSPACE_COMPACTION_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
+  "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "PAPERCLIP_SECRETS_STRICT_MODE",
+  "SERVE_UI", "PAPERCLIP_UI_DEV_MIDDLEWARE", "HEARTBEAT_SCHEDULER_ENABLED", "PAPERCLIP_ANNOUNCEMENTS_ENABLED",
+  "GITHUB_ACTIONS", "GITHUB_REF_PROTECTED", "RUNNER_DEBUG", "ACTIONS_RUNNER_DEBUG", "ACTIONS_STEP_DEBUG",
+]);
+const PUBLIC_NUMBER_ENV_KEYS = new Set([
+  "PORT", "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES", "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
+  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS",
+  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
+  "GITHUB_RUN_ATTEMPT", "GITHUB_RUN_NUMBER", "GITHUB_RUN_ID", "GITHUB_RETENTION_DAYS",
+]);
+
+// A setting name and a bounded value must agree before it is public. Unknown
+// opaque values remain private; declared bindings always override these rules.
+function isOrdinaryDiagnosticEnvSetting(key: string, value: string): boolean {
+  const name = key.toUpperCase();
+  if (PUBLIC_ENV_KEYS.has(name)) return true;
+  if ((PUBLIC_BOOLEAN_ENV_KEYS.has(name) || /(?:^|_)(?:FLAG|ENABLED|DISABLED|DEBUG)$/.test(name)) &&
+    /^(?:0|1|true|false)$/i.test(value)) return true;
+  if ((PUBLIC_NUMBER_ENV_KEYS.has(name) || /(?:^|_)(?:COUNT|WORKERS|PORT|MAX_TOKENS)$/.test(name)) &&
+    /^\d+$/.test(value)) return true;
+  return (name === "BASE_URL" && value === "/") ||
+    (/(?:^|_)MODE$/.test(name) && /^(?:test|development|production|safe)$/.test(value)) ||
+    (name === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value));
+}
+
+/** Select private values while preserving explicit ordinary process settings. */
+export function collectDiagnosticEnvironmentSecrets(
+  env: unknown,
+  secretKeys: Iterable<string> = [],
+): string[] {
+  if (!env || typeof env !== "object") return [];
+  const declared = new Set(secretKeys);
+  const secretName = new RegExp(`^(?:${SECRET_NAME_PATTERN})$`, "i");
+  const values = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value) continue;
+    if (declared.has(key) || secretName.test(key) ||
+      redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
+      /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
+      !isOrdinaryDiagnosticEnvSetting(key, value)) {
+      values.add(value);
+    }
+    try {
+      const url = new URL(value);
+      if (url.password) {
+        values.add(value);
+        values.add(url.password);
+        values.add(decodeURIComponent(url.password));
+      }
+    } catch { /* ordinary settings and malformed URLs need no URL projection */ }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}

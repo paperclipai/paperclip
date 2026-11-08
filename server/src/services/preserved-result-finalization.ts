@@ -2,7 +2,8 @@ import { notifyNativeFinalizationWork } from "./native-finalization-notification
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { preservedResultHasStop } from "./native-runtime/preserved-native-result-finalization.js";
+import { readWorkspaceRecovery, verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 
 /** Re-enter the existing finalizer only after preservation. This does not
  * recreate a result, grant an executor budget, or apply it over newer work. */
@@ -17,7 +18,8 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
       eq(issues.id, coordinator.issueId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.id, runId))).for("update");
-    if (!issue || !run || issue.assigneeAgentId !== run.agentId || ["done", "cancelled"].includes(issue.status) ||
+    if (!issue || !run || run.status === "cancelled" || preservedResultHasStop(run.resultJson)
+        || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId || ["done", "cancelled"].includes(issue.status) ||
         issue.executionRunId || issue.checkoutRunId) return false;
     const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), ne(heartbeatRuns.id, runId),
@@ -37,8 +39,10 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
       sql`${issueRecoveryActions.evidence}->>'runId' = ${runId}`,
     )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1);
     const recovery = readSystemRecovery(action?.evidence);
-    if (!result || recovery?.state !== "complete" || !recovery.preservationOperationIds.length) return false;
-    if (!await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return false;
+    const workspace = readWorkspaceRecovery(action?.evidence ?? null);
+    if (!result || recovery?.state !== "complete" || recovery.sourceRunId !== run.id || !recovery.preservationOperationIds.length
+      || workspace?.status !== "recovered" || workspace.runId !== run.id
+      || !await verifiedWorkspaceRepairReceipt(tx as unknown as Db, run)) return false;
     const [intent] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.reason, "task_retry"),
@@ -54,6 +58,7 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
       nextAttemptAt: new Date(), failureCode: null, failureDetail: null, updatedAt: new Date(),
       recoveryHistory: [...coordinator.recoveryHistory, {
         kind: "preserved_result_finalization", generationId,
+        preservationGenerationId: recovery.generationId,
         resultId: result.id, previousFailureCode: coordinator.failureCode,
         previousFailureDetail: coordinator.failureDetail, at: new Date().toISOString(),
       }],

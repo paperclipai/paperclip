@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createProviderTraceObjectStore, objectProviderTraceRef, importingProviderTraceRef, providerTraceCleanupRef, type ProviderTraceObjectStore } from "./provider-trace-object-store.js";
+import { isObjectJournalBusyError, type ObjectJournalIOPriority } from "./object-byte-journal.js";
 import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 import { loadStorageConfig } from "../storage/config.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -268,11 +269,11 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     traceObjectStores.set(db, external);
     return external;
   }
-  async function readBytes(traceRef: string) {
-    return objectProviderTraceRef(traceRef) ? objectStore().read(traceRef) : readTraceBytes(traceRef);
+  async function readBytes(traceRef: string, priority: ObjectJournalIOPriority) {
+    return objectProviderTraceRef(traceRef) ? objectStore().read(traceRef, undefined, priority) : readTraceBytes(traceRef);
   }
   async function entriesFor(traceRef: string) {
-    return (await readBytes(traceRef)).toString("utf8").split("\n").flatMap(line => {
+    return (await readBytes(traceRef, "interactive")).toString("utf8").split("\n").flatMap(line => {
       if (!line.trim()) return [];
       try { return [record(JSON.parse(line))]; }
       catch { return [{ kind: "trace_status", status: "incomplete", reason: "invalid_sidecar_record" }]; }
@@ -508,7 +509,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
         await objectStore().finish(row.traceRef);
         if (!await objectStore().settled(row.traceRef)) throw new Error("trace_capture_unsettled");
       }
-      bytes = await readBytes(row.traceRef);
+      bytes = await readBytes(row.traceRef, "background");
     } catch {
       const updatedAt = new Date();
       const finalized = await db
@@ -575,7 +576,10 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
   async function inspect(runId: string, companyId: string) {
     const row = await getReadableByRun(runId, companyId);
     if (!row) return { trace: null, entries: [] };
-    const entries = await entriesFor(row.traceRef).catch(() => []);
+    const entries = await entriesFor(row.traceRef).catch((error) => {
+      if (isObjectJournalBusyError(error)) throw error;
+      return [];
+    });
     return {
       trace: asMetadata(row),
       entries: entries.map((entry) =>
@@ -609,7 +613,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
   async function download(runId: string, companyId: string) {
     const row = await getReadableByRun(runId, companyId);
     if (!row) return null;
-    return { row, bytes: await readBytes(row.traceRef) };
+    return { row, bytes: await readBytes(row.traceRef, "interactive") };
   }
 
   async function remove(runId: string, companyId: string) {

@@ -71,6 +71,7 @@ associate(["first-task", "confirmation-replies", "completion-updates"], Object.f
   "revise-accept", "reject-no-execution",
 ].map((id) => [id, ["onboarding/first-task"]])));
 associate(["first-task"], { "ordinary-task-control": ["tasks/completion"] });
+associate(["onboarding-approval-history"], { "interview-hire-execute": ["onboarding/first-task", "questions-and-approvals/continuation", "tasks/completion"] });
 associate(["confirmation-replies"], {
   "confirmation-ambiguous": ["questions-and-approvals/confirmations", "questions-and-approvals/audience"],
   "unanswered-question-return": ["questions-and-approvals/dismiss-and-reopen", "questions-and-approvals/continuation"],

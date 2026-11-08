@@ -64,6 +64,24 @@ from error text. Unknown and configuration failures keep their normal errors.
 The envelope alone grants no retry, accounting or cleanup authority; native
 execution also requires its complete, current controller checkpoint proof.
 
+## Stop failures
+
+Environment providers can throw `PluginEnvironmentStopError` from
+`onEnvironmentStopLease` when they cannot stop a resource that is in a provider
+error state. The error takes one closed reason:
+
+- `resource_unrecoverable`: the provider reports that the resource cannot recover.
+- `recovery_failed`: the resource is in an error state again after one recovery attempt.
+- `recovery_incomplete`: recovery did not finish before the stop deadline.
+
+The worker forwards only the reason. It omits messages, provider error text and
+causes. The host reads it with `readEnvironmentStopFailure`, which derives the
+`terminal` flag from the reason. The first two reasons are terminal: another
+automatic attempt cannot succeed without provider or operator action. The host
+escalates a terminal failure at once and retries it at its slowest cleanup
+interval. It never abandons the pending cleanup. Other stop errors keep their
+normal retry behavior.
+
 ## Worker quick start
 
 ```ts
@@ -577,13 +595,14 @@ headers?, body? }`.
 
 Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
 
+A child issue always gets its own execution workspace, realized from the project base. It keeps the parent's project and workspace strategy, never the parent's checkout, branch or unmerged changes. `inheritExecutionWorkspaceFromIssueId` likewise copies only the source issue's project and workspace strategy.
+
 Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
 
 ```ts
 const child = await ctx.issues.create({
   companyId,
   parentId: missionIssueId,
-  inheritExecutionWorkspaceFromIssueId: missionIssueId,
   title: "Implement feature slice",
   status: "todo",
   assigneeAgentId: workerAgentId,

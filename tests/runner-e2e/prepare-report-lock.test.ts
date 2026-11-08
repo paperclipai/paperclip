@@ -100,3 +100,60 @@ it.each(['input', 'output', 'unknown'])('refreshes dependency proof only from a 
     expect(await readFile(path.join(relative, 'report-lock.patch'), 'utf8')).toBe(patch);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+async function trustedLockFixture(variant: string, callback: (root: string, relative: string, hash: (value: string) => string,
+  original: string, resolved: string, initial: object) => Promise<void>) {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), `eval-report-lock-${variant}-`)));
+  const relative = path.join(root, 'tests/runner-e2e');
+  const original = "lockfileVersion: '9.0'\nimporters: {}\npackages:\n  dependabot@2.0.0: {resolution: {integrity: fixture-bot}}\n";
+  const resolved = "lockfileVersion: '9.0'\nimporters:\n  ui: {}\npackages:\n  dependabot@2.0.0: {resolution: {integrity: fixture-bot}}\n";
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const initial = { inputSha256: '0'.repeat(64), outputSha256: '1'.repeat(64), patchSha256: hash('historical') };
+  try {
+    await mkdir(relative, { recursive: true });
+    await writeFile(path.join(root, 'pnpm-lock.yaml'), original);
+    await writeFile(path.join(relative, 'report-lock.json'), JSON.stringify(initial));
+    await writeFile(path.join(relative, 'report-lock.patch'), 'historical');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], { cwd: root });
+    await callback(root, relative, hash, original, resolved, initial);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+it('admits a verified trusted lock that already resolves without a correction', async () => {
+  await trustedLockFixture('trusted-resolved', async (root, relative, hash, original) => {
+    expect(await refreshReportLock(root, { trustedLockSha256: hash(original) })).toBe('refreshed');
+    const policy = JSON.parse(await readFile(path.join(relative, 'report-lock.json'), 'utf8'));
+    expect(policy).toMatchObject({ inputSha256: hash(original), outputSha256: hash(original), patchSha256: hash('') });
+    expect(await readFile(path.join(relative, 'report-lock.patch'), 'utf8')).toBe('');
+    expect(await prepareReportLock(root)).toBe('already-reviewed');
+  });
+});
+
+it('records the correction for a verified trusted lock that resolves differently', async () => {
+  await trustedLockFixture('trusted-corrected', async (root, relative, hash, original, resolved) => {
+    await writeFile(path.join(root, 'pnpm-lock.yaml'), resolved);
+    const cli = path.join(relative, 'prepare-report-lock.mjs');
+    await copyFile(path.join(import.meta.dirname, 'prepare-report-lock.mjs'), cli);
+    expect(execFileSync(process.execPath, [cli, '--refresh', '--trusted-lock-sha256', hash(original)], { cwd: root, encoding: 'utf8' }).trim())
+      .toBe('refreshed');
+    const policy = JSON.parse(await readFile(path.join(relative, 'report-lock.json'), 'utf8'));
+    expect(policy).toMatchObject({ inputSha256: hash(original), outputSha256: hash(resolved) });
+    await writeFile(path.join(root, 'pnpm-lock.yaml'), original);
+    expect(await prepareReportLock(root)).toBe('reviewed-correction');
+    expect(await readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8')).toBe(resolved);
+  });
+});
+
+it('refuses a trusted hash that does not name the committed lock', async () => {
+  await trustedLockFixture('trusted-mismatch', async (root, relative, hash, original, resolved, initial) => {
+    await expect(refreshReportLock(root, { trustedLockSha256: hash(resolved) })).rejects.toThrow('not reviewed');
+    expect(JSON.parse(await readFile(path.join(relative, 'report-lock.json'), 'utf8'))).toEqual(initial);
+    expect(await readFile(path.join(relative, 'report-lock.patch'), 'utf8')).toBe('historical');
+    const cli = path.join(relative, 'prepare-report-lock.mjs');
+    await copyFile(path.join(import.meta.dirname, 'prepare-report-lock.mjs'), cli);
+    expect(() => execFileSync(process.execPath, [cli, '--refresh', '--trusted-lock-sha256', 'not-a-hash'], { cwd: root, stdio: 'pipe' }))
+      .toThrow();
+  });
+});

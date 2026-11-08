@@ -39,6 +39,15 @@ describe("optimistic task Retry", () => {
     expect(container.textContent).not.toContain("Thinking");
     expect(container.textContent).not.toContain("Taking longer");
   });
+  it("refreshes the inspected file recovery after an accepted Retry", async () => {
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "retry", accepted: true, stale: false,
+      observedRunId: "failed-run", presentation: null } as Awaited<ReturnType<typeof issuesApi.retryTask>>);
+    const key = queryKeys.issues.recoveryActions("task", "hold", "failed-run");
+    client.setQueryData(key, { active: null, actions: [] });
+    await render();
+    await act(async () => container.querySelector("button")!.click());
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  });
   it("paints Thinking before admission resolves and shares the same request across double clicks", async () => {
     let settle!: (value: Awaited<ReturnType<typeof issuesApi.retryTask>>) => void;
     vi.mocked(issuesApi.retryTask).mockImplementation(() => new Promise(resolve => { settle = resolve; }));

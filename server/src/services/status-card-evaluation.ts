@@ -1,3 +1,5 @@
+import { readIdleStatusCardSchedule } from "./status-card-idle-schedule.js";
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import { companies, statusCards, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -22,6 +24,13 @@ export function statusCardEvaluationService(db: Db, heartbeat: IssueAssignmentWa
   let retryAt: number | null = null;
 
   return {
+    async readIdleSchedule(tx: Pick<Db, "select">, now: number, owner: () => DeadlineReconciliationSnapshot) {
+      if (enabled !== false && (reconstructReactive || allChanges || changes.size > 0 || retryAt !== null)) {
+        return { blocked: true, state: { enabled, reconstructReactive, allChanges,
+          changes: [...changes].sort(), retryAt }, deadlines: [] };
+      }
+      return readIdleStatusCardSchedule(tx, now, enabled, owner);
+    },
     changed(hints?: ReadonlySet<string>) {
       for (const hint of hints ?? ["*"]) {
         if (hint === "*" || hint === "changes:*") { allChanges = true; if (hint === "*") enabled = null; }

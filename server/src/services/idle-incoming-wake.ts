@@ -1,3 +1,6 @@
+import { readIdleMcpSleepProof, type IdleMcpSleepProof } from "./public-mcp/idle-sleep-proof.js";
+import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
+import { idleExternalAgentIncomingWorkQuery } from "../modules/external-agents/index.js";
 import { apiWakeFingerprint, createApiWakeAdmission, type ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
@@ -19,6 +22,7 @@ import { hasConnectionEventWakeReceiver } from "./connection-event-wake.js";
 export interface IdleIncomingWakeProof {
   capability: IdleIncomingWakeCapability;
   apiWakeAdmission?: ApiWakeAdmission;
+  mcp?: IdleMcpSleepProof;
   connectionIds: string[];
   endpointIds: string[];
   /** A broker enrollment cannot discharge these credential continuity obligations. */
@@ -49,6 +53,7 @@ export async function readIdleIncomingWakeProof(
     ownerId: string;
     receiverOwner: object;
     now?: () => number;
+    inspectionNow?: number;
   },
 ): Promise<IdleIncomingWakeProof | undefined> {
   const capability = input.capabilities?.incomingWake;
@@ -69,7 +74,11 @@ export async function readIdleIncomingWakeProof(
       throw new Error("Incoming wake inspection budget exhausted");
     return Math.max(1, Math.floor(ms));
   };
+  let queries = 0;
+  const inspectionNow = input.inspectionNow ?? Date.now();
   const beforeRead = async () => {
+
+    if ((queries += 2) > 64) throw new Error("Incoming wake query budget exhausted");
     // One shared owner budget, not five seconds multiplied by the row count.
     await tx.execute(
       sql`SELECT set_config('statement_timeout', ${`${remaining()}ms`}, true)`,
@@ -92,6 +101,13 @@ export async function readIdleIncomingWakeProof(
         challenge: capability.apiKeyProof!.challenge, keyHash: row.keyHash }),
         expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString() })),
     });
+  }
+  if (capability.routes.includes("mcp-oauth-http-v1")) {
+    const stackId = process.env.PAPERCLIP_CLOUD_STACK_ID;
+    if (!stackId || !capability.mcpOAuthProof) throw new Error("MCP wake challenge is missing");
+    proof.mcp = await readIdleMcpSleepProof(tx, input.receiverOwner, { stackId, ownerId: input.ownerId,
+      capabilityGeneration: capability.generation, challenge: capability.mcpOAuthProof.challenge, now: inspectionNow, budget: { beforeRead, check: () => { remaining(); } } });
+    remaining();
   }
   if (!capability.routes.includes("github-broker-events-v1")) {
     await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
@@ -280,6 +296,10 @@ export function incomingWakeWorkQuery(
   proof?: IdleIncomingWakeProof,
   continuityConnectionIds: readonly string[] = [],
 ): SQL | undefined {
+  const mcp = proof?.mcp;
+  const mcpQuery = idleMcpWorkQuery(reason, { ingress: mcp?.ingress, subscriptions: mcp?.subscriptions, transfers: mcp?.transfers, handoffs: mcp?.handoffs })
+    ?? idleExternalAgentIncomingWorkQuery(reason, mcp?.ingress);
+  if (mcpQuery) return mcpQuery;
   const connectionIds = [
     ...(proof?.connectionIds ?? []),
     ...(proof?.requiredContinuityConnectionIds.filter((id) =>

@@ -1,4 +1,5 @@
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
@@ -11,6 +12,7 @@ import { connectionManagementGuard, connectionRequestContext, connectionRequestU
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -800,10 +802,10 @@ export function agentRoutes(
   const agentFiles = agentFileStore(db);
   const instructionRevisions = agentInstructionRevisionService(db);
   const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
-  function instructionFileDetail(snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
+  async function instructionFileDetail(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
     receipt?: import("@paperclipai/shared").AgentInstructionCommitReceipt) {
     const path = snapshot.revision.entryFile;
-    return { path, content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
+    return { path, ...await instructions.getFileDates(agent, path, snapshot.revision.contentHash), content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
       language: path.toLowerCase().endsWith(".md") ? "markdown" : "text", markdown: path.toLowerCase().endsWith(".md"),
       isEntryFile: true, editable: true, deprecated: false, virtual: false };
   }
@@ -1775,6 +1777,18 @@ export function agentRoutes(
     };
   }
 
+  /**
+   * Terminating an agent is a board-only governed action. The denial gives
+   * other actors a ready profile link, so they can send a person to the control.
+   */
+  async function assertBoardCanTerminateAgent(req: Request, target: { id: string; companyId: string }) {
+    if (req.actor.type === "board") return;
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, target.companyId));
+    const profile = company?.issuePrefix ? `[the agent's profile](/${company.issuePrefix}/agents/${target.id})` : "the agent's profile";
+    throw forbidden(`Board access required: only a board user can terminate an agent. Ask a person with board access to open ${profile} and choose Terminate from its actions menu.`);
+  }
+
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -2288,6 +2302,9 @@ export function agentRoutes(
     claude_local: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
     codex_local: ["OPENAI_API_KEY", "CODEX_API_KEY"],
     grok_local: ["XAI_API_KEY"],
+    // OpenCode reaches its models through OpenRouter, the provider account
+    // AI connections bind for opencode_local.
+    opencode_local: ["OPENROUTER_API_KEY"],
   };
 
   function isInheritableCredentialReference(value: unknown): value is Record<string, unknown> {
@@ -3235,6 +3252,11 @@ export function agentRoutes(
         // The lifecycle verifies the saved agent after its plugin can create the agent-owned computer.
         return { connectionId: selection.connection.id };
       }
+      const testEnvironment = testEnvironmentId ? await environmentsSvc.getById(testEnvironmentId) : null;
+      if (adapterType === "paperclip_runner" && config.homeMode === "preconfigured" && testEnvironment
+        && await pluginEnvironmentRunnerTaskDriver(db, testEnvironment)) {
+        throw unprocessable(pluginRunnerAiConnectionRequiredMessage(true), { code: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED });
+      }
       const target = await resolveAdapterTestExecutionContext({ companyId, adapterType,
         agentId: hasSavedAgent ? agentId : undefined, environmentId: testEnvironmentId });
       try {
@@ -3382,6 +3404,14 @@ export function agentRoutes(
             ? [{ code: "dot_workspace", level: "error" as const, message: "Managed Dot runners do not expose workspace access. Turn off workspace access before assigning work." }] : []),
         ];
         res.json({ adapterType: type, status: checks.some(c => c.level === "error") ? "fail" : checks.some(c => c.level === "warn") ? "warn" : "pass", testedAt: new Date().toISOString(), checks });
+        return;
+      }
+      // A plugin Runner-task environment runs only managed AI connections in an isolated
+      // home. Refuse before secret resolution or a computer allocation it cannot use.
+      const preconfiguredTestHome = type === "paperclip_runner" && adapterConfigForTest.homeMode === "preconfigured";
+      if (type === "paperclip_runner" && requestedEnvironment && (preconfiguredTestHome || !aiBinding)
+        && await pluginEnvironmentRunnerTaskDriver(db, requestedEnvironment)) {
+        res.json(pluginRunnerAiConnectionRequiredTestResult(type, preconfiguredTestHome));
         return;
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -5236,7 +5266,7 @@ export function agentRoutes(
     }
     if (agentInstructionsBundleMode(existing) !== "external" && instructionPath(relativePath) === deriveBundleState(existing).entryFile) {
       const snapshot = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
-      if (snapshot) { res.json(instructionFileDetail(snapshot)); return; }
+      if (snapshot) { res.json(await instructionFileDetail(existing, snapshot)); return; }
     }
     res.json(await instructions.readFile(existing, relativePath));
   });
@@ -5272,7 +5302,7 @@ export function agentRoutes(
           await svc.update(existing.id, { adapterConfig });
         }
       }
-      res.json(instructionFileDetail(receipt, receipt));
+      res.json(await instructionFileDetail(existing, receipt, receipt));
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
@@ -5317,6 +5347,8 @@ export function agentRoutes(
       entityId: existing.id,
       details: {
         path: result.file.path,
+        contentHash: result.file.contentHash,
+        created: Boolean(result.file.createdAt),
         size: result.file.size,
         clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate === true,
       },
@@ -5340,7 +5372,7 @@ export function agentRoutes(
     if (!isUuidLike(runId)) throw unprocessable("Invalid instruction candidate run id");
     const receipt = await instructionWorkingCopies.resolve({ companyId: existing.companyId, agentId: existing.id,
       runId, baseRevisionId: req.body.baseRevisionId, content: req.body.content }, req.actor);
-    res.json(instructionFileDetail(receipt, receipt));
+    res.json(await instructionFileDetail(existing, receipt, receipt));
   });
 
   router.get("/agents/:id/instructions-bundle/history", async (req, res) => {
@@ -5382,7 +5414,7 @@ export function agentRoutes(
         runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
         contentHash: receipt.revision.contentHash }).catch(() => undefined);
     }
-    res.json(instructionFileDetail(receipt, receipt));
+    res.json(await instructionFileDetail(existing, receipt, receipt));
   });
 
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
@@ -5491,6 +5523,8 @@ export function agentRoutes(
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
+    // Termination is board-only and irreversible on every route, not just POST /terminate.
+    if (requestedStatus === "terminated") await assertBoardCanTerminateAgent(req, existing);
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
@@ -5928,12 +5962,12 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
     }
+    await assertBoardCanTerminateAgent(req, existing);
 
     const agent = existing.status === "pending_approval"
       ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
@@ -7531,7 +7565,10 @@ export function agentRoutes(
 
       const entries = await providerTraces
         .readExactEntries(run.id, run.companyId)
-        .catch(() => null);
+        .catch(error => {
+          if (isObjectJournalBusyError(error)) throw error;
+          return null;
+        });
       if (entries === null) {
         res.json({
           created: 0,
