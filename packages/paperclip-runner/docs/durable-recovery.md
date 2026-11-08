@@ -122,7 +122,11 @@ conversation, only when all of these are true:
     fence quorum, and otherwise the lost turn is closed. An active turn or open
     session saved by a different run stays strict.
 - The startup has no candidate admission.
-- The saved descriptor names this startup's sidecar command and arguments.
+- The saved descriptor names the same launch as this startup: the same
+  executable and sidecar file names, and identical non-path arguments. The
+  files may be installed under a different directory, as an `npx` versioned
+  cache, a new image layout or a new checkout does. The re-bind then records
+  this startup's runner-owned paths in the saved descriptor.
 
 Every other binding stays exact. The saved descriptor must match this build's
 qualified agent profile (ACPX version, agent server package and version, and

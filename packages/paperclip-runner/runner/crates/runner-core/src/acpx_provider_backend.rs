@@ -608,6 +608,28 @@ struct AcpxDurableState {
     retired_semantic_calls: BTreeSet<String>,
 }
 
+/// The saved launch names the same executable and sidecar files as this
+/// startup's qualified profile, possibly installed under a different directory
+/// (an `npx` versioned cache, a new image layout or checkout). File names and
+/// every non-path argument must match exactly.
+fn same_launch_shape(descriptor: &AcpxProviderDescriptor, profile: &AcpxLaunchProfile) -> bool {
+    fn same_file_name(saved: &Path, current: &Path) -> bool {
+        saved.is_absolute()
+            && current.is_absolute()
+            && saved.file_name().is_some()
+            && saved.file_name() == current.file_name()
+    }
+    same_file_name(&descriptor.sidecar_command, &profile.command)
+        && descriptor.sidecar_args.len() == profile.args.len()
+        && descriptor
+            .sidecar_args
+            .iter()
+            .zip(&profile.args)
+            .all(|(saved, current)| {
+                saved == current || same_file_name(Path::new(saved), Path::new(current))
+            })
+}
+
 impl AcpxDurableState {
     fn new(
         descriptor: AcpxProviderDescriptor,
@@ -1043,9 +1065,7 @@ impl AcpxCommandExecutor {
     // still verifies every artifact and the restored provider identity.
     fn rebinds_settled_session(&self, state: &AcpxDurableState) -> bool {
         self.launch_profile.as_ref().is_some_and(|profile| {
-            profile.candidate_admission.is_none()
-                && state.descriptor.sidecar_command == profile.command
-                && state.descriptor.sidecar_args == profile.args
+            profile.candidate_admission.is_none() && same_launch_shape(&state.descriptor, profile)
         }) && state.identity.is_some()
             && !state.provider_exit_unconfirmed
             && state.pending_runtime_requests.is_empty()
@@ -1145,6 +1165,15 @@ impl AcpxCommandExecutor {
             && self.rebinds_settled_session(&state)
         {
             state.launch_profile_digest = launch_profile_digest.clone();
+            // An upgrade may install the same launch files at a new path. The
+            // runner-owned qualified profile is authoritative for where they
+            // live; the saved descriptor only recorded the old location.
+            let profile = self
+                .launch_profile
+                .as_ref()
+                .expect("a re-bind requires the runner launch profile");
+            state.descriptor.sidecar_command = profile.command.clone();
+            state.descriptor.sidecar_args = profile.args.clone();
         }
         state.validate(&self.context, &launch_profile_digest)?;
         self.state = Some(state);
@@ -6256,6 +6285,76 @@ mod tests {
             error.classification(),
             Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Moves the upgraded build's launch files to a new install directory with
+    /// the same file names, as an `npx` versioned cache, a new image layout or a
+    /// new checkout does (K14 upgraded between two worktrees).
+    #[cfg(unix)]
+    fn relocate_upgraded_install(
+        directory: &Path,
+        config: &mut DurableRunnerConfig,
+    ) -> (PathBuf, Vec<String>) {
+        let install = directory.join("build-2");
+        fs::create_dir_all(&install).unwrap();
+        let profile = config.acpx_launch_profile.as_mut().unwrap();
+        let command = install.join(profile.command.file_name().unwrap());
+        fs::copy(&profile.command, &command).unwrap();
+        let old_sidecar = PathBuf::from(&profile.args[0]);
+        let sidecar = install.join(old_sidecar.file_name().unwrap());
+        fs::copy(&old_sidecar, &sidecar).unwrap();
+        profile.command = command.clone();
+        profile.args = vec![sidecar.to_string_lossy().into_owned()];
+        profile.artifacts = vec![artifact(&command), artifact(&sidecar)];
+        let args = profile.args.clone();
+        config.validate().unwrap();
+        (command, args)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_sessions_rebind_to_an_upgraded_build_installed_at_a_new_path() {
+        // Interrupted turn of the same run (the K14 failure) and a settled
+        // session attached by the next run.
+        let (directory, mut config, state_path) =
+            interrupted_turn_after_runner_upgrade("upgrade-relocated-turn");
+        let (command, args) = relocate_upgraded_install(&directory, &mut config);
+        let current_digest = config
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .canonical_digest()
+            .unwrap();
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered
+            .restore()
+            .expect("a relocated install of the upgraded build restores the interrupted turn");
+        let restored: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(restored.launch_profile_digest, current_digest);
+        assert_eq!(restored.descriptor.sidecar_command, command);
+        assert_eq!(restored.descriptor.sidecar_args, args);
+        fs::remove_dir_all(directory).unwrap();
+
+        let (directory, mut config, payload, _) =
+            settled_session_after_runner_upgrade("upgrade-relocated-settled");
+        let (command, args) = relocate_upgraded_install(&directory, &mut config);
+        let mut payload = payload;
+        payload["provider"]["sidecarCommand"] = json!(command);
+        payload["provider"]["sidecarArgs"] = json!(args);
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered
+            .restore()
+            .expect("a relocated install of the upgraded build restores a settled session");
+        recovered
+            .attach_run(&payload)
+            .expect("the next run attaches the same conversation");
+        let attached: AcpxDurableState =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(attached.descriptor.sidecar_command, command);
+        assert_eq!(attached.descriptor.sidecar_args, args);
+        assert_eq!(attached.lifecycle, "suspended");
         fs::remove_dir_all(directory).unwrap();
     }
 
