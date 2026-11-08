@@ -1872,14 +1872,17 @@ When automatic recovery cannot prove a local owner stopped, an operator can
 record containment through the task's recovery action after the original lease
 expires. The operator separately confirms the controller and provider/tools
 stopped on their original host, and records reviewed action outcomes and evidence.
-The server rechecks board runtime permission, company, assignee, source binding,
+The server rechecks board `runtime:confirm_owner_stop` permission for a company
+owner, company administrator or instance administrator, plus company, assignee, source binding,
 opaque authority, exact expiry (including microseconds), pending Stop, accepted
 results and cleanup obligations under the normal ownership locks. A renewed or
 replaced owner invalidates the confirmation. This is explicit operator evidence,
 not a local process-stop observation.
 
 Containment uses normal failed-owner settlement and preserves usage uncertainty,
-workspaces and outcome evidence. It does not accept a provider result or queue a
+workspaces and outcome evidence. Containment records the canonical `restored`
+outcome while keeping the task status unchanged, including when it is already
+`todo`. A separate ordinary Retry then consumes that committed evidence. It does not accept a provider result or queue a
 replacement. Only exact unadmitted Retry receipts for the contained source are
 closed with an inspectable reason; accepted or newer work stays intact. After
 cleanup and outcome review, the user makes a new ordinary Retry request under

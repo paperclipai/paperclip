@@ -100,8 +100,9 @@ Gaps: Component host test doesn't prove actual filesystem/provider repair.
 
 ## `bounded-continuation`
 
-Original-host Native controller containment is a board-only `runtime:manage`
-operation on the existing recovery resolution route. Agents cannot submit it.
+Original-host Native controller containment requires board-only
+`runtime:confirm_owner_stop` authority on the existing recovery resolution route:
+a company owner, company administrator, or instance administrator. Agents cannot submit it.
 It requires separate controller/provider stop confirmations, reviewed outcomes,
 a server-bound exact authority digest, elapsed lease and unchanged locked
 source/assignee/cleanup fences. It records containment without queuing work; a
