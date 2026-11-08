@@ -10,6 +10,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { recoveryService } from "../services/recovery/service.js";
 
 const KIND = "environment_run_lease_active";
 const stopEvidence = "The old server container was replaced and is no longer running.";
@@ -78,6 +79,27 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
     expect(await actionFor(issueId)).toMatchObject({ status: "active" });
     expect((await lease(leaseId)).status).toBe("active");
+  });
+
+  it("is never closed by ordinary recovery, even once the task is done", async () => {
+    const { companyId, issueId } = await seed();
+    await pass();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    await recoveryService(db, { enqueueWakeup: vi.fn() } as never).reconcileActiveRecoveryActions({ companyId });
+    expect(await actionFor(issueId)).toMatchObject({ status: "active" });
+  });
+
+  it("closes the request without attesting when the lease was released another way", async () => {
+    const { companyId, issueId, leaseId } = await seed();
+    await pass();
+    const action = (await actionFor(issueId))!;
+    await db.update(environmentLeases).set({ status: "released" }).where(eq(environmentLeases.id, leaseId));
+    await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: leaseId,
+      stopEvidence, actorId: "board-user" })).resolves.toEqual({ recordId: leaseId, status: "released" });
+    const resolved = await actionFor(issueId);
+    expect(resolved).toMatchObject({ status: "resolved", evidence: { ownerGoneNotNeeded: { actorId: "board-user" } } });
+    expect(resolved?.evidence).not.toHaveProperty("ownerGone");
+    expect((await lease(leaseId)).metadata).not.toHaveProperty("ownerGoneAttestation");
   });
 
   it("does not ask about an owner Paperclip can judge, or a record with no task", async () => {

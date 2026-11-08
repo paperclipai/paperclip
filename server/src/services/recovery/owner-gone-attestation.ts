@@ -52,17 +52,21 @@ export async function confirmOwnerGone(input: {
       || !["active", "escalated"].includes(action.status) || action.evidence?.recordId !== input.recordId) throw changed();
     const now = new Date();
     const proof = { actorId: input.actorId, stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
-    if (!(await kind.attestOwnerGone(tx, { companyId: input.companyId, recordId: input.recordId }, proof))) throw changed();
+    const attestation = await kind.attestOwnerGone(tx, { companyId: input.companyId, recordId: input.recordId }, proof);
+    if (attestation === "changed") throw changed();
+    // Released by another path: close the request; nothing remains to attest.
+    const released = attestation === "released";
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
-      evidence: { ...action.evidence, ownerGone: proof },
-      nextAction: "The previous server was confirmed stopped. Recovery releases the resource.",
+      evidence: { ...action.evidence, ...(released ? { ownerGoneNotNeeded: proof } : { ownerGone: proof }) },
+      nextAction: released ? "The resource was already released. No confirmation was needed."
+        : "The previous server was confirmed stopped. Recovery releases the resource.",
     }).where(eq(issueRecoveryActions.id, action.id));
     const publication = await persistActivity(tx, { companyId: input.companyId, actorType: "user", actorId: input.actorId,
       action: "issue.ownership_owner_gone_confirmed", entityType: "issue", entityId: input.issueId,
       runId: typeof action.evidence?.runId === "string" ? action.evidence.runId : undefined,
-      details: { recoveryActionId: input.actionId, kind: kind.id, recordId: input.recordId, ...proof } });
-    return { publication };
+      details: { recoveryActionId: input.actionId, kind: kind.id, recordId: input.recordId, outcome: attestation, ...proof } });
+    return { publication, released };
   });
   publishActivity(committed.publication.publication);
-  return { recordId: input.recordId, status: "queued" as const };
+  return { recordId: input.recordId, status: committed.released ? "released" as const : "queued" as const };
 }

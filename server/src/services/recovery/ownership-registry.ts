@@ -153,7 +153,8 @@ export type OwnableKind = {
   onUnprovable?: UnprovableAction;
   /** Records the board's confirmation that this record's unrecorded owner stopped, so its
    * owner proves gone (`operator_attested`). Returns false when the record no longer qualifies. */
-  attestOwnerGone?: (tx: Db, target: { companyId: string; recordId: string }, proof: Record<string, unknown>) => Promise<boolean>;
+  attestOwnerGone?: (tx: Db, target: { companyId: string; recordId: string }, proof: Record<string, unknown>)
+    => Promise<"attested" | "released" | "changed">;
   /** When a record of this kind next becomes settleable without a signal
    * (a retention window ending). The reconciler wakes then. */
   nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
@@ -348,14 +349,21 @@ function runLeaseKind(): OwnableKind {
     invariantChecks: [1, 2], settle: settleEnvironmentRunLease,
     onUnprovable: requestOwnerGoneConfirmation("environment_run_lease_active"),
     // Only an unstamped lease of a finished run: a stamped holder is judged by its stamp.
-    attestOwnerGone: async (tx, target, proof) => (await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
+    attestOwnerGone: async (tx, target, proof) => {
+      const attested = (await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
       .set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ [OWNER_GONE_ATTESTATION_KEY]: proof })}::jsonb` })
       .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId),
         eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId),
         sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
         sql`exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
           and run.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`))
-      .returning({ id: environmentLeases.id }), { companyId: target.companyId, leaseId: target.recordId })).length > 0,
+      .returning({ id: environmentLeases.id }), { companyId: target.companyId, leaseId: target.recordId })).length > 0;
+      if (attested) return "attested";
+      // Released by another path since the board was asked: nothing is left to attest.
+      const [lease] = await tx.select({ status: environmentLeases.status }).from(environmentLeases)
+        .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId)));
+      return !lease || lease.status !== "active" ? "released" : "changed";
+    },
     listInProgress: async (db, limit, offset) => {
       const rows = await select(db).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
