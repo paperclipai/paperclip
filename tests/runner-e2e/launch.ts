@@ -31,6 +31,7 @@ import { createRunnerE2ETemporaryRoot } from "./server-config.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+import { AGENT_FILESYSTEM_SANDBOX_ENV, agentFilesystemSandboxConfig } from "./agent-filesystem-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -589,6 +590,10 @@ async function runAttempt(input: {
       executions,
       repositoryRoot,
     );
+    const agentFilesystemSandbox = agentFilesystemSandboxConfig({
+      platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
+      evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+    });
     const childEnv: NodeJS.ProcessEnv = {
       ...buildRunnerE2EProcessEnvironment(sourceEnvironment, executions),
       [CHAT_PRIVATE_INPUTS_ENV]: privateInputs?.filename,
@@ -609,6 +614,7 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
+      [AGENT_FILESYSTEM_SANDBOX_ENV]: agentFilesystemSandbox ? JSON.stringify(agentFilesystemSandbox) : undefined,
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(temporaryRoot, "artifacts-private", "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
