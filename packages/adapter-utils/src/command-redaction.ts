@@ -192,10 +192,36 @@ function isOrdinaryDiagnosticEnvSetting(key: string, value: string): boolean {
     (name === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value));
 }
 
+/** In the host process environment, an undeclared value under an
+ * unrecognized name is a possible credential only if it could be one: at
+ * least 8 characters, and not a bare number, hex number or boolean-like word.
+ * Shorter values ("vi", "RUN", "1") are host settings; redacting them as
+ * substrings corrupted unrelated report text ("service" became
+ * "ser***REDACTED***ce"). Declared, secret-named and credential-shaped values
+ * are always kept private. An agent's configured environment keeps the
+ * fail-closed rule: any unknown binding name is private whatever its length. */
+function plausibleUndeclaredCredential(key: string, value: string): boolean {
+  if (credentialNameSegments(key)) return true;
+  return value.length >= 8 && !/^(?:\d+|0x[0-9a-f]+|true|false|on|off|yes|no)$/i.test(value);
+}
+
+const CREDENTIAL_SEGMENTS = new Set(["TOKEN", "TOKENS", "SECRET", "SECRETS", "PASSWORD", "PASSWD", "PASSPHRASE",
+  "CREDENTIAL", "CREDENTIALS", "PRIVATE", "BEARER", "AUTHORIZATION", "APIKEY"]);
+
+/** A name with a credential segment (AWS_SECRET_ACCESS_KEY, AWS_BEARER_TOKEN_BEDROCK),
+ * or a KEY segment that is last or followed only by ID (KEY, AWS_ACCESS_KEY_ID).
+ * Such a value stays private whatever its length. */
+function credentialNameSegments(key: string): boolean {
+  const segments = key.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  return segments.some((segment, index) => CREDENTIAL_SEGMENTS.has(segment) ||
+    (segment === "KEY" && (index === segments.length - 1 || (index === segments.length - 2 && segments[index + 1] === "ID"))));
+}
+
 /** Select private values while preserving explicit ordinary process settings. */
 export function collectDiagnosticEnvironmentSecrets(
   env: unknown,
   secretKeys: Iterable<string> = [],
+  options: { hostProcess?: boolean } = {},
 ): string[] {
   if (!env || typeof env !== "object") return [];
   const declared = new Set(secretKeys);
@@ -206,7 +232,7 @@ export function collectDiagnosticEnvironmentSecrets(
     if (declared.has(key) || secretName.test(key) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
       /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
-      !isOrdinaryDiagnosticEnvSetting(key, value)) {
+      (!isOrdinaryDiagnosticEnvSetting(key, value) && (!options.hostProcess || plausibleUndeclaredCredential(key, value)))) {
       values.add(value);
     }
     try {

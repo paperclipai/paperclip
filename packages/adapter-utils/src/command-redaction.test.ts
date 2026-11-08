@@ -213,6 +213,20 @@ describe("diagnostic environment secret selection", () => {
     expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
   });
 
+  // Host env of a desktop agent session: short ordinary values under names
+  // the allowlist does not know. Treating "vi" as a credential redacted it
+  // inside "service" in Sentry reports.
+  it("does not treat short or bare-number host process values under unknown names as credentials", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CHILD_EDITOR: "vi", RUN_PHASE: "RUN", FEATURE_STATE: "off",
+      SESSION_PID: "67591", XPC_FLAGS: "0x0", ASK_TOOL: "true", BATCH_SIZE: "8", LONG_NUMBER: "123456789012",
+      CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1" }, [], { hostProcess: true })).toEqual([]);
+    // Credential names keep short values private, and long opaque values stay private.
+    expect(collectDiagnosticEnvironmentSecrets({ AWS_ACCESS_KEY_ID: "1", CUSTOM_BINDING: "opaque-host-secret" }, [],
+      { hostProcess: true }).sort()).toEqual(["1", "opaque-host-secret"]);
+    // An agent's configured environment keeps the fail-closed rule.
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+  });
+
   it("keeps unknown opaque values private without declarations", () => {
     expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "opaque-host-secret" })).toEqual(["opaque-host-secret"]);
   });
