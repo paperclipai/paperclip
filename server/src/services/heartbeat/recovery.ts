@@ -2591,10 +2591,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             : processPidAlive && legacyProcessProof?.reason !== "process_group_alive"
               ? `Lost in-memory process handle, but child pid ${run.processPid} is still alive`
               : `Lost in-memory process handle, but persisted process group ${run.processGroupId} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
+          // Only a run that is still running: a Stop or the stale-lock sweep may
+          // have finished it since this pass read it, and that outcome stands.
+          const detachedWrite = await setRunStatusFromLive(run.id, "running", ["running"], {
             error: detachedMessage,
             errorCode: DETACHED_PROCESS_ERROR_CODE,
           });
+          const detachedRun = detachedWrite.updated ? detachedWrite.run : null;
           if (detachedRun) {
             await appendRunEvent(detachedRun, {
               eventType: "lifecycle",
