@@ -1042,6 +1042,14 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
   });
 
+  it("routes a task identifier from another company to a company switch instead of a search", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a lookup that is not found does not mean the task does not exist");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the person can switch to its company and open a chat there");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<its prefix>/issues/<identifier>");
+  });
   it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
     expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
