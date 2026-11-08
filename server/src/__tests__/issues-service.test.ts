@@ -1104,15 +1104,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       end $$;
       create trigger test_fail_unblock_wake before insert on agent_wakeup_requests
         for each row execute function test_fail_unblock_wake();
-      create function test_stop_before_owner_release() returns trigger language plpgsql as $$
-      begin
-        if old.blocked_owner_notified_at is not null and new.blocked_owner_notified_at is null then
-          raise exception 'injected server stop before the owner notification release';
-        end if;
-        return new;
-      end $$;
-      create trigger test_stop_before_owner_release before update on issues
-        for each row execute function test_stop_before_owner_release();
     `));
     try {
       await edit("Edit while the owner wake cannot be saved");
@@ -1120,8 +1111,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       await db.execute(sql.raw(`
         drop trigger test_fail_unblock_wake on agent_wakeup_requests;
         drop function test_fail_unblock_wake();
-        drop trigger test_stop_before_owner_release on issues;
-        drop function test_stop_before_owner_release();
       `));
     }
     const [afterStop] = await db.select().from(issues).where(eq(issues.id, issue.id));
@@ -1132,6 +1121,56 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await heartbeatService(db).drainActiveRunExecutions();
 
     expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+  });
+
+  it("saves no owner wake request when the notification stamp cannot be saved, so a later edit sends exactly one", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    await db.execute(sql.raw(`
+      create function test_fail_owner_stamp() returns trigger language plpgsql as $$
+      begin
+        if old.blocked_owner_notified_at is null and new.blocked_owner_notified_at is not null then
+          raise exception 'injected server stop before the owner notification stamp';
+        end if;
+        return new;
+      end $$;
+      create trigger test_fail_owner_stamp before update on issues
+        for each row execute function test_fail_owner_stamp();
+    `));
+    try {
+      await edit("Edit while the owner stamp cannot be saved");
+    } finally {
+      await db.execute(sql.raw(`
+        drop trigger test_fail_owner_stamp on issues;
+        drop function test_fail_owner_stamp();
+      `));
+    }
+    expect(await unblockWakes()).toHaveLength(0);
+
+    const response = await edit("Edit after the restart");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
+  });
+
+  it("holds no database connection while the owner wake runs on a pool of one connection", async () => {
+    const { issue } = await seedUnnotifiedBlockedIssue();
+    const poolOfOne = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const wakeQueries: string[] = [];
+    try {
+      await deliverBlockedOwnerNotification(poolOfOne, {
+        issue,
+        wakeup: async (_agentId, options) => {
+          const [current] = await poolOfOne.select({ status: issues.status }).from(issues).where(eq(issues.id, issue.id));
+          wakeQueries.push(`${current!.status}:${options.unblockRequestGuard.action}`);
+        },
+      });
+    } finally {
+      await poolOfOne.$client.end({ timeout: 5 });
+    }
+    expect(wakeQueries).toEqual(["blocked:Restore registry access"]);
   });
 
   it("wakes the owner of the current unblock request when an older update delivers after a newer one", async () => {
