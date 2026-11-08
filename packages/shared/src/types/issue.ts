@@ -726,6 +726,9 @@ export interface IssueRelatedWorkItem {
 export interface IssueRelatedWorkSummary {
   outbound: IssueRelatedWorkItem[];
   inbound: IssueRelatedWorkItem[];
+  outboundTotal?: number;
+  inboundTotal?: number;
+  truncated?: boolean;
 }
 
 export interface IssueExecutionStagePrincipal {
