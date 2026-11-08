@@ -249,6 +249,18 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     expect((await row(leaseId)).status).toBe("pending_cleanup");
   });
 
+  it("does not hide an orphan behind a prepared descriptor the settle would reject", async () => {
+    const runId = await run("failed");
+    const leaseId = await retainedOrphan(runId);
+    const lease = await row(leaseId);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: {
+      nativeWorkspaceSync: { state: "prepared", leaseId, providerLeaseId: lease.providerLeaseId } } })
+      .where(eq(heartbeatRuns.id, runId));
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 1 });
+    expect((await row(leaseId)).status).toBe("pending_cleanup");
+  });
+
   it("leaves an ordinary retained sandbox (no orphan marker) alone", async () => {
     const leaseId = await retainedOrphan(await run("failed"));
     const { [ORPHANED_SANDBOX_RECOVERY_KEY]: _marker, ...metadata } = (await row(leaseId)).metadata!;

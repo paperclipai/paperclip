@@ -58,9 +58,20 @@ function alwaysHeldSql() {
     -- export check: an orphan the settle would release must never be hidden
     -- here. Narrower cases (a prepared remote workspace, an observed failure)
     -- are listed and held by the settle until their export settles.
+    -- The descriptor must also be one the settle's reader accepts
+    -- (readNativeWorkspaceSyncReference); an invalid one holds nothing.
     or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
       and run.runtime_mode = 'native'
+      and run.runner_profile_json#>>'{nativeWorkspaceSync,schema}' in
+        ('paperclip.native-workspace-sync/v1', 'paperclip.native-workspace-sync/v2', 'paperclip.native-workspace-sync/v3')
       and run.runner_profile_json#>>'{nativeWorkspaceSync,state}' = 'prepared'
+      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,descriptorSha256}' ~ '^[0-9a-f]{64}$', false)
+      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,baselineSha256}' ~ '^[0-9a-f]{64}$', false)
+      and coalesce(jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,finalHostSha256}'), 'null') = 'null'
+      and jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,workspaceId}') = 'string'
+      and jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,remoteCwd}') = 'string'
+      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,resourceDisposition}', 'destroy')
+        in ('keep_running', 'stop_and_retain', 'destroy')
       and run.runner_profile_json#>>'{nativeWorkspaceSync,leaseId}' = ${environmentLeases.id}::text
       and run.runner_profile_json#>>'{nativeWorkspaceSync,providerLeaseId}' = ${environmentLeases.providerLeaseId}
       and coalesce(run.runner_profile_json#>>'{nativeExecutionInput,workspace,access}', '') <> 'none')
