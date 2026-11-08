@@ -12034,14 +12034,15 @@ async function executePaperclipNativeSessionWithinScope(
       if (protocolIntegrityFailure !== null) throw protocolIntegrityFailure;
     }
   } finally {
+    // The provider turn is over, whether it succeeded or threw: what follows is
+    // release and hand-back, which a follow-up's admission may wait for
+    // (`warmSessionReleaseWait`). The outer execution's finally clears it.
+    settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     releaseGitHubRun?.();
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
       await timeController("github_stop", () => githubAccess!.stop());
     }
   }
-  // The provider turn is over: what follows is release and hand-back, which a
-  // follow-up's admission may wait for (`warmSessionReleaseWait`).
-  settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
   let postExecutionFailed = false;
   let postExecutionCleanupFailed = false;
   try {
