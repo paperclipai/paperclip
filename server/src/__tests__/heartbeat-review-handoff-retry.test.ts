@@ -559,6 +559,58 @@ describeEmbeddedPostgres("review handoff retry after stale blocker clears", () =
     });
   });
 
+  it("gives a replacement reviewer on the same stage the next attempt after the old reviewer's attempt", async () => {
+    const { companyId, issueId, reviewerAgentId, workerAgentId, stageId } = await seedFixture();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementReviewerAgent",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      source: "automation",
+      requestedByActorType: "system",
+      reason: "execution_review_requested",
+      status: "completed",
+      finishedAt: new Date(),
+      idempotencyKey: buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 1 }),
+      payload: { issueId, reviewHandoffAttempt: 1 },
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          ...(issue.executionState as Record<string, unknown>),
+          currentParticipant: { type: "agent", agentId: replacementAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: workerAgentId, userId: null },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.reviewParticipantRequeued).toBe(1);
+    const [replacementWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, replacementAgentId)));
+    expect(replacementWake).toMatchObject({
+      idempotencyKey: buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 2 }),
+      payload: expect.objectContaining({ issueId, reviewHandoffAttempt: 2 }),
+    });
+    expect(replacementWake.status).not.toBe("skipped");
+  });
+
   it("escalates to board with one actionable blocker upon exhausting the review handoff budget", async () => {
     const { companyId, issueId, reviewerAgentId, stageId } = await seedFixture();
     const heartbeat = heartbeatService(db);

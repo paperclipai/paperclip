@@ -74,10 +74,9 @@ export function isReservedReviewHandoffIdempotencyKey(key: unknown): boolean {
   return typeof key === "string" && key.startsWith(REVIEW_HANDOFF_RETRY_IDEMPOTENCY_PREFIX);
 }
 
-function systemReviewHandoffWake(reviewerAgentId: string, keyCondition: SQL) {
+function systemReviewHandoffWake(keyCondition: SQL) {
   return and(
     keyCondition,
-    eq(agentWakeupRequests.agentId, reviewerAgentId),
     eq(agentWakeupRequests.source, "automation"),
     eq(agentWakeupRequests.requestedByActorType, "system"),
   );
@@ -221,9 +220,9 @@ async function hasQueuedReviewWake(
       and(
         eq(agentWakeupRequests.companyId, companyId),
         or(
-          systemReviewHandoffWake(
-            reviewerAgentId,
-            sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          and(
+            eq(agentWakeupRequests.agentId, reviewerAgentId),
+            systemReviewHandoffWake(sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`),
           ),
           and(
             eq(agentWakeupRequests.agentId, reviewerAgentId),
@@ -246,7 +245,6 @@ async function getReviewHandoffAttemptLedger(
   companyId: string,
   issueId: string,
   stageId: string,
-  reviewerAgentId: string,
 ): Promise<{ lastAttempt: number; used: number; lastRefusedAt: Date | null }> {
   const keyPrefix = buildReviewHandoffRetryIdempotencyKeyPrefix({ issueId, stageId });
   const [[closedEscalation], rows] = await Promise.all([
@@ -274,10 +272,7 @@ async function getReviewHandoffAttemptLedger(
       .where(
         and(
           eq(agentWakeupRequests.companyId, companyId),
-          systemReviewHandoffWake(
-            reviewerAgentId,
-            sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
-          ),
+          systemReviewHandoffWake(sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`),
         ),
       ),
   ]);
@@ -337,7 +332,6 @@ async function recordRefusedReviewHandoffAttempt(
 async function getReviewHandoffWakeReceipts(
   db: Db,
   companyId: string,
-  reviewerAgentId: string,
   idempotencyKey: string,
 ): Promise<Array<{ status: string; createdAt: Date }>> {
   return db
@@ -346,10 +340,7 @@ async function getReviewHandoffWakeReceipts(
     .where(
       and(
         eq(agentWakeupRequests.companyId, companyId),
-        systemReviewHandoffWake(
-          reviewerAgentId,
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-        ),
+        systemReviewHandoffWake(eq(agentWakeupRequests.idempotencyKey, idempotencyKey)),
       ),
     );
 }
@@ -607,7 +598,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     hasValidReviewBlocker(db, issue, input.treeControlSvc),
     hasActiveReviewRun(db, issue.companyId, issue.id, target.reviewerAgentId),
     hasQueuedReviewWake(db, issue.companyId, issue.id, target.stageId, target.reviewerAgentId),
-    getReviewHandoffAttemptLedger(db, issue.companyId, issue.id, target.stageId, target.reviewerAgentId),
+    getReviewHandoffAttemptLedger(db, issue.companyId, issue.id, target.stageId),
   ]);
 
   const decision = decideReviewHandoffRetry({
@@ -677,12 +668,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     throw error;
   }
 
-  const receipts = await getReviewHandoffWakeReceipts(
-    db,
-    issue.companyId,
-    decision.targetAgentId,
-    decision.idempotencyKey,
-  );
+  const receipts = await getReviewHandoffWakeReceipts(db, issue.companyId, decision.idempotencyKey);
   if (receipts.some((receipt) => receipt.status !== SKIPPED_WAKE_STATUS)) {
     return { action: "enqueued", wake };
   }
