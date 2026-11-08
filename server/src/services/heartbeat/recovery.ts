@@ -1,4 +1,4 @@
-import { releaseDeadControllerResultLeases } from "../native-runtime/native-dead-controller-result-lease.js";
+import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -941,11 +941,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean; trigger?: "same_run_retry" }) {
     // A hard kill cannot release its accepted results the way a graceful drain
-    // does. Release leases whose earlier-boot controller has exited, so the
-    // finalization below settles them now instead of after lease expiry.
-    const releasedResults = await releaseDeadControllerResultLeases(db, { now, runIds,
-      liveRunExecutions: activeRunExecutions });
+    // does. The shared ownership path settles each lease whose controller is
+    // proven gone, so the finalization below settles it now instead of after
+    // lease expiry. The periodic reconciler pass covers any it misses.
+    const releasedResults = await settleOwnableKind(db, "native_accepted_result_lease", { now, runIds,
+      skipRunIds: activeRunExecutions });
     for (const released of releasedResults) {
+      if (!released.runId) continue;
       const run = await getRun(released.runId).catch(() => null);
       if (run) await appendRunEvent(run, { eventType: "native.recovery.transition", stream: "system", level: "info",
         message: "Server restart released the accepted native result of a stopped controller for finalization",

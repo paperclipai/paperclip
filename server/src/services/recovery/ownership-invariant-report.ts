@@ -20,13 +20,16 @@ import {
 } from "./ownership-registry.js";
 
 /**
- * Report-only ownership reconciliation (plan section C, Phase 1).
+ * Ownership reconciliation (plan section C).
  *
  * One pass lists every registered kind's in-progress records, classifies each
  * owner as gone, alive or unprovable, and runs the plan's invariant checks.
  * Violations are written once per process to the activity log as
- * `recovery.invariant_violation`. Nothing is settled, released or retried, and
- * nothing is sent to Telemetry (AGENTS.md §5.7).
+ * `recovery.invariant_violation`. A kind that registers a `settle` (Phase 2)
+ * is settled when its owner is proven gone, and its `onUnprovable` action is
+ * surfaced when the owner is unprovable; an unprovable owner is never
+ * released. Report-only kinds are never changed. Nothing is sent to Telemetry
+ * (AGENTS.md §5.7).
  */
 
 export const OWNERSHIP_INVARIANT_VIOLATION_ACTION = "recovery.invariant_violation";
@@ -57,6 +60,12 @@ export type KindReport = {
   truncated: boolean;
   verdicts: { gone: number; alive: number; unprovable: number };
   reasons: Record<string, number>;
+  /** Records this pass settled (kinds with a registered `settle`). */
+  settled: number;
+  /** Records of a settling kind whose owner was alive or gone-but-kept: the
+   * owner can still die without writing a signal, so the worker keeps a
+   * bounded re-check due while any exist. */
+  watched: number;
   coverageGap?: string;
   error?: string;
 };
@@ -74,6 +83,8 @@ export type OwnershipReport = {
   awaitingSecondProof: number;
   /** Earliest time a record inside a grace window becomes checkable, if any. */
   nextDueAt: Date | null;
+  /** In-progress records of settling kinds that a later pass must re-prove. */
+  settleWatch: number;
   /** Work left for a later pass: failed listings or checks, unsaved
    * violations, and an unfinished I4 window. The worker keeps a retry due. */
   retryNeeded: boolean;
@@ -126,7 +137,7 @@ const INTENT_LOOKBACK_MS = 60 * 60_000;
  * PostgreSQL case-insensitive regular expression. */
 const TEMPORARY_REFUSAL_PATTERN = "budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout";
 
-type Classification = { verdict: OwnerProof["verdict"]; reason: string };
+type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true };
 
 async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<Map<string, Classification>> {
   const runIds = [...new Set(records.flatMap(record => record.owner.kind === "run" ? [record.owner.runId] : []))];
@@ -155,6 +166,92 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
     case "operator": return { verdict: "alive", reason: "operator_owned" };
     case "none": return { verdict: "unprovable", reason: "no_owner_stamp" };
   }
+}
+
+/** Settles a proven-gone record, or surfaces the operator action for an
+ * unprovable one. A failure is logged and retried on a later pass. */
+async function settleOrSurface(db: Db, kind: OwnableKind, record: InProgressRecord, proof: Classification,
+  now: Date): Promise<"settled" | "kept" | "failed"> {
+  try {
+    if (proof.verdict === "gone" && kind.settle) {
+      const outcome = await kind.settle(db, record, { now, proof: proof as OwnerProof });
+      return outcome.settled ? "settled" : "kept";
+    }
+    if (proof.verdict === "unprovable" && kind.onUnprovable) await kind.onUnprovable(db, record, { now, proof: proof as OwnerProof });
+    return "kept";
+  } catch (error) {
+    logger.warn({ err: error, kind: kind.id, recordId: record.recordId }, "ownership settle failed; a later pass retries");
+    return "failed";
+  }
+}
+
+export type SettledRecord = { kind: string; recordId: string; runId: string | null; reason: string };
+
+/**
+ * Settles one kind now, outside the periodic pass: restart recovery calls this
+ * so a dead owner's record settles in the first pass after boot. It uses the
+ * same listing, prover and settle as the reconciler. `runIds` limits it to
+ * those runs; `skipRunIds` names runs this process is executing.
+ */
+export async function settleOwnableKind(db: Db, kindId: string, options: {
+  now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
+} = {}): Promise<SettledRecord[]> {
+  return (await settleKind(db, kindId, options)).settled;
+}
+
+/**
+ * The settle watch's light re-check: settles only the kinds that register a
+ * `settle`, through their own (indexed) listings, without the full report pass
+ * or the global invariant checks. Returns how many records are still watched.
+ */
+export async function recheckSettlingKinds(db: Db, options: { now?: Date; probe?: ProcessProbe; kinds?: readonly OwnableKind[] } = {}):
+  Promise<{ settled: SettledRecord[]; watched: number }> {
+  const settled: SettledRecord[] = [];
+  let watched = 0;
+  for (const kind of (options.kinds ?? OWNABLE_KINDS).filter(candidate => candidate.settle && candidate.listInProgress)) {
+    const result = await settleKind(db, kind.id, options, kind);
+    settled.push(...result.settled);
+    watched += result.watched;
+  }
+  return { settled, watched };
+}
+
+async function settleKind(db: Db, kindId: string, options: {
+  now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
+}, explicitKind?: OwnableKind): Promise<{ settled: SettledRecord[]; watched: number }> {
+  const kind = explicitKind ?? OWNABLE_KINDS.find(candidate => candidate.id === kindId);
+  if (!kind?.listInProgress || !kind.settle) throw new Error(`ownership kind ${kindId} has no settle path`);
+  const now = options.now ?? new Date();
+  const wanted = options.runIds ? new Set(options.runIds) : null;
+  const records: InProgressRecord[] = [];
+  if (wanted && kind.listForRuns) {
+    // Scope before any page limit, so a requested run is never skipped.
+    records.push(...await kind.listForRuns(db, [...wanted]));
+  } else {
+    // A one-shot settle reads the whole kind; only the periodic pass is capped.
+    for (let offset = 0; ; offset += 200) {
+      const listed = await kind.listInProgress(db, 200, offset);
+      records.push(...listed.records);
+      if (!listed.truncated) break;
+    }
+  }
+  await resolveFenceHolders(db, records);
+  const unique = [...new Map(records.map(record => [record.recordId, record])).values()]
+    .filter(record => (!wanted || (record.runId !== null && wanted.has(record.runId)))
+      && !(record.runId && options.skipRunIds?.has(record.runId)));
+  const runProofs = await classifyRunOwners(db, unique);
+  const settled: SettledRecord[] = [];
+  let watched = 0;
+  for (const record of unique) {
+    const proof = await classify(record.owner, runProofs, options.probe, now);
+    const outcome = await settleOrSurface(db, kind, record, proof, now);
+    if (outcome === "settled") {
+      settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });
+    } else if (proof.verdict !== "unprovable") {
+      watched += 1;
+    }
+  }
+  return { settled, watched };
 }
 
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
@@ -278,6 +375,10 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   now?: Date;
   /** Write new violations to the activity log. Defaults to true. */
   record?: boolean;
+  /** Settle proven-gone records of kinds that register a `settle`, and surface
+   * their unprovable operator actions. Defaults to `record`; a read-only pass
+   * never changes a record. */
+  settle?: boolean;
 }): Promise<OwnershipReport> {
   const now = options.now ?? new Date();
   const limit = options.limitPerKind ?? 200;
@@ -286,11 +387,12 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const kindReports: KindReport[] = [];
   const violations: InvariantViolation[] = [];
   const goneThisPass = new Set<string>();
+  const settleRecords = options.settle ?? options.record !== false;
   let retryNeeded = false;
 
   for (const kind of kinds) {
     const report: KindReport = { kind: kind.id, obligation: kind.obligation, storage: kind.storage, inProgress: 0,
-      truncated: false, verdicts: { gone: 0, alive: 0, unprovable: 0 }, reasons: {},
+      truncated: false, verdicts: { gone: 0, alive: 0, unprovable: 0 }, reasons: {}, settled: 0, watched: 0,
       ...(kind.coverageGap ? { coverageGap: kind.coverageGap } : {}) };
     kindReports.push(report);
     if (!kind.listInProgress) continue;
@@ -323,6 +425,13 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         runId: record.runId, issueId: record.issueId };
       if (kind.invariantChecks.includes(1) && record.owner.kind === "none") {
         violations.push({ ...base, rule: "I1_owned", reason: "no_owner_stamp" });
+      }
+      if (settleRecords && kind.settle) {
+        const outcome = await settleOrSurface(db, kind, record, proof, now);
+        if (outcome === "settled") { report.settled += 1; continue; }
+        if (outcome === "failed") retryNeeded = true;
+        // An unprovable owner changes only by operator action, which signals.
+        if (proof.verdict !== "unprovable") report.watched += 1;
       }
       if (kind.invariantChecks.includes(2) && proof.verdict === "gone") {
         const key = `${kind.id}:${record.recordId}`;
@@ -371,7 +480,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
           companyId: violation.companyId, actorType: "system", actorId: OWNERSHIP_RECONCILER_ACTOR_ID,
           action: OWNERSHIP_INVARIANT_VIOLATION_ACTION, entityType: "ownership_record", entityId: violation.recordId,
           details: { rule: violation.rule, kind: violation.kind, reason: violation.reason,
-            runId: violation.runId, issueId: violation.issueId, mode: "report_only" },
+            runId: violation.runId, issueId: violation.issueId, mode: "report_only" }, // violations are reported, never repaired
         });
       } catch (error) {
         logger.warn({ err: error, rule: violation.rule, kind: violation.kind }, "failed to record ownership invariant violation");
@@ -402,8 +511,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   }
 
   const inProgress = kindReports.reduce((total, report) => total + report.inProgress, 0);
+  const settleWatch = kindReports.reduce((total, report) => total + report.watched, 0);
   const report: OwnershipReport = { at: now.toISOString(), inProgress, kinds: kindReports, violations,
-    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt, retryNeeded };
+    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt, settleWatch, retryNeeded };
   if (newViolations.length > 0 || kindReports.some(kind => kind.error)) {
     logger.info({
       inProgress, violations: violations.length, newViolations: newViolations.length,

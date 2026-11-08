@@ -25,6 +25,7 @@ import { registerOwnershipReconciliationWork } from "../services/native-runtime/
 import {
   createOwnershipReportState,
   OWNERSHIP_INVARIANT_VIOLATION_ACTION,
+  recheckSettlingKinds,
   runOwnershipReconciliationPass,
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
@@ -129,11 +130,11 @@ describe("report-only ownership reconciliation", () => {
     };
   }
 
-  it("registers every section-C kind once, with no settle path", () => {
+  it("registers every section-C kind once; only kinds moved in Phase 2 settle", () => {
     const names = OWNABLE_KINDS.map(kind => kind.id);
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
-    expect(OWNABLE_KINDS.every(kind => kind.settle === null)).toBe(true);
+    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(["native_accepted_result_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -205,12 +206,19 @@ describe("report-only ownership reconciliation", () => {
       controllerProcessStartedAt: new Date("2026-11-07T09:00:00.000Z"), controllerGeneration: 1 };
     await db.insert(nativeRunFinalizations).values([
       { ...claim, runId, issueId, controllerHostHash: currentProcessSpaceHash() },
-      // Written before the PID space was stamped: never provable.
+      // Written before the PID space was stamped: the one-release local proof
+      // on a single-host server (#19883), never on an ephemeral one.
       { ...claim, runId: legacyRunId, issueId: legacyIssueId, controllerHostHash: null },
     ]);
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(kindReport(report, "native_executor_claim")).toMatchObject({ inProgress: 2,
-      verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, missing_identity: 1 } });
+      verdicts: { gone: 2, unprovable: 0 }, reasons: { pid_dead: 2 } });
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const ephemeral = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+      expect(kindReport(ephemeral, "native_executor_claim")).toMatchObject({ inProgress: 2,
+        verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, process_space_unrecorded: 1 } });
+    } finally { vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", ""); }
   });
 
   it("writes nothing when recording is off", async () => {
@@ -349,6 +357,31 @@ describe("report-only ownership reconciliation", () => {
       await coordinator.stop();
     }
   }, 90_000);
+
+  it("keeps re-proving a settling kind's live owner, which can die without a signal", async () => {
+    const settle = vi.fn(async () => ({ settled: true, reason: "pid_dead" }));
+    const liveOwner = { kind: "process" as const, stamp: { kind: "local" as const, scope: "fixture", generation: null, host: null,
+      processSpace: currentProcessSpaceHash(), bootId: currentControllerBootId(), pid: process.pid, processStartedAt: null } };
+    const fixture = { ...OWNABLE_KINDS.find(kind => kind.id === "native_accepted_result_lease")!, id: "fixture_settling_kind",
+      settle, listInProgress: async () => ({ truncated: false, records: [{ recordId: "r1", companyId, runId: null, issueId: null,
+        owner: liveOwner, updatedAt: null }] }) };
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state, kinds: [fixture] });
+    const second = await runOwnershipReconciliationPass(db, { state, kinds: [fixture] });
+    // The set is unchanged, so only the settle watch keeps a re-check due.
+    expect([first.settleWatch, second.settleWatch]).toEqual([1, 1]);
+    expect(settle).not.toHaveBeenCalled();
+    const reportOnly = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
+      kinds: [{ ...fixture, settle: null }] });
+    expect(reportOnly.settleWatch).toBe(0);
+    // The watch's re-check lists only settling kinds; a report-only kind's
+    // listing is never read.
+    const reportOnlyList = vi.fn(async () => ({ truncated: false, records: [] }));
+    const recheck = await recheckSettlingKinds(db, { kinds: [fixture, { ...fixture, id: "fixture_report_only", settle: null,
+      listInProgress: reportOnlyList }] });
+    expect(recheck).toEqual({ settled: [], watched: 1 });
+    expect(reportOnlyList).not.toHaveBeenCalled();
+  });
 
   it("goes quiet with nothing in progress and follows up while records change", async () => {
     const errors: unknown[] = [];

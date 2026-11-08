@@ -59,6 +59,11 @@ export const nativeRunFinalizations = pgTable(
     unsafeExportRecoveryIdx: index("native_run_finalizations_unsafe_export_recovery_idx")
       .on(table.companyId, table.issueId, table.runId)
       .where(sql`${table.phase} = 'terminal_failure' AND ${table.failureCode} = 'native_workspace_sync_out_unsafe_archive'`),
+    // The `native_accepted_result_lease` ownership kind: outstanding executor
+    // leases on an accepted result that is not final yet (reconciler listing).
+    acceptedResultLeaseIdx: index("native_run_finalizations_accepted_result_lease_idx")
+      .on(table.leaseExpiresAt)
+      .where(sql`${table.resultId} is not null AND ${table.leaseOwner} is not null AND ${table.phase} not in ('committed', 'terminal_failure', 'applied')`),
     controlDeadlineIdx: index("native_run_finalizations_control_deadline_idx")
       .on(table.controlDeadlineAt).where(sql`${table.controlDeadlineAt} is not null`),
     issueCompanyFk: foreignKey({

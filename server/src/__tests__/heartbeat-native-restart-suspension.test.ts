@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
+import { activityLog, authUsers, budgetReservations, issueRecoveryActions, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -10,6 +10,11 @@ import type { NativeSessionBackend } from "@paperclipai/paperclip-runner";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 
 
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
@@ -326,10 +331,11 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
   /** RC-41: a hard kill leaves the accepted result leased to a controller that no longer exists. */
   async function killedController(f: Awaited<ReturnType<typeof seedAcceptedResult>>, controller: {
-    bootId: string; pid: number; processStartedAt: Date | null;
+    bootId: string; pid: number; processStartedAt: Date | null; hostHash?: string | null;
   }) {
     await f.db.update(nativeRunFinalizations).set({ controllerBootId: controller.bootId,
-      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt })
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+      controllerHostHash: controller.hostHash ?? null })
       .where(eq(nativeRunFinalizations.runId, f.runId));
   }
   async function restart(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
@@ -402,4 +408,168 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
       .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
   }, 60_000);
+
+  // Phase 2: the accepted-result lease settles on the shared ownership path
+  // (proveOwnerGone + registry settle), never by lease age.
+  const deadController = (hostHash: string | null) => ({ bootId: randomUUID(), pid: 2_000_000_001,
+    processStartedAt: new Date(Date.now() - 60_000), hostHash });
+  const legacyProofs = async (f: Awaited<ReturnType<typeof seedAcceptedResult>>) => f.db.select({ id: activityLog.id })
+    .from(activityLog).where(and(eq(activityLog.action, "legacy_host_unknown_dead_pid_proof"), eq(activityLog.runId, f.runId)));
+
+  it("finalizes a result leased to a dead controller stamped with this PID space, without the legacy fallback", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-STAMPED-DEAD", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(currentProcessSpaceHash()));
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+    expect(await legacyProofs(f)).toHaveLength(0);
+  }, 90_000);
+
+  it("records each use of the one-release fallback for a controller saved before its PID space", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-LEGACY-DEAD", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(null));
+    const { run } = await restart(f);
+    expect(run.status).toBe("succeeded");
+    expect(await legacyProofs(f)).toHaveLength(1);
+  }, 90_000);
+
+  it("keeps a result leased to a dead PID recorded in another PID space: another host is never proof", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-FOREIGN-SPACE", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController("another-pid-space"));
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
+      .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
+  }, 60_000);
+
+  it("keeps an unrecorded-host lease on an ephemeral server and asks the board to confirm the stop", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-LEGACY-EPHEMERAL", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(null));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+      expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
+        .toMatchObject({ settled: 0, reasons: { process_space_unrecorded: 1 } });
+    } finally { vi.unstubAllEnvs(); }
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(owner.leaseExpiresAt).toEqual(f.leaseExpiresAt);
+    const actions = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(actions.map(action => [action.cause, action.ownerType, action.status]))
+      .toEqual([["native_controller_host_unverified", "board", "active"]]);
+  }, 60_000);
+
+  it("finalizes the result once the board attests the unrecorded controller stopped", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-OPERATOR-ATTESTED", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController("operator_attested"));
+    const { run } = await restart(f);
+    expect(run.status).toBe("succeeded");
+  }, 90_000);
+
+  it("settles a dead controller's result lease in the reconciler pass when restart recovery missed it", async () => {
+    // Crash point: the controller died after the result was accepted and the
+    // lease written, and this boot's restart sweep did not see it (it started
+    // before the row, or failed). The next reconciler pass settles it.
+    const f = await seedAcceptedResult("ACCEPTED-RECONCILER-PASS", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(currentProcessSpaceHash()));
+    const readOnly = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState(), record: false });
+    expect(readOnly.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
+      .toMatchObject({ settled: 0, verdicts: { gone: 1 } });
+    const [held] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(held.leaseExpiresAt).toEqual(f.leaseExpiresAt);
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(f.db, { state });
+    expect(first.kinds.find(kind => kind.kind === "native_accepted_result_lease")).toMatchObject({ settled: 1 });
+    const [released] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(released.leaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // Settled records are no longer in progress, so rule I2 never fires.
+    const second = await runOwnershipReconciliationPass(f.db, { state });
+    expect(second.violations.filter(violation => violation.kind === "native_accepted_result_lease")).toEqual([]);
+  }, 60_000);
+
+  it("keeps a live earlier-boot controller's result lease in the reconciler pass", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-RECONCILER-LIVE", (runner) => `${runner}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt,
+      hostHash: currentProcessSpaceHash() });
+    const report = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    expect(report.kinds.find(kind => kind.kind === "native_accepted_result_lease"))
+      .toMatchObject({ settled: 0, verdicts: { alive: 1 } });
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(owner.leaseExpiresAt).toEqual(f.leaseExpiresAt);
+  }, 60_000);
+
+  it("drops an expired executor lease from the kind and asks the board nothing for it", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-EXPIRED-LEGACY", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(null));
+    await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease")!;
+      expect(await kind.listForRuns!(f.db, [f.runId])).toEqual([]);
+      await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    } finally { vi.unstubAllEnvs(); }
+    expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+  }, 60_000);
+
+  it("lists a requested run's lease directly, so a run-scoped settle never misses it", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-RUN-SCOPED", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(currentProcessSpaceHash()));
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease")!;
+    expect((await kind.listForRuns!(f.db, [f.runId, randomUUID()])).map(record => record.runId)).toEqual([f.runId]);
+    const settled = await settleOwnableKind(f.db, "native_accepted_result_lease", { runIds: [f.runId] });
+    expect(settled.map(record => record.runId)).toEqual([f.runId]);
+  }, 60_000);
+
+  it("settles a result lease whose live controller dies after the worker went quiet, with no signal", async () => {
+    // The set stays unchanged across passes, so only the settle watch keeps a
+    // re-check due. The controller then dies without writing anything.
+    const f = await seedAcceptedResult("ACCEPTED-DIES-AFTER-QUIET", (runner) => `${runner}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    const liveBoot = randomUUID();
+    await killedController(f, { bootId: liveBoot, pid: process.pid, processStartedAt: self.processStartedAt,
+      hostHash: currentProcessSpaceHash() });
+    const reports: OwnershipReport[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
+    const worker = registerOwnershipReconciliationWork(f.db, coordinator, () => true, { onReport: report => reports.push(report) });
+    try {
+      await worker.ready;
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(2);
+      const lease = (report: OwnershipReport) => report.kinds.find(kind => kind.kind === "native_accepted_result_lease")!;
+      expect(lease(reports[1]!)).toMatchObject({ settled: 0, verdicts: { alive: expect.any(Number) } });
+      expect(reports[1]!.settleWatch).toBeGreaterThan(0);
+      // Gone quiet would mean no deadline; the watch keeps one due.
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      await killedController(f, deadController(currentProcessSpaceHash()));
+      await expect.poll(async () => {
+        const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        return owner.leaseExpiresAt!.getTime() <= Date.now();
+      }, { timeout: 70_000, interval: 500 }).toBe(true);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 180_000);
+
+  it("keeps an idle issue's grace deadline while only the settle watch is due", async () => {
+    // Rule I7: an in-progress issue with no next action becomes checkable when
+    // its grace window ends. While a live result-lease owner keeps the worker
+    // on light re-checks, that deadline must still trigger a full pass.
+    const f = await seedAcceptedResult("ACCEPTED-WATCH-WITH-GRACE", (runner) => `${runner}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt,
+      hostHash: currentProcessSpaceHash() });
+    // Grace (5 min) ends about 50 s from now: after the worker turns watch-only.
+    await f.db.insert(issues).values({ id: randomUUID(), companyId: fixture.current.companyId, title: "Idle in progress",
+      status: "in_progress", assigneeAgentId: fixture.current.agentId, updatedAt: new Date(Date.now() - 5 * 60_000 + 50_000) });
+    const reports: OwnershipReport[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
+    const worker = registerOwnershipReconciliationWork(f.db, coordinator, () => true, { onReport: report => reports.push(report) });
+    try {
+      await worker.ready;
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(2);
+      expect(reports[1]!.settleWatch).toBeGreaterThan(0);
+      // The third pass is due by the grace deadline, so it is a full pass.
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(3);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 180_000);
 });
