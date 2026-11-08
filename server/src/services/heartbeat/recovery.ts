@@ -12,7 +12,7 @@ import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-wor
 import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-native-session-cleanup-work.js";
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
-import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
+import { pendingCleanupDeadlineSql, recoveredOrphanFirstAttemptSql } from "../environment-cleanup-state.js";
 import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
@@ -207,6 +207,9 @@ const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 
 // The reaper sweeps at most this many orphaned active leases per tick.
 const ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20;
+
+// One recovery call settles at most this many terminal runs' active leases.
+const ORPHANED_RUN_LEASE_PAGE_SIZE = 100;
 
 // A provider or plugin destroy rejection can carry a bearer credential, a
 // signed URL, or provider response detail in its name, code, message, cause, or
@@ -1610,6 +1613,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   // it. The bump pushes the row past the fixed-size page, so the next tick
   // reaches the rows behind it. It costs the row one extra backoff wait,
   // which is safe because the guard means a physical sandbox still exists.
+  // Where the next unscoped orphaned run-lease page starts, per company scope.
+  const orphanRunLeaseCursors = new Map<string, string>();
+
   async function deferOrphanedActiveLease(leaseId: string): Promise<void> {
     const now = new Date();
     await db
@@ -1648,6 +1654,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       || adapterExecutionControls.has(runId) || runningProcesses.has(runId) };
     let recovered = 0;
 
+    // One bounded page per call. An unscoped call continues after the last
+    // page it read, so leases kept by a live holder or another obligation
+    // never block the leases behind them.
+    const cursorKey = opts.leaseId ? null : opts.companyId ?? "*";
+    const after = cursorKey === null ? undefined : orphanRunLeaseCursors.get(cursorKey);
     const scoped = await db
       .select({ lease: environmentLeases })
       .from(environmentLeases)
@@ -1656,10 +1667,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         eq(environmentLeases.status, "active"),
         opts.companyId ? eq(environmentLeases.companyId, opts.companyId) : undefined,
         opts.leaseId ? eq(environmentLeases.id, opts.leaseId) : undefined,
+        after ? gt(environmentLeases.id, after) : undefined,
         isNotNull(environmentLeases.heartbeatRunId),
         or(isNull(heartbeatRuns.id), inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES])),
       ))
-      .orderBy(asc(environmentLeases.id));
+      .orderBy(asc(environmentLeases.id))
+      .limit(ORPHANED_RUN_LEASE_PAGE_SIZE);
+    if (cursorKey !== null) {
+      if (scoped.length < ORPHANED_RUN_LEASE_PAGE_SIZE) orphanRunLeaseCursors.delete(cursorKey);
+      else orphanRunLeaseCursors.set(cursorKey, scoped[scoped.length - 1]!.lease.id);
+    }
     for (const { lease } of scoped) {
       if (lease.heartbeatRunId && !localRuns.has(lease.heartbeatRunId)
         && await nativeWorkspaceExportPendingForLease(db, lease)
@@ -1791,7 +1808,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
           opts?.environmentRetry ? eq(environmentLeases.environmentId, opts.environmentRetry.environmentId) : undefined,
           pendingCleanupRetryDueSql(manualRetry),
-          backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
+          backoffMs > 0 ? or(lte(environmentLeases.updatedAt, cutoff), recoveredOrphanFirstAttemptSql()) : undefined,
         ),
       )
       .orderBy(asc(environmentLeases.updatedAt))

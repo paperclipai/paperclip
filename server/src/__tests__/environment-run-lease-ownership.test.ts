@@ -2,7 +2,18 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  completionContracts,
+  createDb,
+  environmentLeases,
+  environments,
+  heartbeatRuns,
+  issues,
+  nativeRunFinalizations,
+  nativeRunResults,
+} from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
   currentControllerBootId,
@@ -11,7 +22,9 @@ import {
   currentProcessSpaceHash,
 } from "../services/controller-process-identity.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-controller.js";
+import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { settleEnvironmentRunLease } from "../services/environment-run-lease-settlement.js";
+import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.js";
 import { environmentService } from "../services/environments.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import {
@@ -109,14 +122,78 @@ suite("environment_run_lease_active on the shared ownership path", () => {
   it("stops and keeps a dead holder's sandbox instead of destroying it", async () => {
     const runId = await run("succeeded");
     const leaseId = await lease(runId, await deadHolder(), true);
-    const before = await row(leaseId);
     await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
     const after = await row(leaseId);
     expect(after).toMatchObject({ status: "pending_cleanup", failureReason: "sandbox_stop_pending" });
     expect(after.metadata?.sandboxStopAndRetain).toMatchObject({ leaseId, runId, builtinProvider: "fake",
       recoveredOrphanedRunLease: true, ownerProof: "pid_dead" });
-    // Due now: the pending-cleanup sweep dispatches the stop without a backoff.
-    expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+  });
+
+  it("stops a recovered orphan at once, even when the lease was used moments ago; a failed stop backs off", async () => {
+    const runId = await run("failed");
+    const leaseId = await lease(runId, await deadHolder(), true);
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await nextEnvironmentCleanupAt(db)).toBeLessThanOrEqual(Date.now());
+    const stop = vi.fn(async () => { throw new Error("provider unavailable"); });
+    const heartbeat = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: stop } as unknown as HeartbeatEnvironmentRuntime });
+    await heartbeat.sweepPendingCleanupLeases({ backoffMs: 5 * 60_000 });
+    expect(stop).toHaveBeenCalledOnce();
+    // The failed first attempt counted; the next one waits out the backoff.
+    await heartbeat.sweepPendingCleanupLeases({ backoffMs: 5 * 60_000 });
+    expect(stop).toHaveBeenCalledOnce();
+    expect((await row(leaseId)).status).toBe("pending_cleanup");
+  });
+
+  it("reads one bounded page per recovery call, so kept leases never block the leases behind them", async () => {
+    const foreign = { bootId: "other", pid: 1, hostHash: "another-pid-space", processStartedAt: null };
+    const keptRuns = await Promise.all(Array.from({ length: 100 }, () => run("failed")));
+    await db.insert(environmentLeases).values(keptRuns.map((runId, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, companyId, heartbeatRunId: runId,
+      status: "active", metadata: { [ENVIRONMENT_LEASE_CONTROLLER_KEY]: foreign } })));
+    const orphanId = "ffffffff-0000-4000-8000-000000000000";
+    await db.insert(environmentLeases).values({ id: orphanId, companyId, heartbeatRunId: await run("failed"), status: "active",
+      metadata: { [ENVIRONMENT_LEASE_CONTROLLER_KEY]: await deadHolder() } });
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0 })).toEqual({ recovered: 0 });
+    expect((await row(orphanId)).status).toBe("active");
+    expect(await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0 })).toEqual({ recovered: 1 });
+    expect((await row(orphanId)).status).toBe("pending_cleanup");
+  });
+
+  it("waits for native settlement only while the lease's environment exists to release it", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Native settlement" });
+    const contractId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "result-worker-v1", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "result-worker-v1", objective: "Finish", criteria: [] },
+      canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    const native = { runtimeMode: "native", nativeIssueId: issueId, issueId, completionContractId: contractId };
+    const kept = await run("succeeded", native);
+    const orphaned = await run("succeeded", native);
+    const goneEnvironmentId = randomUUID();
+    await db.insert(environments).values({ id: goneEnvironmentId, name: "Deleted", driver: "sandbox", status: "active",
+      config: { provider: "fake", image: "ubuntu:24.04" } });
+    for (const runId of [kept, orphaned]) {
+      const resultId = randomUUID();
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId,
+        serverFingerprint: "fixture", schemaStatus: "accepted", resultJson: {}, canonicalSha256: "a".repeat(64) });
+      await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "committed", resultId });
+    }
+    const keptLease = await lease(kept, await deadHolder(), true);
+    const orphanedLease = await lease(orphaned, await deadHolder(), true);
+    await db.update(environmentLeases).set({ environmentId: goneEnvironmentId }).where(eq(environmentLeases.id, orphanedLease));
+    await db.delete(environments).where(eq(environments.id, goneEnvironmentId));
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect((await row(keptLease)).status).toBe("active");
+    expect((await row(orphanedLease)).status).toBe("pending_cleanup");
+    await db.delete(nativeRunFinalizations);
+    await db.delete(nativeRunResults);
+    await db.delete(heartbeatRuns);
+    await db.delete(completionContracts);
+    await db.delete(issues).where(eq(issues.id, issueId));
   });
 
   it("keeps a lease while its run is active, whatever its holder", async () => {

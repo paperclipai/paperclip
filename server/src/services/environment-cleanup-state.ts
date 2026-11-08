@@ -16,6 +16,17 @@ export function recoverableSandboxCreationCondition() {
   ));
 }
 
+/** A run lease the ownership settle moved to cleanup, before its first
+ * cleanup attempt. Its holder is proven gone, so the first stop or teardown is
+ * due now regardless of how recently the lease was used; a failed attempt
+ * counts and the normal retry backoff applies from then on. */
+export function recoveredOrphanFirstAttemptSql() {
+  return sql`(${environmentLeases.failureReason} = 'orphaned_active_lease_recovered'
+    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true')
+    and coalesce(${environmentLeases.metadata}->>'pendingCleanupRetryAttempts', '0') = '0'
+    and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`;
+}
+
 export function pendingCleanupDeadlineSql(now = Date.now()) {
   const deadline = sql`case
     when ${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'
@@ -29,9 +40,10 @@ export function pendingCleanupDeadlineSql(now = Date.now()) {
 }
 
 export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_CLEANUP_RETRY_MS): Promise<number | null> {
-  const [row] = await db.select({ next: sql<string | null>`min(greatest(
+  const [row] = await db.select({ next: sql<string | null>`min(case when ${recoveredOrphanFirstAttemptSql()}
+    then ${pendingCleanupDeadlineSql()} else greatest(
     extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${backoffMs},
-    ${pendingCleanupDeadlineSql()}))` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));
+    ${pendingCleanupDeadlineSql()}) end)` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));
   const [creation] = await db.select({ next: sql<string | null>`min(extract(epoch from ${sandboxCreationOperations.nextAttemptAt}) * 1000)` })
     .from(sandboxCreationOperations).where(recoverableSandboxCreationCondition());
   const deadlines = [row?.next, creation?.next].filter((value): value is string => value != null).map(Number);

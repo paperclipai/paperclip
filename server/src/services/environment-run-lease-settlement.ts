@@ -37,8 +37,9 @@ type LeaseRow = typeof environmentLeases.$inferSelect;
  * - a lease without a remote sandbox moves to `pending_cleanup`, as before;
  * - a lease still needed by another obligation is left alone: a pending native
  *   workspace export, a legacy shutdown fence, another live lease on the same
- *   provider resource, or an accepted native result whose settlement releases
- *   the lease with the run's own resource disposition.
+ *   provider resource, or an accepted native result whose settlement can
+ *   release the lease (its environment still exists) with the run's own
+ *   resource disposition.
  */
 export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord,
   context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
@@ -123,7 +124,13 @@ async function keptByAnotherObligation(tx: Db, lease: LeaseRow): Promise<string 
       or(notInArray(nativeRunFinalizations.phase, TERMINAL_NATIVE_PHASES), eq(nativeRunFinalizations.phase, "committed"),
         and(eq(nativeRunFinalizations.phase, "terminal_failure"),
           sql`${nativeRunFinalizations.failureDetail} ? 'workspaceFinalizeAttempt'`)))).limit(1);
-  if (accepted) return "native_result_settles_lease";
+  // Native settlement releases through the lease's environment; with the
+  // environment row gone it skips the lease, so this settle must not wait.
+  if (accepted && lease.environmentId) {
+    const [environment] = await tx.select({ id: environments.id }).from(environments)
+      .where(eq(environments.id, lease.environmentId));
+    if (environment) return "native_result_settles_lease";
+  }
   return null;
 }
 

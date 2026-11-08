@@ -75,11 +75,10 @@ export function readStopOnlyCleanup(lease: Lease) {
 
 /** Persist before provider dispatch so an older worker or a restart cannot turn
  * an explicit stop into ordinary destructive release. Invalid pins stay pending.
- * `recovery` marks an ownership settle: it is recorded on the intent, and the
- * row keeps its `updatedAt` so the pending-cleanup sweep dispatches the stop
- * without first waiting out its retry backoff. */
+ * `recovery` marks an ownership settle on the intent; the pending-cleanup
+ * sweep dispatches such a stop's first attempt without its retry backoff. */
 export async function prepareSandboxStopAndRetain(db: Db, lease: Lease, recovery?: Record<string, unknown>) {
-  return prepareStopAndRetain(db, lease, "active", recovery ?? {}, recovery !== undefined);
+  return prepareStopAndRetain(db, lease, "active", recovery);
 }
 
 /** Historical release rows can lack a stop receipt. Re-inspect the exact
@@ -148,8 +147,7 @@ function stopOnlyAttempt(lease: Lease, attemptId: string) {
     sql`${environmentLeases.metadata}->>'pluginId' is not distinct from ${readStopOnlyCleanup(lease)?.pluginId ?? null}`);
 }
 
-async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released", recovery: Record<string, unknown> = {},
-  keepUpdatedAt = false) {
+async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released", recovery: Record<string, unknown> = {}) {
   const requestId = randomUUID(), now = new Date();
   const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId,
     companyId: lease.companyId, runId: lease.heartbeatRunId, leaseId: lease.id,
@@ -157,8 +155,7 @@ async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" |
     ...(lease.provider && isBuiltinSandboxProvider(lease.provider) && !lease.metadata?.sandboxProviderPlugin && lease.metadata?.pluginId == null
       ? { builtinProvider: lease.provider } : { pluginId: lease.metadata?.pluginId }), ...recovery };
   const [updated] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
-    status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now,
-    updatedAt: keepUpdatedAt ? sql`${environmentLeases.updatedAt}` : now,
+    status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now, updatedAt: now,
     metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
       [SANDBOX_STOP_AND_RETAIN_KEY]: intent, pendingCleanupAttemptId: requestId,
       pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
