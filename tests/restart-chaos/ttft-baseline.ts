@@ -59,11 +59,16 @@ const midturnTask = (nonce: string) => [
 const midturnFollowUp = (nonce: string) =>
   `Mid-turn follow-up ${nonce}: also reply with a one-line comment that says \`HELLO ${nonce}\`.`;
 
+/** The agent's replies naming `marker`, oldest first. */
+async function agentReplies(api: ChaosApi, issueId: string, marker: string): Promise<Json[]> {
+  const comments = await api.get<Json[]>(`/api/issues/${issueId}/comments`, 10_000).catch(() => []);
+  return comments.filter(comment => Boolean(comment.authorAgentId) && String(comment.body ?? "").includes(marker))
+    .sort((a, b) => Date.parse(String(a.createdAt)) - Date.parse(String(b.createdAt)));
+}
+
 /** When the agent's reply naming `marker` first appeared on the task, or null. */
 async function replyCreatedAt(api: ChaosApi, issueId: string, marker: string): Promise<string | null> {
-  const comments = await api.get<Json[]>(`/api/issues/${issueId}/comments`, 10_000).catch(() => []);
-  const reply = comments.filter(comment => Boolean(comment.authorAgentId) && String(comment.body ?? "").includes(marker))
-    .sort((a, b) => Date.parse(String(a.createdAt)) - Date.parse(String(b.createdAt)))[0];
+  const reply = (await agentReplies(api, issueId, marker))[0];
   return reply ? String(reply.createdAt) : null;
 }
 
@@ -225,6 +230,8 @@ async function main() {
     lifecycle: { type: "string" },
     // Mid-turn follow-up delivery: queue (default, wait for the turn) or steer (into the live turn).
     "midturn-mode": { type: "string", default: "queue" },
+    // Fault the control plane right after a steered comment is acknowledged (K1, K2 or K6).
+    "midturn-fault": { type: "string" },
     "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
@@ -240,6 +247,9 @@ async function main() {
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}; run: set -a; source ~/.secrets; set +a`);
   const midturnMode = values["midturn-mode"];
   if (midturnMode !== "queue" && midturnMode !== "steer") throw new Error("--midturn-mode must be queue or steer");
+  const midturnFault = values["midturn-fault"] as FaultKind | undefined;
+  if (midturnFault !== undefined && !["K1", "K2", "K6"].includes(midturnFault)) throw new Error("--midturn-fault must be K1, K2 or K6");
+  if (midturnFault && midturnMode !== "steer") throw new Error("--midturn-fault applies to --midturn-mode steer");
   const lifecycle = values.lifecycle;
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
     throw new Error("--lifecycle must be per_turn, warm or default");
@@ -330,6 +340,10 @@ async function main() {
         }
         const comment = await api.post<Json>(`/api/issues/${issueId}/comments`, { body: midturnFollowUp(nonce) });
         const steer = midturnMode === "steer" ? await steerQueuedComment(api, issueId, String(comment.id)) : null;
+        // Restart right after the steered comment was acknowledged: it must be answered exactly once.
+        const fault = midturnFault && steer?.acknowledgedAt
+          ? await supervisor.fault(midturnFault, 0, `midturn-${index}`) : null;
+        if (fault) faults.push({ kind: midturnFault!, readyAt: fault.readyAt ?? Date.now(), runIds: [inside.runId] });
         // A steered comment is answered inside the same run; a queued one needs a second run.
         const settled = await waitForRest(api, supervisor, issueId, steer?.acknowledgedAt ? 1 : 2);
         if (settled.timedOut) {
@@ -338,7 +352,9 @@ async function main() {
           continue;
         }
         midturn.push({ adapter, issueId, mode: midturnMode, interruptedRunId: inside.runId, commentId: String(comment.id),
-          commentCreatedAt: String(comment.createdAt), steer, replyCreatedAt: await replyCreatedAt(api, issueId, `HELLO ${nonce}`),
+          commentCreatedAt: String(comment.createdAt), steer, fault: fault ? midturnFault : null,
+          replyCount: (await agentReplies(api, issueId, `HELLO ${nonce}`)).length,
+          replyCreatedAt: await replyCreatedAt(api, issueId, `HELLO ${nonce}`),
           runs: settled.runs });
         timeline.add("baseline_midturn_done", { adapter, issueId, runs: settled.runs.length });
       }
