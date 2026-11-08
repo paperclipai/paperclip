@@ -394,20 +394,22 @@ export class CodexSessionState {
   /**
    * The one stale-event rule (durable-ownership plan, section G). A provider
    * event that names a turn which is not the active turn, and which an earlier
-   * session generation accepted or this generation already settled, is
-   * history: it is recorded and never fails the current turn. A turn this
-   * session never saw is not history and still fails closed.
+   * session generation accepted (restored from the checkpoint, or reported
+   * lost on restore) or this generation already settled, is history: it is
+   * recorded and never fails the current turn. A turn this session never saw
+   * is not history and still fails closed.
    */
   isHistoryTurn(turnId: string): boolean {
     return turnId.length > 0
       && !this.protocolFailed
       && turnId !== this.activeTurnId
-      && (this.priorGenerationTurns.has(turnId) || this.terminalTurns.has(turnId));
+      && (this.priorGenerationTurns.has(turnId) || this.restoredTerminalTurns.has(turnId)
+        || this.terminalTurns.has(turnId));
   }
 
   /** Every turn the history rule covers, for classifiers that take a set. */
   historyTurnIds(): Set<string> {
-    return new Set([...this.priorGenerationTurns, ...this.terminalTurns.keys()]);
+    return new Set([...this.priorGenerationTurns, ...this.restoredTerminalTurns, ...this.terminalTurns.keys()]);
   }
 
   recordHistoryEvent(kind: string, turnId: string): void {

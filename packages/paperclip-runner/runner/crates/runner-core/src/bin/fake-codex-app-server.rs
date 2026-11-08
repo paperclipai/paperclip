@@ -1809,6 +1809,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
                     }}))?;
                 }
+                // A resumed Codex thread can also report items and the
+                // terminal of the turn lost to a restart after it accepts the
+                // next turn. They are history of an earlier generation.
+                if durable_turn_ids
+                    && state.next_turn > 1
+                    && args
+                        .iter()
+                        .any(|value| value == "--stale-items-after-turn-start")
+                {
+                    let lost_turn_id = format!("provider-turn-{}", state.next_turn - 1);
+                    for (method, params) in [
+                        (
+                            "item/started",
+                            json!({"item": {"id": "lost-item", "type": "agentMessage", "text": ""}}),
+                        ),
+                        (
+                            "item/agentMessage/delta",
+                            json!({"itemId": "lost-item", "delta": "late"}),
+                        ),
+                        (
+                            "item/completed",
+                            json!({"item": {"id": "lost-item", "type": "agentMessage", "text": "late"}}),
+                        ),
+                        (
+                            "turn/completed",
+                            json!({"turn": {"id": lost_turn_id, "status": "failed", "items": [],
+                            "error": {"message": "lost", "codexErrorInfo": "other"}}}),
+                        ),
+                    ] {
+                        let mut params = params;
+                        params["threadId"] = json!(state.thread_id);
+                        if method != "turn/completed" {
+                            params["turnId"] = json!(lost_turn_id);
+                        }
+                        send(json!({"method": method, "params": params}))?;
+                    }
+                }
                 // A notification for a turn the runner never owned fails the
                 // accepted turn before it starts.
                 if args

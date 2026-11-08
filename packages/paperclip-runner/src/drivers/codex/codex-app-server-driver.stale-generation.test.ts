@@ -114,7 +114,9 @@ describe("Codex driver stale-generation events", () => {
     await original.close({ reason: "controller restarted" });
     await originalEvents;
 
-    const recovered = (await driver.recoverSession?.(snapshot))!.session;
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    if (!recovered) throw new Error("recovery did not return a session");
     await recovered.reconcile?.();
     const events: PrpEvent[] = [];
     const consume = (async () => { for await (const event of recovered.events()) events.push(event); })();
@@ -135,6 +137,35 @@ describe("Codex driver stale-generation events", () => {
     expect(events.some((event) => event.eventType === "harness.diagnostic"
       && ["stale_generation_event", "restored_terminal_replay"].includes(String(event.payload.classification))
       && event.payload.receivedTurnId === "turn-1")).toBe(true);
+  });
+
+  // A restore-loss report for a turn this session never bound records that
+  // turn as an earlier generation's. Its later activity is history too.
+  it("records late activity for a turn reported lost on restore as history", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-restore-lost-activity",
+      normalizedSessionId: "normalized-restore-lost-activity",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-uncheckpointed", status: "failed",
+      items: [], error: { code: "provider_turn_lost_on_restore", message: "lost", recoverable: true } } });
+    transport.push("item/completed", { threadId: "thread-1", turnId: "turn-uncheckpointed",
+      item: { id: "late-1", type: "agentMessage", text: "late" } });
+    transport.push("item/agentMessage/delta", { threadId: "thread-1", turnId: "turn-uncheckpointed",
+      itemId: "late-1", delta: "late" });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) {
+      events.push(event);
+      if (event.eventType === "turn.completed" || event.eventType === "session.failed") break;
+    }
+    expect(events.find((event) => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.find((event) => event.eventType === "turn.completed")?.turnId).toBe("turn-1");
+    expect(events.filter((event) => event.eventType === "harness.diagnostic"
+      && event.payload.classification === "stale_generation_event"
+      && event.payload.receivedTurnId === "turn-uncheckpointed").length).toBeGreaterThan(0);
   });
 
   it("still fails closed on a turn the session never saw", async () => {
