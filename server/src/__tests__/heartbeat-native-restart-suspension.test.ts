@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, authUsers, budgetReservations, issueRecoveryActions, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -608,7 +610,14 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     // not hold the run `running`; the next boot proves the holder gone.
     const f = await seedAcceptedResult("FINALIZER-THEN-SIGKILL", () => `native-finalizer:${randomUUID()}`);
     await heldBy(f, deadHolder());
-    const { run, owner } = await restart(f);
+    // A claim wakes the ownership worker, which may have gone quiet, so it
+    // watches the new holder.
+    const ownershipWakes: string[] = [];
+    const stop = subscribeDatabaseWork(f.db, DELIVERY_QUEUES.ownershipInvariantReport, (event, hints) => {
+      if (event === "settled") ownershipWakes.push(...(hints ?? []));
+    });
+    const { run, owner } = await restart(f).finally(stop);
+    expect(ownershipWakes.some(hint => hint.includes(f.runId))).toBe(true);
     expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
     // This boot's own finalizer claim recorded itself as the holder of its token,
     // without rewriting the executor's controller identity.

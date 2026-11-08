@@ -1,5 +1,5 @@
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
-import { nativeLeaseHolder } from "./native-token-lease-settlement.js";
+import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
@@ -3897,6 +3897,7 @@ async function inspectRetainedNativeSessionCleanup(
               },
             ]),
       ];
+      await notifyNativeTokenLeaseClaimed(tx, { companyId: run.companyId, runId: run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({

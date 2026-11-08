@@ -1,6 +1,7 @@
 import { and, eq, gt, like, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { currentControllerProcessStamp, readControllerProcess, type ControllerProcess } from "../controller-process-identity.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
@@ -32,6 +33,14 @@ const PREFIX: Record<NativeTokenLeaseKind, string> = {
   native_finalizer_lease: "native-finalizer:",
   native_cleanup_lease: "native-cleanup:",
 };
+
+/** Wakes the ownership worker for a newly claimed token lease, so a quiet
+ * worker (on any server) starts watching the holder. Call it in the claim's
+ * transaction, before the write it announces. */
+export async function notifyNativeTokenLeaseClaimed(tx: object, scope: { companyId: string; runId: string }) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport,
+    JSON.stringify({ companyId: scope.companyId, runId: scope.runId }));
+}
 
 /** The `lease_holder` value for a token-only lease claimed by this process. */
 export function nativeLeaseHolder(token: string): Record<string, unknown> {
