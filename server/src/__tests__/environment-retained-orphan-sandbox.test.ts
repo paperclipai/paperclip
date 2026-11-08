@@ -19,6 +19,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-
 import { hasPendingRunCleanup } from "../services/execution-blocker.js";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.js";
 import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-termination.js";
+import { taskChatRetryExecutionStopped } from "../services/chat-channels/task-retry-authority.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY } from "../services/sandbox-stop-and-retain.js";
 
@@ -123,6 +124,8 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     // Admission and Retry still see a stopped sandbox while the destroy waits.
     expect(hasRecoveredCleanupStopReceipt(released)).toBe(true);
     expect(await hasPendingRunCleanup(db, companyId, released.heartbeatRunId!)).toBe(false);
+    const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, released.heartbeatRunId!));
+    expect(await taskChatRetryExecutionStopped(db, failedRun!)).toBe(true);
     // Due now, and the sweep destroys it from the recorded lease.
     expect(await nextEnvironmentCleanupAt(db)).toBeLessThanOrEqual(Date.now());
     const teardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>

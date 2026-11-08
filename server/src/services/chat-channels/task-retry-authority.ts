@@ -3,7 +3,7 @@ import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryAct
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { readTaskRetryIntent } from "../task-retry.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
-import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
@@ -74,7 +74,11 @@ async function taskChatRetryExecutionContained(db: Db, run: typeof heartbeatRuns
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   )).for("share", { noWait: true });
-  if (leases.some(lease => lease.provider !== "local")) return leases.every(hasRemoteTerminationReceipt);
+  // A verified stop counts, including one whose destroy is queued as stopped
+  // cleanup (a recovered or retained orphan sandbox awaiting teardown).
+  if (leases.some(lease => lease.provider !== "local")) {
+    return leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease));
+  }
   return await recordedLocalExecutionStopped(db, run) ||
     await hasNativeLocalProcessStop(db, run.companyId, run.id) ||
     await hasHistoricalSuspendedNativeSession(db, run);
