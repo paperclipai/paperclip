@@ -182,6 +182,46 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       const requests = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
         eq(issueRecoveryActions.cause, OWNER_UNPROVABLE_CAUSE)));
       expect(requests.map(request => request.status).sort()).toEqual(["active", "resolved"]);
+      // Confirming the current version applies, even with the older confirmation still on record.
+      const fresh = requests.find(request => request.status === "active")!;
+      await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: fresh.id, recordId: runId,
+        stopEvidence, actorId: "board-user" });
+      expect(await legacyPass()).toMatchObject({ settled: 1, reasons: { operator_attested: 1 } });
+      expect(await leaseLive(runId)).toBe(false);
+    });
+
+    it("refuses a confirmation for a version the record no longer has, then asks about the current one", async () => {
+      const { companyId, issueId, runId } = await seedLegacyRun();
+      await legacyPass();
+      const asked = (await actionFor(issueId))!;
+      await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: asked.id, recordId: runId,
+        stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
+      // The next pass refreshes the open request to the current version; that confirmation applies.
+      await legacyPass();
+      const refreshed = (await actionFor(issueId))!;
+      expect(refreshed.id).toBe(asked.id);
+      expect(refreshed.evidence.recordUpdatedAt).not.toBe(asked.evidence.recordUpdatedAt);
+      await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: refreshed.id, recordId: runId,
+        stopEvidence, actorId: "board-user" });
+      expect(await legacyPass()).toMatchObject({ settled: 1, reasons: { operator_attested: 1 } });
+    });
+
+    it("re-checks the confirmed version inside the settle's transaction", async () => {
+      const { companyId, issueId, runId } = await seedLegacyRun();
+      await legacyPass();
+      const kind = OWNABLE_KINDS.find(candidate => candidate.id === LEGACY)!;
+      const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const confirmedVersion = row!.updatedAt;
+      // The record moves on between the reconciler's listing and its settle.
+      await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      const record = { recordId: runId, companyId, runId, issueId, updatedAt: confirmedVersion,
+        owner: { kind: "process" as const, stamp: { kind: "local" as const, scope: LEGACY, generation: null, host: null,
+          processSpace: "", bootId: row!.controllerBootId!, pid: 4242, processStartedAt: null, processGroupId: null } } };
+      await expect(kind.settle!(db, record, { now: new Date(), proof: { verdict: "gone", reason: "operator_attested" } }))
+        .resolves.toMatchObject({ settled: false, reason: "record_changed_since_confirmation" });
+      expect(await leaseLive(runId)).toBe(true);
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
     });
   });
 });

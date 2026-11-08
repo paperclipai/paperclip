@@ -24,6 +24,17 @@ const changed = () => conflict("This record changed since recovery asked. Refres
 export function requestOwnerGoneConfirmation(kindId: string) {
   return async (db: Db, record: InProgressRecord, context: { now: Date; proof: OwnerProof }): Promise<void> => {
     if (!LEGACY_REASONS.has(context.proof.reason) || !record.issueId || !record.companyId) return;
+    const recordUpdatedAt = record.updatedAt?.toISOString() ?? null;
+    // A record that changed while the board was asked: the open request names its current version,
+    // so a confirmation always binds to what the board can see now.
+    if (recordUpdatedAt) {
+      await db.update(issueRecoveryActions)
+        .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({ recordUpdatedAt })}::jsonb`, updatedAt: context.now })
+        .where(and(eq(issueRecoveryActions.companyId, record.companyId), eq(issueRecoveryActions.sourceIssueId, record.issueId),
+          eq(issueRecoveryActions.cause, OWNER_UNPROVABLE_CAUSE), eq(issueRecoveryActions.fingerprint, fingerprint(kindId, record.recordId)),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->>'recordUpdatedAt' is distinct from ${recordUpdatedAt}`));
+    }
     await db.insert(issueRecoveryActions).values({
       companyId: record.companyId, sourceIssueId: record.issueId, kind: "active_run_watchdog",
       status: "active", ownerType: "board", cause: OWNER_UNPROVABLE_CAUSE,
@@ -31,7 +42,7 @@ export function requestOwnerGoneConfirmation(kindId: string) {
       // The record version the board is asked about: a record-version attestation applies only while
       // the record is unchanged, so it can never release an owner that took the record over since.
       evidence: { kind: kindId, recordId: record.recordId, runId: record.runId, proof: context.proof.reason,
-        recordUpdatedAt: record.updatedAt?.toISOString() ?? null },
+        recordUpdatedAt },
       nextAction: "A resource from this task's earlier run was recorded before Paperclip stored which server held it, "
         + "so Paperclip cannot verify that the server stopped. Confirm that the previous server process has stopped "
         + "(for example, its container was replaced), and recovery releases the resource.",
@@ -45,8 +56,13 @@ export function requestOwnerGoneConfirmation(kindId: string) {
  * about; the reconciler reads it back (`recordVersionAttestations`). A record with no version
  * cannot be bound, so it keeps its other recovery path.
  */
-export async function attestOwnerGoneByRecordVersion(): Promise<"attested"> {
-  return "attested";
+export async function attestOwnerGoneByRecordVersion(tx: Db, target: { companyId: string; recordId: string;
+  requestedVersion: string | null }, lockVersion: (tx: Db, target: { companyId: string; recordId: string }) => Promise<Date | null>,
+): Promise<"attested" | "released" | "changed"> {
+  const version = await lockVersion(tx, target);
+  if (!version) return "released";
+  // The record changed since the board was asked: the confirmation would never apply, so refuse it.
+  return target.requestedVersion === version.toISOString() ? "attested" : "changed";
 }
 
 /**
@@ -63,12 +79,14 @@ export async function recordVersionAttestations(db: Db, kindId: string,
     inArray(issueRecoveryActions.companyId, [...new Set(bound.map(record => record.companyId!))]),
     inArray(issueRecoveryActions.fingerprint, bound.map(record => fingerprint(kindId, record.recordId))),
     sql`${issueRecoveryActions.evidence} ? 'ownerGone'`));
-  const confirmed = new Map<string, string>();
+  // A record can have several confirmations (one per version the board confirmed); any one of
+  // them that names the current version applies.
+  const confirmed = new Set<string>();
   for (const { evidence } of rows) {
     if (typeof evidence?.recordId === "string" && typeof evidence.recordUpdatedAt === "string")
-      confirmed.set(evidence.recordId, evidence.recordUpdatedAt);
+      confirmed.add(`${evidence.recordId}|${evidence.recordUpdatedAt}`);
   }
-  return new Set(bound.filter(record => confirmed.get(record.recordId) === record.updatedAt!.toISOString())
+  return new Set(bound.filter(record => confirmed.has(`${record.recordId}|${record.updatedAt!.toISOString()}`))
     .map(record => record.recordId));
 }
 
@@ -90,7 +108,8 @@ export async function confirmOwnerGone(input: {
       || !["active", "escalated"].includes(action.status) || action.evidence?.recordId !== input.recordId) throw changed();
     const now = new Date();
     const proof = { actorId: input.actorId, stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
-    const attestation = await kind.attestOwnerGone(tx, { companyId: input.companyId, recordId: input.recordId }, proof);
+    const attestation = await kind.attestOwnerGone(tx, { companyId: input.companyId, recordId: input.recordId,
+      requestedVersion: typeof action.evidence?.recordUpdatedAt === "string" ? action.evidence.recordUpdatedAt : null }, proof);
     if (attestation === "changed") throw changed();
     // Released by another path: close the request; nothing remains to attest.
     const released = attestation === "released";
