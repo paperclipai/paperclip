@@ -34,4 +34,36 @@ describe("mergeQuotaWindowResults", () => {
     const managed = [result("anthropic", true), result("openai", false)];
     expect(mergeQuotaWindowResults(managed, [])).toEqual(managed);
   });
+
+  it("lets a successful adapter report replace an unconnected placeholder", () => {
+    // Operators with a working host-local login but no connected account must
+    // see their adapter-reported quota, not the connect hint.
+    const placeholder: ProviderQuotaResult = {
+      ...result("anthropic", false),
+      accountKey: "unconnected:company-1:anthropic",
+      error: "Connect a subscription account in AI connections to view its quota.",
+    };
+    const merged = mergeQuotaWindowResults([placeholder], [result("anthropic", true)]);
+    expect(merged).toEqual([result("anthropic", true)]);
+  });
+
+  it("keeps the connect hint when the adapter probe also fails", () => {
+    const placeholder: ProviderQuotaResult = {
+      ...result("anthropic", false),
+      accountKey: "unconnected:company-1:anthropic",
+      error: "Connect a subscription account in AI connections to view its quota.",
+    };
+    const merged = mergeQuotaWindowResults([placeholder], [result("anthropic", false)]);
+    expect(merged).toEqual([placeholder]);
+  });
+
+  it("treats results without an accountKey as authoritative", () => {
+    // Adapter-reported and test-shaped results carry no accountKey. They must
+    // never be mistaken for a placeholder.
+    const merged = mergeQuotaWindowResults(
+      [result("anthropic", true)],
+      [result("anthropic", true)],
+    );
+    expect(merged).toEqual([result("anthropic", true)]);
+  });
 });

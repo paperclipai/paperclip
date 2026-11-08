@@ -32,7 +32,7 @@ import {
   accessService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows, fetchCompanyQuotaWindows, mergeQuotaWindowResults } from "../services/quota-windows.js";
+import { fetchAllQuotaWindows, fetchCompanyQuotaWindows, isUnconnectedPlaceholder, mergeQuotaWindowResults } from "../services/quota-windows.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { DeploymentMode } from "@paperclipai/shared";
@@ -349,7 +349,9 @@ export function costRoutes(
       res.json(managed);
       return;
     }
-    const adapterReported = await fetchAllQuotaWindows(new Set(managed.map((result) => result.provider)));
+    const adapterReported = await fetchAllQuotaWindows(
+      new Set(managed.filter((result) => !isUnconnectedPlaceholder(result)).map((result) => result.provider)),
+    );
     res.json(mergeQuotaWindowResults(managed, adapterReported));
   });
 

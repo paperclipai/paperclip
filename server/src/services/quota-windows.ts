@@ -158,12 +158,38 @@ function providerSlugForAdapterType(type: string): string {
  * windows. A connected account stays authoritative for its provider; an
  * adapter only contributes providers that no connection reports.
  */
+export function isUnconnectedPlaceholder(result: ProviderQuotaResult): boolean {
+  return typeof result.accountKey === "string" && result.accountKey.startsWith("unconnected:");
+}
+
 export function mergeQuotaWindowResults(
   managed: ProviderQuotaResult[],
   adapterReported: ProviderQuotaResult[],
 ): ProviderQuotaResult[] {
-  const reported = new Set(managed.map((result) => result.provider));
-  return [...managed, ...adapterReported.filter((result) => !reported.has(result.provider))];
+  // Only real connected accounts are authoritative. The unconnected:
+  // placeholders exist so the UI can show a connect hint; they must not block
+  // or override adapter-reported windows from host-local credentials.
+  const authoritative = new Set(
+    managed.filter((result) => !isUnconnectedPlaceholder(result)).map((result) => result.provider),
+  );
+  const adapterByProvider = new Map(
+    adapterReported.filter((result) => !authoritative.has(result.provider)).map((result) => [result.provider, result]),
+  );
+  const hasPlaceholder = new Set(
+    managed.filter(isUnconnectedPlaceholder).map((result) => result.provider),
+  );
+  // A placeholder yields to a successful adapter report for the same provider.
+  // When the adapter probe also fails, the connect hint is the more useful
+  // message, so the placeholder stays.
+  const merged = managed.filter(
+    (result) => !isUnconnectedPlaceholder(result) || adapterByProvider.get(result.provider)?.ok !== true,
+  );
+  for (const result of adapterByProvider.values()) {
+    if (result.ok || !hasPlaceholder.has(result.provider)) {
+      merged.push(result);
+    }
+  }
+  return merged;
 }
 
 export async function fetchAllQuotaWindows(
