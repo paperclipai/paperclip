@@ -201,8 +201,21 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await service.updatePermissions(legacy.id, { canCreateSkills: false } as never);
     expect(await stored(legacy.id)).toMatchObject({ canCreateAgents: true, canCreateSkills: false });
 
-    const denied = await insertCeo({ canCreateAgents: false, canCreateSkills: true });
+    const unrecorded = await insertCeo({ canCreateAgents: false, canCreateSkills: true });
+    await service.updatePermissions(unrecorded.id, { canCreateSkills: false } as never);
+    expect(await stored(unrecorded.id)).toMatchObject({ canCreateAgents: true, canCreateSkills: false });
+
+    const denial = { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" };
+    const denied = await insertCeo({ canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: denial });
     await service.updatePermissions(denied.id, { canCreateSkills: false } as never);
-    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, canCreateSkills: false });
+    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, canCreateSkills: false, ceoHiringDeniedBy: denial });
+
+    // An import update whose manifest omits the field keeps the board's denial,
+    // and a supplied denial record is never taken from input.
+    await service.update(denied.id, { permissions: {} } as never);
+    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, ceoHiringDeniedBy: denial });
+    const open = await insertCeo({ canCreateAgents: true });
+    await service.update(open.id, { permissions: { canCreateAgents: false, ceoHiringDeniedBy: denial } } as never);
+    expect(await stored(open.id)).not.toHaveProperty("ceoHiringDeniedBy");
   });
 });

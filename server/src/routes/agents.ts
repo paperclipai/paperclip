@@ -5,7 +5,7 @@ import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
-import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { CEO_HIRING_DENIAL_KEY, normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -5053,7 +5053,17 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    // Turning a CEO's hiring off here is the board's restriction; record who
+    // and when, so it is told apart from a false saved by other writes.
+    const hiringWasOn = normalizeAgentPermissions(existing.permissions, { role: existing.role }).canCreateAgents;
+    const permissionsPatch = existing.role === "ceo" && req.body.canCreateAgents === false && hiringWasOn
+      ? { ...req.body, [CEO_HIRING_DENIAL_KEY]: {
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          actorId: (req.actor.type === "agent" ? req.actor.agentId : req.actor.userId) ?? null,
+          at: new Date().toISOString(),
+        } }
+      : req.body;
+    const agent = await svc.updatePermissions(id, permissionsPatch);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
