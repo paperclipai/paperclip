@@ -387,7 +387,9 @@ function pendingCleanupKind(): OwnableKind {
   // The first attempt of a settled orphan is due at once: the worker's "run
   // now" deadline is 0, so its due time is when the settle queued it (saved
   // by the settle; a row from before that is due since its last write).
-  const dueMs = sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
+  // Built per listing: the deadline reader bounds saved deadlines relative to
+  // the current time, so it must not be frozen at module load.
+  const dueMs = () => sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
       then coalesce(case when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRecoveredAtMs') = 'number'
         then (${environmentLeases.metadata}->>'pendingCleanupRecoveredAtMs')::numeric end,
         extract(epoch from ${environmentLeases.updatedAt}) * 1000)
@@ -399,7 +401,7 @@ function pendingCleanupKind(): OwnableKind {
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
         heartbeatRunId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
-        updatedAt: environmentLeases.updatedAt, dueMs })
+        updatedAt: environmentLeases.updatedAt, dueMs: dueMs() })
         .from(environmentLeases).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({

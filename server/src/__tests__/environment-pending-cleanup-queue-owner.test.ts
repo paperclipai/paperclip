@@ -78,6 +78,19 @@ suite("pending-cleanup obligation owned by the cleanup queue", () => {
     expect(Math.abs((report.nextDueAt?.getTime() ?? 0) - expected)).toBeLessThan(5_000);
   });
 
+  it("keeps an escalated item with the sweep's 30-minute cooldown scheduled, due at its saved deadline", async () => {
+    // The sweep escalates well after boot: let the clock pass the reader's 1 s slack.
+    await new Promise(resolve => setTimeout(resolve, 1_500));
+    const retryAfterMs = Date.now() + 30 * 60_000;
+    await item(new Date(Date.now() - 60 * 60_000), { pendingCleanupRetryAttempts: 5,
+      pendingCleanupRetryAfterMs: retryAfterMs });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.kinds.find(entry => entry.kind === KIND)).toMatchObject({ verdicts: { alive: 1 },
+      reasons: { queue_scheduled: 1 } });
+    expect(report.violations.filter(violation => violation.kind === KIND)).toEqual([]);
+    expect(Math.abs((report.nextDueAt?.getTime() ?? 0) - (retryAfterMs + 10 * 60_000))).toBeLessThan(5_000);
+  });
+
   it("does not list an item a claimant holds in flight (that is the teardown claim)", async () => {
     await item(new Date(Date.now() - 60 * 60_000), { pendingCleanupInFlight: true, pendingCleanupAttemptId: "claim" });
     const { kind } = await pass();
