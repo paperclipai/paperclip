@@ -1648,6 +1648,79 @@ describe("issue execution policy routes", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
+    it("stops the outgoing reviewer's active run before completing the handoff", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      const activeRun = {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        agentId: qaAgentId,
+        runtimeMode: "native",
+        status: "running",
+        contextSnapshot: { issueId: issue.id },
+      };
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValueOnce({ ...activeRun, status: "cancelled" });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Handing this off while my own run is still active",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+        activeRun.id,
+        "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }),
+      );
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+
+    it("rejects the handoff when the outgoing reviewer's run cannot be confirmed stopped", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      const activeRun = {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        agentId: qaAgentId,
+        runtimeMode: "native",
+        status: "running",
+        contextSnapshot: { issueId: issue.id },
+      };
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.getRun.mockResolvedValueOnce(activeRun);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to hand off without a confirmed stop",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({
+        code: "runner_goal_reassignment_stop_unconfirmed",
+        runId: activeRun.id,
+      });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
     it("queues a wake for a newly reassigned agent participant", async () => {
       const secondAgentId = "88888888-8888-4888-8888-888888888888";
       const threeParticipantPolicy = normalizeIssueExecutionPolicy({

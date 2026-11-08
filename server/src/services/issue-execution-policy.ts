@@ -501,7 +501,7 @@ function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecu
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
 }
 
-function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
+export function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
   if (!principal) {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
