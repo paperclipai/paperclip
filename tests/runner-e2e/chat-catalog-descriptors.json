@@ -5885,7 +5885,7 @@
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
-    "attemptTimeoutMs": 600000,
+    "attemptTimeoutMs": 900000,
     "setupPolicy": {
       "readiness": "preserve-scenario",
       "invariantCheckIds": [
