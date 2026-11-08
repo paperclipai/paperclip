@@ -10,7 +10,7 @@ import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
-import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
+import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import {
   OWNABLE_KINDS,
   resolveFenceHolders,
@@ -176,9 +176,10 @@ async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<M
 }
 
 async function classify(owner: RecordOwner, runProofs: Map<string, Classification>, probe: ProcessProbe | undefined,
-  now: Date): Promise<Classification> {
+  now: Date, touchedAt: Date | null = null): Promise<Classification> {
   switch (owner.kind) {
-    case "process": return proveOwnerGone(owner.stamp, probe);
+    // The record's last write time lets a replaced server boot be fenced only for work it touched under a valid lease.
+    case "process": return proveOwnerGone(touchedAt ? { ...owner.stamp, touchedAt: touchedAt.toISOString() } : owner.stamp, probe);
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
     case "issue": return runProofs.get(`issue:${owner.issueId}`) ?? { verdict: "unprovable", reason: "owner_issue_unread" };
@@ -272,7 +273,7 @@ async function settleKind(db: Db, kindId: string, options: {
   const settled: SettledRecord[] = [];
   let watched = 0;
   for (const record of unique) {
-    let proof = await classify(record.owner, runProofs, options.probe, now);
+    let proof = await classify(record.owner, runProofs, options.probe, now, record.updatedAt);
     if (options.currentProcessIdle && record.runId && proof.verdict === "alive" && proof.reason === "current_process") {
       proof = { verdict: "gone", reason: "current_process_idle" };
     }
@@ -588,6 +589,8 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const goneThisPass = new Set<string>();
   let queueDueAt: Date | null = null;
   const settleRecords = options.settle ?? options.record !== false;
+  // A pass that settles nothing must not fence another boot's lease either.
+  const passProbe = settleRecords ? options.probe : { ...(options.probe ?? currentProcessProbe()), readOnly: true };
   let retryNeeded = false;
 
   for (const kind of kinds) {
@@ -618,7 +621,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     report.inProgress = unique.length;
     const runProofs = await classifyRunOwners(db, unique);
     for (const record of unique) {
-      const proof = await classify(record.owner, runProofs, options.probe, now);
+      const proof = await classify(record.owner, runProofs, passProbe, now, record.updatedAt);
       report.verdicts[proof.verdict] += 1;
       report.reasons[proof.reason] = (report.reasons[proof.reason] ?? 0) + 1;
       const base = { kind: kind.id, recordId: record.recordId, companyId: record.companyId,
