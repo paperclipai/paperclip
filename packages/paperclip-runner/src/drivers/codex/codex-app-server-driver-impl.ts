@@ -677,7 +677,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         } else if (
           completedTurnId.length > 0 &&
           completedTurnId !== acceptedTurnId &&
-          !active.some((turn) => text(turn.id) === completedTurnId)
+          !active.some((turn) => text(turn.id) === completedTurnId) &&
+          // A checkpointed terminal turn keeps the existing history behavior.
+          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === completedTurnId)
         ) {
           lostAcceptedTurnId = completedTurnId;
         }

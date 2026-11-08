@@ -350,7 +350,8 @@ export class CodexSessionState {
     // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
     // live while it stays active; once reconcile settles it, its late reports
     // are history too.
-    if (input.lostAcceptedTurnId && input.lostAcceptedTurnId !== this.activeTurnId)
+    if (input.lostAcceptedTurnId && input.lostAcceptedTurnId !== this.activeTurnId
+      && !this.terminalTurns.has(input.lostAcceptedTurnId))
       this.unconfirmedLostTurns.add(input.lostAcceptedTurnId);
     for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
       if (turnId) this.priorGenerationTurns.add(turnId);

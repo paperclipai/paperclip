@@ -158,6 +158,35 @@ describe("Codex driver terminal-turn history replay", () => {
     ).toMatchObject({ code: "turn_binding_mismatch" });
   });
 
+  it("keeps a checkpointed failed turn as history even when the runner's accepted-turn record names it", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport() as FakeCodexTransport & { controllerAcceptedCompletedTurnId?: () => string | null };
+    const failed = { id: "turn-1", status: "failed", items: [], error: { code: "provider_failed", message: "failed", recoverable: false } };
+    second.controllerAcceptedCompletedTurnId = () => "turn-1";
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [failed] } };
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({ runId: "run-saved-failure", normalizedSessionId: "normalized-saved-failure", workingDirectory: WORKSPACE });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: failed });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    expect(snapshot.terminalTurns).toMatchObject([{ turnId: "turn-1" }]);
+    await original.close({ reason: "controller detached" });
+    const recovery = await driver.recoverSession!(snapshot);
+    expect(recovery.recovered).toBe(true);
+    const session = recovery.session!;
+    await session.reconcile?.();
+    // The replacement runner re-delivers the checkpointed failure.
+    second.push("turn/completed", { threadId: "thread-1", turn: failed });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await session.startTurn({ message: { role: "user", text: "Report disposition only." } });
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.find(event => event.eventType === "turn.completed")?.turnId).toBe("turn-2");
+  });
+
   async function recoverWithUnadoptedAcceptedTurn(runId: string) {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport() as FakeCodexTransport & { controllerAcceptedCompletedTurnId?: () => string | null };
