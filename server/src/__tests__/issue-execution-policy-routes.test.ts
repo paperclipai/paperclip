@@ -832,6 +832,62 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("rejects a status change that would silently drop a monitor sent in the same body", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1006",
+      title: "Monitor survives a status PATCH",
+      executionPolicy: {
+        version: 1,
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-11-01T12:00:00.000Z",
+          maxAttempts: 3,
+          scheduledBy: "assignee",
+        },
+      },
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date("2026-11-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: "assignee",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "todo",
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2026-11-01T12:00:00.000Z",
+            maxAttempts: 3,
+            scheduledBy: "assignee",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Monitor can only be scheduled");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows board-authored in_review repair updates without a review path", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
