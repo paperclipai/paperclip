@@ -12,6 +12,7 @@ describe("explicit diagnostic credential forms", () => {
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
   looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
@@ -225,6 +226,14 @@ describe("diagnostic environment secret selection", () => {
       { hostProcess: true }).sort()).toEqual(["1", "opaque-host-secret"]);
     // An agent's configured environment keeps the fail-closed rule.
     expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+  });
+
+  it("keeps short host values private as whole tokens", () => {
+    const env = { CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", RUN_PHASE: "RUN", FEATURE_STATE: "off", LEVEL: "2",
+      SESSION_PID: "67591", LONG_SECRET: "opaque-host-secret", AWS_ACCESS_KEY_ID: "1" };
+    // Substring-private values are not repeated; booleans and 1-3 digit numbers are never credentials.
+    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi"]);
+    expect(collectHostEnvironmentTokenSecrets(null)).toEqual([]);
   });
 
   it("keeps unknown opaque values private without declarations", () => {

@@ -193,13 +193,13 @@ function isOrdinaryDiagnosticEnvSetting(key: string, value: string): boolean {
 }
 
 /** In the host process environment, an undeclared value under an
- * unrecognized name is a possible credential only if it could be one: at
- * least 8 characters, and not a bare number, hex number or boolean-like word.
- * Shorter values ("vi", "RUN", "1") are host settings; redacting them as
- * substrings corrupted unrelated report text ("service" became
- * "ser***REDACTED***ce"). Declared, secret-named and credential-shaped values
- * are always kept private. An agent's configured environment keeps the
- * fail-closed rule: any unknown binding name is private whatever its length. */
+ * unrecognized name is redacted as a substring only if it could be a
+ * credential: at least 8 characters, and not a bare number, hex number or
+ * boolean-like word. Shorter values ("vi", "RUN") are redacted only as whole
+ * tokens (`collectHostEnvironmentTokenSecrets`): as substrings they corrupted
+ * unrelated report text ("service" became "ser***REDACTED***ce"). Declared,
+ * secret-named and credential-shaped values are always substring-private. An
+ * agent's configured environment keeps the fail-closed substring rule. */
 function plausibleUndeclaredCredential(key: string, value: string): boolean {
   if (credentialNameSegments(key)) return true;
   return value.length >= 8 && !/^(?:\d+|0x[0-9a-f]+|true|false|on|off|yes|no)$/i.test(value);
@@ -215,6 +215,28 @@ function credentialNameSegments(key: string): boolean {
   const segments = key.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
   return segments.some((segment, index) => CREDENTIAL_SEGMENTS.has(segment) ||
     (segment === "KEY" && (index === segments.length - 1 || (index === segments.length - 2 && segments[index + 1] === "ID"))));
+}
+
+const BOOLEAN_WORD = /^(?:true|false|on|off|yes|no)$/i;
+
+/**
+ * Host process values under unknown names that are too short or too plain to
+ * redact as substrings (see `plausibleUndeclaredCredential`). They are still
+ * private: callers redact them where they appear as a whole token. Boolean
+ * words and numbers of at most 3 digits are not: they cannot hold a credential
+ * (a 3-digit value has 1000 possibilities), and as tokens they would erase
+ * exit codes and counts from every report.
+ */
+export function collectHostEnvironmentTokenSecrets(env: unknown): string[] {
+  if (!env || typeof env !== "object") return [];
+  const substringValues = new Set(collectDiagnosticEnvironmentSecrets(env, [], { hostProcess: true }));
+  const values = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value.trim() || substringValues.has(value)) continue;
+    if (isOrdinaryDiagnosticEnvSetting(key, value) || BOOLEAN_WORD.test(value) || /^\d{1,3}$/.test(value)) continue;
+    values.add(value);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
 }
 
 /** Select private values while preserving explicit ordinary process settings. */

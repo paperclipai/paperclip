@@ -5,7 +5,11 @@ import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellat
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
-import { collectDiagnosticEnvironmentSecrets, redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import {
+  collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
+  redactDiagnosticText,
+} from "@paperclipai/adapter-utils/command-redaction";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import {
@@ -168,15 +172,28 @@ function scalars(value: unknown, fields: readonly string[]): Context {
 /** Select credential fields, credential-shaped values, and declared bindings. */
 export const collectRunFailureSecretValues = collectDiagnosticEnvironmentSecrets;
 
+/** Short host values that stay private as whole tokens only. */
+export const collectRunFailureHostTokenSecrets = collectHostEnvironmentTokenSecrets;
+
 /** Redact literal, JSON-escaped and URI-encoded forms without rewriting markers. */
-export function redactRunFailureSecretValues<T>(input: T, values: readonly string[]): T {
-  const forms = [...new Set(values.filter(Boolean).flatMap((value) => {
+export function redactRunFailureSecretValues<T>(input: T, values: readonly string[],
+  tokenValues: readonly string[] = []): T {
+  const variants = (list: readonly string[]) => [...new Set(list.filter(Boolean).flatMap((value) => {
     const forms = [value, JSON.stringify(value).slice(1, -1)];
     try { forms.push(encodeURIComponent(value)); } catch { /* malformed Unicode */ }
     return forms;
   }))].sort((a, b) => b.length - a.length);
-  if (forms.length === 0) return input;
-  const pattern = new RegExp(forms.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gu");
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const forms = variants(values);
+  // Short host values are private only as whole tokens: "vi" is redacted in
+  // "editor vi", never inside "service".
+  const tokenForms = variants(tokenValues).filter((value) => !forms.includes(value));
+  const alternatives = [
+    ...(forms.length ? [forms.map(escape).join("|")] : []),
+    ...(tokenForms.length ? [`(?<![\\p{L}\\p{N}_])(?:${tokenForms.map(escape).join("|")})(?![\\p{L}\\p{N}_])`] : []),
+  ];
+  if (alternatives.length === 0) return input;
+  const pattern = new RegExp(alternatives.join("|"), "gu");
   const redact = (value: unknown): unknown => {
     if (typeof value === "string") return value.replace(pattern, () => REDACTED_EVENT_VALUE);
     if (Array.isArray(value)) return value.map(redact);
