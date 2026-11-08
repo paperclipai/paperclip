@@ -513,6 +513,7 @@ const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "elicitation_required",
   "provider_interaction_required",
   "oauth_insufficient_scope",
+  "oauth_refreshed_retry_required",
 ]);
 
 const REMOTE_TOOL_CALL_PROTOCOL_REASON_CODES = new Set([
