@@ -59,17 +59,11 @@ const midturnTask = (nonce: string) => [
 const midturnFollowUp = (nonce: string) =>
   `Mid-turn follow-up ${nonce}: also reply with a one-line comment that says \`HELLO ${nonce}\`.`;
 
-/** The agent's replies naming `marker`, oldest first. */
+/** The agent's replies naming `marker`, oldest first. A failed read throws: it is not a lost reply. */
 async function agentReplies(api: ChaosApi, issueId: string, marker: string): Promise<Json[]> {
-  const comments = await api.get<Json[]>(`/api/issues/${issueId}/comments`, 10_000).catch(() => []);
+  const comments = await api.get<Json[]>(`/api/issues/${issueId}/comments`, 10_000);
   return comments.filter(comment => Boolean(comment.authorAgentId) && String(comment.body ?? "").includes(marker))
     .sort((a, b) => Date.parse(String(a.createdAt)) - Date.parse(String(b.createdAt)));
-}
-
-/** When the agent's reply naming `marker` first appeared on the task, or null. */
-async function replyCreatedAt(api: ChaosApi, issueId: string, marker: string): Promise<string | null> {
-  const reply = (await agentReplies(api, issueId, marker))[0];
-  return reply ? String(reply.createdAt) : null;
 }
 
 /**
@@ -328,7 +322,7 @@ async function main() {
     // Mid-turn follow-up: a comment posted while the agent is inside a long
     // tool call. Records when the comment landed and every run of the task,
     // so the wait splits into "rest of the turn" and "hand-off".
-    if (phases.has("midturn")) await Promise.all(adapters.map(async adapter => {
+    const runMidturn = async (adapter: (typeof adapters)[number]) => {
       for (let index = 0; index < samples; index += 1) {
         const nonce = `${adapter}-m${index}-${Date.now().toString(36)}`;
         const issueId = await createTask(api, lab, adapter, `TTFT mid-turn ${nonce}`, midturnTask(nonce));
@@ -351,14 +345,24 @@ async function main() {
           timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "midturn" });
           continue;
         }
+        // Read the replies once; a failed read is recorded, not counted as a lost reply.
+        const replies = await agentReplies(api, issueId, `HELLO ${nonce}`)
+          .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
         midturn.push({ adapter, issueId, mode: midturnMode, interruptedRunId: inside.runId, commentId: String(comment.id),
           commentCreatedAt: String(comment.createdAt), steer, fault: fault ? midturnFault : null,
-          replyCount: (await agentReplies(api, issueId, `HELLO ${nonce}`)).length,
-          replyCreatedAt: await replyCreatedAt(api, issueId, `HELLO ${nonce}`),
+          replyCount: Array.isArray(replies) ? replies.length : null,
+          replyReadError: Array.isArray(replies) ? null : replies.error,
+          replyCreatedAt: Array.isArray(replies) && replies[0] ? String(replies[0].createdAt) : null,
           runs: settled.runs });
         timeline.add("baseline_midturn_done", { adapter, issueId, runs: settled.runs.length });
       }
-    }));
+    };
+    // Every fault restarts the one shared server, so faulted samples run one
+    // at a time: a restart must never land in another sample's comment or steer.
+    if (phases.has("midturn")) {
+      if (midturnFault) for (const adapter of adapters) await runMidturn(adapter);
+      else await Promise.all(adapters.map(runMidturn));
+    }
 
     // Restart recovery: one in-flight tool call per adapter, then one fault crosses all of them.
     const kinds: FaultKind[] = ["K1", "K2"];
@@ -414,6 +418,13 @@ async function main() {
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
     process.stdout.write(report(runs, faults));
     if (timedOutIssues.size) process.stdout.write(`\n${timedOutIssues.size} sample(s) timed out and were left out.\n`);
+    // Every answered mid-turn comment must be answered exactly once.
+    const wrongReplies = midturn.filter(sample => sample.replyCount !== 1);
+    for (const sample of wrongReplies) {
+      process.stdout.write(`\nMid-turn sample ${String(sample.adapter)} ${String(sample.issueId)}: ${sample.replyReadError
+        ? `reply read failed (${String(sample.replyReadError)})` : `${String(sample.replyCount)} replies, expected 1`}\n`);
+    }
+    if (wrongReplies.length) process.exitCode = 1;
     process.stdout.write(`\nWrote ${outDir}\n`);
   } finally {
     // Always stop the wrapper-owned embedded Postgres (SysV shared memory is scarce).

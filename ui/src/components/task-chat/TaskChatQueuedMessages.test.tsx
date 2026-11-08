@@ -503,6 +503,30 @@ describe("TaskChatQueuedMessages", () => {
       expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
     });
 
+    it("gives a saved edit a full window while another row's countdown keeps the clock running", async () => {
+      const start = Date.now();
+      const twoRows: IssueQueuedCommentQueue = { ...queue, entries: queue.entries.slice(0, 2).map((entry, index) => {
+        const at = new Date(start + index * 4_000);
+        return { ...entry, comment: { ...entry.comment, createdAt: at, updatedAt: at } };
+      }) };
+      // comment-1 counts down first; the person opens it for editing at 1 s.
+      const props = render({ queue: twoRows, autoSteerDelayMs: delay });
+      await advance(1_000);
+      await act(async () => { render({ ...props, editingCommentId: "comment-1" }); });
+      // comment-2 counts down to start + 9 s and keeps the clock ticking past
+      // comment-1's old deadline.
+      await advance(5_000);
+      expect(props.onSteer).not.toHaveBeenCalled();
+      const saved = { ...twoRows, revision: "rev-2", entries: twoRows.entries.map((entry, index) => index === 0
+        ? { ...entry, comment: { ...entry.comment, body: "Edited", updatedAt: new Date(Date.now()) } } : entry) };
+      await act(async () => { render({ ...props, queue: saved, editingCommentId: null }); });
+      await advance(500);
+      expect(props.onSteer).not.toHaveBeenCalledWith("comment-1", expect.anything());
+      expect(countdown()?.textContent).toContain("Sending in");
+      await advance(5_000);
+      expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-2");
+    });
+
     it("keeps a cancelled message in the queue with its explicit Steer button", async () => {
       const props = render({ queue: fresh(), autoSteerDelayMs: delay });
       await act(async () => {

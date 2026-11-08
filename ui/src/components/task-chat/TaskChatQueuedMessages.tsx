@@ -291,6 +291,8 @@ export function TaskChatQueuedMessages({
   // back to the ordinary queue instead of retrying in a loop.
   const [cancelledAutoSteer, setCancelledAutoSteer] = useState<ReadonlySet<string>>(() => new Set());
   const attemptedAutoSteer = useRef(new Set<string>());
+  // Recomputes the deadlines after an attempt; the set itself is a ref.
+  const [autoSteerAttempts, setAutoSteerAttempts] = useState(0);
   // First time this view offered each message revision for automatic steering.
   const firstEligibleAt = useRef(new Map<string, number>());
   const [now, setNow] = useState(() => Date.now());
@@ -333,10 +335,17 @@ export function TaskChatQueuedMessages({
     [entries],
   );
 
+  // Send decisions read the current queue snapshot, not the local copy that a
+  // sync effect updates one render later: a saved edit must get its new
+  // revision's full window, not the old revision's deadline.
+  const autoSteerEntries = useMemo(
+    () => queue.entries.filter((entry) => !optimisticDeliveryIds.current.has(entry.comment.id)),
+    [queue.entries],
+  );
   const autoSteerDeadlines = useMemo(() => {
     const deadlines = new Map<string, number>();
     if (autoSteerDelayMs === null) return deadlines;
-    for (const entry of entries) {
+    for (const entry of autoSteerEntries) {
       if (queuedMessageAutoSteerEligible({ queue, entry, cancelledIds: cancelledAutoSteer,
         attemptedKeys: attemptedAutoSteer.current, editingCommentId })) {
         const key = queuedMessageAutoSteerKey(entry);
@@ -345,7 +354,7 @@ export function TaskChatQueuedMessages({
       }
     }
     return deadlines;
-  }, [entries, queue, cancelledAutoSteer, editingCommentId, autoSteerDelayMs]);
+  }, [autoSteerEntries, queue, cancelledAutoSteer, editingCommentId, autoSteerDelayMs, autoSteerAttempts]);
 
   // Announce a new countdown once; the ticking text itself is not a live region.
   const announcedCountdowns = useRef(new Set<string>());
@@ -366,12 +375,16 @@ export function TaskChatQueuedMessages({
 
   useEffect(() => {
     if (pending || reordering) return;
-    const due = entries.find(entry => {
+    const due = autoSteerEntries.find(entry => {
       const deadline = autoSteerDeadlines.get(entry.comment.id);
-      return deadline !== undefined && deadline <= now;
+      // The deadlines memo does not see these refs change; check them here.
+      return deadline !== undefined && deadline <= now
+        && !attemptedAutoSteer.current.has(queuedMessageAutoSteerKey(entry))
+        && !optimisticDeliveryIds.current.has(entry.comment.id);
     });
     if (!due) return;
     attemptedAutoSteer.current.add(queuedMessageAutoSteerKey(due));
+    setAutoSteerAttempts((count) => count + 1);
     void runRowAction(due.comment.id, "steer");
   });
 
