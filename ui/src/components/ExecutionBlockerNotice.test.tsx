@@ -69,6 +69,19 @@ describe("ordinary task interruption", () => {
     expect(container.textContent).not.toContain("Part 1");
     expect(container.querySelector("button")).toBeNull();
   });
+  it("shows a locked blocker without reading its status, and a finished blocker still saving files", async () => {
+    const message = "Retry is waiting for a finished task this one depends on to save its files. Your Retry is saved.";
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", canRetry: false,
+      retryWait: { reason: "dependency_blocked", message } }} canRetry onRetry={retry}
+      blockers={[{ id: "secret", identifier: "CHA-12", locked: true } as never]} />));
+    expect(container.querySelector("[data-testid='locked-issue-chip']")?.textContent).toContain("CHA-12");
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", canRetry: false,
+      retryWait: { reason: "dependency_blocked", message } }} canRetry onRetry={retry}
+      blockers={[{ id: "done", identifier: "CHA-9", title: "Part 1", status: "done", priority: "medium",
+        assigneeAgentId: null, assigneeUserId: null } as never]} />));
+    expect(container.querySelector("[data-testid='retry-waiting-on'] a")?.getAttribute("href")).toContain("CHA-9");
+    expect(container.textContent).toContain("Saving its files");
+  });
   it("names the saved-work recovery step instead of a bare queue", async () => {
     await render({ ...failed, state: "working", canRetry: false, recoveryStep: "saving_previous_files" });
     expect(container.textContent).toBe("Saving files from the previous attempt…");

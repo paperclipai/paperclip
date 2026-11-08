@@ -8,6 +8,7 @@ import { cn } from "../lib/utils";
 import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 import { ProviderFailureNotice } from "./ProviderFailureNotice";
+import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
 
 const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
   checking_previous_run: "Checking that the previous attempt stopped",
@@ -18,6 +19,7 @@ const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recover
 const blockerAction: Record<string, string> = {
   blocked: "Blocked: open it to Retry",
   cancelled: "Cancelled: remove or replace it",
+  done: "Saving its files",
 };
 
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
@@ -56,12 +58,15 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
   // A task that has not started yet names the admission hold it waits for.
   if (!optimistic && presentation?.state === "working" && presentation.retryWait) {
-    const waitingOn = presentation.retryWait.reason === "dependency_blocked"
-      ? (blockers ?? []).filter(blocker => blocker.status !== "done") : [];
+    const dependencies = presentation.retryWait.reason === "dependency_blocked" ? blockers ?? [] : [];
+    const unfinished = dependencies.filter(blocker => isLockedIssueStub(blocker) || blocker.status !== "done");
+    const waitingOn = unfinished.length ? unfinished : dependencies;
     return <div role="status" aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>
       <p>{presentation.retryWait.message}</p>
       {waitingOn.length ? <ul className="mt-1 space-y-0.5" data-testid="retry-waiting-on">
-        {waitingOn.map(blocker => <li key={blocker.id} className="flex min-w-0 items-center gap-2">
+        {waitingOn.map(blocker => isLockedIssueStub(blocker)
+          ? <li key={blocker.id} className="flex min-w-0 items-center gap-2"><LockedIssueChip identifier={blocker.identifier} /></li>
+          : <li key={blocker.id} className="flex min-w-0 items-center gap-2">
           <Link to={createIssueDetailPath(blocker.identifier ?? blocker.id)}
             className="font-mono text-xs text-foreground underline-offset-2 hover:underline">
             {blocker.identifier ?? "Task"}

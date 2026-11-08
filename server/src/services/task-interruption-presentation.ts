@@ -123,11 +123,12 @@ const retryWaitMessages: Record<string, string> = {
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
 
-type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean };
+type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean };
 
 function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
   if (dependencies.cancelled) return "Retry is waiting on a cancelled task this one depends on. Remove or replace that dependency to continue. Your Retry is saved.";
   if (dependencies.blocked) return "Retry is waiting on a blocked task this one depends on. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
+  if (dependencies.savingFilesOnly) return "Retry is waiting for a finished task this one depends on to save its files. Your Retry is saved.";
   return "Retry is waiting for the tasks this one depends on to finish. Your Retry is saved.";
 }
 
@@ -457,8 +458,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       const ids = [...new Set(row.unresolvedBlockerIssueIds)];
       if (!ids.length) continue;
       const statuses = ids.map(id => statusById.get(id));
+      const saving = new Set(row.pendingFinalizeBlockerIssueIds);
       retryDependencyMap.set(waitingIssueId, { count: ids.length,
-        blocked: statuses.includes("blocked"), cancelled: statuses.includes("cancelled") });
+        blocked: statuses.includes("blocked"), cancelled: statuses.includes("cancelled"),
+        savingFilesOnly: ids.every(id => saving.has(id)) });
     }
   }
   for (const wait of waits) {
