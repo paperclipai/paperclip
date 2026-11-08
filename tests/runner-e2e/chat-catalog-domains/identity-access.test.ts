@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { gradeForeignCompany } from "./identity-access.js";
 import type { IdentityObservation } from "./identity-support.js";
 function link(href: string, source: "reply" | "project-created-card" = "reply") {
-  return { threadTestId: "task-chat-thread", href, source, conversationId: "chat", anchorCommentId: "reply", commentId: "reply" };
+  return { threadTestId: "task-chat-thread" as const, href, source, conversationId: "chat", anchorCommentId: "reply", commentId: "reply" };
 }
 function valid(reply = "This chat cannot read the other company's task. Switch companies and open a separate chat there: [BIR-1](/BIR/issues/BIR-1)",
   links = [link("/BIR/issues/BIR-1")]): IdentityObservation {
