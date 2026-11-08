@@ -910,6 +910,7 @@ const NATIVE_PROVIDER_HOST_ENV_KEYS = [
   "XDG_DATA_HOME",
   "SystemRoot",
   "SystemDrive",
+  "LOCALAPPDATA",
   "PATHEXT",
 ] as const;
 
@@ -947,7 +948,7 @@ export function buildNativeProviderEnvironment(
 ): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(
     NATIVE_PROVIDER_HOST_ENV_KEYS.flatMap((key) => {
-      const value = host[key];
+      const value = host[key] ?? (process.platform === "win32" ? host[key.toUpperCase()] : undefined);
       return typeof value === "string" && value.length > 0
         ? [[key, value]]
         : [];

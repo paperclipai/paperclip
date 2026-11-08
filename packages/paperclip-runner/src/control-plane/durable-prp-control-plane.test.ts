@@ -1861,6 +1861,24 @@ it("passes structured inputs to an external owner and preserves its replacement 
   expect(launcher.mock.calls[0][0].args).not.toContain("--connect-url");
 });
 
+it("preserves the Windows sandbox host environment through runner launch", () => {
+  let launched: RunnerProcessLaunchSpec | undefined;
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test", identity, ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    environment: { SystemRoot: "C:\\Windows", SystemDrive: "C:", LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local", PRIVATE_SECRET: "excluded" },
+    processLauncher: spec => {
+      launched = spec;
+      return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+        completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
+    },
+  });
+  expect(launched?.environment).toMatchObject({ SystemRoot: "C:\\Windows", SystemDrive: "C:", LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local" });
+  expect(launched?.environment.PRIVATE_SECRET).toBeUndefined();
+});
+
 it("preserves the controller-selected ACPX provider package root", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   spawnRunner({

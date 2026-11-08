@@ -1042,6 +1042,8 @@ impl SupervisedProcess {
             "PATH",
             "PATHEXT",
             "SystemRoot",
+            "SystemDrive",
+            "LOCALAPPDATA",
             "WINDIR",
             "HOME",
             "USERPROFILE",
