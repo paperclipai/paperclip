@@ -4,7 +4,7 @@ import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
 import { LEGACY_RECOVERY_CAUSE, settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
-import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
+const OWNER_GONE_ATTESTATION_KEY = "ownerGoneAttestation";
 
 /**
  * `legacy_interrupted_preparation_hold`: a run a graceful shutdown interrupted
