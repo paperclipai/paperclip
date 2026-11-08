@@ -12399,7 +12399,18 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            status: "in_progress",
+            // A staged reviewer/approver is executing work, but the issue is
+            // still in review. Preserve that lifecycle state while acquiring
+            // the run locks; all other checkouts retain the normal transition
+            // to in_progress.
+            status: sql`case
+              when ${issues.status} = 'in_review'
+                and ${issues.executionState}->>'status' = 'pending'
+                and ${issues.executionState}->'currentParticipant'->>'type' = 'agent'
+                and ${issues.executionState}->'currentParticipant'->>'agentId' = ${agentId}
+              then 'in_review'
+              else 'in_progress'
+            end`,
             startedAt: now,
             updatedAt: now,
           })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, inspectPendingExecutionStage, isLegacyIntermediateExecutionStageApproval, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -343,6 +343,62 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("explicit reviewer approval advances without a terminal status request", () => {
+      const reviewStageId = policy.stages[0].id;
+      const issue = {
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: {
+          status: "pending" as const,
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review" as const,
+          currentParticipant: { type: "agent" as const, agentId: qaAgentId },
+          returnAssignee: { type: "agent" as const, agentId: coderAgentId },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        executionDecision: "approve",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Review approved",
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeUserId: ctoUserId,
+        executionState: {
+          status: "pending",
+          currentStageType: "approval",
+          completedStageIds: [reviewStageId],
+        },
+      });
+      expect(result.patch.status).not.toBe("done");
+      expect(inspectPendingExecutionStage(issue)).toMatchObject({
+        status: "valid",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        hasLaterStages: true,
+      });
+      expect(isLegacyIntermediateExecutionStageApproval({
+        issue,
+        actorAgentId: qaAgentId,
+        requestedStatus: "done",
+      })).toBe(true);
+      expect(isLegacyIntermediateExecutionStageApproval({
+        issue,
+        actorAgentId: coderAgentId,
+        requestedStatus: "done",
+      })).toBe(false);
+    });
+
     it("lets a reviewer provide loose instructions for the next approval stage", () => {
       const reviewStageId = policy.stages[0].id;
       const approvalInstructions = "Please decide whether this is ready to ship, with any launch caveats.";
@@ -422,6 +478,38 @@ describe("issue execution policy transitions", () => {
       // status should NOT be overridden — caller can set done
       expect(result.patch.status).toBeUndefined();
     });
+
+    it("explicit final approval is the only stage decision that closes the issue", () => {
+      const reviewStageId = policy.stages[0].id;
+      const approvalStageId = policy.stages[1].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: ctoUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [reviewStageId],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        executionDecision: "approve",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        commentBody: "Final approval",
+      });
+
+      expect(result.patch.status).toBe("done");
+      expect(result.patch.executionState).toMatchObject({ status: "completed" });
+    });
   });
 
   describe("changes requested flow", () => {
@@ -466,6 +554,39 @@ describe("issue execution policy transitions", () => {
         stageId: reviewStageId,
         stageType: "review",
         outcome: "changes_requested",
+      });
+    });
+
+    it("explicit request changes returns to the executor", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        executionDecision: "request_changes",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Please fix the rollback case",
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        executionState: { status: "changes_requested" },
       });
     });
 
@@ -639,6 +760,38 @@ describe("issue execution policy transitions", () => {
       expect(result.patch).toEqual({ executionState: null });
       expect(result.decision).toBeUndefined();
       expect(result.workflowControlledAssignment).toBeUndefined();
+    });
+
+    it("cancels instead of requesting changes when the board is the active approver", () => {
+      const approvalStageId = policy.stages[1].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [policy.stages[0].id],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "cancelled",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+        commentBody: "Cancel the staged task",
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
     });
 
     it("board override can cancel a drifted pending review without rebuilding the pending stage", () => {

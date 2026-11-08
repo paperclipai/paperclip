@@ -47,6 +47,7 @@ type TransitionInput = {
   policy: IssueExecutionPolicy | null;
   previousPolicy?: IssueExecutionPolicy | null;
   requestedStatus?: string;
+  executionDecision?: "approve" | "request_changes";
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
   allowBoardOverride?: boolean;
@@ -60,6 +61,15 @@ type TransitionResult = {
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
 };
+
+export type PendingExecutionStageInspection =
+  | { status: "none" }
+  | {
+      status: "valid";
+      currentParticipant: IssueExecutionStagePrincipal;
+      hasLaterStages: boolean;
+    }
+  | { status: "invalid" };
 
 /**
  * Consecutive agent-initiated changes-requested rounds tolerated on one stage
@@ -657,6 +667,56 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
+/**
+ * Resolve a pending stage from the issue's live policy/state pair. Callers use
+ * this instead of inferring governance from a requested terminal status.
+ * Malformed or drifted pending state is reported separately so guards can
+ * fail closed.
+ */
+export function inspectPendingExecutionStage(issue: IssueLike): PendingExecutionStageInspection {
+  try {
+    const rawState = typeof issue.executionState === "object" && issue.executionState !== null
+      ? issue.executionState as Record<string, unknown>
+      : null;
+    if (rawState?.status !== PENDING_STATUS) return { status: "none" };
+    const state = parseIssueExecutionState(issue.executionState);
+    if (!state) return { status: "invalid" };
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (!policy || !state.currentStageId || !state.currentParticipant) {
+      return { status: "invalid" };
+    }
+    const stage = findStageById(policy, state.currentStageId);
+    if (!stage || stage.type !== state.currentStageType) {
+      return { status: "invalid" };
+    }
+    const approvedState = buildCompletedState(state, stage);
+    return {
+      status: "valid",
+      currentParticipant: state.currentParticipant,
+      hasLaterStages: nextPendingStageAfter(policy, stage, approvedState) !== null,
+    };
+  } catch {
+    return { status: "invalid" };
+  }
+}
+
+/** Temporary compatibility for callers that still encode approval as done. */
+export function isLegacyIntermediateExecutionStageApproval(input: {
+  issue: IssueLike;
+  actorAgentId: string;
+  requestedStatus: unknown;
+}): boolean {
+  if (input.requestedStatus !== "done" || input.issue.status !== "in_review") {
+    return false;
+  }
+  const inspection = inspectPendingExecutionStage(input.issue);
+  return inspection.status === "valid" &&
+    inspection.hasLaterStages &&
+    inspection.currentParticipant.type === "agent" &&
+    inspection.currentParticipant.agentId === input.actorAgentId &&
+    input.issue.assigneeAgentId === input.actorAgentId;
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -667,12 +727,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const explicitAssignee = assigneePrincipal(input.requestedAssigneePatch);
   const currentStage = input.policy ? findStageById(input.policy, existingState?.currentStageId) : null;
   const requestedStatus = input.requestedStatus;
+  const executionDecision = input.executionDecision;
   const activeStage = currentStage && existingState?.status === PENDING_STATUS ? currentStage : null;
   const effectiveReviewRequest = input.reviewRequest === undefined
     ? existingState?.reviewRequest ?? null
     : input.reviewRequest;
 
   if (!input.policy) {
+    if (executionDecision) {
+      throw unprocessable("executionDecision requires an active review or approval stage");
+    }
     if (existingState) {
       patch.executionState = null;
       if (input.issue.status === "in_review" && existingState.returnAssignee) {
@@ -694,6 +758,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    if (executionDecision) {
+      throw unprocessable("The active execution stage no longer exists in the issue policy");
+    }
     // The stored stage id no longer resolves against the (possibly just
     // replaced) policy — e.g. the caller PATCHed a brand-new executionPolicy
     // in the same request that regenerated stage ids. When a review cycle is
@@ -729,6 +796,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
+    }
+    // Cancellation is an issue lifecycle operation, never a disguised stage
+    // decision. Route authorization decides who may cancel; the execution
+    // policy must always terminate its pending state unambiguously.
+    if (requestedStatus === "cancelled") {
+      patch.executionState = null;
+      return { patch };
+    }
+    if (executionDecision && !principalsEqual(currentParticipant, actor)) {
+      throw unprocessable("Only the active reviewer or approver can decide the current execution stage");
     }
 
     // An escalated review is deliberately held by a human who is not in the
@@ -770,6 +847,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       return { patch };
     }
     if (!escalatedHold && !stageHasParticipant(activeStage, currentParticipant)) {
+      if (executionDecision) {
+        throw unprocessable("The active execution-stage participant is no longer eligible");
+      }
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
         exclude: existingState?.returnAssignee ?? null,
@@ -800,7 +880,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     if (principalsEqual(currentParticipant, actor)) {
-      if (requestedStatus === "done") {
+      const activeDecision = executionDecision ??
+        (requestedStatus === "done"
+          ? "approve"
+          : requestedStatus && requestedStatus !== "in_review"
+            ? "request_changes"
+            : undefined);
+
+      if (activeDecision === "approve") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
@@ -813,6 +900,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const nextStage = nextPendingStageAfter(input.policy, activeStage, approvedState);
 
         if (!nextStage) {
+          // The explicit operation owns the lifecycle transition. Legacy
+          // callers still supply status=done themselves.
+          if (executionDecision === "approve") patch.status = "done";
           patch.executionState = approvedState;
           return {
             patch,
@@ -864,7 +954,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         return { patch };
       }
 
-      if (requestedStatus && requestedStatus !== "in_review") {
+      if (activeDecision === "request_changes") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
@@ -977,6 +1067,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     return { patch };
+  }
+
+  if (executionDecision) {
+    throw unprocessable("executionDecision requires an active review or approval stage");
   }
 
   const shouldStartWorkflow =

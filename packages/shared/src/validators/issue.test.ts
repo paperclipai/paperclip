@@ -37,6 +37,11 @@ describe("issue validators", () => {
     expect(updateIssueSchema.parse({}).expectedExecutionPolicy).toBeUndefined();
     expect(updateIssueSchema.safeParse({ expectedExecutionPolicy: [] }).success).toBe(false);
   });
+  it("accepts only explicit execution-stage decision values", () => {
+    expect(updateIssueSchema.parse({ executionDecision: "approve" }).executionDecision).toBe("approve");
+    expect(updateIssueSchema.parse({ executionDecision: "request_changes" }).executionDecision).toBe("request_changes");
+    expect(updateIssueSchema.safeParse({ executionDecision: "done" }).success).toBe(false);
+  });
   it("accepts private visibility without adding defaults to updates", () => {
     expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
     expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");

@@ -363,6 +363,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  isLegacyIntermediateExecutionStageApproval,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -14323,7 +14324,7 @@ export function issueRoutes(
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionPolicy?: Record<string, unknown> | null; executionState?: Record<string, unknown> | null },
     requestedStatus: unknown = req.body.status,
   ) {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
@@ -14338,6 +14339,16 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // Compatibility only: a legacy reviewer may still send status=done. Let
+    // that request reach the policy transition only when the live issue has a
+    // valid pending stage owned by this actor and an uncompleted later stage.
+    // A final-stage, malformed, stale, or wrong-participant request remains
+    // rejected, so this cannot weaken terminal-status mediation.
+    if (isLegacyIntermediateExecutionStageApproval({
+      issue,
+      actorAgentId: req.actor.agentId,
+      requestedStatus,
+    })) return;
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
     if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
@@ -14362,6 +14373,14 @@ export function issueRoutes(
         Object.keys(req.body).some(key => key !== "status" && key !== "expectedStatusVersion")
       )) {
         throw unprocessable("expectedStatusVersion requires a status-only backlog-to-todo promotion");
+      }
+      if (req.body?.executionDecision !== undefined && req.body.status !== undefined) {
+        throw unprocessable("executionDecision cannot be combined with status");
+      }
+      if (req.body?.executionDecision !== undefined && Object.keys(req.body).some(
+        (key) => !["executionDecision", "comment", "commentClientRequestId", "attachmentIds"].includes(key),
+      )) {
+        throw unprocessable("executionDecision may only be combined with its decision comment and attachments");
       }
       next();
     },
@@ -14464,6 +14483,7 @@ export function issueRoutes(
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
+        executionDecision,
         reopen: reopenRequested,
         resume: resumeRequested,
         interrupt: interruptRequested,
@@ -14650,6 +14670,7 @@ export function issueRoutes(
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
         req.body.status !== undefined ||
+        executionDecision !== undefined ||
         normalizedAssigneeAgentId !== undefined ||
         req.body.assigneeUserId !== undefined ||
         Array.isArray(req.body.blockedByIssueIds) ||
@@ -14711,6 +14732,7 @@ export function issueRoutes(
           actorId: actor.actorId,
         });
       const effectiveMoveToTodoRequested =
+        executionDecision === undefined &&
         !assigneeSelfCommentOnTerminal &&
         !(isBlocked && !!commentBody && (await getExecutionBlocker(db, existing.companyId, existing.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
@@ -14752,6 +14774,7 @@ export function issueRoutes(
       const isAgentWorkUpdate =
         req.actor.type === "agent" &&
         (Object.keys(updateFields).length > 0 ||
+          executionDecision !== undefined ||
           reviewRequest !== undefined ||
           hiddenAtRaw !== undefined);
 
@@ -14897,6 +14920,7 @@ export function issueRoutes(
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
+        executionDecision,
         requestedAssigneePatch: {
           assigneeAgentId: normalizedAssigneeAgentId,
           assigneeUserId:
