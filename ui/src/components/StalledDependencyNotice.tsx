@@ -16,7 +16,12 @@ import { describeError } from "../api/errors";
  * each one from here, with the child's own Retry, without opening it.
  */
 export function StalledDependencyNotice({ stalled }: { stalled: IssueBlockerStalledWakeContext[] | null | undefined }) {
-  const entries = stalled ?? [];
+  // Most tasks have none: render nothing and read nothing.
+  if (!stalled || stalled.length === 0) return null;
+  return <StalledDependencyList entries={stalled} />;
+}
+
+function StalledDependencyList({ entries }: { entries: IssueBlockerStalledWakeContext[] }) {
   // The child's own task state decides whether Retry is offered, as on its page.
   const children = useQueries({
     queries: entries.map(entry => {

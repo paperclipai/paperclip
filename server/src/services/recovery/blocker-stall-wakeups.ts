@@ -267,9 +267,14 @@ export async function verifyBlockerStallWake(db: Db, input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   requestedByActorType: string | null | undefined;
 }): Promise<boolean> {
-  if (input.contextSnapshot?.wakeReason !== ISSUE_BLOCKER_STALLED_WAKE_REASON) return false;
-  if (input.requestedByActorType !== "system") return false;
-  const stall = input.contextSnapshot.blockerStall as Partial<IssueBlockerStalledWakeContext> | undefined;
+  const context = input.contextSnapshot;
+  // A resource wait (AI connection busy, workspace busy) replaces the run with
+  // a server-created retry that keeps the context but not the wake reason or
+  // request. It carries the stall that admitted the original run.
+  const serverRetry = typeof context?.retryOfRunId === "string" && context.retryOfRunId.length > 0;
+  if (!context || (context.wakeReason !== ISSUE_BLOCKER_STALLED_WAKE_REASON && !serverRetry)) return false;
+  if (!serverRetry && input.requestedByActorType !== "system") return false;
+  const stall = context.blockerStall as Partial<IssueBlockerStalledWakeContext> | undefined;
   const stalledIssueId = typeof stall?.stalledIssueId === "string" ? stall.stalledIssueId : null;
   const actionId = typeof stall?.recoveryAction?.id === "string" ? stall.recoveryAction.id : null;
   if (!stalledIssueId || !actionId || stalledIssueId === input.issueId) return false;

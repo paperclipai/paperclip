@@ -40,6 +40,7 @@ import {
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -862,6 +863,23 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledWake!.id));
     expect(run?.status).toBe("succeeded");
     expect(run?.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] });
+
+    // A resource wait replaces the run with a server-created retry that keeps
+    // the stall context but not the wake reason. The retry gate still admits it.
+    const retryGate = async (contextSnapshot: Record<string, unknown>) => {
+      const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+        status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+        retryOfRunId: stalledWake!.id, contextSnapshot }).returning();
+      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id, now: new Date() });
+    };
+    const replacement = { ...(run!.contextSnapshot as Record<string, unknown>), wakeReason: "bounded_transient_heartbeat_retry",
+      retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
+    expect(await retryGate(replacement)).toMatchObject({ allowed: true });
+    const { blockerStall: _stall, ...withoutStall } = replacement;
+    expect(await retryGate(withoutStall)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+    // Once the stall's action is no longer current, the retry waits for the blocker like any other.
+    await db.update(issueRecoveryActions).set({ outcome: "restored" }).where(eq(issueRecoveryActions.id, action.id));
+    expect(await retryGate(replacement)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
   });
 
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
