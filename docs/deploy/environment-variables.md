@@ -14,6 +14,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_BIND_HOST` | (unset) | Required when `PAPERCLIP_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `PAPERCLIP_BIND` for new setups |
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
+| `DATABASE_URL_FILE` | (unset) | Path to a file holding the connection string. When set, the password is re-read from this file on every pool connection, and `SIGHUP` closes the pool so the next query reconnects with a freshly written credential — a credential rotation without a restart. See [Credential reload](./database.md#credential-reload-sighup). |
 | `PAPERCLIP_HOME` | `~/.paperclip` | Base directory for all Paperclip data |
 | `PAPERCLIP_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
