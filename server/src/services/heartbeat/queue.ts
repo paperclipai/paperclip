@@ -2517,18 +2517,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // temporary hold is saved as a deferred intent that names the refusal and
     // the hold-release event that promotes it, never written as a terminal
     // skip. Promotion runs normal admission again, once.
-    // The release drain promotes a saved message behind the task's latest
-    // terminal run. A task that never ran has none: its message stays in the
-    // task, and stranded-work recovery starts the task once the hold lifts.
+    // The release drain promotes a saved message behind the task's latest run,
+    // once that run is terminal; a run still stopping after a pause commits is
+    // that run. A task that never ran has none: its message stays in the task,
+    // and stranded-work recovery starts the task once the hold lifts.
     const canSaveDeferredMessage = async () => {
       if (executionWaitRequestId || caseRequest || durableRequest || !issueId || !isUuidLike(issueId) ||
           opts.requestedByActorType !== "user" || !wakeCommentId) return false;
-      const [latest] = await db.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode })
-        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, agent.companyId),
-          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`))
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-      return Boolean(latest && isHeartbeatRunTerminalStatus(latest.status) &&
-        (latest.runtimeMode === "legacy" || latest.runtimeMode === "native"));
+      const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`))
+        .limit(1);
+      return Boolean(latest);
     };
     const saveDeferredMessage = async (refusal: string, message: string, details: Record<string, unknown> = {}) => {
       const savedIssueId = issueId!;

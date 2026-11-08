@@ -239,6 +239,36 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
+  // A company pause stops runs asynchronously. A message posted while the
+  // task's run is still stopping is saved behind that run, and delivered once
+  // after the run ends and the pause lifts.
+  it("saves a message posted while the paused company's run is still stopping, and delivers it once", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted while the run was stopping." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
+    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution",
+      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: "company.inactive" }) }) })]);
+    // The run stops without reading the message; then the pause lifts.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
   // A task that never ran has no terminal run for the release drain to promote
   // a saved message behind. Its message stays in the task, and stranded-work
   // recovery starts the task once the pause lifts.
