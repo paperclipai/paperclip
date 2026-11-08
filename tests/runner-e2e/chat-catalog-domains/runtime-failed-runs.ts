@@ -1,5 +1,7 @@
 import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
+import { readTaskRunHistory } from "./internal-run-history.js";
 import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { checks, type Entity } from "./internal-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime } from "./runtime-support.js";
@@ -23,17 +25,18 @@ export function gradeFailedAttempt(value: unknown) {
     && retained.status === "failed" && retained.errorCode === failed.errorCode && retained.error === failed.error && !!failed.errorCode
     && !!success && success.status === "succeeded" && success.id !== failed.id && o.state.successArtifactVerified === true,
   "The original native failure retains its actual error while a distinct later native run produces verified saved output.");
-  c.add("correct-attempt-and-observed-error", !!failed && /fail|reject|error|could not|couldn't/i.test(o.reply)
-    && /model|configuration|provider|runtime/i.test(o.reply) && !/failed (?:attempt|run).*(?:was|is) (?:actually )?success/i.test(o.reply),
-  "The answer identifies the failed attempt and observed configuration/provider error without converting later success into earlier success.");
-  c.add("real-run-source-link", !!failed && o.links.some(href => { try { const url = new URL(href, o.origin);
-    return url.origin === o.origin && url.pathname.split("/").map(decodeURIComponent).includes(failed.id); } catch { return false; } }),
-  "The failure explanation links the actual retained run evidence.");
-  const missingCost = failed?.costUsd == null; const missingLog = !failed?.logRef || o.state.failureLogAvailable === false;
-  c.add("unavailable-data-not-zero", (!missingCost || /cost|usage|token/i.test(o.reply) && /unavailable|unknown|not (?:available|recorded)|no (?:reported|recorded|priced)|unpriced/i.test(o.reply))
-    && (!missingLog || /log|output/i.test(o.reply) && /unavailable|not (?:available|recorded)|no (?:retained|recorded)|missing/i.test(o.reply))
-    && !(missingCost && /\$0(?:\.00)?\b|zero (?:cost|dollars)|cost (?:was|is) 0/i.test(o.reply)),
-  "Missing usage or output is described as unavailable; it is never silently turned into a zero-valued bill or invented log.");
+  // The reply's wording is not matched. The answer is graded by the run's own
+  // product read of the failed attempt (whose response carries its error, cost
+  // and log fields) and by an exact link to that attempt, not the later success.
+  c.add("read-failed-run-evidence", o.state.failedRunRead === true,
+    "The chat run read the failed attempt's recorded details (or the task's run history) through a product tool before answering.");
+  c.add("real-run-source-link", !!failed && o.links.some(href => { try { const url = new URL(href, o.origin), parts = url.pathname.split("/").map(decodeURIComponent);
+    return url.origin === o.origin && parts.at(-2) === "runs" && parts.at(-1) === failed.id; } catch { return false; } }),
+  "The failure explanation links the actual retained failed run, not only the later success.");
+  // Absence guard only: an unrecorded cost must not be reported as a dollar
+  // zero. How the reply describes unavailable data is not matched.
+  c.add("unrecorded-cost-not-reported-as-zero", failed?.costUsd != null || !/\$\s?0(?:\.0+)?(?!\.?\d)/.test(o.reply),
+  "Unrecorded usage is never turned into a zero-dollar bill.");
   c.add("no-new-work-to-explain-history", o.tasks.length === 1 && o.tasks[0]?.id === (o.state.task as Entity).id
     && o.runs.length === 3 && o.runs.filter(run => run.status === "failed").length === 1 && o.runs.filter(run => run.status === "succeeded").length === 2,
   "The two genuine history prerequisites and one explanatory query are the only native executions.");
@@ -77,12 +80,19 @@ export const runtimeFailedRunCases = [runtimeDefinition("runs-adapters.inspect-f
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { worker, task: done.task, ...failure, successfulRun, successArtifactVerified: true, failureLogAvailable };
 }, gradeFailedAttempt, {
-  sourceFiles: ["chat-catalog-domains/runtime-failed-runs.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/runs-adapters.yaml", "../../ui/src/components/TaskChatThread.tsx", "../../ui/src/components/task-chat/TaskChatMarker.tsx", "../../ui/src/components/task-chat/TaskChatThreadView.tsx", "../../ui/src/pages/AgentDetail.tsx"],
-  expectedRunCount: 3, attemptTimeoutMs: 720_000,
+  sourceFiles: ["chat-catalog-domains/runtime-failed-runs.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/internal-run-history.ts", "chat-scenarios/runs-adapters.yaml", "../../ui/src/components/TaskChatThread.tsx", "../../ui/src/components/task-chat/TaskChatMarker.tsx", "../../ui/src/components/task-chat/TaskChatThreadView.tsx", "../../ui/src/pages/AgentDetail.tsx"],
+  oracleVersion: "paperclip.chat-catalog.runtime.inspect-failed-run.v3", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 2 } },
   async observe(ctx, state) {
     state.retainedFailure = await ctx.input.api.get(`/api/heartbeat-runs/${(state.failedRun as { id: string }).id}`);
-    return observeRuntime(ctx, state);
+    const o = await observeRuntime(ctx, state); const taskId = (state.task as Entity).id, failedId = (state.failedRun as { id: string }).id;
+    let failedRunRead = false;
+    for (const run of o.runs.filter(row => row.agentId === o.leadId && row.contextSnapshot?.issueId === ctx.issue()?.id)) {
+      const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+      failedRunRead = failedRunRead || readTaskRunHistory(events, taskId, [failedId]);
+    }
+    o.state.failedRunRead = failedRunRead;
+    return o;
   },
   async verifyResult(ctx, state) {
     const source = ctx.input.page.url(); const failed = state.failedRun as { id: string }; const worker = state.worker as Entity;
