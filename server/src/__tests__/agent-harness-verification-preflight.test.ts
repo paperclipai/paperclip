@@ -6,6 +6,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { eq } from "drizzle-orm";
 import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, environments, plugins } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
+import * as modelCatalog from "../services/openrouter-models.js";
+import * as adapters from "../adapters/index.js";
+import { harnessPoolService } from "../services/harness-pools.js";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -107,6 +110,34 @@ describePostgres("saved harness account preflight", () => {
     expect(probe.mock.calls[0][1].config.env).toMatchObject({ OPENROUTER_API_KEY: "fixture-preflight-key" });
     expect(release).toHaveBeenCalledExactlyOnceWith("released");
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("verifies the saved native pool member instead of ambient credentials (revoked=%s)", async revoked => {
+    vi.spyOn(modelCatalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Fixture model" }]);
+    const pool = await harnessPoolService(db).save(agent.companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: "Lifecycle Pool", enabled: true, mode: "failover", members: [{
+        id: randomUUID(), harness: { type: "opencode" }, connection: { mode: "delegated", provider: "openrouter", method: "api_key", ...account },
+        model: "openrouter/anthropic/claude-sonnet-4.5",
+      }],
+    } }, userId);
+    [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      runtimeConfig: { harnessPool: { poolId: pool.id } }, lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+    }).where(eq(agents.id, agent.id)).returning();
+    const nativeAdapter = adapters.requireServerAdapter("paperclip_runner");
+    const ambient = vi.fn().mockResolvedValue({ ...passed, adapterType: "paperclip_runner", status: "fail", checks: [] });
+    vi.spyOn(adapters, "requireServerAdapter").mockReturnValue({ ...nativeAdapter, testEnvironment: ambient });
+    if (revoked) {
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      await expect(verify()).rejects.toThrow("No pool account is permitted");
+      expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+    } else {
+      await expect(verify()).resolves.toBe("complete");
+      expect(probe).toHaveBeenCalledOnce();
+      expect(probe.mock.calls[0][1].config).toMatchObject({ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.5" });
+      expect(probe.mock.calls[0][1].config.env).toMatchObject({ OPENROUTER_API_KEY: "fixture-preflight-key" });
+      expect(release).toHaveBeenCalledExactlyOnceWith("released");
+    }
+    expect(ambient).not.toHaveBeenCalled();
   });
 
   it("checks account access again after allocation and releases on revocation", async () => {

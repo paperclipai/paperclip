@@ -219,10 +219,23 @@ app-server passed. Focused tests cover central management, agent choices, frozen
 admission, shared/scoped cooldowns and safe successors. These controlled tests do
 not qualify real subscription handoff or physical Stop/restart behavior.
 
-Task 6 remains open. The Windows binary builds, but the physical native test times
-out; upstream verified process snapshots do not support Windows execution. The
-browser extension is disconnected, so actual UI acceptance is unavailable. SSH,
-sandbox and live Claude-to-Codex continuation remain unqualified. Broad regression
-and CI failures retain their original evidence and must be accounted for before
-release. Do not merge upstream or describe this plan as fully completed while
-these gates are open. Local develop integration is explicitly authorized for testing.
+Follow-up verification on local develop `8f65a13dc0` corrects the earlier blanket
+Windows limitation: the native Codex server vertical slice passes on Windows with
+the real Rust Runner and a controlled provider (1/1), including durable completion
+and session resume. Native Codex Stop tests pass 2/2; portable recovery tests pass
+5/5, including restarting the provider without repeating its completed turn. The
+Unix-only interrupted-startup case executes zero tests on Windows and is not proof.
+These results do not qualify every managed provider profile or a live subscription.
+
+The browser extension now works. Central pool save, member ordering, reload, and
+refusal of a disabled pool are verified. The real new-agent journey exposed a
+background verification path that ignored `runtimeConfig.harnessPool`; its fix uses
+the shared effective binding reader and the existing managed account probe. The
+new regressions prove that the selected member is tested and a revoked account
+cannot fall back to ambient credentials. The full preflight file passes 11/11.
+
+Task 6 remains open for the live-account journey, physical controller-crash
+continuation, and any selected SSH/sandbox qualification. Full upstream CI passed
+on `aefc630f4a`; follow-up commits require their own checks. Earlier failures retain
+their original evidence. Do not describe this plan as fully completed while the
+selected acceptance gates are open. Local develop integration remains authorized.

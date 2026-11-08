@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companies, type Db } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiRuntimeConnectionBindingSchema, effectiveAiConnectionInput } from "@paperclipai/shared";
 import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
@@ -65,7 +65,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     const responsibleUserId = agent.lifecycleOperation?.responsibleUserId ?? company.defaultResponsibleUserId;
     const context = { consumerType: "agent" as const, consumerId: agent.id, actorType: "system" as const,
       actorId: "agent-lifecycle", responsibleUserId };
-    let binding = agent.runtimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+    let binding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(agent.runtimeConfig));
     let config = agent.adapterConfig;
     if (binding?.mode === "router") {
       const selected = await aiConnectionRouterService(db, manager).resolve({ companyId: agent.companyId,
