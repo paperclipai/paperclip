@@ -2172,7 +2172,8 @@ describe("agent permission routes", () => {
   });
 
   it("does not let a CEO denied hiring restore it for itself or grant it to another agent", async () => {
-    const ceo = { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true } };
+    const ceo = { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true,
+      ceoHiringDeniedBy: { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" } } };
     const worker = { ...baseAgent, permissions: { canCreateAgents: false, canCreateSkills: true } };
     mockAgentService.getById.mockImplementation(async (id: string) => (id === ceo.id ? ceo : id === worker.id ? worker : null));
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
@@ -2192,6 +2193,29 @@ describe("agent permission routes", () => {
     }
     expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("records the board user who turns a CEO's hiring off, and only then", async () => {
+    const ceo = { ...baseAgent, role: "ceo", permissions: { canCreateAgents: true, canCreateSkills: true } };
+    mockAgentService.getById.mockResolvedValue(ceo);
+    mockAgentService.updatePermissions.mockResolvedValue({ ...ceo, permissions: { canCreateAgents: false, canCreateSkills: true } });
+    const app = await createApp({ type: "board", userId: "board-user", source: "local_implicit", isInstanceAdmin: true, companyIds: [companyId] });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      canCreateAgents: false,
+      ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "board-user", at: expect.any(String) }),
+    }));
+
+    mockAgentService.updatePermissions.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, permissions: { canCreateAgents: true } });
+    await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true });
   });
 
   it("rejects CEO permission updates outside the caller company scope", async () => {
