@@ -6,6 +6,7 @@ import {
   subscribeDatabaseWork,
   costEvents,
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -61,6 +62,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(completionContracts);
     await db.delete(issues);
     await db.delete(agents);
@@ -404,6 +406,22 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .set({ processPid: 2_000_000_000 })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      reason: "issue_assigned",
+      status: "claimed",
+      claimedAt: new Date(),
+      runId: runningRunId,
+      payload: { issueId },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ wakeupRequestId: wakeId })
+      .where(eq(heartbeatRuns.id, runningRunId));
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -431,6 +449,17 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(run?.status).toBe("interrupted");
     expect(run?.errorCode).toBe("orphaned_running_run");
 
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("failed");
+    expect(wake?.finishedAt).toBeInstanceOf(Date);
+
     const lock = await db
       .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
       .from(issues)
@@ -456,6 +485,56 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       "agent.task_run",
       expect.objectContaining({ agent_id: agentId, state: "interrupted" }),
     );
+  });
+
+  it("finishes a claimed wake left on an already-terminal orphaned run with no issue lock", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const wakeId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      reason: "issue_assigned",
+      status: "claimed",
+      claimedAt: new Date(),
+      finishedAt: null,
+      runId: runningRunId,
+      payload: { issueId },
+    });
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      errorCode: "orphaned_running_run",
+      error: "run terminalized by recovery backstop: process and sandbox gone while heartbeat_runs.status stayed live",
+      finishedAt: new Date(),
+      wakeupRequestId: wakeId,
+      contextSnapshot: { issueId },
+    }).where(eq(heartbeatRuns.id, runningRunId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("failed");
+    expect(wake?.finishedAt).toBeInstanceOf(Date);
+
+    const again = await heartbeat.sweepStaleIssueLocks();
+    expect(again).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    const settled = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId))
+      .then((rows) => rows[0]);
+    expect(settled?.status).toBe("failed");
   });
 
   it.each(["in_progress", "done"])("preserves a live legacy controller lease when the issue is %s", async (status) => {

@@ -5,6 +5,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
@@ -6074,6 +6075,119 @@ export function recoveryService(
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // A claimed wake with finishedAt null is still "in flight". Assignment and
+  // comment reclaim refuse a new run while that row exists, even after the
+  // linked heartbeat has already been interrupted as orphaned_running_run.
+  const OPEN_WAKE_STATUSES_BLOCKING_RECLAIM = [
+    "queued",
+    "claimed",
+    "deferred_issue_execution",
+  ] as const;
+  const ORPHANED_RUNNING_RUN_ERROR_CODES = [
+    "orphaned_running_run",
+    "orphaned_running_run_issue_terminal",
+  ] as const;
+
+  function wakeStatusForTerminalRun(status: string) {
+    if (status === "succeeded") return "completed";
+    if (status === "cancelled") return "cancelled";
+    return "failed";
+  }
+
+  async function finishOpenWakesForTerminalRun(
+    tx: Db,
+    run: {
+      id: string;
+      companyId: string;
+      wakeupRequestId: string | null;
+      status: string;
+      error: string | null;
+    },
+    now: Date,
+  ) {
+    if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return;
+    const link = run.wakeupRequestId
+      ? or(
+          eq(agentWakeupRequests.runId, run.id),
+          eq(agentWakeupRequests.id, run.wakeupRequestId),
+        )
+      : eq(agentWakeupRequests.runId, run.id);
+    await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
+    await tx
+      .update(agentWakeupRequests)
+      .set({
+        status: wakeStatusForTerminalRun(run.status),
+        finishedAt: now,
+        error:
+          run.error ??
+          `wake finished because heartbeat run ${run.id} is ${run.status}`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, run.companyId),
+          link,
+          inArray(agentWakeupRequests.status, [
+            ...OPEN_WAKE_STATUSES_BLOCKING_RECLAIM,
+          ]),
+          isNull(agentWakeupRequests.finishedAt),
+        ),
+      );
+  }
+
+  // Historical orphan terminalizations committed the run and cleared the issue
+  // lock without finishing the wake. Those issues no longer appear in the lock
+  // scan, so a later assignment still sees status=claimed and finishedAt=null.
+  async function finishOpenWakesForTerminalOrphanedRuns() {
+    const stuckRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(
+        agentWakeupRequests,
+        and(
+          eq(agentWakeupRequests.companyId, heartbeatRuns.companyId),
+          or(
+            eq(agentWakeupRequests.runId, heartbeatRuns.id),
+            eq(heartbeatRuns.wakeupRequestId, agentWakeupRequests.id),
+          ),
+          inArray(agentWakeupRequests.status, [
+            ...OPEN_WAKE_STATUSES_BLOCKING_RECLAIM,
+          ]),
+          isNull(agentWakeupRequests.finishedAt),
+        ),
+      )
+      .where(
+        and(
+          inArray(heartbeatRuns.errorCode, [
+            ...ORPHANED_RUNNING_RUN_ERROR_CODES,
+          ]),
+          inArray(heartbeatRuns.status, [
+            "succeeded",
+            "interrupted",
+            "failed",
+            "cancelled",
+            "timed_out",
+          ]),
+        ),
+      );
+
+    const seen = new Set<string>();
+    for (const run of stuckRuns) {
+      if (seen.has(run.id)) continue;
+      seen.add(run.id);
+      const now = new Date();
+      await db.transaction(async (tx) => {
+        await finishOpenWakesForTerminalRun(tx, run, now);
+      });
+    }
+  }
+
   // Backstop reconciler: terminalizes a "running" run that can no longer reach a
   // terminal status on its own. The run finalizer writes the terminal status in
   // a step that is separate from the agent status=done PATCH. When the teardown
@@ -6272,7 +6386,7 @@ export function recoveryService(
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: boundIssueId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });
       }
-      return tx
+      const [written] = await tx
         .update(heartbeatRuns)
         .set({
           status: terminalStatus,
@@ -6284,8 +6398,13 @@ export function recoveryService(
           updatedAt: now,
         })
         .where(eligible)
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        .returning();
+      if (!written) return null;
+      // Same transaction as the run write. A later sweep cannot be the only
+      // thing that releases the claim: the wake must already be terminal when
+      // the orphaned run commits.
+      await finishOpenWakesForTerminalRun(tx, written, now);
+      return written;
     });
     if (!updated) {
       // Another path finalized the run between the read and this write. Keep
@@ -6355,6 +6474,8 @@ export function recoveryService(
       issueIds: [] as string[],
       terminalizedRunIds: [] as string[],
     };
+
+    await finishOpenWakesForTerminalOrphanedRuns();
 
     const candidates = await db
       .select({
