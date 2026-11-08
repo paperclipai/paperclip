@@ -505,16 +505,18 @@ export async function prepareAcpxRuntimeSandbox(input: {
         ...(input.environment?.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG ? [codexObservabilityToml(JSON.parse(input.environment.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG))] : []),
         "[features]",
         "shell_snapshot = false",
-        "[shell_environment_policy]", 'inherit = "all"', "ignore_default_excludes = true",
-        `include_only = ${JSON.stringify([...new Set([
-          "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
-          "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-          ...CERTIFICATE_ENVIRONMENT_KEYS,
-          ...taskEnvironmentKeys,
-          // Unselected provider/config secrets keep Codex's default shell exclusions;
-          // only Paperclip's scoped API token is required by Bash/curl skills.
-          ...Object.keys(input.environment ?? {}).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
-        ])])}`,
+        ...(input.environment?.PAPERCLIP_AGENT_KEY_ID || taskEnvironmentKeys.length > 0 ? [
+          "[shell_environment_policy]", 'inherit = "all"', "ignore_default_excludes = true",
+          `include_only = ${JSON.stringify([...new Set([
+            "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+            "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            ...CERTIFICATE_ENVIRONMENT_KEYS,
+            ...taskEnvironmentKeys,
+            // Unselected provider/config secrets keep Codex's default shell exclusions;
+            // only Paperclip's scoped API token is required by Bash/curl skills.
+            ...Object.keys(input.environment ?? {}).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
+          ])])}`,
+        ] : []),
         "",
       ].join("\n"),
     );
