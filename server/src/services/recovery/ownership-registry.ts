@@ -32,6 +32,7 @@ import {
   settleNativeAcceptedResultLease,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
+import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -208,7 +209,7 @@ function nrfTokenLeaseOwner(row: NrfRow, scope: NativeTokenLeaseKind): RecordOwn
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "issueId" | "status" | "controllerBootId"
   | "controllerLeaseExpiresAt" | "processPid" | "processGroupId" | "processStartedAt" | "processHostHash" | "updatedAt"
-  | "runnerProfileJson">;
+  | "runnerProfileJson" | "controllerProcess">;
 
 const runColumns = {
   id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId, status: heartbeatRuns.status,
@@ -217,6 +218,7 @@ const runColumns = {
   processStartedAt: heartbeatRuns.processStartedAt, processHostHash: heartbeatRuns.processHostHash,
   updatedAt: heartbeatRuns.updatedAt,
   runnerProfileJson: heartbeatRuns.runnerProfileJson,
+  controllerProcess: heartbeatRuns.controllerProcess,
 };
 
 function runKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
@@ -243,6 +245,17 @@ function runProcessStamp(row: RunRow, scope: string): LocalOwnerStamp {
     pid: row.processPid, processStartedAt: row.processStartedAt?.toISOString() ?? null,
     processGroupId: row.processGroupId,
   };
+}
+
+const legacyControllerLeaseWhere = and(eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
+  isNotNull(heartbeatRuns.controllerBootId), sql`${heartbeatRuns.controllerLeaseExpiresAt} > now()`);
+
+function legacyControllerLeaseOwner(row: RunRow): RecordOwner {
+  const stamp = legacyControllerOwnerStamp(row);
+  if (stamp) return { kind: "process", stamp };
+  return { kind: "fence", stamp: { kind: "remote", scope: "legacy_controller_lease", generation: null,
+    fenceToken: row.controllerBootId },
+  fence: { currentFenceToken: row.controllerBootId, currentGeneration: null, leaseExpiresAt: row.controllerLeaseExpiresAt } };
 }
 
 // ----------------------------------------------------------------------------
@@ -744,10 +757,27 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       })) };
     },
   },
-  runKind("legacy_controller_lease", "Legacy controller lease", "ownership",
-    and(eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"), isNotNull(heartbeatRuns.controllerBootId)),
-    row => ({ kind: "process", stamp: { kind: "local", scope: "legacy_controller_lease", generation: null, host: null,
-      processSpace: null, bootId: row.controllerBootId, pid: null, processStartedAt: null } })),
+  {
+    // Shared path since Phase 2: the claim records its controller process
+    // (`controller_process`, bound to the boot id); settle expires the lease of
+    // a controller proven gone, and live-run recovery settles the run now
+    // instead of after lease expiry plus the age guard. Outstanding leases
+    // only. Rows saved before that column, and revoked leases, stay boot-id
+    // fences: alive while leased, then handled by the existing revocation.
+    ...runKind("legacy_controller_lease", "Legacy controller lease", "ownership", legacyControllerLeaseWhere,
+      legacyControllerLeaseOwner),
+    listForRuns: async (db, runIds) => {
+      const records: InProgressRecord[] = [];
+      for (let index = 0; index < runIds.length; index += 500) {
+        const rows = await db.select(runColumns).from(heartbeatRuns)
+          .where(and(legacyControllerLeaseWhere, inArray(heartbeatRuns.id, [...runIds.slice(index, index + 500)])));
+        records.push(...(rows as RunRow[]).map(row => ({ recordId: row.id, companyId: row.companyId, runId: row.id,
+          issueId: row.issueId, owner: legacyControllerLeaseOwner(row), updatedAt: row.updatedAt })));
+      }
+      return records;
+    },
+    settle: settleLegacyControllerLease,
+  },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),
     row => row.processPid ? { kind: "process", stamp: runProcessStamp(row, "detached_process_marker") } : { kind: "none" },
