@@ -338,6 +338,12 @@ export class CodexSessionState {
       dispositionOnlyRecoveryPreviouslyConsumed;
     this.dispositionOnlyRecoveryTurnId = dispositionOnlyRecoveryTurnId;
     for (const turnId of this.terminalTurns.keys()) this.priorGenerationTurns.add(turnId);
+    // The checkpoint's active turn (or one the previous controller's runner
+    // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
+    // live while it stays active; once reconcile settles it, its late reports
+    // are history too.
+    for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
+      if (turnId) this.priorGenerationTurns.add(turnId);
     if (dispositionOnlyRecoveryTurnId && dispositionOnlyRecoveryTurnId !== this.activeTurnId)
       this.priorGenerationTurns.add(dispositionOnlyRecoveryTurnId);
   }

@@ -168,6 +168,49 @@ describe("Codex driver stale-generation events", () => {
       && event.payload.receivedTurnId === "turn-uncheckpointed").length).toBeGreaterThan(0);
   });
 
+  // The checkpoint's active turn belongs to the earlier generation too. When
+  // reconcile settles it from thread/read, a later, different terminal for it
+  // is history, not a conflicting terminal of this generation.
+  it("records a late terminal for a checkpointed active turn that reconcile settled as history", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "turn-1", status: "completed", items: [] }] } };
+    const driver = makeDriver([first, second], { conversationMode: "direct" });
+    const original = await driver.openSession({ runId: "run-active-checkpoint",
+      normalizedSessionId: "normalized-active-checkpoint", workingDirectory: WORKSPACE });
+    const originalEvents = (async () => { for await (const _event of original.events()) { /* drain */ } })();
+    await original.startTurn({ message: { role: "user", text: "First." } });
+    first.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    await vi.waitFor(async () => expect((await original.snapshot()).activeTurnId).toBe("turn-1"));
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller restarted" });
+    await originalEvents;
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    if (!recovered) throw new Error("recovery did not return a session");
+    const events: PrpEvent[] = [];
+    const consume = (async () => { for await (const event of recovered.events()) events.push(event); })();
+    await recovered.reconcile?.();
+    await vi.waitFor(() => expect(events.some((event) =>
+      event.turnId === "turn-1" && event.eventType === "turn.completed")).toBe(true));
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", items: [],
+      error: { code: "provider_failed", message: "late", recoverable: false } } });
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await recovered.startTurn({ message: { role: "user", text: "Second." } });
+    second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-2", status: "inProgress", items: [] } });
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    await vi.waitFor(() => expect(events.some((event) =>
+      event.eventType === "turn.completed" && event.turnId === "turn-2")).toBe(true));
+    await recovered.close({ reason: "test complete" });
+    await consume;
+    expect(events.find((event) => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.some((event) => event.eventType === "harness.diagnostic"
+      && event.payload.classification === "stale_generation_event"
+      && event.payload.receivedTurnId === "turn-1")).toBe(true);
+  });
+
   it("still fails closed on a turn the session never saw", async () => {
     const { transport, session, events, consume } = await settledThenActive("stale-unknown");
     transport.push("item/completed", { threadId: "thread-1", turnId: "turn-foreign",
