@@ -2,7 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { getTableColumns, and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -430,7 +430,27 @@ export function activityService(db: Db) {
 
     forIssue: (issueId: string, limit?: number) => {
       const query = db
-        .select()
+        .select({
+          ...getTableColumns(activityLog),
+          details: sql<(typeof activityLog.$inferSelect)["details"]>`
+            CASE
+              WHEN ${inArray(activityLog.action, [
+                "issue.created",
+                "issue.updated",
+                "issue.comment_added",
+                "issue.document_created",
+                "issue.document_updated",
+                "issue.document_restored",
+                "issue.document_deleted",
+                "issue.document_annotation_thread_created",
+                "issue.document_annotation_comment_added",
+              ])}
+                AND jsonb_typeof(${activityLog.details}) = 'object'
+              THEN ${activityLog.details} - 'currentReferencedIssues'
+              ELSE ${activityLog.details}
+            END
+          `.as("details"),
+        })
         .from(activityLog)
         .where(
           or(

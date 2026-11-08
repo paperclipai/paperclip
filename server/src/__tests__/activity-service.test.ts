@@ -108,6 +108,81 @@ describeEmbeddedPostgres("activity service", () => {
     expect((await service.getById(task.id))?.workMode).toBe(nextMode);
   });
 
+  it("strips legacy reference snapshots from issue activity while preserving unrelated activity details", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    const addedReferencedIssues = [
+      { id: randomUUID(), identifier: "TEST-ADDED", title: "Added issue" },
+    ];
+    const removedReferencedIssues = [
+      { id: randomUUID(), identifier: "TEST-REMOVED", title: "Removed issue" },
+    ];
+    const legacySnapshot = [
+      { id: randomUUID(), identifier: "TEST-CURRENT", title: "Current issue" },
+    ];
+    const unrelatedSnapshot = [
+      { id: randomUUID(), identifier: "PLUGIN-CURRENT", title: "Plugin issue" },
+    ];
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.document_updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          currentReferencedIssues: legacySnapshot,
+          addedReferencedIssues,
+          removedReferencedIssues,
+          preservedValue: "keep-me",
+        },
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "custom.plugin_event",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          currentReferencedIssues: unrelatedSnapshot,
+          pluginValue: "preserve-me",
+        },
+      },
+    ]);
+
+    const rows = await activityService(db).forIssue(issueId);
+
+    const documentUpdate = rows.find(
+      (row) => row.action === "issue.document_updated",
+    );
+    expect(documentUpdate).toBeDefined();
+    expect(documentUpdate?.details).not.toHaveProperty("currentReferencedIssues");
+    expect(documentUpdate?.details).toMatchObject({
+      addedReferencedIssues,
+      removedReferencedIssues,
+      preservedValue: "keep-me",
+    });
+
+    const pluginEvent = rows.find(
+      (row) => row.action === "custom.plugin_event",
+    );
+    expect(pluginEvent?.details).toMatchObject({
+      currentReferencedIssues: unrelatedSnapshot,
+      pluginValue: "preserve-me",
+    });
+  });
+
   it("limits company activity lists", async () => {
     const companyId = randomUUID();
 
