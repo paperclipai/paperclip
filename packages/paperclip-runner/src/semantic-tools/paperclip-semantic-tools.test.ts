@@ -114,6 +114,7 @@ describe("run-scoped semantic tool authority", () => {
       expect(description).toMatch(/existing skill.*import.*install/i);
       expect(description).toMatch(/source provenance/i);
       expect(description).toMatch(/search_api.*call_api/);
+      expect(description).toMatch(/SKILL\.md is in a local directory.*even when the company library has no match.*instead of copying/);
       expect(description).toContain("does not assign");
     }
     expect(live.inputSchema).toEqual(authored.inputSchema);
