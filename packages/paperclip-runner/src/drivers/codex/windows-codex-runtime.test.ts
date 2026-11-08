@@ -1,8 +1,21 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { materializeWindowsCodexRuntime } from "./windows-codex-runtime.js";
+
+const creationRace = vi.hoisted(() => ({ next: false }));
+vi.mock("node:fs", async importOriginal => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, mkdirSync: ((...args: Parameters<typeof fs.mkdirSync>) => {
+    const result = fs.mkdirSync(...args);
+    if (creationRace.next) {
+      creationRace.next = false;
+      throw Object.assign(new Error("Concurrent creator already made the directory"), { code: "EEXIST" });
+    }
+    return result;
+  }) };
+});
 
 let root: string;
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
@@ -22,6 +35,13 @@ it("copies only executable resources and reuses a verified generation", () => {
   expect(cached).not.toBe(f.binary);
   expect(materializeWindowsCodexRuntime(f.binary, f.cache)).toBe(cached);
   expect(readdirSync(dirname(cached)).sort()).toEqual(["codex-code-mode-host.exe", "codex.exe", "runtime.json"]);
+  expect(readFileSync(cached, "utf8")).toBe("official runtime fixture");
+});
+it("accepts a concurrent cache directory creator and still verifies the directory", () => {
+  const f = fixture();
+  creationRace.next = true;
+  const cached = materializeWindowsCodexRuntime(f.binary, f.cache);
+  expect(creationRace.next).toBe(false);
   expect(readFileSync(cached, "utf8")).toBe("official runtime fixture");
 });
 it("refuses a changed cached executable instead of running it", () => {
