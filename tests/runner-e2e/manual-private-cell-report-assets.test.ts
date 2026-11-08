@@ -21,6 +21,7 @@ vi.mock("node:fs/promises", async original => {
 });
 import { copySharedEvidence } from "./shared-evidence.js";
 import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
+import { PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments } from "./private-framework-report.js";
 import { packageEvidence, publishRunnerE2EAttemptEvidence, isStandardEvidencePath } from "./evidence.js";
 import { readManualPrivateHandoff, sealStandardOriginalEvidence, sealManualResultEvidence, preserveOriginalFrameworkResult, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { canonicalGeneratedReportAsset, cellTraceAsset, inspectCellReportProducer, privateCellEvidenceOwner, readPrivateCellTraceAsset, type CellReportProducerIdentity } from "./manual-private-report-assets.js";
@@ -317,8 +318,8 @@ async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { let manualDiagnostic; ${source.slice(start, end)} return result; }`, { mode: "strip" });
   const publisher = vi.fn(publishRunnerE2EAttemptEvidence);
-  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", "dropDuplicatePlaywrightOutput", `${code}; return actualBranch;`)(
-    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation, dropDuplicatePlaywrightOutput,
+  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", "dropDuplicatePlaywrightOutput", "PRIVATE_FRAMEWORK_REPORT", "referenceSealedFrameworkAttachments", "path", "manualCellKind", `${code}; return actualBranch;`)(
+    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation, dropDuplicatePlaywrightOutput, PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments, path, manualCellKind,
   ) as (context: ManualPrivateHandoff | undefined, candidate: { id: string }, source: string, root: string, target: string, secrets: string[], result: RunnerE2EResult, resultPath: string) => Promise<RunnerE2EResult>;
   return { branch, publisher };
 }
