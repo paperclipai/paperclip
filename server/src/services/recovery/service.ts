@@ -5833,7 +5833,17 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        or(eq(issues.status, "blocked"), and(
+          inArray(issues.status, ["todo", "in_progress"]),
+          sql`exists (
+            select 1 from issue_relations cancellation_edge
+            join issues cancelled_blocker on cancelled_blocker.id = cancellation_edge.issue_id
+            where cancellation_edge.company_id = ${issues.companyId}
+              and cancelled_blocker.company_id = ${issues.companyId}
+              and cancellation_edge.related_issue_id = ${issues.id}
+              and cancellation_edge.type = 'blocks' and cancelled_blocker.status = 'cancelled'
+          )`,
+        )),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
@@ -5856,6 +5866,7 @@ export function recoveryService(
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
+            status: issues.status,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -5872,6 +5883,7 @@ export function recoveryService(
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
+          status: issues.status,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -5989,6 +6001,7 @@ export function recoveryService(
         }
         const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
         if (
+          candidate.status !== "blocked" ||
           !readiness ||
           !readiness.isDependencyReady ||
           readiness.blockerIssueIds.length === 0 ||

@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildIssueBlockersResolvedWakeStateKey,
+  type CancelledDependencyHandoff,
 } from "../services/issue-dependency-wakeups.ts";
 
 // The first test in this suite imports the large `routes/issues.ts` module
@@ -18,7 +19,7 @@ vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
-const mockFindExistingCancelledDependencyHandoffWake = vi.hoisted(() => vi.fn(async () => null));
+const mockFindExistingCancelledDependencyHandoffWake = vi.hoisted(() => vi.fn<() => Promise<{ id: string } | null>>(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -29,7 +30,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   update: vi.fn(),
   getDependencyReadiness: vi.fn(),
-  getCancelledDependencyHandoff: vi.fn(async () => null),
+  getCancelledDependencyHandoff: vi.fn<() => Promise<CancelledDependencyHandoff | null>>(async () => null),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),

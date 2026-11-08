@@ -327,7 +327,7 @@ export async function findExistingCancelledDependencyHandoffWake(
     .where(and(
       eq(agentWakeupRequests.companyId, input.companyId),
       eq(agentWakeupRequests.idempotencyKey, `issue_dependency_cancelled:${input.commentId}`),
-      inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+      inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES, "coalesced"]),
     ))
     .then(rows => rows[0] ?? null);
 }

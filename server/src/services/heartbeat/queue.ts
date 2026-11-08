@@ -155,6 +155,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   isDependencyResolvedWakePayload,
   dependencyResolvedWakePayloadSql,
+  findExistingCancelledDependencyHandoffWake,
 } from "../issue-dependency-wakeups.js";
 import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
@@ -3032,6 +3033,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          // Route delivery and recovery share this admission fence. The comment
+          // transaction alone cannot serialize two subsequent queue writes.
+          if (wakeCommentId && opts.idempotencyKey === `issue_dependency_cancelled:${wakeCommentId}`) {
+            const existing = await findExistingCancelledDependencyHandoffWake(tx as unknown as Db, {
+              companyId: agent.companyId, commentId: wakeCommentId,
+            });
+            if (existing && existing.id !== executionWaitRequestId) return { kind: "deferred" as const };
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
