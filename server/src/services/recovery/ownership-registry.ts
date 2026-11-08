@@ -430,6 +430,8 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
   return { kind: "process", stamp: {
     kind: "local", scope, generation: null, host: null, processSpace: controller.hostHash,
     bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
   } };
 }
 

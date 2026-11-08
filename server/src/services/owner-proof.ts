@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import {
   currentControllerBootId,
+  currentControllerDeployment,
   currentControllerProcessStamp,
   currentProcessSpaceHash,
   observedProcessStartedAt,
@@ -9,7 +10,7 @@ import {
   PROCESS_START_PRECISION_MS,
   UNKNOWN_PROCESS_SPACE,
 } from "./controller-process-identity.js";
-import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
+import type { WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
 import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
 
 /** `processSpace` value written when a board operator confirmed that this exact
@@ -151,10 +152,7 @@ function processGroupExists(processGroupId: number): boolean {
  * the previous deployment before the new one starts, so the two never overlap.
  * A service with a volume cannot have replicas. */
 export function currentDeploymentIdentity(env: NodeJS.ProcessEnv = process.env): ProcessProbe["deployment"] {
-  const worker = currentWorkspaceWorker(env);
-  if (!worker) return null;
-  const volumeId = env.RAILWAY_VOLUME_ID?.trim() || null;
-  return { worker, exclusiveVolume: Boolean(volumeId && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()), volumeId };
+  return currentControllerDeployment(env);
 }
 
 export function currentProcessProbe(): ProcessProbe {

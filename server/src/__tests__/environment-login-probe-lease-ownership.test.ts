@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { companies, createDb, environmentLeases, environments } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { currentControllerProcess, currentControllerProcessStamp, currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { currentControllerProcess, currentControllerProcessStamp, currentProcessSpaceHash, readControllerProcess } from "../services/controller-process-identity.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-controller.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { settleEnvironmentLoginProbeLease } from "../services/environment-login-probe-lease-settlement.js";
@@ -40,7 +40,7 @@ suite("environment_login_probe_lease on the shared ownership path", () => {
       status: "active", config: { provider: "fake", image: "ubuntu:24.04" } });
   }, 30_000);
 
-  afterEach(async () => { await db.delete(environmentLeases); });
+  afterEach(async () => { vi.unstubAllEnvs(); await db.delete(environmentLeases); });
   afterAll(async () => { await temporary?.cleanup(); });
 
   async function lease(holder: Record<string, unknown> | null, providerLeaseId?: string) {
@@ -114,5 +114,30 @@ suite("environment_login_probe_lease on the shared ownership path", () => {
     expect(report.kinds.find(kind => kind.kind === KIND)).toMatchObject({ settled: 0 });
     expect(await heartbeatService(db).sweepOrphanedActiveLeases({ backoffMs: 5 * 60_000 })).toEqual({ recovered: 1 });
     expect((await row(legacy)).status).toBe("pending_cleanup");
+  });
+
+  function railway(deploymentId: string) {
+    vi.stubEnv("RAILWAY_PROJECT_ID", "project"); vi.stubEnv("RAILWAY_ENVIRONMENT_ID", "production");
+    vi.stubEnv("RAILWAY_SERVICE_ID", "server"); vi.stubEnv("RAILWAY_DEPLOYMENT_ID", deploymentId);
+    vi.stubEnv("RAILWAY_VOLUME_ID", "volume"); vi.stubEnv("RAILWAY_VOLUME_MOUNT_PATH", "/data");
+  }
+
+  it("stamps the platform deployment so a redeploy can prove the old holder gone", async () => {
+    railway("deployment-old");
+    const stamp = currentControllerProcessStamp();
+    expect(stamp.deployment).toEqual({ worker: { provider: "railway", projectId: "project", environmentId: "production",
+      serviceId: "server", deploymentId: "deployment-old" }, exclusiveVolume: true, volumeId: "volume" });
+    expect(readControllerProcess(JSON.parse(JSON.stringify(stamp)))).toEqual(stamp);
+    const replaced = await lease({ ...stamp, bootId: "old-boot", hostHash: "old-container", pid: 7 });
+    const sameDeployment = await lease({ ...stamp, bootId: "sibling-boot", hostHash: "sibling-container", pid: 8 });
+    await db.update(environmentLeases).set({ metadata: { leaseController: { ...stamp, bootId: "sibling-boot", hostHash: "sibling-container", pid: 8,
+      deployment: { ...stamp.deployment, worker: { ...stamp.deployment!.worker, deploymentId: "deployment-new" } } } } })
+      .where(eq(environmentLeases.id, sameDeployment));
+    railway("deployment-new");
+    const report = await pass();
+    expect(report.kinds.find(kind => kind.kind === KIND)).toMatchObject({ settled: 1,
+      reasons: { deployment_replaced: 1, different_process_space: 1 } });
+    expect((await row(replaced)).status).toBe("pending_cleanup");
+    expect((await row(sameDeployment)).status).toBe("active");
   });
 });
