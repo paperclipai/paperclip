@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, notLike, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, notLike, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -19,8 +19,9 @@ import { recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
  *
  * The shared reconciler calls this only after `proveOwnerGone` proved the
  * recorded controller gone. Settle expires exactly that lease: a lease taken
- * over since the proof, a run no longer running, and remote copyback (fenced
- * by its own controller lease) are left alone. It settles ownership only; the
+ * over since the proof, a run that already finished (other than a run cancelled
+ * after its result was accepted), and remote copyback (fenced by its own
+ * controller lease) are left alone. It settles ownership only; the
  * accepted result is finalized by the finalizer that the notifications wake.
  */
 export async function settleNativeAcceptedResultLease(db: Db, record: InProgressRecord,
@@ -43,7 +44,10 @@ export async function settleNativeAcceptedResultLease(db: Db, record: InProgress
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId),
         eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
       .where(and(eq(nativeRunFinalizations.runId, record.recordId), eq(heartbeatRuns.runtimeMode, "native"),
-        eq(heartbeatRuns.status, "running"), gt(nativeRunFinalizations.leaseExpiresAt, now),
+        // A run cancelled after its result was accepted (for example by a
+        // budget pause) still owes finalization, and the dead lease would
+        // hold it, and the agent's pause, for the lease's full term.
+        inArray(heartbeatRuns.status, ["running", "cancelled"]), gt(nativeRunFinalizations.leaseExpiresAt, now),
         notLike(nativeRunFinalizations.leaseOwner, "native-finalizer:%"),
         notLike(nativeRunFinalizations.leaseOwner, "native-cleanup:%")))
       .for("update", { of: nativeRunFinalizations });

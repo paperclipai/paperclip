@@ -9,8 +9,9 @@ import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { logger } from "../middleware/logger.js";
-import { companies, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, companies, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { persistActivity } from "./activity-log.js";
 import * as lifecycle from "../modules/agent-lifecycle/index.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
@@ -110,8 +111,18 @@ export function startAgentLifecycle(db: Db, driver: lifecycle.LifecycleDriver, c
 }
 
 /** Budget evaluation owns the transaction and supplies the aggregate agent decision. */
-export function applyAgentBudgetHoldInTransaction(tx: Db, companyId: string, agentId: string, blocked: boolean) {
-  return applyAgentPolicyHoldsInTransaction(tx, createAgentLifecycleEffects(), companyId, agentId, { budget: blocked });
+export async function applyAgentBudgetHoldInTransaction(tx: Db, companyId: string, agentId: string, blocked: boolean) {
+  const [before] = await tx.select({ holds: agents.lifecycleHolds }).from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+  const updated = await applyAgentPolicyHoldsInTransaction(tx, createAgentLifecycleEffects(), companyId, agentId, { budget: blocked });
+  // A budget pause is a governance stop: record it, and its release, with the
+  // reason, in the transaction that applies it.
+  const had = before?.holds?.includes("budget") ?? false;
+  const has = updated?.lifecycleHolds?.includes("budget") ?? had;
+  if (updated && had !== has) await persistActivity(tx, { companyId, actorType: "system", actorId: "budget",
+    agentId, action: has ? "agent.paused" : "agent.resumed", entityType: "agent", entityId: agentId,
+    details: { reason: "budget", lifecycleState: updated.lifecycleState, holds: updated.lifecycleHolds } });
+  return updated;
 }
 
 export function fenceActiveCompanyAgentStopsInTransaction(tx: Db, companyId: string, status: "paused" | "archived") {
