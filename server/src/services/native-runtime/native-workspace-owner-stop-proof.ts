@@ -28,7 +28,10 @@ export function copybackOwnerStamp(owner: LocalWorkspaceOwner): LocalOwnerStamp 
     processStartedAt: owner.processStartedAt, processGroupId: null };
 }
 
-const HOST_UNPROVABLE = new Set(["different_host", "different_process_space", "unknown_process_space"]);
+// Only a known foreign host or PID space. An unreadable PID space here
+// (`unknown_process_space`) is a local owner this server cannot judge, which
+// must stay blocked rather than take the board-attestation path.
+const HOST_UNPROVABLE = new Set(["different_host", "different_process_space"]);
 
 /** Whether an unprovable verdict only says the owner ran somewhere else. */
 export function copybackOwnerOnAnotherHost(proof: OwnerProof): boolean {

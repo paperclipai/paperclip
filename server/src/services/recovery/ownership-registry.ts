@@ -109,7 +109,13 @@ export type InProgressRecord = {
 
 export type ListResult = { records: InProgressRecord[]; truncated: boolean };
 
-export type SettleOutcome = { settled: boolean; reason: string };
+export type SettleOutcome = {
+  settled: boolean; reason: string;
+  /** False when the settle has nothing left to do for this record (the
+   * record waits on another owner, such as the board). The reconciler still
+   * lists and reports it, but keeps no settle watch on it. */
+  watch?: boolean;
+};
 
 /** Moves one record whose owner was just proven gone to its next state. It must
  * compare-and-swap on the exact owner that was proven, so a record taken over
@@ -868,7 +874,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       const woke = await wakeCopybackOwnerRecheck(db, { companyId: record.companyId, actionId: record.recordId,
         now: context.now, owner: { pid: stamp.pid, processStartedAt: stamp.processStartedAt, bootId: stamp.bootId,
           processSpace: stamp.processSpace } });
-      return { settled: false, reason: woke ? "copyback_recheck_woken" : "copyback_recheck_not_waiting" };
+      // A hold whose recheck is not waiting (exhausted, past its deadline or
+      // moved on) is the board's: keep it visible, but stop watching it.
+      return woke ? { settled: false, reason: "copyback_recheck_woken" }
+        : { settled: false, reason: "copyback_recheck_not_waiting", watch: false };
     },
   },
   recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",

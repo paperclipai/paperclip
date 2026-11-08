@@ -8,7 +8,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
-import { proveLocalWorkspaceOwnerStopped } from "./native-workspace-owner-stop-proof.js";
+import { copybackOwnerOnAnotherHost, proveLocalWorkspaceOwnerStopped } from "./native-workspace-owner-stop-proof.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../recovery/ownership-registry.js";
@@ -249,6 +249,26 @@ describe("native workspace owner recovery after a restart", () => {
         workspaceOwnerRecovery: { state: "operator_required", owner } } }).where(eq(issueRecoveryActions.id, legacySeed.actionId));
       const [record] = (await kind.listInProgress!(db, 500, 0)).records.filter(entry => entry.recordId === legacySeed.actionId);
       expect(record!.owner).toMatchObject({ kind: "process", stamp: { processSpace: null } });
+
+      // A hold whose recheck no longer waits (exhausted) is the board's: still
+      // listed, but the reconciler keeps no settle watch on it.
+      const before = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind] });
+      const exhaustedSeed = await seedAbandonedCopyback();
+      const { owner: exhaustedOwner } = await killedControllerOwner({ orphanChild: false });
+      await db.update(issueRecoveryActions).set({ status: "active", evidence: { runId: exhaustedSeed.runId,
+        systemRecovery: { ...failSystemRecovery(createSystemRecovery(exhaustedSeed.runId),
+          new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence")), state: "exhausted", nextAttemptAt: null },
+        workspaceOwnerRecovery: { state: "operator_required", owner: { ...exhaustedOwner, hostHash: currentProcessSpaceHash() } } } })
+        .where(eq(issueRecoveryActions.id, exhaustedSeed.actionId));
+      const after = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind] });
+      expect(after.kinds[0]!.inProgress).toBe(before.kinds[0]!.inProgress + 1);
+      expect(after.kinds[0]!.reasons.pid_dead).toBe((before.kinds[0]!.reasons.pid_dead ?? 0) + 1);
+      expect(after.settleWatch).toBe(before.settleWatch);
+    });
+
+    it("never treats an unreadable local PID space as an owner on another host", () => {
+      expect(copybackOwnerOnAnotherHost({ verdict: "unprovable", reason: "unknown_process_space" })).toBe(false);
+      expect(copybackOwnerOnAnotherHost({ verdict: "unprovable", reason: "different_process_space" })).toBe(true);
     });
   });
 
