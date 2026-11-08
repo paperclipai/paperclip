@@ -965,6 +965,13 @@ describe("agent issue mutation checkout ownership", () => {
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({ id: ownerRunId, status: "running" });
     const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -981,6 +988,31 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["never checked out", { checkoutRunId: null, executionRunId: null }],
+    ["whose run already reached a terminal status", { checkoutRunId: ownerRunId, executionRunId: ownerRunId }],
+  ])("lets a peer agent write an in_progress issue %s", async (_label, runFields) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      ...runFields,
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue(
+      runFields.executionRunId ? { id: ownerRunId, status: "succeeded" } : null,
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", ...runFields }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
   });
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {

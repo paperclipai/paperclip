@@ -416,6 +416,7 @@ import {
 } from "../services/issue-queued-comment-queue.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const LIVE_RUN_LOCK_STATUSES = new Set<string>(["queued", "running", "scheduled_retry"]);
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -5768,6 +5769,23 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function hasLiveRunLock(
+    issue: { checkoutRunId?: string | null; executionRunId?: string | null },
+  ) {
+    const runIds = [...new Set(
+      [issue.checkoutRunId, issue.executionRunId].filter(
+        (id): id is string => !!id,
+      ),
+    )];
+    for (const runId of runIds) {
+      const run = await heartbeat.getRun(runId);
+      if (run && LIVE_RUN_LOCK_STATUSES.has(run.status)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -5779,6 +5797,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
@@ -5854,7 +5874,7 @@ export function issueRoutes(
       ) {
         return true;
       }
-      if (issue.status === "in_progress") {
+      if (issue.status === "in_progress" && await hasLiveRunLock(issue)) {
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
         return denyIssueWrite(
