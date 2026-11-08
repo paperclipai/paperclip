@@ -188,11 +188,12 @@ def main():
     required, hidden_inputs, unset, assignments, command = parse(sys.argv[1:])
     hidden = []
     for path in hidden_inputs:
-        if os.path.lexists(path):
-            real = os.path.realpath(path)
-            if real == "/":
-                fail("refusing to hide the filesystem root", 2)
-            hidden.append(real)
+        # Keep paths that do not exist yet: their ancestors stay ungranted, so
+        # a later mkdir there is unreachable too.
+        real = os.path.realpath(path)
+        if real == "/":
+            fail("refusing to hide the filesystem root", 2)
+        hidden.append(real)
     for name in unset:
         os.environ.pop(name, None)
     for name, value in assignments:
