@@ -51,7 +51,7 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
 
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!,
-    runIds: runs.filter(run => run.createdAt <= fault.startedAt && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
+    runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
       .map(run => run.id) }));
 }
 
@@ -120,9 +120,18 @@ export function provisionMs(run: BaselineRun): number | null {
   return runSpans(run).find(span => span.name === "heartbeat.prepare.workspace_provision")?.durationMs ?? null;
 }
 
-async function workspaceCreated(api: ChaosApi, runId: string): Promise<boolean> {
-  const rows = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 15_000).catch(() => []);
-  return (rows ?? []).some(row => row.phase === "workspace_provision" && (row.metadata as Json | null)?.created === true);
+async function workspaceCreated(api: ChaosApi, runId: string, attempts = 3): Promise<boolean> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const rows = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 15_000);
+      return (rows ?? []).some(row => row.phase === "workspace_provision" && (row.metadata as Json | null)?.created === true);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw new Error(`workspace operations unread: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 export function bootWithoutProvisionMs(run: BaselineRun): number | null {
@@ -220,15 +229,24 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const errors: string[] = [];
   const windows = outageWindows(faults);
   const outage = { adjusted: 0, removedMs: 0, windows };
-  for (const task of tasks) {
+  const perTask = tasks.map(task => {
     const seen = new Map<string, RunSample>();
     for (const sample of task.samples) for (const run of sample.runs ?? []) if (run.createdAt) seen.set(run.id, run);
-    const ordered = [...seen.values()].sort((a, b) => Date.parse(a.createdAt!) - Date.parse(b.createdAt!));
+    return { task, ordered: [...seen.values()].sort((a, b) => Date.parse(a.createdAt!) - Date.parse(b.createdAt!)) };
+  });
+  const faultHit = new Set(faultRuns(faults, perTask.flatMap(({ ordered }) => ordered.map(run => ({ id: run.id,
+    createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null })))).flatMap(fault => fault.runIds));
+  for (const { task, ordered } of perTask) {
     for (const [index, run] of ordered.entries()) {
       try {
         const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
-          events: await runEventsWithRetry(api, run.id), workspaceCreated: await workspaceCreated(api, run.id) };
-        if (run.retryOfRunId) raw.phase = "restart";
+          events: await runEventsWithRetry(api, run.id) };
+        try {
+          raw.workspaceCreated = await workspaceCreated(api, run.id);
+        } catch (error) {
+          errors.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
         if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
         const trimmed = withoutOutage(raw, windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
