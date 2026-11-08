@@ -185,6 +185,7 @@ export function validateAdapterModule(mod: unknown, packageName: string): Server
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
+  options: { isStale?: () => boolean } = {},
 ): Promise<ServerAdapterModule> {
   assertExternalAdapterCodeAllowed();
   const packageDir = localPath
@@ -200,7 +201,7 @@ export async function loadExternalAdapterPackage(
   const mod = await import(pathToFileURL(modulePath).href);
   const adapterModule = validateAdapterModule(mod, packageName);
 
-  if (uiParserSource) {
+  if (uiParserSource && !options.isStale?.()) {
     uiParserCache.set(adapterModule.type, uiParserSource);
   }
 
@@ -236,15 +237,19 @@ async function loadFromRecord(
   timeoutMs: number,
 ): Promise<ServerAdapterModule | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
   const timedOut = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      expired = true;
       reject(new ExternalAdapterLoadTimeoutError(record.packageName, timeoutMs));
     }, timeoutMs);
     (timer as { unref?: () => void }).unref?.();
   });
 
   try {
-    const load = loadExternalAdapterPackage(record.packageName, record.localPath);
+    const load = loadExternalAdapterPackage(record.packageName, record.localPath, {
+      isStale: () => expired,
+    });
     load.catch(() => {});
     return await Promise.race([load, timedOut]);
   } catch (err) {

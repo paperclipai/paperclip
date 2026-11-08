@@ -11,7 +11,7 @@ vi.mock("../services/adapter-plugin-store.js", () => ({
   getAdapterPluginByType: () => undefined,
 }));
 
-import { buildExternalAdapters } from "../adapters/plugin-loader.js";
+import { buildExternalAdapters, getUiParserSource } from "../adapters/plugin-loader.js";
 
 const HEALTHY_SOURCE = `export function createServerAdapter() {
   return { type: ${JSON.stringify("fixture_healthy")} };
@@ -32,6 +32,26 @@ function writeFixturePackage(root: string, name: string, source: string): string
     JSON.stringify({ name, type: "module", main: "index.js" }),
   );
   writeFileSync(path.join(packageDir, "index.js"), source);
+  return packageDir;
+}
+
+const SLOW_SOURCE = `await new Promise((resolve) => setTimeout(resolve, 300));
+export function createServerAdapter() {
+  return { type: "fixture_slow" };
+}
+`;
+
+function writeSlowPackageWithUiParser(root: string): string {
+  const packageDir = writeFixturePackage(root, "fixture-slow", SLOW_SOURCE);
+  writeFileSync(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "fixture-slow",
+      type: "module",
+      exports: { ".": "./index.js", "./ui-parser": "./ui-parser.js" },
+    }),
+  );
+  writeFileSync(path.join(packageDir, "ui-parser.js"), "export const parse = () => [];");
   return packageDir;
 }
 
@@ -81,5 +101,17 @@ describe("buildExternalAdapters load budget", () => {
 
     expect(elapsedMs).toBeLessThan(5_000);
     expect(adapters.map((adapter) => adapter.type)).toEqual(["fixture_healthy"]);
+  }, 10_000);
+
+  it("does not cache the UI parser of an import that finishes after the budget", async () => {
+    const slowDir = writeSlowPackageWithUiParser(root);
+    mockStore.records = [recordFor(slowDir, "fixture-slow", "fixture_slow")];
+
+    const adapters = await buildExternalAdapters({ timeoutMs: 50 });
+    expect(adapters).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    expect(getUiParserSource("fixture_slow")).toBeUndefined();
   }, 10_000);
 });
