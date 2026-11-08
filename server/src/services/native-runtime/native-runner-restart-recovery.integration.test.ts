@@ -2843,7 +2843,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
   }
 
   async function appendRunEvents(fixture: Awaited<ReturnType<typeof seedRun>>, events: Array<{
-    eventType: string; turnId?: string; kind?: string;
+    eventType: string; turnId?: string; kind?: string; payload?: Record<string, unknown>;
   }>) {
     const [last] = await fixture.db.select({ seq: sql<number>`coalesce(max(${heartbeatRunEvents.seq}), 0)::int` })
       .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
@@ -2852,7 +2852,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       seq += 1;
       await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq,
         eventType: event.eventType, stream: "system", level: "info",
-        payload: { prpEvent: { runId: fixture.runId, eventType: event.eventType, sourceKind: "runner",
+        payload: event.payload ?? { prpEvent: { runId: fixture.runId, eventType: event.eventType, sourceKind: "runner",
           ...(event.turnId ? { turnId: event.turnId } : {}),
           payload: event.kind ? { kind: event.kind } : {} } } });
     }
@@ -3033,6 +3033,39 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     const { disposition } = await resumeThenCrash(fixture);
     expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
+  // The executor records each attempt's provider attempt on its start.
+  const processStart = (providerAttempt: number) =>
+    ({ eventType: "native.process_start_requested", payload: { hostname: "host", providerAttempt } });
+
+  it("charges an adopted reattachment whose runner died without progress, even after it recorded a start", async () => {
+    const fixture = await seedInterruptedCheckpoint("REATTACH-START-NO-PROGRESS");
+    await resumeThenCrash(fixture);
+    await appendRunEvents(fixture, [...restoreNoise(1), { eventType: "turn.failed", turnId: "continuation-1" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 3 });
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text, 'disposition'],
+        '"reattach_existing_runner"'::jsonb)`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    // The reattachment's own admission records a start for the same attempt.
+    await appendRunEvents(fixture, [processStart(3)]);
+    const { disposition } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
+  it("does not charge a normal retry whose executor died after saving its attempt but before its start", async () => {
+    const fixture = await seedInterruptedCheckpoint("RETRY-SAVED-UNSTARTED");
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    // The resume (attempt 2) starts, its provider accepts a turn, and it
+    // makes no progress. A normal retry then saves attempt 3 and the
+    // controller dies before that retry records its start.
+    await appendRunEvents(fixture, [processStart(2), { eventType: "turn.accepted", turnId: "resumed" }]);
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 3 });
   });
 
   it("charges the owed attempt once when an unstarted first resume is replaced", async () => {

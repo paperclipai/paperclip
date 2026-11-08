@@ -44,17 +44,25 @@ export function providerAttemptChargesBudget(outcome: ProviderAttemptOutcome): b
 }
 
 /**
- * The first event-log position of the attempt that runs after `sinceSeq`: the
- * executor records `native.process_start_requested` before any backend may
- * spawn a runner, so a later normal retry starts a new window and earlier
- * work never counts for it.
+ * Where the outcome window of `providerAttempt` starts, after `sinceSeq`. The
+ * executor records `native.process_start_requested` with its provider attempt
+ * before any backend may spawn a runner, so a later normal retry starts a new
+ * window and earlier work never counts for it.
+ * - `{ seq }`: the latest start of that attempt (a reattachment writes one too).
+ * - `"unstarted"`: the latest start names an earlier attempt. The executor
+ *   saved the new attempt but died before its start, so nothing in the event
+ *   log belongs to it.
+ * - Starts written before they carried an attempt fall back to the latest start.
  */
 export async function providerAttemptWindowStart(
   tx: Pick<Db, "select">,
-  input: { runId: string; sinceSeq: number },
-): Promise<number> {
+  input: { runId: string; sinceSeq: number; providerAttempt: number },
+): Promise<{ seq: number } | "unstarted"> {
   const [start] = await tx
-    .select({ seq: heartbeatRunEvents.seq })
+    .select({
+      seq: heartbeatRunEvents.seq,
+      attempt: sql<unknown>`${heartbeatRunEvents.payload} -> 'providerAttempt'`,
+    })
     .from(heartbeatRunEvents)
     .where(and(
       eq(heartbeatRunEvents.runId, input.runId),
@@ -63,7 +71,11 @@ export async function providerAttemptWindowStart(
     ))
     .orderBy(desc(heartbeatRunEvents.seq))
     .limit(1);
-  return start ? Number(start.seq) : input.sinceSeq;
+  if (!start) return { seq: input.sinceSeq };
+  const attempt = typeof start.attempt === "number" ? start.attempt : Number(start.attempt);
+  if (start.attempt !== null && start.attempt !== undefined && Number.isSafeInteger(attempt)
+    && attempt < input.providerAttempt) return "unstarted";
+  return { seq: Number(start.seq) };
 }
 
 /**

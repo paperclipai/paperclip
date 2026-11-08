@@ -275,13 +275,19 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
     && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
     return input.coordinator.attempt >= previous.attempt;
   const claimedAt = previous === "none" ? 0 : previous.watermark;
-  const windowStart = await providerAttemptWindowStart(tx, { runId: input.runId, sinceSeq: claimedAt });
+  // A reattachment adopted a provider that had already started, and it keeps
+  // the attempt; a normal retry after it starts a new attempt.
+  const adoptedProviderWork = previous !== "none" && !previous.launchesRunner
+    && input.coordinator.attempt === previous.attempt;
+  const window = adoptedProviderWork ? { seq: claimedAt }
+    : await providerAttemptWindowStart(tx, {
+      runId: input.runId, sinceSeq: claimedAt, providerAttempt: input.coordinator.attempt,
+    });
+  if (window === "unstarted") return true;
   const outcome = await readProviderAttemptOutcome(tx, {
     runId: input.runId,
-    sinceSeq: windowStart,
-    // A reattachment adopted a provider that had already started, unless a
-    // later normal retry started a new attempt.
-    adoptedProviderWork: previous !== "none" && !previous.launchesRunner && windowStart === claimedAt,
+    sinceSeq: window.seq,
+    adoptedProviderWork,
   });
   return !providerAttemptChargesBudget(outcome);
 }

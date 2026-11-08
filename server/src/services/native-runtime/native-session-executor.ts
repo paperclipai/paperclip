@@ -10929,7 +10929,9 @@ async function executePaperclipNativeSessionWithinScope(
                 level: "info",
                 message: "Native execution requested; prior local stop evidence no longer applies.",
                 // Binds a later identity-less stop proof to the host that launched.
-                payload: { hostname: hostname() },
+                // The provider attempt opens that attempt's outcome window for
+                // the work-based budget (provider-attempt-outcome.ts).
+                payload: { hostname: hostname(), providerAttempt: attempt },
               });
               crashPoint("native.process_start.after_requested_before_spawn");
             },

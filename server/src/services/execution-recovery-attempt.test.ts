@@ -77,15 +77,28 @@ describe("interrupted preparation retries", () => {
     const source = { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1,
       contextSnapshot: { executionRetryAccounting: accounting(1) } };
     expect(executionRetryAttemptCount(source, INTERRUPTED_PREPARATION_RETRY_REASON)).toBe(0);
-    expect(accountingForScheduledRetry(source, INTERRUPTED_PREPARATION_RETRY_REASON, 1)).toEqual(accounting(1));
+    expect(accountingForScheduledRetry(source, INTERRUPTED_PREPARATION_RETRY_REASON, 1))
+      .toEqual({ ...accounting(1), interruptedPreparations: 1 });
   });
   it("counts consecutive interrupted preparations in their own lane, never as failures", () => {
     const retry = { scheduledRetryReason: INTERRUPTED_PREPARATION_RETRY_REASON, scheduledRetryAttempt: 5,
       contextSnapshot: { executionRetryAccounting: accounting(0) } };
     expect(executionRetryAttemptCount(retry, INTERRUPTED_PREPARATION_RETRY_REASON)).toBe(5);
     expect(executionFailureRetryCount(retry)).toBe(0);
-    expect(accountingForScheduledRetry(retry, INTERRUPTED_PREPARATION_RETRY_REASON, 6)).toEqual(accounting(0));
+    expect(accountingForScheduledRetry(retry, INTERRUPTED_PREPARATION_RETRY_REASON, 6))
+      .toEqual({ ...accounting(0), interruptedPreparations: 6 });
     expect(INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS).toBe(12);
+  });
+  it("keeps the interrupted-preparation count across a wait retry in between", () => {
+    const prepared = accountingForScheduledRetry({ scheduledRetryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
+      scheduledRetryAttempt: 4, contextSnapshot: { executionRetryAccounting: accounting(0) } },
+    INTERRUPTED_PREPARATION_RETRY_REASON, 5);
+    expect(prepared).toEqual({ ...accounting(0), interruptedPreparations: 5 });
+    // A workspace wait in between carries the chain's accounting forward.
+    const waited = { scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 1,
+      contextSnapshot: { executionRetryAccounting: accountingForScheduledRetry(
+        { contextSnapshot: { executionRetryAccounting: prepared } }, "workspace_busy", 1) } };
+    expect(executionRetryAttemptCount(waited, INTERRUPTED_PREPARATION_RETRY_REASON)).toBe(5);
   });
   it("still charges a real failure after interrupted preparations", () => {
     const retry = { scheduledRetryReason: INTERRUPTED_PREPARATION_RETRY_REASON, scheduledRetryAttempt: 3,
