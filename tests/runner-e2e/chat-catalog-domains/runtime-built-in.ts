@@ -1,24 +1,44 @@
+import { createHash } from "node:crypto";
 import { pollUntil } from "../api.js";
 import { checks, sameTask, type Entity } from "./internal-support.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type InstructionFile } from "./runtime-support.js";
+import { agentLink, runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type InstructionFile } from "./runtime-support.js";
 interface BuiltInState { definition: { key: string }; agentId: string | null; agent: RuntimeAgent | null; status: string }
+/**
+ * Agent instruction files persist without revision history (design change 14420):
+ * a read reports a content token stamped with the reader, so the write's
+ * attribution is the `agent.files_updated` audit row for the saved bytes.
+ */
+function agentInstructionSave(o: NonNullable<ReturnType<typeof runtimeObservation>>, workerId: string, content: string) {
+  const contentHash = createHash("sha256").update(content).digest("hex");
+  return o.activity.find(row => row.action === "agent.files_updated" && row.companyId === o.companyId && row.entityId === workerId
+    && row.actorType === "agent" && row.actorId === o.leadId && row.agentId === o.leadId
+    && row.details?.path === "AGENTS.md" && row.details.contentHash === contentHash
+    && o.runs.some(run => run.id === (row as typeof row & { runId?: string }).runId));
+}
+function nonEmptyLines(content: string) { return content.split("\n").map(line => line.trim()).filter(Boolean); }
 export function gradeBuiltInConfiguration(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
-  c.add("actual-built-in-observation", !!o, "The protected built-in registry, durable configuration revision and historical task are independently read."); if (!o) return c.result();
+  c.add("actual-built-in-observation", !!o, "The protected built-in registry, saved instruction file and historical task are independently read."); if (!o) return c.result();
   const original = o.state.builtInBefore as BuiltInState | undefined; const after = o.state.builtInAfter as BuiltInState | undefined;
   const beforeInstruction = o.state.originalInstruction as InstructionFile | undefined; const current = o.instruction;
   const worker = o.agents.find(row => row.id === original?.agentId);
   c.add("protected-identity-preserved", !!original && !!after && after.definition.key === "summarizer" && after.agentId === original.agentId
     && !!worker && worker.companyId === o.companyId && o.agents.length === o.state.agentCountBefore,
     "The required registry still points to the same summarizer, with no replacement ordinary hire.");
-  c.add("shorter-updates-durably-configured", !!current && !!beforeInstruction && current.content !== beforeInstruction.content
-    && /shorter|brief|concise|(?:three|3|two|2) sentences|under \d+ words/i.test(current.content)
-    && /summar|updates?/i.test(current.content) && current.revision.actorAgentId === o.leadId && o.runs.some(run => run.id === current.revision.sourceRunId),
-    "An actual agent-attributed revision applies shorter summary guidance while retaining the summarizer purpose.");
-  c.add("history-retained", !!beforeInstruction && o.instructionHistory?.revisions.some(row => row.id === beforeInstruction.revision.id) === true
-    && o.tasks.length === 1 && sameTask(o.state.historicalTask as Entity, o.tasks[0]), "Instruction history and attributed historical work remain intact.");
-  c.add("inspectable-effective-change", !!worker && /short|brief|concis/i.test(o.reply),
-    "The response describes the saved protected-agent configuration change.");
+  // The wording of the new guidance is the model's own; grade that the run
+  // itself saved a targeted edit of the built-in's bundled instructions.
+  const originalLines = beforeInstruction ? nonEmptyLines(beforeInstruction.content) : [];
+  const currentLines = new Set(current ? nonEmptyLines(current.content) : []);
+  c.add("configuration-durably-saved-by-run", !!current && !!beforeInstruction && !!worker && current.content !== beforeInstruction.content
+    && !!agentInstructionSave(o, worker.id, current.content),
+    "The chat agent's own run saved changed instructions for the existing summarizer, and those bytes are what the product now serves.");
+  c.add("targeted-edit-retains-summarizer-purpose", originalLines.length > 0
+    && originalLines.filter(line => currentLines.has(line)).length * 2 >= originalLines.length,
+    "The edit tunes the bundled summarizer instructions rather than replacing them wholesale.");
+  c.add("history-retained", o.tasks.length === 1 && sameTask(o.state.historicalTask as Entity, o.tasks[0]),
+    "The summarizer's attributed historical work remains intact.");
+  c.add("names-configured-agent", !!worker && (!!agentLink(o, worker) || (!!worker.name && o.reply.includes(worker.name))),
+    "The response identifies the summarizer whose configuration it changed.");
   return c.result();
 }
 export const runtimeBuiltInCases = [runtimeDefinition("agents.configure-required-agent", async ctx => {
@@ -32,6 +52,7 @@ export const runtimeBuiltInCases = [runtimeDefinition("agents.configure-required
   const agentCountBefore = (await ctx.input.api.get<RuntimeAgent[]>(`${root}/agents`)).length;
   return { worker, builtInBefore, instructionAgentId: worker.id, originalInstruction, historicalTask, agentCountBefore };
 }, gradeBuiltInConfiguration, {
+  oracleVersion: "paperclip.chat-catalog.runtime.configure-required-agent.v3",
   sourceFiles: ["chat-catalog-domains/runtime-built-in.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "protected-summarizer-identity", "historical-task-unrun"] },
   async verifySetup(ctx, state) {
