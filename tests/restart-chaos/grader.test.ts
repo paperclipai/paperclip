@@ -137,6 +137,11 @@ describe("R1–R6 grading on fixture timelines", () => {
       run("r3", "succeeded", 45_000, 80_000, { wakeCommentIds: ["c1"] }),
     ])];
     expect(gradeR4(record(samples))).toMatchObject({ verdict: "pass" });
+    // A poll that saw both running (claiming marks running before dispatch)
+    // does not change that.
+    const polled = [sample(39_990, "in_progress", [run("r1", "running", 1_000), run("r2", "running", 30_000, null, { startedAt: iso(39_960) })]),
+      ...samples];
+    expect(gradeR4(record(polled))).toMatchObject({ verdict: "pass" });
     // Any other cancelled run that overlapped still executed.
     const executed = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 40_000),
       run("r2", "cancelled", 30_000, 40_060, { startedAt: iso(39_960), errorCode: "cancelled" })])];

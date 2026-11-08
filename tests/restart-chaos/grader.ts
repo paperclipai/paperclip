@@ -117,12 +117,18 @@ const PRE_DISPATCH_CANCELLATIONS = new Set(["continuation_task_ownership_changed
  * after a successful run is a replay.
  */
 export function gradeR4(record: TaskRecord): RuleResult {
-  for (const sample of reachable(record.samples)) {
-    const running = (sample.runs ?? []).filter(run => run.status === "running");
-    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => `${run.id}(${run.status})`).join(",")}` };
-  }
   const finalRuns = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
   for (const sample of reachable(record.samples)) for (const run of sample.runs ?? []) finalRuns.set(run.id, run);
+  // Claiming marks a run running before dispatch, so a run that ended as a
+  // pre-dispatch cancellation never executed, whatever a poll saw.
+  const neverExecuted = (id: string) => {
+    const final = finalRuns.get(id);
+    return final?.status === "cancelled" && PRE_DISPATCH_CANCELLATIONS.has(final.errorCode ?? "");
+  };
+  for (const sample of reachable(record.samples)) {
+    const running = (sample.runs ?? []).filter(run => run.status === "running" && !neverExecuted(run.id));
+    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => `${run.id}(${run.status})`).join(",")}` };
+  }
   const begun = [...finalRuns.values()].filter(run => run.startedAt)
     .sort((a, b) => (ms(a.createdAt) || 0) - (ms(b.createdAt) || 0));
   // A continuation cancelled as stale before adapter dispatch was claimed but

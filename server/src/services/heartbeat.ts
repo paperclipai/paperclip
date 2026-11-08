@@ -3798,7 +3798,9 @@ export function heartbeatService(
         // Use cancellation settlement so wakeup, issue ownership, agent state,
         // and notifications agree; do not retry work for the previous owner.
         // A user's message it carried that no run read is saved first, so the
-        // release reopens the finished task for it (work-intent outbox).
+        // release reopens the finished task for it (work-intent outbox). If
+        // this fast path fails or the closing run has not settled yet, the
+        // ownership reconciler saves it once that run settles.
         await deferUndeliveredCommentsOfStaleRun(db, run).catch(err =>
           logger.warn({ err, runId: run.id }, "could not save the messages of a stale continuation"));
         await cancelRunInternal(run.id, outerErr.code, {

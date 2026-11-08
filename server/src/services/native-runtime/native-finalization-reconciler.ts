@@ -18,6 +18,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import {
   createOwnershipReportState,
   DEFERRED_INTENT_NOT_PROMOTED,
+  USER_COMMENT_DROPPED_BY_STALE_RUN,
   USER_COMMENT_WITHOUT_WAKE,
   ownershipReportFingerprint,
   recheckSettlingKinds,
@@ -825,27 +826,37 @@ export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
 /** Section E backstop: a deferred intent whose hold cleared without a
  * release event is promoted through the one promotion function. Promotion
  * re-runs normal admission, so a wrong report never bypasses a gate. */
-export async function applyOwnershipReportBackstops(db: Db, report: OwnershipReport) {
-  // Rule: an undelivered user comment newer than the task's last run gets a
-  // wake. Save the missing outbox entry, then promote it below.
-  for (const violation of report.violations.filter(row => row.reason === USER_COMMENT_WITHOUT_WAKE)) {
+export async function applyOwnershipReportBackstops(db: Db, report: OwnershipReport): Promise<{ retryNeeded: boolean }> {
+  let retryNeeded = false;
+  // Rules: an undelivered user comment newer than the task's last run gets a
+  // wake, and a comment a stale continuation dropped reopens its done task.
+  // Save the missing outbox entry, then promote it.
+  for (const violation of report.violations.filter(row =>
+    row.reason === USER_COMMENT_WITHOUT_WAKE || row.reason === USER_COMMENT_DROPPED_BY_STALE_RUN)) {
     if (!violation.companyId || !violation.issueId) continue;
-    const [issue] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
-      .where(and(eq(issues.companyId, violation.companyId), eq(issues.id, violation.issueId)));
-    if (!issue?.assigneeAgentId) continue;
-    await saveUndeliveredUserComments(db, { companyId: violation.companyId, issueId: violation.issueId,
-      agentId: issue.assigneeAgentId, commentIds: [violation.recordId], allowedStatuses: ["todo", "in_progress"],
-      executionWait: deferredWorkIntentWait("wake_lost", "This message's wake was lost; it is sent now.") })
-      .then(saved => saved ? db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: violation.companyId!,
-        trigger: "reconciler_backstop", issueId: violation.issueId })) : undefined)
-      .catch(error => logger.warn({ err: error, commentId: violation.recordId }, "could not save a user comment without a wake"));
+    const lost = violation.reason === USER_COMMENT_WITHOUT_WAKE;
+    try {
+      const [issue] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+        .where(and(eq(issues.companyId, violation.companyId), eq(issues.id, violation.issueId)));
+      if (!issue?.assigneeAgentId) continue;
+      const saved = await saveUndeliveredUserComments(db, { companyId: violation.companyId, issueId: violation.issueId,
+        agentId: issue.assigneeAgentId, commentIds: [violation.recordId], allowedStatuses: lost ? ["todo", "in_progress"] : ["done"],
+        ...(lost ? { executionWait: deferredWorkIntentWait("wake_lost", "This message's wake was lost; it is sent now.") } : {}) });
+      if (saved) await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: violation.companyId!,
+        trigger: "reconciler_backstop", issueId: violation.issueId }));
+    } catch (error) {
+      // The message still has no saved receipt: keep a pass due.
+      retryNeeded = true;
+      logger.warn({ err: error, commentId: violation.recordId }, "could not save a user comment without a wake");
+    }
   }
   const companies = new Set(report.violations.filter(violation => violation.reason === DEFERRED_INTENT_NOT_PROMOTED)
     .flatMap(violation => violation.companyId ? [violation.companyId] : []));
   for (const companyId of companies) {
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
-      .catch(error => logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"));
+      .catch(error => { retryNeeded = true; logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"); });
   }
+  return { retryNeeded };
 }
 
 export function registerOwnershipReconciliationWork(
@@ -910,12 +921,13 @@ export function registerOwnershipReconciliationWork(
       lastPassAt = Date.now();
       pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
-      await applyOwnershipReportBackstops(db, report);
+      const backstop = await applyOwnershipReportBackstops(db, report);
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
       // A settling kind's live owner can die without writing a signal, so
-      // keep one bounded re-check due while such records exist.
-      const fullPassDue = changing || report.awaitingSecondProof > 0 || report.retryNeeded;
+      // keep one bounded re-check due while such records exist. A backstop
+      // that could not save or promote keeps one due as well.
+      const fullPassDue = changing || report.awaitingSecondProof > 0 || report.retryNeeded || backstop.retryNeeded;
       watchOnly = !fullPassDue && report.settleWatch > 0;
       const followUp = fullPassDue || report.settleWatch > 0
         ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;

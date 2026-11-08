@@ -456,6 +456,35 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
+  // The durable half: the stale check ran before the closing run settled (or
+  // its save failed), so only the cancelled stale wake carries the message.
+  // Once the closing run settles, the reconciler saves it and the drain
+  // reopens the task and delivers it once.
+  it("recovers a message a stale continuation dropped once the closing run settles", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(),
+      error: "continuation_task_ownership_changed" }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")
+      .map(row => row.recordId)).toEqual([f.commentId]);
+    expect(await applyOwnershipReportBackstops(db, report)).toEqual({ retryNeeded: false });
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(1);
+    const again = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(again.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
+  }, 180_000);
+
+  it("keeps a reconciler pass due when the backstop cannot save a message", async () => {
+    const report = { violations: [{ rule: "I4_exactly_once_intent", kind: "issue_comment", recordId: randomUUID(),
+      companyId: "not-a-company-id", runId: null, issueId: "not-an-issue-id", reason: "user_comment_without_wake" }] };
+    expect(await applyOwnershipReportBackstops(db, report as never)).toEqual({ retryNeeded: true });
+  });
+
   it("keeps the terminal outcomes closed and every temporary refusal mapped to a release trigger", () => {
     expect([...WORK_INTENT_TERMINAL_OUTCOMES]).toEqual(["delivered", "consumed", "task_cancelled", "hard_stop"]);
     for (const refusal of ["budget.blocked", "company.inactive", "agent.not_invokable", "issue_tree_hold_active",
