@@ -884,7 +884,7 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="agent-character-header flex items-center gap-2">
+      <header className="agent-character-header flex flex-wrap items-center gap-x-2 gap-y-3">
         <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
           <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} size={128} className="agent-header-character" trackingScope="page" followCursor />
         </div>
@@ -928,6 +928,7 @@ export function AgentDetail() {
           companyId={resolvedCompanyId}
           assignLabel="New task"
           size="default"
+          className="flex items-center gap-1 sm:gap-2 shrink-0 max-sm:w-full max-sm:justify-end"
           showAssignIcon={false}
           showChat
           showStatus={false}
