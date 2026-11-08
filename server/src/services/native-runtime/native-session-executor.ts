@@ -5748,7 +5748,11 @@ async function migrateRunnerdStateRootForExecution(input: {
       // holds no provider work (RC-29d).
       if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })
         || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
-        if (remoteSandbox) await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
+        if (remoteSandbox) {
+          takeRemoteBootstrapRestartProof(input.execution.binding.runId);
+          recordRemoteBootstrapRestartProof(input.execution.binding.runId,
+            await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity }));
+        }
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
       }
@@ -6287,6 +6291,28 @@ const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
  * runner can be verified there is nothing to stop, and a remaining conflict is
  * still caught by the bounded same-run bootstrap retry.
  */
+const provenRemoteBootstrapRestarts = new Map<string, "absent_confirmed" | "stopped" | "killed">();
+
+export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent_confirmed" | "stopped" | "killed"): void {
+  provenRemoteBootstrapRestarts.set(runId, stopped);
+}
+
+export function recordRemoteBootstrapRestartProof(runId: string,
+  stopped: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>): boolean {
+  provenRemoteBootstrapRestarts.delete(runId);
+  if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
+  provenRemoteBootstrapRestarts.set(runId, stopped);
+  return true;
+}
+
+export function hasRemoteBootstrapRestartProof(runId: string): boolean {
+  return provenRemoteBootstrapRestarts.has(runId);
+}
+
+export function takeRemoteBootstrapRestartProof(runId: string): boolean {
+  return provenRemoteBootstrapRestarts.delete(runId);
+}
+
 export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -6296,7 +6322,7 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   verify?: typeof verifyRemoteRunnerReattachment;
   waitMs?: number;
   pollMs?: number;
-} = {}): Promise<"no_prior_runner" | "stopped" | "killed" | "stop_failed"> {
+} = {}): Promise<"no_prior_runner" | "absent_confirmed" | "stopped" | "killed" | "stop_failed"> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
   const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
@@ -6309,9 +6335,10 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
       claim: { runId, remote: { providerLeaseId, remoteCwd: target.remoteCwd } },
       target, identity: input.identity, runId, normalizedSessionId: nativeSessionKey(input.execution),
     });
-  } catch {
+  } catch (error) {
     // No runner with this run's exact identity and generation is alive here.
-    return "no_prior_runner";
+    return error instanceof RemoteRunnerRecoveryError && error.remoteRunnerRecovery.reason === "process_not_running"
+      ? "absent_confirmed" : "no_prior_runner";
   }
   try {
     let outcome: "stopped" | "killed" = "stopped";
@@ -6323,6 +6350,11 @@ export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
       if (await runner.isAlive()) {
         await runner.signal("SIGKILL");
         outcome = "killed";
+        const killDeadline = Date.now() + (options.waitMs ?? STALE_REMOTE_RUNNER_STOP_WAIT_MS);
+        while (Date.now() < killDeadline && await runner.isAlive()) {
+          await new Promise(done => setTimeout(done, options.pollMs ?? 500));
+        }
+        if (await runner.isAlive()) return "stop_failed";
       }
     }
     await input.onLog?.("stdout", `[paperclip-runner] Stopped the interrupted runner ${runner.pid} before restarting the bootstrap.\n`);
@@ -15073,6 +15105,7 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
     incompleteReason: "unavailable" | "not_suspended" | null;
+    notSuspendedRunId?: string | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
       return {
@@ -15140,6 +15173,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerState: null,
         providerSessionIdentity: null,
         incompleteReason: "not_suspended",
+        notSuspendedRunId: typeof runnerState.runId === "string" ? runnerState.runId : null,
       };
     }
     let providerState: Record<string, unknown>;
@@ -15204,6 +15238,20 @@ async function createRunnerdBackendWithinSessionClaim(
       timeoutMs: 10_000,
     });
     return probe.exitCode === 0 && !probe.timedOut;
+  };
+
+  const moveInterruptedBootstrapSessionAside = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
+    const moved = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        'set -eu; for directory in "$1" "$2" "$3"; do test -d "$directory" && test ! -L "$directory" || exit 1; done; mv -- "$3" "$4"',
+        "paperclip-runner-bootstrap-restart", remoteRuntimeRoot, posix.dirname(remoteSessionRoot), remoteSessionRoot,
+        `${remoteSessionRoot}.bootstrap-restart-${Date.now()}-${randomUUID()}`],
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    return moved.exitCode === 0 && !moved.timedOut;
   };
 
   const recordInPlaceHarnessReuse = async (
@@ -15481,7 +15529,13 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      if (state.incompleteReason !== "unavailable" || backupAvailable ||
+                      const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
+                        && input.restartRecovery?.kind === "bootstrap_incomplete"
+                        && state.notSuspendedRunId === input.execution.binding.runId
+                        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId);
+                      if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
                           !(await claimUntouchedRemoteSession())) {
                         throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);
                       }
