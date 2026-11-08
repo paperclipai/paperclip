@@ -17,10 +17,13 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "../d
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import {
   createOwnershipReportState,
+  DEFERRED_INTENT_NOT_PROMOTED,
   ownershipReportFingerprint,
+  recheckSettlingKinds,
   runOwnershipReconciliationPass,
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
+import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -795,15 +798,20 @@ const OWNERSHIP_REPORT_WAKE_QUEUES = [
   DELIVERY_QUEUES.staleIssueLocks,
   DELIVERY_QUEUES.queuedRunDispatch,
   DELIVERY_QUEUES.accounting,
+  // Company and agent pause changes: the hold-release watch of the deferred
+  // work-intent backstop (section E).
+  DELIVERY_QUEUES.agentLifecycle,
 ] as const;
 
 /** Interval between report passes while in-progress records keep changing. */
 export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
 
 /**
- * The ownership reconciliation pass of this reconciler (plan section C,
- * Phase 1). It is report-only: it classifies the owner of every registered
- * in-progress record and records invariant violations, and never settles.
+ * The ownership reconciliation pass of this reconciler (plan section C). It
+ * classifies the owner of every registered in-progress record and records
+ * invariant violations. Kinds moved to the shared path in Phase 2 register a
+ * `settle`, which the pass calls only when the owner is proven gone; every
+ * other kind is report-only and never changed.
  *
  * Trigger and quiet condition (rules/sleep-aware-background-work.mdc):
  * - one pass when the worker registers at startup, from durable truth;
@@ -818,6 +826,18 @@ export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
  * deadline: an idle instance runs no SQL here. The pass runs in the shared
  * scheduler only, never on the path before `turn.start`.
  */
+/** Section E backstop: a deferred intent whose hold cleared without a
+ * release event is promoted through the one promotion function. Promotion
+ * re-runs normal admission, so a wrong report never bypasses a gate. */
+async function promoteMissedDeferredIntents(db: Db, report: OwnershipReport) {
+  const companies = new Set(report.violations.filter(violation => violation.reason === DEFERRED_INTENT_NOT_PROMOTED)
+    .flatMap(violation => violation.companyId ? [violation.companyId] : []));
+  for (const companyId of companies) {
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
+      .catch(error => logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"));
+  }
+}
+
 export function registerOwnershipReconciliationWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -839,6 +859,12 @@ export function registerOwnershipReconciliationWork(
   // no SQL; the next producer signal re-checks suppression.
   let parked = false;
   let lastPassAt: number | null = null;
+  // True when the only reason a pass is due is the settle watch: the next run
+  // re-checks the settling kinds alone, not every kind and invariant.
+  let watchOnly = false;
+  // Rule I7's grace deadline from the last full pass; the light re-check keeps
+  // it and runs a full pass once it is due.
+  let graceDueAt: number | null = null;
   const unsubscribers: Array<() => void> = [];
   const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
     retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
@@ -860,15 +886,32 @@ export function registerOwnershipReconciliationWork(
         nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
         return;
       }
+      if (watchOnly && !pendingWake && (graceDueAt === null || Date.now() < graceDueAt)) {
+        // Bounded and cheap: indexed listings of the settling kinds only.
+        lastPassAt = Date.now();
+        const recheck = await recheckSettlingKinds(db);
+        // A settle changes the set; the next full pass reports it.
+        if (recheck.settled.length > 0) { watchOnly = false; nextRunAt = Date.now(); return; }
+        if (recheck.watched === 0) watchOnly = false;
+        const watchDue = recheck.watched > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+        nextRunAt = watchDue === null ? graceDueAt : graceDueAt === null ? watchDue : Math.min(watchDue, graceDueAt);
+        return;
+      }
       lastPassAt = Date.now();
       pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
+      await promoteMissedDeferredIntents(db, report);
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
-      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded
+      // A settling kind's live owner can die without writing a signal, so
+      // keep one bounded re-check due while such records exist.
+      const fullPassDue = changing || report.awaitingSecondProof > 0 || report.retryNeeded;
+      watchOnly = !fullPassDue && report.settleWatch > 0;
+      const followUp = fullPassDue || report.settleWatch > 0
         ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;
+      graceDueAt = graceDue;
       nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
       if (fingerprint !== lastFingerprint) {
         // One line per change of the in-progress set: the verdict counts per
@@ -877,7 +920,8 @@ export function registerOwnershipReconciliationWork(
           inProgress: report.inProgress,
           violations: report.violations.length,
           kinds: Object.fromEntries(report.kinds.filter(kind => kind.inProgress > 0 || kind.error)
-            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.truncated ? { truncated: true } : {}),
+            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.settled ? { settled: kind.settled } : {}),
+              ...(kind.truncated ? { truncated: true } : {}),
               ...(kind.error ? { error: kind.error } : {}) }])),
         }, "ownership reconciliation pass");
       }

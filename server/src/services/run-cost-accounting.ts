@@ -1,7 +1,5 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
-import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
@@ -21,6 +19,7 @@ import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -127,9 +126,7 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
 async function notifyAccountingHoldRelease(tx: object, companyId: string) {
-  await notifyRunDispatch(tx, { companyId });
-  await notifyDeferredExecutionEligibility(tx, { companyId });
-  await notifyIssueRecovery(tx, { companyId });
+  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled" });
 }
 
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
@@ -422,6 +419,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         timeoutMinutes: ACCOUNTING_CLOSURE_TIMEOUT_MS / 60_000 } }, publications);
     return true;
   }), { "budget.accounting.owner": "run" });
+  // Only a closed account reaches this gap; an open one returned false above.
+  if (accounted) crashPoint("accounting.closure.after_commit_before_spool_unlink");
   for (const file of recoveredFiles) {
     try { await fs.rm(file, { force: true }); }
     catch (error) { logger.warn({ err: error, runId }, "Accounting committed; recovered receipt cleanup will retry"); }

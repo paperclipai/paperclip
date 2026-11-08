@@ -444,8 +444,9 @@ retain their titles and default to no generation request.
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
 - Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks whose `origin_issue_id` is that source task. Only for rows without a recorded `origin_issue_id`, it falls back to tasks created by runs bound to the source task, using native run issue identity or persisted legacy task context; a recorded origin suppresses that fallback, so the list agrees with `createdFrom`. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
+- A child task never shares its parent's (or any ancestor's) execution workspace. It inherits company, project, goal, privacy and workspace strategy, and its first run realizes its own workspace from the project base. `inheritExecutionWorkspaceFromIssueId` copies only the source issue's project and strategy; an explicit `executionWorkspaceId` that an ancestor created or is bound to is dropped. A child that an older release bound to its parent's workspace is moved to its own on its next admission once no earlier run of it is still running or settling (see `doc/execution-semantics.md`).
 - Delegated follow-ups keep their structural parent. When an agent run bound to an ordinary execution task creates an issue and omits `parentId`, the server defaults `parentId` to that run's task and records `parentDefaultedFromRunIssue: true` on the `issue.created` activity. An explicit `parentId: null` keeps the task standalone. The default never applies to conversation runs (chat handoffs stay top-level), to watchdog follow-ups, to board/user creates, to a run task the agent may not mutate, when the default parent would create a delegation cycle with the requested assignee, or when the agent may not create a child under the default parent (for example a protected assignment policy without a grant); those requests stay standalone instead of failing. An explicitly requested parent is still subject to the ordinary assignment check. Structural parentage, creation provenance and blockers stay distinct: the default adds no blocker.
-- Agent-created task trees are at most two levels (`MAX_AGENT_TASK_HIERARCHY_DEPTH`). When an agent, or automation acting for one (runner and project tools, chat suggestions, native delegation, accepted-plan decomposition, decision effects, plugins, external agents), would create or move a task to a third level, the server does not reject it: the task is placed under the requested parent's ancestor at the allowed depth, a sibling of the requester, and the create/update response and activity carry `parentAdjusted`. An agent move of a task that has its own children skips only the parent change (`reason: "has_children"`). The requester keeps blocking (`blockParentUntilDone` blocks the requester), workspace inheritance and privacy inheritance; provenance follows the `origin_issue_id` rule below. Placement never moves a task above a low-trust boundary root that contains the requester. The ancestor is written only when the caller authorized it and confirms it with `expectedParentId` (the issue routes, the runner `create_task` tool, and nested chat suggestions do); other callers get a standalone task instead (an unconfirmed move skips only the parent change), so no edge lands under an unchecked ancestor. Board users, watchdog and recovery machinery, channel-boundary placement and human-configured routines may nest to any depth; existing deeper trees stay valid and fully readable.
+- Agent-created task trees are at most two levels (`MAX_AGENT_TASK_HIERARCHY_DEPTH`). When an agent, or automation acting for one (runner and project tools, chat suggestions, native delegation, accepted-plan decomposition, decision effects, plugins, external agents), would create or move a task to a third level, the server does not reject it: the task is placed under the requested parent's ancestor at the allowed depth, a sibling of the requester, and the create/update response and activity carry `parentAdjusted`. An agent move of a task that has its own children skips only the parent change (`reason: "has_children"`). The requester keeps blocking (`blockParentUntilDone` blocks the requester), workspace strategy inheritance and privacy inheritance; provenance follows the `origin_issue_id` rule below. Placement never moves a task above a low-trust boundary root that contains the requester. The ancestor is written only when the caller authorized it and confirms it with `expectedParentId` (the issue routes, the runner `create_task` tool, and nested chat suggestions do); other callers get a standalone task instead (an unconfirmed move skips only the parent change), so no edge lands under an unchecked ancestor. Board users, watchdog and recovery machinery, channel-boundary placement and human-configured routines may nest to any depth; existing deeper trees stay valid and fully readable.
 - `origin_issue_id` and `origin_run_id` are server-set only: the task the creating run was bound to (a chat included), otherwise the chat that handed the task off, otherwise the requested parent (before placement); and that run. Privacy still follows the requested parent. Because `origin_issue_id` is returned with the task, it is recorded only when it reveals nothing new: the task's own parent or privacy parent (already exposed on the task), or a fully public origin (open, outside private projects and subtrees, not hidden); otherwise it stays null and `createdFrom` resolves the source through the run with its access checks. They never change after create.
 - `GET /api/issues/:id` returns `createdFrom` (`{ issue: { id, identifier, title, status }, run: { id, agentId } | null, agent: { id, name } | null } | null`): the task that created this issue, resolved from `origin_issue_id`, otherwise from the task the origin run was executing (`origin_run_id`, or for historical rows the run on the recorded creation activity). It is present whether or not `parentId` is set and requires that the viewer may read the source task. A recorded `origin_issue_id` is returned with `run` and `agent` null when no run created the task or the viewer may not see that run, so a null `run` is not missing provenance; a source resolved only through a run additionally requires that run to be visible. An unreadable, hidden-from-viewer or cross-company source yields `null`, indistinguishable from missing provenance.
 - Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
@@ -1103,7 +1104,7 @@ Task-watchdog wakes must include server-derived capability metadata that names t
 Within the watched subtree, a watchdog run may perform only mutations that restore or clarify the next live/waiting path:
 
 - add comments that explain findings, evidence, and next action
-- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace context from that subtree
+- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace strategy from that subtree; each follow-up gets its own execution workspace
 - assign or reassign included issues to active, invokable, same-company agents when normal assignment checks and scoped assignment grants allow it
 - move included issues among `todo`, `in_progress`, `in_review`, and `blocked` when the transition is needed to restore a valid action path
 - reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
@@ -1760,26 +1761,49 @@ Financial changes append independent durable evaluation inputs. The existing
 worker coalesces notifications over one second and publishes budget holds,
 incidents and durable Stop intent from a consistent snapshot. Policy/control
 publication is fenced separately from settlement. Inputs arriving or committing
-later stay pending; no global sequence watermark consumes them. Limited-budget
-admission refuses relevant unevaluated inputs older than fifteen seconds.
-Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Runs that ended without succeeding and
-await accounting hold new work only: they never open a hard-stop incident, pause
-a scope, or stop running work. Only spend at the limit, or unpriced usage under
-a blocking policy, does that. A succeeded run with only its usage report
-outstanding, whose provider already reported observed usage, does not hold new
-work: its provider work is over, so it is bounded like a running run. A
-succeeded run with no observed cost still holds new work. Its observed cost counts toward spend and reservation
-capacity, and its settled charge can still reach the hard stop. A run that
-failed, was cancelled, timed out or was interrupted still holds new work,
-because its provider may not have stopped. Temporary holds (accounting that awaits
-settlement, recovering runs, budget inputs that await evaluation) gate new work
-only. They never refuse an admitted run's own tool mutations or an owned
-recovery; a hard stop or pause still does, through the normal pause and
-cancellation path. Provider reporting and cancellation delays
-remain additional to evaluation lag. Cancellation delivery is asynchronous and
-scoped; committed per-run Stop survives policy changes and restart until existing
-stop proof succeeds. Budget resume cannot clear a manual hold.
+later stay pending; no global sequence watermark consumes them. Admission does
+not wait for them: it reads the ledger and live exposure itself, so a reached
+hard stop refuses new work even while evaluation lags.
+
+**Admission is independent of cleanup and accounting.** Admitting new work never
+waits on another run's cleanup or accounting completeness. Only these refuse it:
+
+- spend at the limit (ledger plus observed running spend), or unpriced usage
+  under a blocking policy (the hard stop);
+- an explicit pause of the company, project or agent;
+- an inactive company.
+
+A run whose accounting is unfinished (its final receipt has not closed, its
+native coordinator is still recovering, its usage capture failed, or a late
+receipt is outstanding) contributes its bounded estimate to exposure: the
+larger of its held reservation and its observed cost. It never creates a
+company-wide or scope-wide gate, and it never pauses a scope or opens a
+hard-stop incident. A budget-owned scope hold whose policies no longer reach a
+hard stop is stale; the budget worker releases it, and budget admission does
+not refuse work while it waits. Unevaluated budget inputs are not a gate.
+Provider reporting and cancellation delays remain additional to evaluation lag.
+Cancellation delivery is asynchronous and scoped; committed per-run Stop
+survives policy changes and restart until existing stop proof succeeds. Budget
+resume cannot clear a manual hold.
+
+A successor run on the same task still waits while its predecessor owns
+resources that the successor would reuse (a live environment lease, an open
+native finalization coordinator, or workspace finalization). That wait is
+per task, ends when the owner releases them, and wakes the successor through
+the work-intent promotion path. A predecessor run row that no longer exists
+owns nothing and never holds its successor.
+
+**Accepted work intents are delivered exactly once.** An accepted work intent
+(an assignment, a comment, a Retry or a recovery) ends in one of four terminal
+outcomes only: delivered, consumed by a later run that received it, task
+cancelled, or a reached hard stop. Every other refusal is temporary. The intent
+is saved as a deferred wake whose `executionWait` names the refusal and the
+event that clears it (a lifted pause, a released lock, settled accounting, a
+released task-tree hold, or resumed scheduling). Each such event promotes
+deferred intents through one promotion function, and the ownership reconciler
+promotes any intent whose hold cleared without that event. Promotion re-runs
+normal admission. Consumption is recorded per comment or intent id, so a
+promotion never delivers an intent that a later run already received.
 
 Accepted cumulative per-run usage checkpoints contribute observed running spend
 before the final ledger charge. Admission counts each unfinished operation's

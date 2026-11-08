@@ -104,6 +104,7 @@ import {
 } from "../drivers/runtime-context-materializer.js";
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
+import { crashPoint } from "../crash-point.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -892,16 +893,24 @@ const TURN_START_ADOPTION_CHECK_RESERVE_MS = 5_000;
  * The runner's own final failure of a turn whose start is still pending: a
  * non-recoverable turn terminal held for that start, or a failed run terminal.
  * Neither can be followed by a live start, so the start reports it at once.
+ * A turn failure that names another provider turn (for example, the turn an
+ * earlier generation lost on restore) is history, never this start's failure
+ * (durable-ownership plan, section G).
  */
 export function runnerdPendingTurnStartFailure(
   events: ReadonlyArray<{ eventType: string; envelope: { payload?: unknown } }>,
+  expectedProviderTurnId: string | null = null,
 ): string | null {
   for (const event of events) {
     const payload = record(record(event.envelope.payload).payload);
     const error = record(payload.error);
     if (
       event.eventType === "turn.failed" &&
-      (payload.recoverable === false || error.recoverable === false)
+      (payload.recoverable === false || error.recoverable === false) &&
+      terminalMayBelongToPendingTurnStart({
+        expectedProviderTurnId,
+        terminalProviderTurnId: runnerdTerminalProviderTurnId(event.eventType, payload),
+      })
     ) {
       const code = typeof error.code === "string" ? error.code
         : typeof payload.code === "string" ? payload.code : "provider_turn_failed";
@@ -5992,6 +6001,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#handle = handle;
     this.#watchRunner(handle);
+    // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+    if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
     await this.#publishSpawnedProcess(handle);
     this.#assertStartupOpen();
     await registration?.activate?.();
@@ -6829,6 +6840,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (handle) {
       this.#handle = handle;
       this.#watchRunner(handle);
+      // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+      if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
       await this.#publishSpawnedProcess(handle);
     }
     this.#assertStartupOpen();
@@ -7277,7 +7290,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#core?.store.state.committedEvents ?? []).filter(
             (event) => event.sourceSeq > this.#eventSourceSeq,
           ),
-        ]);
+        ], expectedProviderTurnId);
         if (failure !== null)
           throw new Error(`runnerd failed the provider turn before it started: ${failure}`);
       };

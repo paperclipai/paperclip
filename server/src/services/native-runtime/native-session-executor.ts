@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_POOL_FAILURE_CODES, DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
+import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
@@ -26,6 +27,7 @@ import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { formatNativeRunLogEvent } from "./native-run-log-export.js";
@@ -56,6 +58,7 @@ import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
+import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
 import { coldAdmissionTimeoutMs } from "../../vendor/paperclip-runner/index.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
@@ -3908,11 +3911,14 @@ async function inspectRetainedNativeSessionCleanup(
               },
             ]),
       ];
+      await notifyNativeTokenLeaseClaimed(tx, { companyId: run.companyId, runId: run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({
           leaseOwner,
           leaseExpiresAt: new Date(Date.now() + 60_000),
+          // This process, bound to the token (shared ownership path).
+          leaseHolder: nativeLeaseHolder(leaseOwner),
           recoveryHistory: history,
           updatedAt: new Date(),
         })
@@ -10977,6 +10983,11 @@ async function executePaperclipNativeSessionWithinScope(
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
+            getUnreadSteeredMessages: () => readUnreadSteeredMessages(input.db, {
+              companyId: input.execution.binding.companyId,
+              runId: input.execution.binding.runId,
+              issueId: input.execution.binding.issueId,
+            }),
             onSessionAdmission: async () => {
               if (existingWarmSession) runnerdBackend?.bindDiagnosticSession?.(existingWarmSession);
               // Invalidate prior stop evidence before a backend can spawn.
@@ -10989,8 +11000,11 @@ async function executePaperclipNativeSessionWithinScope(
                 level: "info",
                 message: "Native execution requested; prior local stop evidence no longer applies.",
                 // Binds a later identity-less stop proof to the host that launched.
-                payload: { hostname: hostname() },
+                // The provider attempt opens that attempt's outcome window for
+                // the work-based budget (provider-attempt-outcome.ts).
+                payload: { hostname: hostname(), providerAttempt: attempt },
               });
+              crashPoint("native.process_start.after_requested_before_spawn");
             },
             input: runnerExecution,
             startup: executionContext && (!usesPluginTask || executionContext.pluginSupported) ? executionContext : undefined,

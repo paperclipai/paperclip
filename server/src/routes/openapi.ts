@@ -2188,7 +2188,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2197,7 +2201,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports/preview",
   tags: ["companies"],
   summary: "Preview company export",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2206,7 +2214,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/preview",
   tags: ["companies"],
   summary: "Preview company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2215,7 +2227,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/apply",
   tags: ["companies"],
   summary: "Apply company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityImportSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -4268,7 +4284,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access.",
+    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access. Results are paged: limit defaults to 500 (maximum 1000) and offset to 0. For actors who can read the whole company's task list, every page sets X-Paperclip-Has-More (true when more results exist) and X-Paperclip-Limit; a capped page also sets X-Paperclip-Next-Offset, or X-Paperclip-Next-After-Id for sortField=id&sortDir=asc cursor paging (not with oneChildPerParent). Actors whose rows are filtered by task access, such as low-trust agents, get no pagination headers. Agent call_api results carry these as pagination.hasMore/nextOffset/nextAfterId. A page whose hasMore is true is not the complete list: repeat the request with the same filters and the next offset or afterId until hasMore is false.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -4276,6 +4292,11 @@ registry.registerPath({
       ids: z.string().optional().describe("One to 100 comma-separated task UUIDs; requires index or rows without attention."),
       parentIds: z.string().optional().describe("One to 100 comma-separated parent UUIDs; requires index or rows without attention."),
       oneChildPerParent: z.boolean().optional().describe("Return at most one readable child per parent; requires view=index and parentIds."),
+      limit: z.number().int().min(1).max(1000).optional().describe("Page size; defaults to 500, at most 1000. Check X-Paperclip-Has-More (call_api: pagination.hasMore) for more results."),
+      offset: z.number().int().min(0).optional().describe("Rows to skip; use X-Paperclip-Next-Offset (call_api: pagination.nextOffset) from the previous page."),
+      sortField: z.enum(["updated", "created", "id"]).optional(),
+      sortDir: z.enum(["asc", "desc"]).optional(),
+      afterId: z.string().uuid().optional().describe("Cursor paging: return rows after this task UUID; requires sortField=id, sortDir=asc and no offset. Use X-Paperclip-Next-After-Id (call_api: pagination.nextAfterId)."),
     }).passthrough(),
   },
   responses: {
@@ -4618,7 +4639,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get an exact issue document revision",
   description:
-    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. This read does not restore or modify the document.",
+    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. The response also carries the document's current latestRevisionId and latestRevisionNumber, and isLatest says whether this revision is still current; to read the current text, use GET /api/issues/{id}/documents/{key}. This read does not restore or modify the document.",
   request: {
     params: z.object({
       id: z.string(),

@@ -359,6 +359,10 @@ export function createNativeRunTrace(input: {
   // measurement, so the check never adds a wait to the turn path.
   let budgetStart: SpeedBudgetStart | null = null;
   let queueEndedAtMs: number | null = null;
+  // When the run row was created (start of heartbeat.queue, end of the
+  // ingress span). Input accepted before it waited for a run to exist, for
+  // example a comment posted while the previous turn was still running.
+  let runCreatedAtMs: number | null = null;
   let attemptStartedAtMs: number | null = null;
   let bootChecked = false;
   const reportBudgetBreach = (breach: SpeedBudgetBreach | null): void => {
@@ -376,13 +380,18 @@ export function createNativeRunTrace(input: {
   const checkSpanBudget = (name: string, startedAtMs: number, endedAtMs: number): void => {
     if (!input.budget || input.budget.restartRecovery) return;
     const subject = { adapter: input.budget.adapter, environment: input.budget.environment };
-    if (name === "heartbeat.queue") queueEndedAtMs = endedAtMs;
+    if (name === "heartbeat.queue") { queueEndedAtMs = endedAtMs; runCreatedAtMs ??= startedAtMs; }
+    if (name === "comment.to_run_created" || name === "question_response.to_run_created") runCreatedAtMs ??= endedAtMs;
     // A resumed attempt keeps the run's original queue span; its own claim is
     // the start of this attempt's preparation.
     if (name === "heartbeat.prepare_before_environment") attemptStartedAtMs = startedAtMs;
     if (name === "task.time_to_first_token") {
+      // The span keeps the full user-visible latency. The budget (baseline:
+      // idle follow-ups) judges it from run creation: time the input spent
+      // waiting for a run to exist (behind a live turn) is reported, not judged.
+      const inputWaitMs = runCreatedAtMs !== null && runCreatedAtMs > startedAtMs ? runCreatedAtMs - startedAtMs : 0;
       reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "ttft", start: budgetStart,
-        measuredMs: endedAtMs - startedAtMs }));
+        measuredMs: endedAtMs - startedAtMs - inputWaitMs, ...(inputWaitMs > 0 ? { inputWaitMs } : {}) }));
     }
     // Agent boot: run claimed (end of heartbeat.queue) to the provider session
     // accepting turn.start (end of runner.turn.submit or runner.session.resume).

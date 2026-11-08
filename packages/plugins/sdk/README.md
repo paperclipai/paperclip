@@ -595,13 +595,14 @@ headers?, body? }`.
 
 Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
 
+A child issue always gets its own execution workspace, realized from the project base. It keeps the parent's project and workspace strategy, never the parent's checkout, branch or unmerged changes. `inheritExecutionWorkspaceFromIssueId` likewise copies only the source issue's project and workspace strategy.
+
 Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
 
 ```ts
 const child = await ctx.issues.create({
   companyId,
   parentId: missionIssueId,
-  inheritExecutionWorkspaceFromIssueId: missionIssueId,
   title: "Implement feature slice",
   status: "todo",
   assigneeAgentId: workerAgentId,

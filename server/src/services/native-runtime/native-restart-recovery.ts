@@ -34,6 +34,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
+import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT, providerAttemptChargesBudget, providerAttemptWindowStart, readProviderAttemptOutcome } from "./provider-attempt-outcome.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { persistActivity } from "../activity-log.js";
@@ -169,20 +170,18 @@ export function suspendedByCleanDrain(coordinator: {
 }
 
 /**
- * A controller restart (a crash, so no drain record) that interrupts a resume
- * which had already made progress is also not the run's failure. Each claim
- * records the run's event-log position; the next claim does not charge an
- * attempt when, after that position, the provider accepted a new turn and then
- * completed work in it (a tool execution or a non-usage item). A resume that
- * dies before it completes any work in a new turn still charges, so a crash
- * loop without progress, a resume that fails each time, and provider failures
- * stay bounded. A resume the controller died before starting is not charged
- * either (restartResumeKeepsAttempt). Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
- * controller generations, so a run that makes progress and then crashes the
- * controller every time is still bounded.
+ * A controller restart (a crash, so no drain record) charges the interrupted
+ * attempt only by the work-based rule in provider-attempt-outcome.ts: the
+ * provider accepted a turn in that attempt and no accepted turn completed work
+ * before the crash. Each claim records the run's event-log position, so the
+ * next claim judges only what happened after it. A resume the controller died
+ * before starting, a runner that never admitted its provider, and a turn.start
+ * the provider did not accept are not charged. Credit stops after
+ * NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT controller generations, so a crash
+ * loop that never starts the provider, or that makes progress and then crashes
+ * the controller every time, is still bounded.
  */
-export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = 12;
-const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed"] as const;
+export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
 
 type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
 
@@ -193,6 +192,13 @@ type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?
 export function lastRecoveryClaimResume(
   recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
 ): { watermark: number; attempt: number; launchesRunner: boolean } | null {
+  const previous = previousRecoveryClaim(recoveryHistory);
+  return previous === "none" || previous === "unrecorded" ? null : previous;
+}
+
+function previousRecoveryClaim(
+  recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
+): { watermark: number; attempt: number; launchesRunner: boolean } | "none" | "unrecorded" {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
@@ -202,9 +208,9 @@ export function lastRecoveryClaimResume(
     const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
     return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
       && typeof attempt === "number" && Number.isSafeInteger(attempt)
-      ? { watermark, attempt, launchesRunner } : null;
+      ? { watermark, attempt, launchesRunner } : "unrecorded";
   }
-  return null;
+  return "none";
 }
 
 /**
@@ -240,15 +246,18 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
 
 /**
  * Whether this restart claim keeps the provider attempt instead of charging
- * one. Both cases are judged from the previous claim's recorded position:
- * - That resume launched a new runner (not a reattachment) and never started:
- *   no runner was requested and no runner event was
- *   recorded before the controller died (for example in a K6 crash loop). It
- *   used no provider work, so this claim replaces it and carries its charge:
- *   the attempt ends at the attempt that resume was to run as, never above it.
- * - That resume made progress on the current attempt (see above). A normal
- *   retry in between starts a new attempt, and earlier work does not count.
- * Neither applies at or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT.
+ * one, judged by the work-based rule (provider-attempt-outcome.ts) over the
+ * attempt the restart interrupted:
+ * - The first restart judges the original execution's attempt.
+ * - A later restart judges the attempt that ran after the previous claim's
+ *   recorded position. A normal retry in between starts a new attempt window,
+ *   so earlier work does not count for it.
+ * - When the previous claim launched a new runner but that resume never
+ *   reached execution, it consumed nothing and this claim replaces it. Its
+ *   charge decision was never applied, so this claim carries it: the attempt
+ *   ends at the attempt that resume was to run as, never above it.
+ * - A claim history written before claims recorded their position charges.
+ * At or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT every restart charges.
  */
 export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   runId: string;
@@ -260,32 +269,27 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
 }): Promise<boolean> {
   if (input.coordinator.attempt <= 0) return false;
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
-  const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
-  if (previous === null) return false;
-  // Only a claim that launches a new runner can be unstarted. A reattachment
-  // adopted provider work that had already started, so only progress counts.
-  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+  const previous = previousRecoveryClaim(input.coordinator.recoveryHistory);
+  if (previous === "unrecorded") return false;
+  if (previous !== "none" && previous.launchesRunner
+    && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
     return input.coordinator.attempt >= previous.attempt;
-  if (previous.attempt !== input.coordinator.attempt) return false;
-  const watermark = previous.watermark;
-  const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
-  const [work] = await tx
-    .select({ seq: heartbeatRunEvents.seq })
-    .from(heartbeatRunEvents)
-    .where(and(
-      eq(heartbeatRunEvents.runId, input.runId),
-      gt(heartbeatRunEvents.seq, watermark),
-      inArray(heartbeatRunEvents.eventType, [...RESUME_PROGRESS_EVENT_TYPES]),
-      sql`coalesce(${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind', '') <> 'usage'`,
-      // The inner alias hides the table name, so unqualified outer references
-      // below resolve to the outer completed-work row.
-      sql`exists (select 1 from ${heartbeatRunEvents} as accepted_turn where accepted_turn.run_id = ${input.runId}
-        and accepted_turn.seq > ${watermark} and accepted_turn.seq < ${heartbeatRunEvents.seq}
-        and accepted_turn.event_type = 'turn.accepted'
-        and accepted_turn.payload -> 'prpEvent' ->> 'turnId' = ${workTurnId})`,
-    ))
-    .limit(1);
-  return work !== undefined;
+  const claimedAt = previous === "none" ? 0 : previous.watermark;
+  // A reattachment adopted a provider that had already started, and it keeps
+  // the attempt; a normal retry after it starts a new attempt.
+  const adoptedProviderWork = previous !== "none" && !previous.launchesRunner
+    && input.coordinator.attempt === previous.attempt;
+  const window = adoptedProviderWork ? { seq: claimedAt }
+    : await providerAttemptWindowStart(tx, {
+      runId: input.runId, sinceSeq: claimedAt, providerAttempt: input.coordinator.attempt,
+    });
+  if (window === "unstarted") return true;
+  const outcome = await readProviderAttemptOutcome(tx, {
+    runId: input.runId,
+    sinceSeq: window.seq,
+    adoptedProviderWork,
+  });
+  return !providerAttemptChargesBudget(outcome);
 }
 
 
@@ -668,7 +672,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   unclaimedBootstrap?: boolean;
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
-  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn";
+  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
+    | "remote_runner_exited_before_provider_work";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -768,6 +773,21 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
+/** Whether a runner or provider produced any event for this run. Unlike
+ * hasNativeExecutionStartEvidence, the controller's own process-start and
+ * identity records do not count: a relaunched runner that exited before run.prepare
+ * has those, but nothing the runner itself sent. */
+async function hasNativeRunnerOriginatedEvidence(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string },
+): Promise<boolean> {
+  const [event] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      or(isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "tool.execution.started"]))))
+    .limit(1);
+  return event !== undefined;
+}
+
 export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
@@ -1333,7 +1353,28 @@ export async function claimNativeRestartRecoveries(input: {
       // A settled retry starts new work, so it needs the same current
       // admission as the resumption reconciler: task pause, agent status,
       // dependencies, ownership and competing runs. Keep it waiting otherwise.
-      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+      // The executor relaunched a remote runner for a same-run bootstrap
+      // retry, and that runner exited (observed by its transport) before any
+      // provider work: the executor's settled failure durably records no
+      // provider session, no provider event and no checkpoint, and none exists
+      // now. The runner's own exit is the remote proof that it is gone; a
+      // recorded runner PID alone would not be (Daytona wave s9301).
+      const settledFailure = row.coordinator.failureDetail;
+      const remoteRunnerExitedBeforeProviderWork = !unclaimedBootstrap && !remoteRunnerNeverLaunched
+        && remoteWorkspace?.state === "prepared" && !pluginTask && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "retryable_failure" && row.run.status === "failed" && !row.coordinator.leaseOwner
+        && settledFailure?.recoveryMode === "bootstrap_retry"
+        && settledFailure?.originalFailureCode === "native_runner_process_exited"
+        && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
+        && settledFailure?.checkpointExists === false && !settledFailure?.successorRunId
+        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !hasCheckpoint && !hasProviderEvidence
+        // Fresh evidence wins over the saved failure: any event the runner or
+        // provider sent contradicts "no provider work".
+        && !(await hasNativeRunnerOriginatedEvidence(tx, row.run));
+      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork) && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
         if (deferred) return deferred;
@@ -1370,8 +1411,10 @@ export async function claimNativeRestartRecoveries(input: {
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
-        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched,
+        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
+          || remoteRunnerExitedBeforeProviderWork,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,

@@ -100,6 +100,9 @@ provider event). The payload names `adapter` (`codex`, `claude` or `opencode`),
 `environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
 start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
 `percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
+For `ttft`, `measuredMs` counts from run creation: when the input waited for its
+run to exist (for example a comment posted while the previous turn was still
+running), that wait is excluded from the judgment and reported as `inputWaitMs`.
 Each metric is checked at most once per dispatch. A restart-recovery dispatch is
 judged only on `restart_recovery`, because its TTFT and boot span the outage. Remote runs and other adapters have
 no budget yet. The event is written in detached diagnostic work after the

@@ -180,7 +180,12 @@ async function withBudgetStopDelivery<T>(db: Db, work: () => Promise<T>): Promis
   }
 }
 
+/** `preservePauseDeferred`: the stop comes from a pause, which keeps the
+ * messages it deferred for delivery once the pause lifts. */
+export type StopInvocationOptions = { preservePauseDeferred?: boolean };
+
 /** Cancellation shares executor ownership and delegates lifecycle and admission effects. */
+
 export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof createHeartbeatRunState>,
   "getRun" | "getAgent" | "getRunCleanupState" | "getRunExecutionWait">,
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
@@ -1748,6 +1753,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelPendingWakeupsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1762,6 +1768,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(agentWakeupRequests.agentId, uniqueAgentIds),
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           isNull(agentWakeupRequests.runId),
+          // A pause is temporary: a message it deferred waits for the pause to
+          // lift (work-intent outbox), so the pause's own stop keeps it.
+          options.preservePauseDeferred ? sql`not (${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and coalesce(${agentWakeupRequests.payload}->'executionWait'->>'trigger', '') = 'pause_lifted')` : undefined,
         ));
       if (!wakeups.length) return 0;
       for (const companyId of new Set(wakeups.map(row => row.companyId))) {
@@ -1782,6 +1792,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelInvocationsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1793,6 +1804,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const wakeupsCancelled = await cancelPendingWakeupsForAgentsInternal(
       uniqueAgentIds,
       reason,
+      options,
     );
     return {
       agentIds: uniqueAgentIds,

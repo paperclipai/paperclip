@@ -1490,6 +1490,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    /** Inherit this issue's project and workspace strategy. The new issue always gets its own workspace. */
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;

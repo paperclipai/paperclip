@@ -477,4 +477,123 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).toBeNull();
   });
 
+
+  describe("automatic steering", () => {
+    const delay = 5_000;
+    const fresh = (overrides: Partial<IssueQueuedCommentQueue> = {}): IssueQueuedCommentQueue => {
+      const at = new Date(Date.now());
+      return { ...queue, ...overrides, entries: queue.entries.slice(0, 1).map(entry => ({
+        ...entry, comment: { ...entry.comment, createdAt: at, updatedAt: at } })) };
+    };
+    const advance = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); await Promise.resolve(); }); };
+    const countdown = () => container.querySelector('[data-testid="task-chat-queued-auto-steer-comment-1"]');
+
+    beforeEach(() => { vi.useFakeTimers({ now: new Date("2026-11-07T12:00:00Z") }); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("shows a countdown with Edit and Cancel, then steers into the live turn", async () => {
+      const props = render({ queue: fresh(), autoSteerDelayMs: delay });
+      expect(countdown()?.textContent).toContain("Sending in 5s");
+      expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).toBeNull();
+      await advance(2_100);
+      expect(countdown()?.textContent).toContain("Sending in 3s");
+      expect(props.onSteer).not.toHaveBeenCalled();
+      await advance(3_000);
+      expect(props.onSteer).toHaveBeenCalledOnce();
+      expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
+    });
+
+    it("gives a saved edit a full window while another row's countdown keeps the clock running", async () => {
+      const start = Date.now();
+      const twoRows: IssueQueuedCommentQueue = { ...queue, entries: queue.entries.slice(0, 2).map((entry, index) => {
+        const at = new Date(start + index * 4_000);
+        return { ...entry, comment: { ...entry.comment, createdAt: at, updatedAt: at } };
+      }) };
+      // comment-1 counts down first; the person opens it for editing at 1 s.
+      const props = render({ queue: twoRows, autoSteerDelayMs: delay });
+      await advance(1_000);
+      await act(async () => { render({ ...props, editingCommentId: "comment-1" }); });
+      // comment-2 counts down to start + 9 s and keeps the clock ticking past
+      // comment-1's old deadline.
+      await advance(5_000);
+      expect(props.onSteer).not.toHaveBeenCalled();
+      const saved = { ...twoRows, revision: "rev-2", entries: twoRows.entries.map((entry, index) => index === 0
+        ? { ...entry, comment: { ...entry.comment, body: "Edited", updatedAt: new Date(Date.now()) } } : entry) };
+      await act(async () => { render({ ...props, queue: saved, editingCommentId: null }); });
+      await advance(500);
+      expect(props.onSteer).not.toHaveBeenCalledWith("comment-1", expect.anything());
+      expect(countdown()?.textContent).toContain("Sending in");
+      await advance(5_000);
+      expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-2");
+    });
+
+    it("keeps a cancelled message in the queue with its explicit Steer button", async () => {
+      const props = render({ queue: fresh(), autoSteerDelayMs: delay });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-auto-steer-cancel-comment-1"]')?.click();
+        await Promise.resolve();
+      });
+      await advance(10_000);
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(countdown()).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).not.toBeNull();
+    });
+
+    it("waits while the message is being edited and restarts from the saved revision", async () => {
+      const queued = fresh();
+      const props = render({ queue: queued, autoSteerDelayMs: delay });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-auto-steer-edit-comment-1"]')?.click();
+        await Promise.resolve();
+      });
+      expect(props.onEdit).toHaveBeenCalledWith("comment-1");
+      render({ ...props, editingCommentId: "comment-1" });
+      await advance(10_000);
+      expect(props.onSteer).not.toHaveBeenCalled();
+      // The save changes the comment; its countdown starts again from that change.
+      const saved = { ...queued, revision: "rev-2", entries: queued.entries.map(entry => ({
+        ...entry, comment: { ...entry.comment, body: "Edited", updatedAt: new Date(Date.now()) } })) };
+      await act(async () => { render({ ...props, queue: saved, editingCommentId: null }); });
+      expect(countdown()?.textContent).toContain("Sending in 5s");
+      await advance(5_100);
+      expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-2");
+    });
+
+    it("keeps the ordinary queue while steering is unavailable or unsupported", async () => {
+      for (const steeringDisposition of ["temporarily_unavailable", "unsupported"] as const) {
+        const props = render({ queue: fresh({ steeringDisposition }), autoSteerDelayMs: delay });
+        expect(countdown()).toBeNull();
+        await advance(10_000);
+        expect(props.onSteer).not.toHaveBeenCalled();
+      }
+    });
+
+    it("tries each message revision once, then leaves it queued after a failure", async () => {
+      const props = render({ queue: fresh(), autoSteerDelayMs: delay, onSteer: vi.fn().mockRejectedValue(new Error("rejected")) });
+      await advance(5_100);
+      await advance(10_000);
+      expect(props.onSteer).toHaveBeenCalledOnce();
+      expect(container.textContent).toContain("Couldn’t steer. Message is still queued.");
+      expect(countdown()).toBeNull();
+    });
+
+    it("never sends someone else’s message or a saved card response automatically", async () => {
+      const notMine = fresh();
+      notMine.entries = notMine.entries.map(entry => ({ ...entry, canEdit: false }));
+      const card = fresh();
+      card.entries = card.entries.map(entry => ({ ...entry, source: { kind: "interaction", summary: "Approved" } as never }));
+      for (const candidate of [notMine, card]) {
+        const props = render({ queue: candidate, autoSteerDelayMs: delay });
+        await advance(10_000);
+        expect(props.onSteer).not.toHaveBeenCalled();
+      }
+    });
+
+    it("stays off unless the caller enables it", async () => {
+      const props = render({ queue: fresh() });
+      expect(countdown()).toBeNull();
+      await advance(10_000);
+      expect(props.onSteer).not.toHaveBeenCalled();
+    });
+  });
 });

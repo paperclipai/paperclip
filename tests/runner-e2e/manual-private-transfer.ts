@@ -206,6 +206,39 @@ async function verifyDownloads(env: NodeJS.ProcessEnv) {
   }
   await writeFile(path.join(root, "manual-report-input-completeness.json"), JSON.stringify({ meaning: "available-files-and-transfer-only", doesNotAttestFeatureOutcome: true, cells }), { mode: 0o600, flag: "wx" });
 }
+/**
+ * Names the first carrier the generated-report seal would refuse with a closed
+ * category, so a refused report is diagnosable without its paths. The seal stays
+ * authoritative; this only runs before it and never admits anything.
+ */
+export async function assertGeneratedReportCarriers(source: string) {
+  let visited = 0;
+  async function visit(relative: string): Promise<void> {
+    for (const entry of await readdir(path.join(source, relative), { withFileTypes: true })) {
+      if (++visited > 4096) return;
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory() && !entry.isSymbolicLink()) { if (name.split("/").length < 24) await visit(name); continue; }
+      if (!entry.isFile() || entry.isSymbolicLink()) continue;
+      const canonical = canonicalGeneratedReportAsset(name);
+      if (name.startsWith("html/trace/") || canonical !== undefined) {
+        if (!canonical) throw new Error("Unsupported generated report carrier (trace viewer asset)");
+        if (!await isTrustedGeneratedReportAsset(name, await readFile(path.join(source, name))))
+          throw new Error("Unsupported generated report carrier (trace viewer bytes)");
+        continue;
+      }
+      if (isStandardEvidenceFile(`html-report/${name}`)) continue;
+      const extension = path.extname(name).toLowerCase();
+      if ([".ttf", ".otf", ".woff", ".woff2"].includes(extension)) throw new Error("Unsupported generated report carrier (font)");
+      if (extension === ".svg") throw new Error("Unsupported generated report carrier (svg)");
+      if (extension === ".webmanifest") throw new Error("Unsupported generated report carrier (webmanifest)");
+      if ([".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico"].includes(extension)) throw new Error("Unsupported generated report carrier (image)");
+      if (extension === ".map") throw new Error("Unsupported generated report carrier (source map)");
+      if (!extension) throw new Error("Unsupported generated report carrier (no extension)");
+      throw new Error("Unsupported generated report carrier (other)");
+    }
+  }
+  await visit("");
+}
 export async function uploadReport(env: NodeJS.ProcessEnv) {
   requireSession(env); const { approval, bucket } = request(env), source = await realpath(env.PRIVATE_REPORT_SOURCE ?? ""), root = await realpath(env.PRIVATE_REPORT_ROOT ?? "");
   if (!source.startsWith(`${root}${path.sep}`)) throw new Error("Private report escaped owned staging");
@@ -213,6 +246,7 @@ export async function uploadReport(env: NodeJS.ProcessEnv) {
   if (evidenceCompleteness.meaning !== "available-files-and-transfer-only" || evidenceCompleteness.doesNotAttestFeatureOutcome !== true
     || evidenceCompleteness.cells.map(cell => cell.executionId).sort().join() !== [...approval.executionIds].sort().join()) throw new Error("Private report lacks exact cell completeness receipts");
   const secrets = normalizedSecrets([...CREDENTIAL_NAMES.map(name => env[name]), env.AWS_ACCESS_KEY_ID, env.AWS_SECRET_ACCESS_KEY, env.AWS_SESSION_TOKEN]);
+  await assertGeneratedReportCarriers(source);
   await sealManualResultEvidence({ root, protocol: MANUAL_PRIVATE_PROTOCOL, private: true, workflowSha: approval.workflowSha,
     targetSha: approval.targetSha, runId: approval.runId, attempt: approval.attempt, executionIds: [...approval.executionIds] }, secrets, source, "generated-report");
   const sealed = path.join(root, "sealed-results");

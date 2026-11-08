@@ -11,8 +11,9 @@ import { asc, desc, eq, gte, inArray, isNull, lt, or, and } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { currentProcessSpaceHash, processExists, sameProcessSpace } from "./controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, processExists, sameProcessSpace } from "./controller-process-identity.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -105,6 +106,17 @@ function readRuntimeControlOwner(metadata: unknown): RuntimeControlOwnerStamp | 
  */
 const liveRuntimeControlOperationIds = new Set<string>();
 
+/**
+ * Workspace-finalize operations this process is driving. A finalize row stamped
+ * by this process (`finalizeOwner`) but absent here was left by a request that
+ * died without unwinding. The ownership settle never touches an id in this set.
+ */
+const liveWorkspaceFinalizeOperationIds = new Set<string>();
+
+export function isWorkspaceFinalizeOperationLive(operationId: string): boolean {
+  return liveWorkspaceFinalizeOperationIds.has(operationId);
+}
+
 type NativeFinalizationActivityScope = {
   operationId: string;
   companyId: string;
@@ -154,6 +166,7 @@ function updatedAtUnchanged(updatedAt: Date) {
 
 export function resetWorkspaceRuntimeControlStateForTests() {
   liveRuntimeControlOperationIds.clear();
+  liveWorkspaceFinalizeOperationIds.clear();
 }
 
 export function workspaceRuntimeControlOwnerIdForTests() {
@@ -550,6 +563,13 @@ export function workspaceOperationService(db: Db) {
                 } satisfies RuntimeControlOwnerStamp,
               }
             : recordInput.metadata ?? null;
+          // Finalize attempts record the process that runs them (no I/O), so
+          // the shared ownership path can settle one whose owner died mid-copyback.
+          const finalizeAttempt = recordInput.phase === "workspace_finalize";
+          if (finalizeAttempt) {
+            currentMetadata = { ...(currentMetadata ?? {}), finalizeOwner: currentControllerProcessStamp() };
+            liveWorkspaceFinalizeOperationIds.add(id);
+          }
 
           // Claim in-process before the row exists, so there is no ordering in which a recovery
           // sweep can observe an operation stamped by this process but not yet tracked by it —
@@ -582,10 +602,14 @@ export function workspaceOperationService(db: Db) {
             if (!published) throw new Error("Workspace operation admission did not publish its running row");
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
+            liveWorkspaceFinalizeOperationIds.delete(id);
             throw insertError;
           }
           createdIds.push(id);
-          if (recordInput.phase === "workspace_finalize") hasFinalization = true;
+          if (recordInput.phase === "workspace_finalize") {
+            hasFinalization = true;
+            crashPoint("workspace.finalize.after_start_before_copyback");
+          }
 
           let heartbeatTimer: NodeJS.Timeout | null = null;
           let timeoutTimer: NodeJS.Timeout | null = null;
@@ -667,6 +691,7 @@ export function workspaceOperationService(db: Db) {
 
           try {
             const result = await settle();
+            if (recordInput.phase === "workspace_finalize") crashPoint("workspace.finalize.after_copyback_before_done");
             await append("system", result.system ?? null);
             await append("stdout", result.stdout ?? null);
             await append("stderr", result.stderr ?? null);
@@ -737,6 +762,7 @@ export function workspaceOperationService(db: Db) {
             if (heartbeatTimer) clearInterval(heartbeatTimer);
             if (timeoutTimer) clearTimeout(timeoutTimer);
             liveRuntimeControlOperationIds.delete(id);
+            liveWorkspaceFinalizeOperationIds.delete(id);
           }
         },
       };

@@ -23,6 +23,8 @@ import {
   executionFailureRetryCount,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
+  INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
+  INTERRUPTED_PREPARATION_RETRY_REASON,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
@@ -506,7 +508,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
       && (run.status === "interrupted" || await isInterruptedNativePreparation(db, run));
     const retryReason = opts?.retryReason ??
-      (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+      (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const transientRecovery =
@@ -515,17 +517,23 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const quotaRetry = transientRecovery?.errorFamily === "provider_quota";
+    const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? (poolFailure ? Math.max(100, poolFailure === "quota" ? (run.scheduledRetryAttempt ?? 0) + 1 : 100)
+        opts?.maxAttempts ?? (interruptedPreparationLane ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS
+          : poolFailure ? Math.max(100, poolFailure === "quota" ? (run.scheduledRetryAttempt ?? 0) + 1 : 100)
           : quotaRetry ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
-    const computedBaseSchedule =
-      opts?.delayMs != null
+    // An interrupted preparation never spends failures, but it never revives
+    // a chain whose real failures already spent the failure budget either.
+    const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
+      && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+    const computedBaseSchedule = failureBudgetSpent ? null
+      : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -537,7 +545,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               maxAttempts,
             }
           : null
-        : poolFailure && nextAttempt <= maxAttempts
+        : poolFailure && !interruptedPreparationLane && nextAttempt <= maxAttempts
           ? { attempt: nextAttempt, baseDelayMs: 0, delayMs: 0, dueAt: now, maxAttempts }
         : nextAttempt <= maxAttempts && quotaRetry
           ? (() => {
@@ -547,7 +555,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               return { attempt: nextAttempt, baseDelayMs, delayMs, dueAt: new Date(now.getTime() + delayMs), maxAttempts };
             })()
         : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
+          ? interruptedPreparationLane
+            ? (() => {
+              // Later lane attempts keep the longest transient delay.
+              const schedule = computeBoundedTransientHeartbeatRetrySchedule(
+                Math.min(nextAttempt, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, opts?.random);
+              return schedule ? { ...schedule, attempt: nextAttempt } : null;
+            })()
+            : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
               opts?.random,

@@ -73,7 +73,7 @@ Each metric is reported by adapter (Codex, Claude/ACPX, OpenCode) and environmen
 
 Phase 1 sets these budgets from the local baseline in `2026-11-07-ttft-baseline.md`. Each budget is the baseline value times 1.2, rounded up to 0.5 s. The 20% headroom covers the small samples and the shared host of the baseline. Daytona and other remote environments get budgets after their own baseline.
 
-A single run is checked against its p95 budget. When a run exceeds it, the run log gets one `run.performance.budget_exceeded` row (`doc/run-log-events.md`). The p50 budgets apply to aggregates: chaos waves, the baseline driver, and staging. Every later phase's exit criteria include "no regression against these budgets". The table lives in code at `server/src/services/native-runtime/native-speed-budgets.ts`.
+A single run is checked against its p95 budget. When a run exceeds it, the run log gets one `run.performance.budget_exceeded` row (`doc/run-log-events.md`). The TTFT span keeps the full user-visible latency, but the TTFT budget judges it from run creation: time an input waited for its run to exist (for example a comment posted while the previous turn was still running) is not judged, because the baseline measured idle follow-ups. That wait is real user-visible latency, so it is its own measured step: the `comment.to_run_created` span in the run log, `inputWaitMs` in a breach, and its own column ("Wait behind live turn") in the TTFT tables of the baseline driver and chaos reports, next to the full comment-to-first-token TTFT. The p50 budgets apply to aggregates: chaos waves, the baseline driver, and staging. Every later phase's exit criteria include "no regression against these budgets". The table lives in code at `server/src/services/native-runtime/native-speed-budgets.ts`.
 
 Time to first token (s, p50 / p95):
 
@@ -123,6 +123,10 @@ What the data does and does not show:
 - These waves exercise only the run-lifecycle kinds. Remote, workspace and accounting kinds need Daytona waves, K4 and K6 faults, and longer storms. The overnight campaign's failures came mostly from those.
 - Track 1 now stamps the PID space on `native_run_finalizations` (#19868) and `heartbeat_runs` (#19871), and the registry reads those stamps. Rows written before them stay `unprovable`. Phase 2 needs the same stamp on every kind it moves before that kind can settle by proof.
 - Restart-crossing dispatches exceeded the TTFT and boot budgets because those metrics spanned the outage. The budget check now judges such dispatches only on restart-recovery latency.
+
+### Phase 2 data: harsh local waves (2026-11-07)
+
+Storms, crash loops and outages up to 588 s, all unmasked, are in [`2026-11-07-phase2-reconciler-data.md`](2026-11-07-phase2-reconciler-data.md). Existing paths settle most run-lifecycle records within 45 s of `ready`. This is not a bound: one environment lease took 119 s, and some native claims stayed proven gone during a load spike. One leak was found: a claimed wake whose run ended without settling it. The unowned pending-cleanup queue and unstamped accounting rows are the main I1 findings. One Daytona wave found the same claimed-wake leak, remote settling of 76–107 s, and a Retry blocked by the company-wide accounting gate (Phase 3).
 
 ## Relationship to the zero-downtime upgrade work
 
@@ -218,6 +222,15 @@ The runner stamps `generation` and `turnId` on every event. Driver and session c
 - An on-demand suite boots the stack once per crash point, runs one task per workload, restarts, and asserts invariants I1–I7. It runs locally or by manual CI dispatch, filtered to the crash points a change touches. It is not a required PR check.
 - Keep the chaos harness as a soak test for timing interactions the enumeration misses. Its R1–R6 graders should map onto I1–I7.
 - The random waves found 20 ms–1 s windows by luck. Enumeration finds them on purpose, and it finds the windows we haven't hit yet.
+
+**Built (Phase 5).**
+- `crashPoint(name)` in `packages/shared/src/crash-points.ts`, with the named points in `crash-point-registry.ts`. `PAPERCLIP_CRASH_POINT=<name>[:<nth>]` arms one point; `NODE_ENV=production` ignores it. Disarmed, a call costs about 4 ns. In-process tests use `armCrashPointForTest`.
+- 20 points at the boundaries in the inventory's write-ahead table, from `sandbox.create.after_provider_before_lease` to `accounting.closure.after_commit_before_spool_unlink`. `server/src/__tests__/crash-point-call-sites.test.ts` requires a call site for each one.
+- `node scripts/crash-points.mjs [--points <glob>] [--kinds <id>] [--adapters …]` boots one instance and arms each point in turn at runtime (`PAPERCLIP_CRASH_POINT_CONTROL`). It asserts R1–R6 plus I1–I4 and I7 per point, from the Phase 1 reconciler. I6 and I8 come from the run log: a run failed by a stale-generation event, and speed-budget breaches. I5 is a known gap until restart claims record their charge decision; R3 bounds it. The manual CI run is `.github/workflows/crash-points.yml`.
+- First full local run (2026-11-08, 14 local points, codex A1, 11.8 min): 11 pass. Work list:
+  - `workspace.finalize.after_start_before_copyback` and `…after_copyback_before_done` leave a `workspace_finalize` operation running after the run succeeded (I2 and R6, kind `native_workspace_finalize_attempt`).
+  - `wake.claim.after_run_running_before_wakeup_claimed` reports I4 on a wake whose retry delivered the work: the known refusal-regex false positive, which section E removes.
+- How to add a point and how to read the results: `tests/restart-chaos/README.md`, "Crash-point suite".
 
 ## Phases
 

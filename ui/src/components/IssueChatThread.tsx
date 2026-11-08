@@ -696,6 +696,8 @@ interface IssueChatThreadProps {
     revision: string,
   ) => Promise<void>;
   onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  /** Delay before an eligible queued message is steered automatically; null keeps every message queued. */
+  queuedMessageAutoSteerDelayMs?: number | null;
   onDiscardQueuedComment?: (
     commentId: string,
     revision: string,
