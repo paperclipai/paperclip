@@ -23,6 +23,7 @@ import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-ter
 import { taskChatRetryExecutionStopped } from "../services/chat-channels/task-retry-authority.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
+import { releasableRetainedOrphanCondition } from "../services/environment-retained-orphan-settlement.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -367,15 +368,6 @@ suite("retained orphan sandbox on the shared ownership path", () => {
       return [await warmLease(await run("succeeded"), { workspaceId: await workspace() }),
         await warmLease(await run("succeeded"), { status: "retained", workspaceId: await workspace(), receipt: false })];
     }],
-    ["two rows share the newest created_at for one sandbox", async () => {
-      const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
-      await db.update(issues).set({ executionWorkspaceId: newWorkspace }).where(eq(issues.id, issueId));
-      const providerLeaseId = `sandbox://fake/${randomUUID()}`, createdAt = new Date();
-      const first = await warmLease(await run("failed"), { workspaceId: oldWorkspace, providerLeaseId, createdAt });
-      const second = await warmLease(await run("succeeded"), { status: "retained", workspaceId: newWorkspace, receipt: false,
-        providerLeaseId, createdAt });
-      return [first, second];
-    }],
     ["another task still shares its workspace", async () => {
       const [shared, fresh] = [await workspace(), await workspace()];
       await db.update(issues).set({ executionWorkspaceId: fresh }).where(eq(issues.id, issueId));
@@ -395,6 +387,24 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     const { kind } = await pass();
     expect(kind).toMatchObject({ settled: 0 });
     expect(await Promise.all(ids.map(row))).toEqual(before);
+  });
+
+  it("lists only one newest row when two rows for a sandbox share a created_at", async () => {
+    const current = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: current }).where(eq(issues.id, issueId));
+    const providerLeaseId = `sandbox://fake/${randomUUID()}`, createdAt = new Date();
+    const [lower, higher] = ["00000000-0000-4000-8000-000000000001", "ffffffff-ffff-4fff-bfff-ffffffffffff"];
+    for (const id of [lower, higher]) {
+      const runId = await run("failed");
+      await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
+        executionWorkspaceId: current, status: "failed", cleanupStatus: "success", leasePolicy: "reuse_by_environment",
+        provider: "fake", providerLeaseId, acquiredAt: createdAt, releasedAt: createdAt, createdAt, updatedAt: createdAt,
+        metadata: { agentId, remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId, runId,
+          leaseId: id, provider: "fake", providerLeaseId, state: "stopped", confirmedAt: createdAt.toISOString() } } });
+    }
+    const listed = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .where(releasableRetainedOrphanCondition());
+    expect(listed.map(row => row.id)).toEqual([higher]);
   });
 
   it("stops, then destroys, a running warm sandbox once its task moves to another workspace", async () => {
