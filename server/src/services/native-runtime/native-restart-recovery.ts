@@ -668,7 +668,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   unclaimedBootstrap?: boolean;
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
-  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn";
+  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
+    | "remote_runner_exited_before_provider_work";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -768,6 +769,21 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
+/** Whether a runner or provider produced any event for this run. Unlike
+ * hasNativeExecutionStartEvidence, the controller's own process-start and
+ * identity records do not count: a relaunched runner that exited before run.prepare
+ * has those, but nothing the runner itself sent. */
+async function hasNativeRunnerOriginatedEvidence(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string },
+): Promise<boolean> {
+  const [event] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      or(isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "tool.execution.started"]))))
+    .limit(1);
+  return event !== undefined;
+}
+
 export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
@@ -1333,7 +1349,28 @@ export async function claimNativeRestartRecoveries(input: {
       // A settled retry starts new work, so it needs the same current
       // admission as the resumption reconciler: task pause, agent status,
       // dependencies, ownership and competing runs. Keep it waiting otherwise.
-      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+      // The executor relaunched a remote runner for a same-run bootstrap
+      // retry, and that runner exited (observed by its transport) before any
+      // provider work: the executor's settled failure durably records no
+      // provider session, no provider event and no checkpoint, and none exists
+      // now. The runner's own exit is the remote proof that it is gone; a
+      // recorded runner PID alone would not be (Daytona wave s9301).
+      const settledFailure = row.coordinator.failureDetail;
+      const remoteRunnerExitedBeforeProviderWork = !unclaimedBootstrap && !remoteRunnerNeverLaunched
+        && remoteWorkspace?.state === "prepared" && !pluginTask && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "retryable_failure" && row.run.status === "failed" && !row.coordinator.leaseOwner
+        && settledFailure?.recoveryMode === "bootstrap_retry"
+        && settledFailure?.originalFailureCode === "native_runner_process_exited"
+        && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
+        && settledFailure?.checkpointExists === false && !settledFailure?.successorRunId
+        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !hasCheckpoint && !hasProviderEvidence
+        // Fresh evidence wins over the saved failure: any event the runner or
+        // provider sent contradicts "no provider work".
+        && !(await hasNativeRunnerOriginatedEvidence(tx, row.run));
+      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork) && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
         if (deferred) return deferred;
@@ -1370,8 +1407,10 @@ export async function claimNativeRestartRecoveries(input: {
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
-        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched,
+        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
+          || remoteRunnerExitedBeforeProviderWork,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
