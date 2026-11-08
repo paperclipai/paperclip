@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CrashPointDefinition, CrashPointName } from "../../packages/shared/src/crash-point-registry.js";
+import { summarizeViolations } from "./invariants.js";
 import { classifyPoint, globToRegExp, parseSuiteArgs, renderSummary, selectPoints, type CrashPointEntry } from "./crash-points.js";
 import { parseCommand } from "./config.js";
 import { readCrashPointReceipt } from "./supervisor.js";
@@ -71,6 +72,17 @@ describe("classifyPoint", () => {
     expect(classifyPoint(point, 0, entry({ invariants: null })).outcome).toBe("harness_error");
     expect(classifyPoint(point, 0, entry({ invariants: { violations: [], byInvariant: {}, errors: ["I3 pass did not finish"] } })).outcome)
       .toBe("harness_error");
+  });
+
+  it("names what an unreached point needs when its registry entry says so", () => {
+    const teardown = "environment.teardown.after_claim_before_destroy" as CrashPointName;
+    expect(classifyPoint(teardown, 0, entry({ point: `${teardown}:1`, reached: null })))
+      .toMatchObject({ outcome: "not_reached", error: expect.stringContaining("needs: A pending_cleanup lease") });
+  });
+
+  it("counts run-log violations under their plan invariant", () => {
+    expect(summarizeViolations([{ rule: "I8_fast_turns" }, { rule: "I6_generation_fencing" }, { rule: "I8_fast_turns" }]))
+      .toEqual({ I8: 2, I6: 1 });
   });
 
   it("renders a summary row per point", () => {

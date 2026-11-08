@@ -124,7 +124,10 @@ export function classifyPoint(point: CrashPointName, exitCode: number | null, en
   if (base.failedTasks.length > 0 || base.violations.length > 0) return { ...base, outcome: "fail" };
   if (entry.invariants?.errors.length) return { ...base, outcome: "harness_error", error: entry.invariants.errors.join("; ") };
   if (!entry.invariants) return { ...base, outcome: "harness_error", error: "no invariant check" };
-  if (!entry.reached) return { ...base, outcome: "not_reached" };
+  if (!entry.reached) {
+    const prerequisite = (CRASH_POINTS as Record<string, CrashPointDefinition>)[point]?.prerequisite;
+    return { ...base, outcome: "not_reached", ...(prerequisite ? { error: `needs: ${prerequisite}` } : {}) };
+  }
   return { ...base, outcome: "pass" };
 }
 
@@ -180,9 +183,17 @@ async function main(): Promise<number> {
   if (options.list) {
     for (const name of selected) {
       const definition = CRASH_POINTS[name] as CrashPointDefinition;
-      console.info(`${name}\n    ${definition.description}\n    kinds ${definition.kinds.join(", ") || "—"}; invariants ${definition.invariants.join(", ")}; env ${definition.environments.join(", ")}`);
+      console.info(`${name}\n    ${definition.description}\n    kinds ${definition.kinds.join(", ") || "—"}; invariants ${definition.invariants.join(", ")}; env ${definition.environments.join(", ")}`
+        + (definition.prerequisite ? `\n    needs: ${definition.prerequisite}` : ""));
     }
     return 0;
+  }
+  if (options.env === "daytona") {
+    // Fail before a 3-minute boot, not after it.
+    const missing = [!process.env.DAYTONA_API_KEY && "DAYTONA_API_KEY",
+      !options.passthrough.includes("--daytona-image") && !process.env.PAPERCLIP_E2E_DAYTONA_IMAGE && "--daytona-image (or PAPERCLIP_E2E_DAYTONA_IMAGE)"]
+      .filter(Boolean);
+    if (missing.length) throw new Error(`--env daytona needs ${missing.join(" and ")}`);
   }
   if (!selected.length) throw new Error(`No crash point matches --points ${options.points.join(",") || "*"} --kinds ${options.kinds.join(",") || "*"} --env ${options.env}`);
   const runId = `cp-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "")}`;
