@@ -33,6 +33,7 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -700,17 +701,19 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
 
   // Workspaces
-  operationKind("workspace_runtime_control_operation", "Managed runtime-control operation", "ownership",
-    and(eq(workspaceOperations.status, "running"), sql`${workspaceOperations.metadata} ? 'runtimeControlOwner'`),
-    row => {
-      const owner = json(json(row.metadata).runtimeControlOwner);
-      const pid = int(owner.pid);
-      // The owner stores a per-process UUID, a PID and, since #19868, its PID
-      // space; no start time, so a live PID stays unprovable.
-      return pid ? { kind: "process", stamp: { kind: "local", scope: "workspace_runtime_control_operation",
-        generation: null, host: null, processSpace: str(owner.hostHash), bootId: str(owner.ownerId), pid,
-        processStartedAt: null, processGroupId: null } } : { kind: "none" };
-    }),
+  {
+    // Shared path since Phase 2: the owner stamp names the server process and,
+    // since this kind moved, its boot id and start time, so a dead or reused
+    // PID is proof. Another host or a stamp without a PID space stays
+    // unprovable; the pre-control sweep's heartbeat lease is its fenced takeover.
+    ...operationKind("workspace_runtime_control_operation", "Managed runtime-control operation", "ownership",
+      and(eq(workspaceOperations.status, "running"), sql`${workspaceOperations.metadata} ? 'runtimeControlOwner'`),
+      row => {
+        const stamp = runtimeControlOperationOwnerStamp(row.metadata);
+        return stamp ? { kind: "process", stamp } : { kind: "none" };
+      }),
+    settle: settleRuntimeControlOperation,
+  },
   {
     // Shared path since Phase 2: a finalize attempt whose process died (a
     // restart between start and copyback, or between copyback and done) is
