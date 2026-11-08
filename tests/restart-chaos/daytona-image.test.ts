@@ -225,7 +225,7 @@ echo '{}' > "$dest/manifest.json"
       await writeFile(script, `#!/bin/sh
 dest="\${9#dir:}"
 n=$(cat "${root}/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${root}/count"
-if [ $n -eq 1 ]; then echo partial > "$dest/blob"; sleep 30; fi
+if [ $n -eq 1 ]; then echo partial > "$dest/blob"; exec sleep 30; fi
 if [ -n "$(ls -A "$dest")" ]; then exit 1; fi
 echo '{}' > "$dest/manifest.json"
 `);
