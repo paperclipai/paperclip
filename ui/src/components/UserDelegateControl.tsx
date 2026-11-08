@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Save, UserRoundCheck } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { describeError } from "@/api/errors";
 import { userDelegateApi, type UserDelegateState } from "@/api/user-delegate";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { queryKeys } from "@/lib/queryKeys";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { isAgentTaskTarget } from "@/lib/company-members";
@@ -49,7 +50,9 @@ export function UserDelegateControl({ companyId }: { companyId: string | null | 
     if (delegateQuery.data) setDraft(savedAgentId);
   }, [delegateQuery.data, savedAgentId]);
 
-  const saveMutation = useMutation({
+  // Bound to the signed-in account: a tab still showing an earlier account
+  // must not change the delegate of whoever the cookie now belongs to.
+  const saveMutation = useAccountBoundMutation({
     mutationFn: (agentId: string) =>
       agentId === NONE
         ? userDelegateApi.clearMine(companyId!)

@@ -4,9 +4,23 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { UserDelegateControl } from "./UserDelegateControl";
 
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const taskTargetChecks = vi.hoisted(() => ({ count: 0, limit: Infinity }));
+
+vi.mock("@/lib/company-members", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/company-members")>();
+  return {
+    ...actual,
+    isAgentTaskTarget: (...args: Parameters<typeof actual.isAgentTaskTarget>) => {
+      taskTargetChecks.count += 1;
+      if (taskTargetChecks.count > taskTargetChecks.limit) throw new Error("Agent filter ran more often than its bound");
+      return actual.isAgentTaskTarget(...args);
+    },
+  };
+});
 const mockUserDelegateApi = vi.hoisted(() => ({ getMine: vi.fn(), setMine: vi.fn(), clearMine: vi.fn() }));
 
 vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
@@ -47,6 +61,7 @@ const delegate = {
 
 function render(container: HTMLDivElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
   const root = createRoot(container);
   act(() => {
     root.render(
@@ -88,6 +103,8 @@ describe("UserDelegateControl", () => {
   });
 
   afterEach(() => {
+    taskTargetChecks.count = 0;
+    taskTargetChecks.limit = Infinity;
     container.remove();
     vi.clearAllMocks();
   });
@@ -137,6 +154,23 @@ describe("UserDelegateControl", () => {
     expect(saveButton(container).disabled).toBe(false);
     await act(() => saveButton(container).click());
     await waitForAssertion(() => expect(mockUserDelegateApi.clearMine).toHaveBeenCalledWith("company-1"));
+    act(() => root.unmount());
+  });
+  it("filters a company-sized agent list once per load and keeps a filtered-out saved delegate", async () => {
+    const agentCount = 2000;
+    mockAgentsApi.list.mockResolvedValue(Array.from({ length: agentCount }, (_, index) => ({
+      id: `agent-${index}`, name: `Agent ${index}`, role: "general",
+      status: index % 2 === 0 ? "active" : "terminated", icon: null,
+    })));
+    mockUserDelegateApi.getMine.mockResolvedValue({ delegate: { ...delegate, delegateAgentId: "agent-1" }, actions });
+    // Filtering is memoized on the query data: a few loads at most, never per render or per option.
+    taskTargetChecks.limit = agentCount * 3;
+    const root = render(container);
+
+    await waitForAssertion(() => expect(select(container).value).toBe("agent-1"));
+    await waitForAssertion(() => expect(select(container).options).toHaveLength(1 + agentCount / 2 + 1));
+    expect(container.textContent).toContain("Agent 1 (unavailable)");
+    expect(taskTargetChecks.count).toBeLessThanOrEqual(agentCount * 3);
     act(() => root.unmount());
   });
 });
