@@ -50,6 +50,11 @@ import {
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
 import { settleSandboxCreationIntent } from "../sandbox-creation-intent-settlement.js";
+import {
+  nextRetainedOrphanDueAt,
+  releasableRetainedOrphanCondition,
+  settleRetainedOrphanSandbox,
+} from "../environment-retained-orphan-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -123,6 +128,9 @@ export type OwnableKind = {
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
   onUnprovable?: UnprovableAction;
+  /** When a record of this kind next becomes settleable without a signal
+   * (a retention window ending). The reconciler wakes then. */
+  nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
   /** Plan invariants this kind is checked against (1–8). */
   invariantChecks: readonly number[];
   /** Why the kind cannot be listed, when `listInProgress` is null. */
@@ -672,6 +680,16 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   leaseKind("environment_retained_hold", "Retained / reusable hold", "workspace_preservation",
     eq(environmentLeases.status, "retained"), () => ({ kind: "none" }), [1, 7]),
+  {
+    // Shared path since Phase 2: a sandbox the orphaned-run-lease settle
+    // stopped and kept is destroyed once nothing references it. Only
+    // releasable orphans are listed, so a held one is never polled; its
+    // retention window end is a due time.
+    ...leaseKind("environment_retained_orphan_sandbox", "Retained orphan sandbox", "workspace_preservation",
+      releasableRetainedOrphanCondition(), row => runOwner(row.heartbeatRunId), [1]),
+    settle: settleRetainedOrphanSandbox,
+    nextDueAt: nextRetainedOrphanDueAt,
+  },
   spoolKind("sandbox_orphan_cleanup_spool", "Orphan cleanup buffer/spool", "ownership", idleOrphanSpoolPath),
   leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
     and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
