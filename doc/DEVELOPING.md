@@ -138,6 +138,10 @@ host file transfers retain Windows drive paths. Full workspace typechecking also
 requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
 validate Windows ACLs.
 
+The root postinstall links the development plugin SDK with Windows directory
+junctions. This link operation does not require Developer Mode or elevation.
+Existing SDK installs are preserved, and repeated postinstalls reuse the link.
+
 Native Codex uses the executable from its matching Windows platform package.
 The native Windows runtime uses the separate `@openai/codex-native` dependency
 (Codex 0.166.0) and the MXC sandbox. The ACP bridge retains its independently
