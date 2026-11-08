@@ -382,9 +382,9 @@ export function createIsolatedCodexAppServerArgs(
     ...(externalRunnerSandbox
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
-    ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
     ...(process.platform === "win32" && !externalRunnerSandbox
       ? ["-c", 'windows.sandbox="mxc"'] : []),
+    ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
     "app-server",
   ];
 }
