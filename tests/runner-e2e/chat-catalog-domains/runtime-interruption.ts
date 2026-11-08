@@ -58,7 +58,7 @@ export const runtimeInterruptionCases = [runtimeDefinition("steering.interrupt-w
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, marker, plan, planBody: body, approvedDirection: approved, directionQueue: queue, planApprovedByHuman: approved.status === "accepted" && approved.resolvedByUserId === session.user.id && !approved.resolvedByAgentId, interruptControlEnabled: true };
 }, gradeInterruption, {
-  authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.interrupt-with-direction.v3", authentication: "human-session", expectedRunCount: 3, attemptTimeoutMs: 900_000,
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
   sourceFiles: ["chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],

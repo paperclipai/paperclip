@@ -5478,7 +5478,7 @@
       "registered-artifact.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.interrupt-with-direction.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "turnTimeoutMs": 120000,
