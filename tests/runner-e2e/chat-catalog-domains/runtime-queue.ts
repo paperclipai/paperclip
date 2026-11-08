@@ -6,18 +6,32 @@ import { checks, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 import type { IssueQueuedCommentQueue } from "../../../packages/shared/src/types/issue.js";
+/** Native continuations embed new comments as JSON, so a body with quotes or newlines appears JSON-escaped. */
+export function promptCarriesComment(prompt: string | undefined, comment: { id: string; body: string }) {
+  return typeof prompt === "string" && prompt.includes(comment.id)
+    && (prompt.includes(comment.body) || prompt.includes(JSON.stringify(comment.body).slice(1, -1)));
+}
+/** A task is named by its setup-assigned identifier (which chat links) or by a link to its page. */
+export function replyNamesTask(reply: string, task: Entity) {
+  const keys = [task.identifier, task.id].filter((key): key is string => !!key);
+  return keys.some(key => new RegExp(`(?<![A-Za-z0-9-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`).test(reply));
+}
+/** The saved requirement is the one queued comment the controller's canonical turn wrote; its wording is the model's. */
+function savedRequirement(queue: IssueQueuedCommentQueue | undefined, leadId: string) {
+  return queue?.entries.length === 1 && queue.entries[0]!.comment.authorAgentId === leadId ? queue.entries[0] : undefined;
+}
 export function gradeQueuedFollowup(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("real-queue-and-delivery-evidence", !!o, "The actual task queue, saved requirement, real initial worker and later consuming native input are required."); if (!o) return c.result();
   const task = o.state.task as Entity; const queued = o.state.queuedAtReply as IssueQueuedCommentQueue | undefined;
-  const requirement = queued?.entries.find(entry => /contact/i.test(entry.comment.body));
+  const requirement = savedRequirement(queued, o.leadId);
   c.add("correct-task-ordered-waiting-requirement-once", !!queued && queued.issueId === task.id && ["queued", "deferred"].includes(queued.state ?? "")
     && queued.entries.length === 1 && requirement?.position === 0 && o.state.workerStatusAtReply === "running"
-    && requirement.comment.authorAgentId === o.leadId && (requirement.comment as typeof requirement.comment & { createdByRunId?: string }).createdByRunId === o.state.canonicalRunId,
+    && requirement.comment.createdByRunId === o.state.canonicalRunId,
   "Exactly one contact-section instruction is durably queued in order on the genuine running Website task and attributed to the source controller turn.");
-  c.add("honest-not-consumed-yet", /queue|sav|forward|wait|next|follow.up|pending/i.test(String(o.state.queryReply))
-    && !/already (?:implemented|consumed|added)|contact section (?:is|has been) (?:ready|added|complete)|I(?:'ve| have)? implemented/i.test(String(o.state.queryReply)),
-  "The canonical answer describes pending delivery rather than pretending an active worker already consumed or implemented it.");
+  // Whether the reply describes the requirement as pending is free-form; it is read from the evidence, not matched by wording.
+  c.add("canonical-reply-identifies-affected-task", replyNamesTask(String(o.state.queryReply), task),
+  "The canonical reply, written while the requirement still waits behind Morgan's active turn, names the Website task it was saved on.");
   c.add("normal-continuation-consumes-exact-input-once", !!requirement && o.state.consumedCommentId === requirement.comment.id
     && o.state.deliveryNativeInputBound === true && o.state.consumingRunCount === 1 && o.state.queueEmptyAfterDelivery === true
     && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded")
@@ -29,6 +43,7 @@ export function gradeQueuedFollowup(value: unknown) {
   return c.result();
 }
 export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", busyRuntimeWorker, gradeQueuedFollowup, {
+  oracleVersion: "paperclip.chat-catalog.runtime-queue.v3",
   sourceFiles: ["chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   expectedRunCount: 3, attemptTimeoutMs: 720_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-busy-worker", "worker-task-scope"] },
@@ -48,13 +63,13 @@ export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", 
       accept: value => chatCatalogNativePhaseIsTimely(ctx) && (value.source?.conversationState === "waiting" && value.runs.length === 2
         && value.runs.find(run => run.id === state.workerRunId)?.status === "running"
         && value.runs.some(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded")
-        && value.queue.entries.filter(entry => /contact/i.test(entry.comment.body)).length === 1) });
+        && !!savedRequirement(value.queue, ctx.input.fixtures.agent.id)) });
     const canonical = phase.runs.find(run => run.agentId === ctx.input.fixtures.agent.id)!;
     state.canonicalRunId = canonical.id; state.workerStatusAtReply = phase.runs.find(run => run.id === state.workerRunId)!.status;
     state.queuedAtReply = phase.queue; state.queryReply = (await observeRuntime(ctx, state)).reply;
     const source = ctx.input.page.url(), task = state.task as Entity;
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
-    const requirement = phase.queue.entries.find(entry => /contact/i.test(entry.comment.body))!;
+    const requirement = savedRequirement(phase.queue, ctx.input.fixtures.agent.id)!;
     await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${requirement.comment.id}`)).toBeVisible();
     await ctx.input.capture("actual-contact-followup-queue", "Contact requirement remains visibly queued behind real active work", "runtime-contact-queue.png");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
@@ -67,8 +82,7 @@ export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", 
     const successors = delivered.runs.filter(run => run.agentId === (state.worker as Entity).id && run.id !== state.workerRunId);
     const inputs = await Promise.all(successors.map(run => ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`)));
     state.consumedCommentId = requirement.comment.id; state.consumingRunCount = successors.length;
-    state.deliveryNativeInputBound = inputs.length === 1 && inputs[0]?.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(requirement.comment.id) === true
-      && inputs[0]?.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(requirement.comment.body) === true;
+    state.deliveryNativeInputBound = inputs.length === 1 && promptCarriesComment(inputs[0]?.runnerProfileJson?.nativeExecutionInput?.task?.prompt, requirement.comment);
     state.queueEmptyAfterDelivery = delivered.queue.entries.length === 0;
   },
   async observe(ctx, state) {
