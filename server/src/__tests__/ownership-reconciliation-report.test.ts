@@ -145,7 +145,7 @@ describe("report-only ownership reconciliation", () => {
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
       .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent",
         "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox",
-        "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease",
+        "native_workspace_finalize_attempt", "execution_workspace_runtime_lease", "wake_request_claimed", "legacy_controller_lease",
         "issue_execution_lock", "issue_checkout_lock"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
