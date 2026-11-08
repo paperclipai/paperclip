@@ -453,7 +453,18 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
       and c.author_agent_id is null and c.created_by_run_id is null
       and c.created_at >= ${since}::timestamptz
       and i.assignee_agent_id is not null and i.conversation_agent_id is null
-      and i.status in ('todo', 'in_progress') and i.execution_run_id is null
+      and (i.status in ('todo', 'in_progress')
+        or (i.status = 'done' and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}))
+      and i.execution_run_id is null
+      and not exists (select 1 from heartbeat_runs steered join heartbeat_run_events steer_event
+          on steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
+        where steered.company_id = c.company_id
+          and (steered.context_snapshot->>'issueId' = c.issue_id::text or steered.native_issue_id = c.issue_id)
+          and coalesce(steered.started_at, steered.created_at) <= c.created_at
+          and (steered.finished_at is null or steered.finished_at >= c.created_at)
+          and steer_event.event_type in ('item.started', 'item.completed')
+          and steer_event.created_at >= c.created_at
+          and strpos(steer_event.payload::text, c.id::text) > 0)
       and exists (select 1 from heartbeat_runs prior where prior.company_id = c.company_id
         and (prior.context_snapshot->>'issueId' = c.issue_id::text or prior.native_issue_id = c.issue_id))
       and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
