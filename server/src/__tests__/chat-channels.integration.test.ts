@@ -68110,12 +68110,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const [completed] = await readHeartbeatRunsById(successor.id);
           expect(completed.status, JSON.stringify({ phase: "useful_successor", status: completed.status,
             errorCode: completed.errorCode, nativePhase: completed.nativePhase })).toBe("succeeded");
+          expect(completed.resultJson?.nativeResult).toMatchObject({ summary: answer });
+          expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id)))[0].phase).toBe("committed");
+          expect(providerTurns).toBe(1);
+          await f.service.processPendingPublications(); await f.service.processPendingPublications();
+          expect((await readChatPublicationsByEndpointId(f.endpoint.id)).filter(publication => publication.state === "published"
+            && typeof publication.payload.text === "string" && publication.payload.text.includes(answer))).toHaveLength(1);
         }, { timeout: 10_000, interval: 25 });
         const [completed] = await readHeartbeatRunsById(successor.id);
         expect(completed.resultJson?.nativeResult).toMatchObject({ summary: answer });
         expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id)))[0].phase).toBe("committed");
         expect(providerTurns).toBe(1);
-        await f.service.processPendingPublications(); await f.service.processPendingPublications();
         expect((await readChatPublicationsByEndpointId(f.endpoint.id)).filter(publication => publication.state === "published"
           && typeof publication.payload.text === "string" && publication.payload.text.includes(answer))).toHaveLength(1);
         await f.service.processFailedChatRunRetry(click.body.chatActionId);
