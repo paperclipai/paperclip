@@ -1,4 +1,5 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { isGitHubAppConnection } from "../../github-app-credentials.js";
 import { connectorToolPolicy } from "../../connectors/tool-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
@@ -91,11 +92,12 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         action: "tool_connection.catalog_refresh",
         outcome: "failure",
         reasonCode: failure.code,
-        details: { status: failure.status },
+        details: { status: failure.status, ...(failure.reason ? { reason: failure.reason } : {}) },
         actor,
       });
       throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
+        ...(failure.reason ? { reason: failure.reason } : {}),
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
       }));
@@ -120,7 +122,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     );
     const nativeProvider = Boolean(nativeProviderCatalogFor(connection) || restConnectorFor(connection));
     if (connection.config.sourceTemplateKey === "google-workspace"
-      || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      || isGitHubAppConnection(connection) || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
       // The catalog is shared, but discovery uses only the caller's grant. A
       // narrower personal consent must not remove actions another active grant
@@ -182,10 +184,11 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         ? googleProfileValue
         : null;
     const connectorPolicy = connectorToolPolicy(sourceTemplateKey, connection);
-    const preserveReviewedCatalog = connectorPolicy.quarantineNewEntries && existingRows.length > 0;
+    const preserveQuarantine = connectorPolicy.quarantineNewEntries || isGitHubAppConnection(connection);
+    const preserveReviewedCatalog = preserveQuarantine && existingRows.length > 0;
     const quarantineOnRefresh =
       (!refreshOptions.enableAllByDefault || preserveReviewedCatalog) &&
-      shouldQuarantineNewEntries(connection) &&
+      (shouldQuarantineNewEntries(connection) || isGitHubAppConnection(connection)) &&
       (connection.status === "active" ||
         preserveReviewedCatalog ||
         sourceTemplateKey === "posthog" ||
@@ -259,7 +262,6 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     const catalogByName = new Map(catalogRows.map(row => [row.toolName, row]));
     const updatedEntries = descriptors.map(descriptor => toCatalogEntry(catalogByName.get(descriptor.name)!));
 
-    const preserveQuarantine = connectorPolicy.quarantineNewEntries;
     const normalizedConfig = preserveQuarantine
       ? { ...connection.config, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault

@@ -12,6 +12,15 @@ it("redacts Slack manager grants and sealed OAuth handoffs", () => {
 });
 
 describe("redactSensitive", () => {
+  it("redacts flat connection credential paths and collects their values for error sanitization", () => {
+    const key = "-----BEGIN PRIVATE KEY-----\nprivate-key-canary\n-----END PRIVATE KEY-----";
+    const body = { credentialValues: { "credentials.privateKey": key, "headers.future": "future-canary" } };
+    expect(redactSensitive(body)).toEqual({ credentialValues: "[REDACTED]" });
+    expect(collectSensitiveStringValues(body)).toEqual([key, "future-canary"]);
+    expect(redactSensitiveValueOccurrences({ message: `Rejected ${key}` }, collectSensitiveStringValues(body)))
+      .toEqual({ message: "Rejected [REDACTED]" });
+  });
+
   it("redacts a plaintext password field on a sign-in body", () => {
     const body = {
       email: "user@example.com",

@@ -1,11 +1,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, createDb, projects as projectTable, userSecretDefinitions } from "@paperclipai/db";
+import { agents, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, toolConnectionInstalls, createDb, projects as projectTable, userSecretDefinitions } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
 import { projectService } from "../services/projects.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const personalTokens = vi.hoisted(() => new Map<string, string>());
+const appAcquire = vi.hoisted(() => vi.fn());
+vi.mock("../services/github-app-client.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/github-app-client.js")>(),
+  createGitHubAppClient: () => ({ acquire: appAcquire }),
+}));
 vi.mock("../services/secrets.js", () => ({ secretService: () => ({
   resolveSecretValue: async (_companyId: string, secretId: string) => secretId,
   resolveUserSecretValue: async (_companyId: string, input: { definitionId: string }) => ({ value: personalTokens.get(input.definitionId) }),
@@ -153,5 +158,61 @@ const support = await getEmbeddedPostgresTestSupport();
     const svc = projectService(db);
     await expect(svc.createWithRepositories(companyId, { name: "Rollback" }, [repo("7"), { ...repo("8"), fullName: "invalid" + String.fromCharCode(0) + "name" }])).rejects.toThrow();
     expect(await db.select().from(projectTable).where(eq(projectTable.name, "Rollback"))).toEqual([]);
+  });
+
+  it("uses verified App repositories for projects without sharing the dedicated credential", async () => {
+    const [company] = await db.insert(companies).values({ name: "App repositories", issuePrefix: "APP" }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "app-member", membershipRole: "member" });
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "App agent" }).returning();
+    const [app] = await db.insert(toolApplications).values({ companyId: company.id, name: "GitHub App", type: "mcp_http" }).returning();
+    const [secret] = await db.insert(companySecrets).values({ companyId: company.id, name: "App key", key: "app-key" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: app.id, name: "Personal GitHub App", uid: "github-app", status: "active", enabled: true,
+      transport: "rest_api", authKind: "api_key", credentialPolicy: "per_agent",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", methodConfig: {
+        appId: "1", installationId: "2", repositories: "org/app-repo", permissionProfile: "read",
+      } },
+    }).returning();
+    const [grant] = await db.insert(connectionGrants).values({
+      companyId: company.id, connectionId: connection.id, kind: "agent", subjectAgentId: agent.id,
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.privateKey", versionSelector: "latest" }],
+    }).returning();
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    const github = { userId: "123", login: "app[bot]", installationCount: 1, repositoryCount: 1, repositorySelection: "selected",
+      installationIds: ["2"], installationOwnerLogins: ["org"], repositories: [{ id: "99", fullName: "org/app-repo", private: true, installationId: "2" }] };
+    appAcquire.mockReset().mockResolvedValue({ token: "private-installation-token", github });
+    const service = toolAccessService(db);
+    const result = await service.listProjectRepositories(company.id, "app-member");
+    expect(result).toMatchObject({ connectionCount: 1, failedConnectionCount: 0, repositories: [{
+      id: "99", fullName: "org/app-repo", url: "https://github.com/org/app-repo", private: true,
+      connections: [connection.name], connectionIds: [connection.id],
+    }] });
+    expect(JSON.stringify(result)).not.toContain("private-installation-token");
+    const project = await projectService(db).createWithRepositories(company.id, { name: "App project" }, result.repositories);
+    expect(project.workspaces[0]).toMatchObject({ repoUrl: "https://github.com/org/app-repo", metadata: { githubRepositoryId: "99" } });
+    expect((await service.listProjectRepositories(company.id, null, true)).repositories).toHaveLength(1);
+    expect(appAcquire).toHaveBeenCalledTimes(2);
+
+    expect((await service.listGitHubRepositories(company.id, "app-member")).repositories).toEqual([]);
+    expect(await service.githubReadConnectionIds(company.id, "app-member")).toEqual([]);
+    await expect(service.githubReadHeaders(company.id, connection.id, "app-member")).rejects.toThrow(/authorization/);
+    for (const userId of [null, "outsider"]) {
+      expect((await service.listProjectRepositories(company.id, userId)).connectionCount).toBe(0);
+    }
+    expect((await service.listProjectRepositories(companyId, "app-member")).repositories).toEqual([]);
+    expect(appAcquire).toHaveBeenCalledTimes(2);
+
+    appAcquire.mockRejectedValueOnce(new Error("private-provider-response"));
+    const failed = await service.listProjectRepositories(company.id, "app-member");
+    expect(failed).toMatchObject({ connectionCount: 1, failedConnectionCount: 1, repositories: [] });
+    expect(JSON.stringify(failed)).not.toContain("private-provider-response");
+
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    expect(await service.listProjectRepositories(company.id, "app-member")).toMatchObject({ failedConnectionCount: 1, repositories: [] });
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    expect(await service.listProjectRepositories(company.id, "app-member")).toMatchObject({ failedConnectionCount: 1, repositories: [] });
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, connection.id));
+    expect(await service.listProjectRepositories(company.id, "app-member")).toMatchObject({ connectionCount: 0, repositories: [] });
+    expect(appAcquire).toHaveBeenCalledTimes(3);
   });
 });

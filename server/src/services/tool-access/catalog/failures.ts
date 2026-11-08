@@ -1,3 +1,4 @@
+import { sanitizeGitHubAppFailure } from "../../github-app-client.js";
 import type { ToolConnectionHealthStatus } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 
@@ -21,7 +22,9 @@ export function isOAuthEndpointRejection(error: unknown): boolean {
 export function healthFailureHttpStatus(failure: {
   status: ToolConnectionHealthStatus;
   code: string;
+  reason?: string;
 }): number {
+  if (failure.code === "github_app_access_unavailable") return failure.reason === "network" ? 502 : 422;
   if (failure.status === "missing_secret") return 422;
   if (failure.code === "oauth_challenge") return 422;
   if (failure.code === "oauth_refresh_missing") return 422;
@@ -48,7 +51,10 @@ export function sanitizeHttpFailure(error: unknown): {
   status: ToolConnectionHealthStatus;
   message: string;
   code: string;
+  reason?: string;
 } {
+  const appFailure = sanitizeGitHubAppFailure(error);
+  if (appFailure) return { status: "error", ...appFailure };
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
     if (code === "cognee_access_unverified" || code === "memory_api_key_rejected") {
@@ -57,7 +63,11 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "grant_credential_invalid" || code === "oauth_insufficient_scope") {
       return { status: code === "grant_credential_invalid" ? "missing_secret" : "degraded", message: error.message, code };
     }
-    if (code === "slack_mcp_access_disabled" || code === "google_workspace_services_unavailable") {
+    if (
+      code === "slack_mcp_access_disabled" ||
+      code === "google_workspace_services_unavailable" ||
+      code === "github_app_mcp_unavailable"
+    ) {
       return { status: "error", message: error.message, code };
     }
     if (code === "user_authorization_required" || code === "github_installation_required") {

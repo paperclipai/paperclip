@@ -1,3 +1,4 @@
+import { ConnectionCredentialInput } from "@/features/connections/ConnectionCredentialInput";
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpRight, ChevronRight, Loader2, Lock } from "lucide-react";
@@ -95,7 +96,7 @@ function connectionMethodUnavailable(connection: ToolConnection, galleryEntry: A
     && !getAvailableConnectionMethod(galleryEntry, methodKey);
 }
 
-function KeySection({
+export function KeySection({
   connection,
   galleryEntry,
   onReplaced,
@@ -117,7 +118,9 @@ function KeySection({
           <div>
             <h2 className="text-sm font-medium text-foreground">Reconnect</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {canReplace ? "Replace the stored credential." : unavailableMessage}
+              {canReplace ? connection.config?.sourceTemplateKey === "github" && connection.config?.connectionMethodKey === "app-installation"
+                ? "Replace the stored GitHub App private key."
+                : "Replace the stored credential." : unavailableMessage}
             </p>
           </div>
         </div>
@@ -357,12 +360,13 @@ function ReconnectForm({
         fields.map((field) => (
           <div key={field.configPath}>
             <label className="text-xs font-medium text-foreground">{field.label}</label>
-            <Input
+            <ConnectionCredentialInput
+              configPath={field.configPath}
               type="password"
               aria-label={field.label}
               autoComplete="off"
               value={values[field.configPath] ?? ""}
-              onChange={(e) => setValues({ ...values, [field.configPath]: e.target.value })}
+              onChange={(value) => setValues({ ...values, [field.configPath]: value })}
               placeholder="****************"
               className="mt-1 h-10 font-mono"
             />

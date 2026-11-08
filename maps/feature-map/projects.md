@@ -50,6 +50,15 @@ Manual: Create a project, add a task from its view, and reload. Verify the task 
 
 Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover inherited choices, explicit overrides, and configuration errors. These offline checks do not qualify live provider storage.
 
+Custom GitHub Apps (2026-10-25): the repository picker includes verified,
+explicitly configured repositories from company-owned App grants for active
+company members or the local trusted board. Personal App metadata belongs to its
+owner; shared App metadata follows its human audience. Selection stores repository
+identity and URL without granting runtime credentials or repository-content
+access. Provider-fixture coverage lives in
+[repository persistence](../../server/src/__tests__/project-repositories-persistence.test.ts);
+live App checkout remains a separate acceptance requirement.
+
 Automated: [repository persistence](../../server/src/__tests__/project-repositories-persistence.test.ts) and [repository browser suite](../../tests/e2e/project-repositories.spec.ts) cover configured repository workflows.
 
 Manual: Attach a small repository, save, and create a project task. Inspect the actual checkout/revision used by its run. Test an invalid repository and missing credentials without treating a saved URL as a working workspace.

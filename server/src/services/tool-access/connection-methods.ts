@@ -1,3 +1,4 @@
+import { isGitHubAppConnection } from "../github-app-client.js";
 import { parseRemoteHttpEndpoint } from "../remote-http-endpoint-guard.js";
 import type { AppDefinition, ConnectionMethodDef, ToolConnectionTransport } from "@paperclipai/shared";
 import {
@@ -103,7 +104,8 @@ export function normalizeConnectionMethodConfig(
 
   const values: Record<string, string | boolean> = {};
   for (const field of fields) {
-    const raw = configValues?.[field.key] ?? field.defaultValue;
+    let raw = configValues?.[field.key] ?? field.defaultValue;
+    if (method.credentialExchange === "github_app_installation" && field.key === "version" && raw === 1) raw = "1";
     if (field.type === "checkbox") {
       if (raw !== undefined && typeof raw !== "boolean")
         throw badRequest(`${field.label} must be true or false`);
@@ -227,12 +229,13 @@ export function projectedConnectionHeaders(
     }
   }
   if (
-    connection.transport === "mcp_remote" &&
+    (connection.transport === "mcp_remote" || isGitHubAppConnection(connection)) &&
     (sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
   ) {
     // GitHub excludes Actions from its default catalog. Project this on every
     // discovery and invocation so existing connections gain the toolset too.
     headers["X-MCP-Toolsets"] = "default,actions";
+    if (isGitHubAppConnection(connection)) headers["X-MCP-Exclude-Tools"] = "get_me";
   }
   return headers;
 }

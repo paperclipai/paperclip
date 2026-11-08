@@ -81,6 +81,12 @@ same responsible user's current grants. Empty successful catalogs, revoked grant
 and permission denials remain terminal. A partial catalog can authorize a requested
 repository only when that repository is present.
 
+Customer-owned GitHub Apps also contribute their verified, explicitly configured
+repositories for active company members and the local trusted board. Discovery
+rechecks the dedicated grant, installation target, vault ownership, and current App
+access. This metadata is available only for project selection; personal repository
+reads and skill-source access retain their existing credential audience checks.
+
 `ConnectionSetupFlow` owns provider setup in both Apps and project dialogs. Task
 intents retain their existing callback protocol. Standalone dialogs verify the saved
 connection through the API after the sign-in popup returns to the instance. Project
