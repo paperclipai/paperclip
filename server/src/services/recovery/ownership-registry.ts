@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, isNull, like, notInArray, notLike, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
+  agents,
   environmentLeases,
   executionWorkspaceRestorePoints,
   executionWorkspaceRuntimeLeases,
@@ -27,12 +28,23 @@ import {
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "../native-runtime/native-runner-ownership.js";
 import type { LocalOwnerStamp, OwnerProof, RemoteFenceState, RemoteOwnerStamp } from "../owner-proof.js";
+import { OPERATOR_ATTESTED_PROCESS_SPACE } from "../owner-proof.js";
+import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { OWNER_GONE_ATTESTATION_KEY, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
   settleNativeAcceptedResultLease,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
+import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
+import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
+import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } from "../legacy-shutdown-workspace-settlement.js";
+import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
+import { settleIssueLock } from "./issue-lock-settlement.js";
+import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
@@ -47,9 +59,17 @@ import {
   pendingCleanupDeadlineSql,
   recoveredOrphanFirstAttemptSql,
 } from "../environment-cleanup-state.js";
+import { settleEnvironmentLoginProbeLease } from "../environment-login-probe-lease-settlement.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
 import { settleSandboxCreationIntent } from "../sandbox-creation-intent-settlement.js";
+import {
+  nextRetainedOrphanDueAt,
+  releasableRetainedOrphanCondition,
+  settleRetainedOrphanSandbox,
+} from "../environment-retained-orphan-settlement.js";
+import { settleExecutionWorkspaceRuntimeLease } from "../workspace-runtime-lease-settlement.js";
+import { parseWorkspaceRuntimeLeaseOwnerKey } from "../workspace-runtime-leases.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -75,6 +95,8 @@ export type RecordOwner =
   | { kind: "fence"; stamp: RemoteOwnerStamp; fence: RemoteFenceState }
   /** A run id only. The record's owner is that run's execution. */
   | { kind: "run"; runId: string }
+  /** An issue id only. Gone when the issue is missing, hidden or terminal. */
+  | { kind: "issue"; issueId: string }
   /** A person or agent assignment, such as an operator-owned recovery action. */
   | { kind: "operator"; ownerType: string | null }
   /** A durable work queue that acts on the record by its saved deadline. The
@@ -96,7 +118,13 @@ export type InProgressRecord = {
 
 export type ListResult = { records: InProgressRecord[]; truncated: boolean };
 
-export type SettleOutcome = { settled: boolean; reason: string };
+export type SettleOutcome = {
+  settled: boolean; reason: string;
+  /** False when the settle has nothing left to do for this record (the
+   * record waits on another owner, such as the board). The reconciler still
+   * lists and reports it, but keeps no settle watch on it. */
+  watch?: boolean;
+};
 
 /** Moves one record whose owner was just proven gone to its next state. It must
  * compare-and-swap on the exact owner that was proven, so a record taken over
@@ -123,6 +151,13 @@ export type OwnableKind = {
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
   onUnprovable?: UnprovableAction;
+  /** Records the board's confirmation that this record's unrecorded owner stopped, so its
+   * owner proves gone (`operator_attested`). Returns false when the record no longer qualifies. */
+  attestOwnerGone?: (tx: Db, target: { companyId: string; recordId: string }, proof: Record<string, unknown>)
+    => Promise<"attested" | "released" | "changed">;
+  /** When a record of this kind next becomes settleable without a signal
+   * (a retention window ending). The reconciler wakes then. */
+  nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
   /** Plan invariants this kind is checked against (1–8). */
   invariantChecks: readonly number[];
   /** Why the kind cannot be listed, when `listInProgress` is null. */
@@ -155,20 +190,8 @@ const runOwner = (runId: string | null | undefined): RecordOwner => runId ? { ki
 
 type NrfRow = typeof nativeRunFinalizations.$inferSelect;
 
-/** NRF records the controller's boot, PID, start time and, since #19868, its
- * PID space (`controller_host_hash`). Rows written before that have no space
- * and stay unprovable for a foreign boot (inventory finding 2). */
-function nrfStamp(row: NrfRow, scope: string): LocalOwnerStamp {
-  return {
-    kind: "local", scope, generation: row.controllerGeneration ?? null, host: null,
-    processSpace: row.controllerHostHash ?? null,
-    // Rows saved before #19868 keep the one-release local proof on single-host
-    // servers (`legacy_host_unknown_dead_pid_proof`, #19883).
-    processSpaceUnrecorded: row.controllerHostHash == null,
-    bootId: row.controllerBootId, pid: row.controllerPid,
-    processStartedAt: row.controllerProcessStartedAt?.toISOString() ?? null, processGroupId: null,
-  };
-}
+/** The NRF controller stamp, shared with native recovery (native-owner-stamps.ts). */
+const nrfStamp = (row: NrfRow, scope: string): LocalOwnerStamp => nativeControllerOwnerStamp(row, scope);
 
 function nrfKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
   owner: (row: NrfRow) => RecordOwner = row => ({ kind: "process", stamp: nrfStamp(row, id) }),
@@ -248,16 +271,9 @@ function runKind(id: string, title: string, obligation: Obligation, where: SQL |
   };
 }
 
-/** heartbeat_runs records the adapter child's PID, start time and, since
- * #19871, its PID space (`process_host_hash`). Older rows have no space and
- * stay unprovable. */
-function runProcessStamp(row: RunRow, scope: string): LocalOwnerStamp {
-  return {
-    kind: "local", scope, generation: null, host: null, processSpace: row.processHostHash ?? null, bootId: null,
-    pid: row.processPid, processStartedAt: row.processStartedAt?.toISOString() ?? null,
-    processGroupId: row.processGroupId,
-  };
-}
+/** The adapter child's stamp (native-owner-stamps.ts). Rows saved before
+ * `process_host_hash` stay unprovable here. */
+const runProcessStamp = (row: RunRow, scope: string): LocalOwnerStamp => runProcessOwnerStamp(row, scope);
 
 const legacyControllerLeaseWhere = and(eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
   isNotNull(heartbeatRuns.controllerBootId), sql`${heartbeatRuns.controllerLeaseExpiresAt} > now()`);
@@ -311,6 +327,10 @@ function runLeaseOwner(row: RunLeaseRow): RecordOwner {
   if (row.runStatus !== null && !TERMINAL_RUN_STATUSES.includes(row.runStatus)) return runOwner(row.heartbeatRunId);
   const holder = controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_run_lease_active");
   if (holder.kind !== "none") return holder;
+  // The board confirmed that the server holding this unstamped lease stopped.
+  if (json(row.metadata)[OWNER_GONE_ATTESTATION_KEY]) return { kind: "process", stamp: { kind: "local",
+    scope: "environment_run_lease_active", generation: null, host: null, processSpace: OPERATOR_ATTESTED_PROCESS_SPACE,
+    bootId: null, pid: null, processStartedAt: null, processGroupId: null } };
   return ephemeralServerEnabled() ? { kind: "none" } : runOwner(row.heartbeatRunId);
 }
 
@@ -327,6 +347,23 @@ function runLeaseKind(): OwnableKind {
   return {
     id: "environment_run_lease_active", title: "Run lease (active)", obligation: "ownership", storage: "database",
     invariantChecks: [1, 2], settle: settleEnvironmentRunLease,
+    onUnprovable: requestOwnerGoneConfirmation("environment_run_lease_active"),
+    // Only an unstamped lease of a finished run: a stamped holder is judged by its stamp.
+    attestOwnerGone: async (tx, target, proof) => {
+      const attested = (await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
+      .set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ [OWNER_GONE_ATTESTATION_KEY]: proof })}::jsonb` })
+      .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId),
+        eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId),
+        sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
+        sql`exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
+          and run.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`))
+      .returning({ id: environmentLeases.id }), { companyId: target.companyId, leaseId: target.recordId })).length > 0;
+      if (attested) return "attested";
+      // Released by another path since the board was asked: nothing is left to attest.
+      const [lease] = await tx.select({ status: environmentLeases.status }).from(environmentLeases)
+        .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId)));
+      return !lease || lease.status !== "active" ? "released" : "changed";
+    },
     listInProgress: async (db, limit, offset) => {
       const rows = await select(db).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
@@ -423,6 +460,8 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
   return { kind: "process", stamp: {
     kind: "local", scope, generation: null, host: null, processSpace: controller.hostHash,
     bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
   } };
 }
 
@@ -458,14 +497,16 @@ type RecoveryActionRow = Pick<typeof issueRecoveryActions.$inferSelect, "id" | "
 
 function recoveryActionKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
   owner: (row: RecoveryActionRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2, 7],
-  runIdOf: (row: RecoveryActionRow) => string | null = () => null): OwnableKind {
+  runIdOf: (row: RecoveryActionRow) => string | null = () => null,
+  options: { includeResolved?: boolean } = {}): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId,
         sourceIssueId: issueRecoveryActions.sourceIssueId, ownerType: issueRecoveryActions.ownerType,
         evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
-        .from(issueRecoveryActions).where(and(isNull(issueRecoveryActions.resolvedAt), where)).orderBy(asc(issueRecoveryActions.id)).limit(limit + 1).offset(offset);
+        .from(issueRecoveryActions).where(and(options.includeResolved ? undefined : isNull(issueRecoveryActions.resolvedAt), where))
+        .orderBy(asc(issueRecoveryActions.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: runIdOf(row), issueId: row.sourceIssueId,
@@ -521,7 +562,47 @@ function spoolKind(id: string, title: string, obligation: Obligation, directory:
 }
 
 // ----------------------------------------------------------------------------
+// execution_workspace_runtime_leases
+
+/** The lease's owner key names its owner: an issue or run is proven by
+ * identity; an agent-scoped (or unparseable) owner is a fence on the lease
+ * expiry that only a claim's locked takeover moves. */
+function runtimeLeaseOwner(row: typeof executionWorkspaceRuntimeLeases.$inferSelect): RecordOwner {
+  const owner = parseWorkspaceRuntimeLeaseOwnerKey(row.ownerKey);
+  if (owner?.kind === "issue") return { kind: "issue", issueId: owner.id };
+  if (owner?.kind === "run") return { kind: "run", runId: owner.id };
+  return { kind: "fence", stamp: { kind: "remote", scope: "execution_workspace_runtime_lease", generation: null,
+    fenceToken: row.ownerKey }, fence: { currentFenceToken: row.ownerKey, currentGeneration: null,
+    leaseExpiresAt: row.expiresAt } };
+}
+
+// ----------------------------------------------------------------------------
 // The registry
+
+// ----------------------------------------------------------------------------
+// agents.lifecycle_operation
+
+/** A live lifecycle lease (for example harness verification) and its holder. */
+const agentLifecycleLeaseHeld = and(
+  sql`${agents.lifecycleOperation} ? 'leaseOwner'`, sql`${agents.lifecycleOperation} ? 'leaseHolder'`,
+  sql`(${agents.lifecycleOperation}->>'leaseUntil')::timestamptz > now()`);
+
+const agentLifecycleLeaseKind: OwnableKind = {
+  // Shared path: a restart that kills the holder must not leave the agent's
+  // lifecycle step, and its queued runs, waiting out the lease.
+  id: "agent_lifecycle_lease", title: "Agent lifecycle step lease (harness verification and setup)", obligation: "ownership",
+  storage: "database", invariantChecks: [1, 2], settle: settleAgentLifecycleLease,
+  listInProgress: async (db, limit, offset) => {
+    const rows = await db.select({ id: agents.id, companyId: agents.companyId, operation: agents.lifecycleOperation,
+      updatedAt: agents.updatedAt }).from(agents).where(agentLifecycleLeaseHeld)
+      .orderBy(asc(agents.id)).limit(limit + 1).offset(offset);
+    const result = page(rows, limit);
+    return { truncated: result.truncated, records: result.rows.map(row => ({
+      recordId: row.id, companyId: row.companyId, runId: null, issueId: null,
+      owner: controllerStamp(row.operation?.leaseHolder, "agent_lifecycle_lease"), updatedAt: row.updatedAt,
+    })) };
+  },
+};
 
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
@@ -672,25 +753,38 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   leaseKind("environment_retained_hold", "Retained / reusable hold", "workspace_preservation",
     eq(environmentLeases.status, "retained"), () => ({ kind: "none" }), [1, 7]),
+  {
+    // Shared path since Phase 2: a sandbox the orphaned-run-lease settle
+    // stopped and kept is destroyed once nothing references it. Only
+    // releasable orphans are listed, so a held one is never polled; its
+    // retention window end is a due time.
+    ...leaseKind("environment_retained_orphan_sandbox", "Retained orphan sandbox", "workspace_preservation",
+      releasableRetainedOrphanCondition(), row => runOwner(row.heartbeatRunId), [1]),
+    settle: settleRetainedOrphanSandbox,
+    nextDueAt: nextRetainedOrphanDueAt,
+  },
   spoolKind("sandbox_orphan_cleanup_spool", "Orphan cleanup buffer/spool", "ownership", idleOrphanSpoolPath),
-  leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
-    and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
-    // Stamped by the write that makes the lease active. A lease saved before
-    // the stamp existed names no owner; it ends with its login session.
-    row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
+  {
+    ...leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
+      and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
+      row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
+    settle: settleEnvironmentLoginProbeLease,
+  },
 
   // Workspaces
-  operationKind("workspace_runtime_control_operation", "Managed runtime-control operation", "ownership",
-    and(eq(workspaceOperations.status, "running"), sql`${workspaceOperations.metadata} ? 'runtimeControlOwner'`),
-    row => {
-      const owner = json(json(row.metadata).runtimeControlOwner);
-      const pid = int(owner.pid);
-      // The owner stores a per-process UUID, a PID and, since #19868, its PID
-      // space; no start time, so a live PID stays unprovable.
-      return pid ? { kind: "process", stamp: { kind: "local", scope: "workspace_runtime_control_operation",
-        generation: null, host: null, processSpace: str(owner.hostHash), bootId: str(owner.ownerId), pid,
-        processStartedAt: null, processGroupId: null } } : { kind: "none" };
-    }),
+  {
+    // Shared path since Phase 2: the owner stamp names the server process and,
+    // since this kind moved, its boot id and start time, so a dead or reused
+    // PID is proof. Another host or a stamp without a PID space stays
+    // unprovable; the pre-control sweep's heartbeat lease is its fenced takeover.
+    ...operationKind("workspace_runtime_control_operation", "Managed runtime-control operation", "ownership",
+      and(eq(workspaceOperations.status, "running"), sql`${workspaceOperations.metadata} ? 'runtimeControlOwner'`),
+      row => {
+        const stamp = runtimeControlOperationOwnerStamp(row.metadata);
+        return stamp ? { kind: "process", stamp } : { kind: "none" };
+      }),
+    settle: settleRuntimeControlOperation,
+  },
   {
     // Shared path since Phase 2: a finalize attempt whose process died (a
     // restart between start and copyback, or between copyback and done) is
@@ -714,15 +808,18 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
   {
+    // Shared path since Phase 2: a lease whose issue or run owner is proven
+    // gone (by identity, never age) is released here and at the next claim.
+    // An agent-scoped owner is a fence on `expires_at`: alive while held,
+    // unprovable after; only the next claim's locked takeover moves it.
     id: "execution_workspace_runtime_lease", title: "Execution workspace runtime lease", obligation: "ownership",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settleExecutionWorkspaceRuntimeLease, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select().from(executionWorkspaceRuntimeLeases).orderBy(asc(executionWorkspaceRuntimeLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.ownerRunId, issueId: row.ownerIssueId,
-        owner: row.ownerRunId ? runOwner(row.ownerRunId) : { kind: "operator", ownerType: row.ownerKey.split(":")[0] ?? null },
-        updatedAt: row.updatedAt,
+        owner: runtimeLeaseOwner(row), updatedAt: row.updatedAt,
       })) };
     },
   },
@@ -802,13 +899,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       })) };
     },
   },
-  leaseKind("legacy_shutdown_settlement_fence", "Legacy graceful-shutdown workspace settlement fence", "workspace_preservation",
-    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
-    row => {
-      const bootId = str(json(json(row.metadata).legacyShutdownWorkspaceSettlement).controllerBootId);
-      return bootId ? { kind: "process", stamp: { kind: "local", scope: "legacy_shutdown_settlement_fence",
-        generation: null, host: null, processSpace: null, bootId, pid: null, processStartedAt: null } } : { kind: "none" };
-    }, [2]),
+  {
+    ...leaseKind("legacy_shutdown_settlement_fence", "Legacy graceful-shutdown workspace settlement fence", "workspace_preservation",
+      sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
+      row => legacyShutdownSettlementOwner(row.metadata), [2]),
+    settle: settleLegacyShutdownSettlementFence,
+  },
   leaseKind("legacy_restore_recovery_hold", "Legacy restore-recovery preservation hold", "workspace_preservation",
     and(eq(environmentLeases.leasePolicy, "retain_on_failure"), sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
       notInArray(environmentLeases.status, ["released", "expired", "failed"])),
@@ -816,26 +912,19 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   recoveryActionKind("system_recovery_attempt", "System recovery attempt for retained work", "workspace_preservation",
     sql`${issueRecoveryActions.evidence}->'systemRecovery'->>'state' in ('scheduled', 'running', 'awaiting_evidence')`,
     () => ({ kind: "none" })),
-  recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
-    sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
-    row => {
-      const owner = json(json(json(row.evidence).workspaceOwnerRecovery).owner);
-      const pid = int(owner.pid);
-      // The receipt records a hostname but no PID space: unprovable by design.
-      return pid ? { kind: "process", stamp: { kind: "local", scope: "copyback_owner_hold", generation: null,
-        host: str(owner.hostname), processSpace: null, bootId: str(owner.controllerBootId), pid,
-        processStartedAt: str(owner.processStartedAt), processGroupId: null } } : { kind: "none" };
-    }),
-  recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
-    sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
-    row => {
-      const fence = json(json(row.evidence).observedWorkspacePreservation);
-      const token = str(fence.leaseOwner);
-      // The current holder is read in the report pass (`resolveFenceHolders`).
-      return token ? { kind: "fence", stamp: { kind: "remote", scope: "observed_workspace_preservation_fence",
-        generation: int(fence.controllerGeneration), fenceToken: token },
-        fence: { currentFenceToken: null, currentGeneration: null, leaseExpiresAt: null } } : { kind: "none" };
-    }, [1, 2, 7], row => str(json(json(row.evidence).observedWorkspacePreservation).runId)),
+  {
+    ...recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
+      sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
+      row => copybackOwnerHoldOwner(row.evidence)),
+    settle: settleCopybackOwnerHold,
+  },
+  {
+    ...recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
+      sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
+      row => observedWorkspaceFenceOwner(row.evidence), [1, 2, 7],
+      row => str(json(json(row.evidence).observedWorkspacePreservation).runId), { includeResolved: true }),
+    settle: settleObservedWorkspaceFence,
+  },
 
   // Accounting and budgets
   runKind("run_accounting_debt", "Run accounting debt", "accounting",
@@ -892,7 +981,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     [2]),
   {
     id: "issue_execution_lock", title: "Issue execution lock", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [2, 3, 7],
+    settle: settleIssueLock, invariantChecks: [2, 3, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.executionRunId,
         updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.executionRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
@@ -905,7 +994,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "issue_checkout_lock", title: "Issue checkout lock", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [2, 7],
+    settle: settleIssueLock, invariantChecks: [2, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.checkoutRunId,
         updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.checkoutRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
@@ -945,6 +1034,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     () => ({ kind: "operator", ownerType: "run_dispatch" }), [4]),
   runKind("scheduled_retry_run", "Scheduled retry run", "ownership", eq(heartbeatRuns.status, "scheduled_retry"),
     () => ({ kind: "operator", ownerType: "retry_schedule" }), [4]),
+  agentLifecycleLeaseKind,
 ];
 
 /** Resolve the current holder of fences that live on another row (the
@@ -964,4 +1054,5 @@ export async function resolveFenceHolders(db: Db, records: InProgressRecord[]): 
     record.owner.fence = { currentFenceToken: holder?.leaseOwner ?? null,
       currentGeneration: holder?.generation ?? null, leaseExpiresAt: holder?.leaseExpiresAt ?? null };
   }
+  await applyObservedFenceProviderProof(db, pending);
 }

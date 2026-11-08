@@ -26,11 +26,13 @@ function ReportRecoveryControl({ owns, onChange }: { owns: boolean; onChange?: (
 }
 
 const CONTROLLER_HOST_UNVERIFIED = "native_controller_host_unverified";
+const OWNER_UNPROVABLE = "ownership_owner_unprovable";
 
 /** Causes whose one action is the board's previous-server stop confirmation;
  * the generic recovery card must not offer other resolutions for them. */
 export function isPreviousServerStopCause(cause: string | null | undefined) {
-  return cause === "native_workspace_finalization_owner_unverified" || cause === CONTROLLER_HOST_UNVERIFIED;
+  return cause === "native_workspace_finalization_owner_unverified" || cause === CONTROLLER_HOST_UNVERIFIED
+    || cause === OWNER_UNPROVABLE;
 }
 
 /** Requests preservation; the existing worker owns stop, copyback and verification. */
@@ -65,6 +67,18 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
           placeholder: "For example: the old server container was replaced and is no longer running.",
           resuming: "Resuming the run…" }} /></>;
   }
+  // A resource held by a server recorded before Paperclip stored which server held it.
+  if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {
+    return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}`}
+        action={action} issueId={issueId} companyId={companyId} className={className}
+        confirmStop={stopEvidence => issuesApi.confirmOwnerGone(issueId, {
+          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence })}
+        copy={{ waiting: "A resource from this task’s earlier run was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. The resource stays reserved until then.",
+          question: "How did you confirm that the previous server stopped?",
+          placeholder: "For example: the old server container was replaced and is no longer running.",
+          resuming: "Releasing the resource…" }} /></>;
+  }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.
   if (ownerRecovery && issueId && companyId && isOwnerStopRequired(action, issueId, companyId)) {
@@ -97,6 +111,12 @@ function isControllerStopRequired(action: IssueRecoveryAction, issueId: string, 
   return action.companyId === companyId && action.sourceIssueId === issueId
     && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
     && typeof action.evidence.runId === "string" && !action.evidence.controllerStop;
+}
+
+function isOwnerGoneRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
+  return action.companyId === companyId && action.sourceIssueId === issueId
+    && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
+    && typeof action.evidence.recordId === "string" && !action.evidence.ownerGone;
 }
 
 function isOwnerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {

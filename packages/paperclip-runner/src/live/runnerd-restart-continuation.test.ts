@@ -422,3 +422,81 @@ it.each(["unread", "read"] as const)("delivers a steered message the restart los
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it("adopts the in-flight turn when a restart lands just after turn.start (t77)", async () => {
+  // The runner journaled turn.start and the provider started the turn, then the
+  // runner died before confirming it: on restore the command is
+  // execution_indeterminate. The restored runner reconciles the ambiguous start
+  // to the provider's live turn, and recovery must adopt that exact turn.
+  const root = await mkdtemp(join(tmpdir(), "runner-restart-indeterminate-"));
+  const identity = { runId: "run-indeterminate", sessionId: "session-indeterminate", companyId: "company-indeterminate", issueId: "issue-indeterminate", agentId: "agent-indeterminate" };
+  const execution: NativeExecutionInputV1 = {
+    schema: "paperclip.native-execution-input.v1",
+    binding: { runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "workspace-indeterminate" },
+    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    task: { identifier: "TEST-4", title: "Finish checks", description: null, prompt: "Watch the already running checks and finish the request.", workMode: "standard" },
+    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    provider: { kind: "codex", model: null },
+    completionContract: { id: "contract-indeterminate", sha256: "digest", schemaVersion: "paperclip.completion-contract.v1", contract: {
+      revision: "1", objective: "Finish checks", criteria: [{ id: "checks", requirement: "Check the outcome" }],
+    } },
+    interactionResponses: [], credentialBindings: [],
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn"],
+    stateDirectory: root,
+    turnStartTimeoutMs: 8_000,
+    prpIdentity: { runnerInstanceId: "runner-indeterminate", environmentLeaseId: "lease-indeterminate", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-indeterminate", itemId: "item-indeterminate" },
+  };
+  const first = createRunnerdCodexTransport(options);
+  let restored: ReturnType<typeof createRunnerdCodexTransport> | undefined;
+  const kill = (pid: number | null) => {
+    if (!pid) return;
+    try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  try {
+    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-indeterminate", transportFactory: () => first.transport });
+    const session = await backend.openSession({ identity, workingDirectory: root });
+    const checkpoint = await session.snapshot();
+    await session.startTurn({ message: { role: "user", text: execution.task.prompt } });
+    const owner = first.evidence();
+    await first.detachControllerForRestart();
+    kill(owner.runnerPid);
+    kill(owner.providerPid);
+    expect(checkpoint.activeTurnId ?? null).toBeNull();
+    // The state both journals hold when the runner dies after journaling the
+    // start but before confirming it: the command is still pending. The provider
+    // keeps the started turn.
+    const runnerPath = join(root, "runner", "runner-state.json");
+    const runnerState = JSON.parse(await readFile(runnerPath, "utf8"));
+    const startId = Object.values(runnerState.processedCommands as Record<string, { commandId: string; commandType: string }>)
+      .find(command => command.commandType === "turn.start")!.commandId;
+    runnerState.processedCommands[startId] = { ...runnerState.processedCommands[startId], status: "pending", result: null };
+    await writeFile(runnerPath, JSON.stringify(runnerState));
+    const controlPath = join(root, "control-plane", "control-plane-state.json");
+    const control = JSON.parse(await readFile(controlPath, "utf8"));
+    for (const command of control.commands) if (command.commandId === startId) { command.status = "pending"; command.result = null; }
+    await writeFile(controlPath, JSON.stringify(control));
+    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: [], resumeActiveTurnId: null });
+    const recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-indeterminate", transportFactory: () => restored!.transport });
+    const recovery = await recovering.recoverSession!(checkpoint, { signal: new AbortController().signal });
+    expect(recovery).toMatchObject({ recovered: true });
+    const restoredStart = JSON.parse(await readFile(controlPath, "utf8")).commands.find((command: { commandId: string }) => command.commandId === startId);
+    expect(restoredStart).toMatchObject({ status: "failed", result: { result: { code: "execution_indeterminate" } } });
+    expect(restored.transport.controllerAcceptedTurnId?.()).toBe("provider-turn-1");
+    expect((await recovery.session!.snapshot()).activeTurnId).toBe("provider-turn-1");
+    expect((await readFile(join(root, "calls.log"), "utf8")).match(/^turn\/start$/gm)).toHaveLength(1);
+    await recovery.session!.close({ reason: "test complete" }).catch(() => undefined);
+  } finally {
+    await restored?.transport.close().catch(() => undefined);
+    for (const bundle of [first, restored]) {
+      if (!bundle) continue;
+      const evidence = bundle.evidence();
+      kill(evidence.runnerPid);
+      kill(evidence.providerPid);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 40_000);

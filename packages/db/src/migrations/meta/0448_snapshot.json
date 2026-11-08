@@ -1,5 +1,5 @@
 {
-  "id": "c9a14dae-e554-4eef-a60b-b09f668cef2a",
+  "id": "360fef2e-1ac3-4ae8-92a2-245e544b61da",
   "prevId": "76f06e29-53a8-4ecc-809a-d52b6bbb6520",
   "version": "7",
   "dialect": "postgresql",
@@ -3970,28 +3970,6 @@
           "method": "btree",
           "with": {}
         },
-        "agent_wakeup_requests_review_handoff_retry_idempotency_uq": {
-          "name": "agent_wakeup_requests_review_handoff_retry_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'review-handoff:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "agent_wakeup_requests_question_response_delivery_idempotency_uq": {
           "name": "agent_wakeup_requests_question_response_delivery_idempotency_uq",
           "columns": [
@@ -4271,6 +4249,18 @@
         "lifecycle_operation": {
           "name": "lifecycle_operation",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_digest": {
+          "name": "harness_verified_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "harness_verified_at": {
+          "name": "harness_verified_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

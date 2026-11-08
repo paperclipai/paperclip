@@ -12,6 +12,8 @@ export interface AgentLifecycleOperation {
   completedPluginIds: string[];
   leaseOwner?: string;
   leaseUntil?: string;
+  /** The controller process holding the lease; restart recovery settles it once proven gone. */
+  leaseHolder?: { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
   retryAt?: string;
   /** Healthy host verification awaits a durable external producer, not a retry timer. */
   waitingForSignal?: boolean;

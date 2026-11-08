@@ -92,7 +92,10 @@ through Paperclip, by deleting the wave's own environment.
 top to bottom (honouring `.wh.` and `.wh..wh..opq` whiteouts), extracts only
 those two paths, checks the ELF header, the pack manifest and the image labels,
 records their digests in `receipt.json`, and deletes the layer blobs. The result
-is cached in `results/daytona-images/<digest>/`, so it runs once per image.
+is cached in `tests/restart-chaos/results/daytona-images/<digest>/` (or
+`$RESTART_CHAOS_IMAGE_CACHE`), shared by every wave and crash-point run, so it
+runs once per image. A copy that fails part-way, or stalls past its 20-minute bound
+(`RESTART_CHAOS_SKOPEO_ATTEMPT_TIMEOUT_MS`), retries from an empty directory.
 Run it alone with `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/daytona-image.ts <image>`.
 
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
@@ -278,11 +281,16 @@ workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
 (`node scripts/crash-points.mjs --list --env daytona`). The run needs
 `DAYTONA_API_KEY` and an image matching this checkout (`--daytona-image` or
 `PAPERCLIP_E2E_DAYTONA_IMAGE`; see "Daytona" above), and refuses to start
-without them. A plain task reaches both `sandbox.create.*` points and
-`environment.lease_release.after_provider_before_lease`. The other three print
-what they need (`needs:` in `--list` and in a `not_reached` result): a failed
-release (teardown claim), a reusable lease (reusable destroy), or a
-stop-and-retain export.
+without them. A plain codex task reaches both `sandbox.create.*` points and
+both `environment.teardown.*` points (a native run releases its sandbox through
+teardown). `environment.lease_release.after_provider_before_lease` (the plain
+release path) and `environment.stop_retain.after_claim_before_stop` (a
+stop-and-retain export) were not reached by any workload on 2026-11-08; a
+`not_reached` result prints what each needs.
+
+`environment.stop_retain.after_claim_before_stop` needs `--daytona-reuse-lease`:
+the chaos environment then keeps reusable sandboxes, so each per-turn run stops
+and keeps its sandbox.
 
 **CI.** `.github/workflows/crash-points.yml` runs the same command on demand
 (`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).

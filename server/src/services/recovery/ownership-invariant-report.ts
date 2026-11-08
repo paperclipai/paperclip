@@ -6,7 +6,8 @@ import {
   issues,
   type Db,
 } from "@paperclipai/db";
-import { TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
+import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
+import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
 import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
@@ -127,6 +128,7 @@ export function createOwnershipReportState(): OwnershipReportState {
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
@@ -155,6 +157,21 @@ async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<M
         : { verdict: "alive", reason: "owner_run_active" });
     }
   }
+  // Issue owners share the map under an `issue:` key (run ids are bare UUIDs).
+  const issueIds = [...new Set(records.flatMap(record => record.owner.kind === "issue" ? [record.owner.issueId] : []))];
+  for (let index = 0; index < issueIds.length; index += 500) {
+    const batch = issueIds.slice(index, index + 500);
+    const rows = await db.select({ id: issues.id, status: issues.status, hiddenAt: issues.hiddenAt }).from(issues)
+      .where(inArray(issues.id, batch));
+    const byId = new Map(rows.map(row => [row.id, row]));
+    for (const issueId of batch) {
+      const row = byId.get(issueId);
+      proofs.set(`issue:${issueId}`, !row ? { verdict: "gone", reason: "owner_issue_missing" }
+        : row.hiddenAt ? { verdict: "gone", reason: "owner_issue_hidden" }
+        : TERMINAL_ISSUE_STATUSES.includes(row.status) ? { verdict: "gone", reason: "owner_issue_terminal" }
+        : { verdict: "alive", reason: "owner_issue_active" });
+    }
+  }
   return proofs;
 }
 
@@ -164,6 +181,7 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
     case "process": return proveOwnerGone(owner.stamp, probe);
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
+    case "issue": return runProofs.get(`issue:${owner.issueId}`) ?? { verdict: "unprovable", reason: "owner_issue_unread" };
     case "operator": return { verdict: "alive", reason: "operator_owned" };
     // A queue is not a process: it is never proven gone. A deadline long past
     // means the queue is not acting, which is a gap to report, not a release.
@@ -176,11 +194,11 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 /** Settles a proven-gone record, or surfaces the operator action for an
  * unprovable one. A failure is logged and retried on a later pass. */
 async function settleOrSurface(db: Db, kind: OwnableKind, record: InProgressRecord, proof: Classification,
-  now: Date): Promise<"settled" | "kept" | "failed"> {
+  now: Date): Promise<"settled" | "kept" | "unwatched" | "failed"> {
   try {
     if (proof.verdict === "gone" && kind.settle) {
       const outcome = await kind.settle(db, record, { now, proof: proof as OwnerProof });
-      return outcome.settled ? "settled" : "kept";
+      return outcome.settled ? "settled" : outcome.watch === false ? "unwatched" : "kept";
     }
     if (proof.verdict === "unprovable" && kind.onUnprovable) await kind.onUnprovable(db, record, { now, proof: proof as OwnerProof });
     return "kept";
@@ -262,7 +280,7 @@ async function settleKind(db: Db, kindId: string, options: {
     const outcome = await settleOrSurface(db, kind, record, proof, now);
     if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });
-    } else if (proof.verdict !== "unprovable") {
+    } else if (outcome !== "unwatched" && proof.verdict !== "unprovable") {
       watched += 1;
     }
   }
@@ -366,6 +384,108 @@ async function checkDeferredIntentsPromoted(db: Db, now: Date, limit: number): P
 }
 
 export const DEFERRED_INTENT_NOT_PROMOTED = "deferred_after_hold_cleared";
+export const USER_COMMENT_WITHOUT_WAKE = "user_comment_without_wake";
+/** A user comment younger than this may still be getting its normal wake. */
+const COMMENT_WAKE_GRACE_MS = 30_000;
+
+export const USER_COMMENT_DROPPED_BY_STALE_RUN = "user_comment_dropped_by_stale_continuation";
+
+/** Invariant 4, the durable half of the stale-continuation rule (chaos
+ * s9401/t72). A user comment on a done task whose only carrying wakes were
+ * cancelled as stale continuations, that a settled agent run which started
+ * before it never read (it finished after the comment), and that no later
+ * run received (the shared per-comment delivery check). The decision waits for the closing run to settle, so it
+ * also covers a stale check that ran before that run reached succeeded, or a
+ * save that failed. The worker saves it so the release drain reopens the
+ * task and delivers it once. */
+async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
+  const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
+  const rows = await db.execute<{ id: string; company_id: string; issue_id: string; agent_id: string }>(sql`
+    select c.id, c.company_id, c.issue_id, i.assignee_agent_id as agent_id from issue_comments c
+    join issues i on i.id = c.issue_id and i.company_id = c.company_id
+    where c.author_user_id is not null and c.deleted_at is null
+      and c.author_agent_id is null and c.created_by_run_id is null and c.created_at >= ${since}::timestamptz
+      and i.status = 'done' and i.assignee_agent_id is not null and i.conversation_agent_id is null
+      and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}
+      and exists (select 1 from agent_wakeup_requests stale where stale.company_id = c.company_id
+        and stale.payload->>'issueId' = c.issue_id::text and stale.status = 'cancelled'
+        and stale.error = 'continuation_task_ownership_changed'
+        and (stale.payload->>'commentId' = c.id::text
+          or coalesce(stale.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
+      and not exists (select 1 from agent_wakeup_requests open_wake where open_wake.company_id = c.company_id
+        and open_wake.payload->>'issueId' = c.issue_id::text
+        and open_wake.status not in ('cancelled', 'skipped', 'failed', 'coalesced')
+        and (open_wake.payload->>'commentId' = c.id::text
+          or coalesce(open_wake.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
+      and exists (select 1 from heartbeat_runs closing where closing.company_id = c.company_id
+        and closing.agent_id = i.assignee_agent_id and closing.status = 'succeeded'
+        and (closing.context_snapshot->>'issueId' = c.issue_id::text or closing.native_issue_id = c.issue_id)
+        and closing.started_at < c.created_at and closing.finished_at >= c.created_at)
+      and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
+        and (r.context_snapshot->>'issueId' = c.issue_id::text or r.native_issue_id = c.issue_id)
+        and r.status in ('queued', 'running', 'scheduled_retry'))
+    order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
+  // Consumption is per comment: a later run counts only if it received this
+  // comment (its own wake input, or a retry's task history), never ordinary
+  // task history of another message's turn.
+  const owed: typeof rows[number][] = [];
+  for (const row of rows) {
+    const delivered = await deliveredQueuedCommentIds(db, { companyId: row.company_id, issueId: row.issue_id,
+      agentId: row.agent_id, commentIds: [row.id] });
+    if (!delivered.has(row.id)) owed.push(row);
+  }
+  return owed.map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "issue_comment", recordId: row.id,
+    companyId: row.company_id, runId: null, issueId: row.issue_id, reason: USER_COMMENT_DROPPED_BY_STALE_RUN }));
+}
+
+/** Invariant 4, reconciler-owned rule: an undelivered user comment newer than
+ * the task's last run gets a wake. A comment commits before its wake is
+ * written, so a restart in between loses the wake (chaos s9401/t69). This
+ * finds a user comment on an assigned, non-conversation task with no live run
+ * or lock, newer than every run of the task, that no wake request carries.
+ * The reconciliation worker saves it as a deferred receipt and promotes it. */
+async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+  const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
+  const rows = await db.execute<{ id: string; company_id: string; issue_id: string; created_at: string }>(sql`
+    select c.id, c.company_id, c.issue_id, c.created_at::text as created_at from issue_comments c
+    join issues i on i.id = c.issue_id and i.company_id = c.company_id
+    where c.author_user_id is not null and c.deleted_at is null
+      and c.author_agent_id is null and c.created_by_run_id is null
+      and c.created_at >= ${since}::timestamptz
+      and i.assignee_agent_id is not null and i.conversation_agent_id is null
+      and (i.status in ('todo', 'in_progress')
+        or (i.status = 'done' and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}))
+      and i.execution_run_id is null
+      and not exists (select 1 from heartbeat_runs steered join heartbeat_run_events steer_event
+          on steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
+        where steered.company_id = c.company_id
+          and (steered.context_snapshot->>'issueId' = c.issue_id::text or steered.native_issue_id = c.issue_id)
+          and coalesce(steered.started_at, steered.created_at) <= c.created_at
+          and (steered.finished_at is null or steered.finished_at >= c.created_at)
+          and steer_event.event_type in ('item.started', 'item.completed')
+          and steer_event.created_at >= c.created_at
+          and strpos(steer_event.payload::text, c.id::text) > 0)
+      and exists (select 1 from heartbeat_runs prior where prior.company_id = c.company_id
+        and (prior.context_snapshot->>'issueId' = c.issue_id::text or prior.native_issue_id = c.issue_id))
+      and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
+        and (r.context_snapshot->>'issueId' = c.issue_id::text or r.native_issue_id = c.issue_id)
+        and (r.status in ('queued', 'running', 'scheduled_retry') or coalesce(r.started_at, r.created_at) >= c.created_at))
+      and not exists (select 1 from agent_wakeup_requests w where w.company_id = c.company_id
+        and w.payload->>'issueId' = c.issue_id::text
+        and (w.payload->>'commentId' = c.id::text
+          or coalesce(w.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
+    order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
+  // A comment inside the grace may still get its normal wake: check it again
+  // when the grace ends (a saved deadline), and report only older ones.
+  const graceEnd = now.getTime() - COMMENT_WAKE_GRACE_MS;
+  const young = [...rows].map(row => new Date(row.created_at).getTime()).filter(at => at >= graceEnd);
+  return {
+    violations: [...rows].filter(row => new Date(row.created_at).getTime() < graceEnd)
+      .map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "issue_comment", recordId: row.id,
+        companyId: row.company_id, runId: null, issueId: row.issue_id, reason: USER_COMMENT_WITHOUT_WAKE })),
+    nextDueAt: young.length ? new Date(Math.min(...young) + COMMENT_WAKE_GRACE_MS) : null,
+  };
+}
 
 /** Invariant 4 with section E's closed outcomes: an accepted intent (a user's
  * request or a message) ended terminally on a refusal that
@@ -520,8 +640,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
         if (outcome === "settled") { report.settled += 1; continue; }
         if (outcome === "failed") retryNeeded = true;
-        // An unprovable owner changes only by operator action, which signals.
-        if (proof.verdict !== "unprovable") report.watched += 1;
+        // An unprovable owner changes only by operator action, which signals;
+        // so does a record whose settle has nothing left to do.
+        if (outcome !== "unwatched" && proof.verdict !== "unprovable") report.watched += 1;
       }
       if (kind.invariantChecks.includes(2) && proof.verdict === "gone") {
         const key = `${kind.id}:${record.recordId}`;
@@ -536,6 +657,12 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   for (const check of [
     () => checkAdmissionIndependence(db, state, now, limit),
     () => checkExactlyOnceIntents(db, state, now, limit),
+    () => checkStaleDroppedComments(db, now, limit),
+    async () => {
+      const result = await checkUserCommentsWithoutWake(db, now, limit);
+      if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
+      return result.violations;
+    },
     async () => {
       const result = await checkDeferredIntentsPromoted(db, now, limit);
       if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
@@ -552,6 +679,19 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     } catch (error) {
       retryNeeded = true;
       logger.warn({ err: error }, "ownership invariant check failed; the report continues");
+    }
+  }
+  // A settling kind can become settleable at a known time without a signal
+  // (a retention window ending); wake then.
+  for (const kind of kinds) {
+    if (!settleRecords || !kind.settle || !kind.nextDueAt) continue;
+    try {
+      const due = await kind.nextDueAt(db, now);
+      const current = nextDueAt as Date | null;
+      if (due && (!current || due < current)) nextDueAt = due;
+    } catch (error) {
+      retryNeeded = true;
+      logger.warn({ err: error, kind: kind.id }, "ownership due-time read failed; a later pass retries");
     }
   }
 

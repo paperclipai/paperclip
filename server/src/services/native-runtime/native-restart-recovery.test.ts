@@ -270,6 +270,33 @@ describe("native controller takeover fencing", () => {
     });
   });
 
+  // Phase 2: the local branch is the shared prover (proveOwnerGone).
+  it("accepts a reused PID only when the live process started definitely later", async () => {
+    const live = { isProcessAlive: () => true };
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() + 5_000) }))
+      .resolves.toEqual({ allowed: true, reason: "controller_pid_recycled" });
+    // An observed start before the recorded one is an inconsistent stamp,
+    // which the previous private proof accepted as recycled.
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() - 5_000) }))
+      .resolves.toEqual({ allowed: false, reason: "controller_pid_start_inconsistent" });
+    // Within the 1 s precision window it is the same live controller.
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => new Date(recordedStart.getTime() + 500) }))
+      .resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
+    await expect(evaluateNativeControllerTakeover({ owner: owner(), now, ...live,
+      readProcessStartedAt: async () => null }))
+      .resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
+  });
+
+  it("judges a controller recorded in this PID space, and keeps the operator attestation", async () => {
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: currentProcessSpaceHash() },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: "operator_attested" },
+      now, isProcessAlive: () => true })).resolves.toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+  });
+
   it.each([
     ["another host", "another-host-pid-space"],
     ["an unreadable PID space", "unknown"],

@@ -261,6 +261,7 @@ import {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmOwnerGoneSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -7391,6 +7392,7 @@ registry.registerPath({
   path: "/api/cli-auth/me",
   tags: ["access"],
   summary: "Get current CLI auth session",
+  description: "Board-credential read used by `npx paperclipai auth whoami` in the person's own terminal. Agent API keys receive 401: an agent cannot sign a terminal in as a person. To connect someone's terminal, see POST /api/cli-auth/challenges.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7410,7 +7412,8 @@ registry.registerPath({
   method: "post",
   path: "/api/cli-auth/challenges",
   tags: ["access"],
-  summary: "Create a CLI auth challenge",
+  summary: "Connect a person's terminal to Paperclip: create a CLI auth challenge for terminal login",
+  description: "Called by the Paperclip CLI in a person's own terminal, never by an agent on their behalf. To connect someone's terminal to Paperclip as themselves, tell them to run `npx paperclipai auth login --api-base <this Paperclip URL>` in that terminal (add `--company-id <companyId>` to name the company). The URL is the address the person already opens Paperclip at in their browser; leave it as that placeholder instead of looking it up, because addresses an agent can see (such as a runner-local API URL) may not be reachable from the person's machine. The CLI prints an approval link; they open it in a browser where they are signed in, review the requesting command, company and Board access, and approve. Only that CLI receives the resulting Board credential. `npx paperclipai auth whoami` confirms who it is signed in as and `npx paperclipai auth logout` revokes it. Agent API keys are a separate identity: never hand out an agent key, create or approve a challenge yourself, or ask for the person's password in chat.",
   request: { body: jsonBody(createCliAuthChallengeSchema) },
   responses: { 200: r.ok(), 400: r.badRequest },
 });
@@ -7420,6 +7423,7 @@ registry.registerPath({
   path: "/api/cli-auth/challenges/{id}/approve",
   tags: ["access"],
   summary: "Approve a CLI auth challenge",
+  description: "Only the signed-in person approves, from the approval page their own CLI printed; agent API keys receive 401. To connect someone's terminal, give them the `npx paperclipai auth login` command (see POST /api/cli-auth/challenges).",
   request: {
     params: z.object({ id: cliAuthChallengeIdParamSchema }),
     body: jsonBody(resolveCliAuthChallengeSchema),
@@ -7449,6 +7453,7 @@ registry.registerPath({
   path: "/api/cli-auth/revoke-current",
   tags: ["access"],
   summary: "Revoke current CLI auth session",
+  description: "Used by `npx paperclipai auth logout` with the CLI's own Board credential; it revokes only that credential and leaves agent API keys untouched.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -11057,6 +11062,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Confirm that a native run's previous server stopped when its host was not recorded",
   body: confirmNativeControllerStoppedSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-owner-gone",
+  tags: ["issues"],
+  summary: "Confirm that the unrecorded server holding a stuck recovery record stopped, so recovery can release it",
+  body: confirmOwnerGoneSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

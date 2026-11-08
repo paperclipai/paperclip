@@ -36,10 +36,10 @@ import {
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT, providerAttemptChargesBudget, providerAttemptWindowStart, readProviderAttemptOutcome } from "./provider-attempt-outcome.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
+import { currentProcessProbe, proveOwnerGone, type ProcessProbe } from "../owner-proof.js";
 import { persistActivity } from "../activity-log.js";
 import { OPERATOR_ATTESTED_CONTROLLER_HOST, requestNativeControllerStopConfirmation } from "./native-controller-host-recovery.js";
-import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -418,8 +418,6 @@ export async function evaluateNativeControllerTakeover(input: {
       ? { allowed: false, reason: "remote_controller_lease_live" }
       : { allowed: true, reason: "remote_controller_lease_released_or_expired" };
   }
-  const isAlive = input.isProcessAlive ?? processIsAlive;
-  const readStartedAt = input.readProcessStartedAt ?? observedProcessStart;
   if ((!owner.leaseOwner || !owner.leaseExpiresAt) && !input.requireStoppedController) {
     return { allowed: true, reason: "unowned" };
   }
@@ -440,21 +438,32 @@ export async function evaluateNativeControllerTakeover(input: {
   if (recordsHost && owner.controllerHostHash === OPERATOR_ATTESTED_CONTROLLER_HOST) {
     return { allowed: true, reason: "operator_attested_controller_stopped" };
   }
-  // A PID can only be judged in the PID space that recorded it. A controller
-  // on another host or namespace (or an unreadable local space) is never
-  // proven gone by a local probe; its lease or fence decides instead.
-  if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
-    return { allowed: false, reason: "controller_host_unprovable" };
-  }
-  // A row saved before the host column existed. An ephemeral (multi-host)
-  // server can never assume it was written here; a board operator decides.
-  if (recordsHost && owner.controllerHostHash == null && ephemeralServerEnabled()) {
-    return { allowed: false, reason: "controller_host_unrecorded" };
-  }
-  // Single-host servers keep the previous local proof for one release, and
-  // every use is recorded so the release that removes it can check for rows.
-  const fallback = recordsHost && owner.controllerHostHash == null ? { legacyHostFallback: true as const } : {};
-  if (!isAlive(priorPid)) {
+  // The local branch is the shared prover (plan Phase 2): a PID is judged
+  // only in the PID space that recorded it, a reused PID must have started
+  // definitely later, and EPERM is alive. A coordinator row saved before the
+  // host column keeps the one-release local proof on single-host servers
+  // (`processSpaceUnrecorded`; each use is recorded by the caller as
+  // LEGACY_HOST_FALLBACK_EVENT), and an ephemeral server never judges it.
+  // Owners built from receipts that never stored a PID space are judged in
+  // this PID space: their callers checked the recorded host first.
+  const base = currentProcessProbe();
+  const probe: ProcessProbe = {
+    ...base,
+    // No platform-deployment shortcut: this stamp records no worker.
+    deployment: null,
+    pidExists: input.isProcessAlive ?? base.pidExists,
+    readStartedAt: input.readProcessStartedAt ?? base.readStartedAt,
+  };
+  const proof = await proveOwnerGone({
+    kind: "local", scope: "native_controller", generation: null, host: null,
+    processSpace: recordsHost ? owner.controllerHostHash ?? null : probe.processSpace,
+    processSpaceUnrecorded: recordsHost && owner.controllerHostHash == null,
+    bootId: null, pid: priorPid, processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
+    processGroupId: null,
+  }, probe);
+  const fallback = proof.legacyHostFallback ? { legacyHostFallback: true as const } : {};
+  if (proof.verdict === "gone") {
+    if (proof.reason === "pid_reused") return { allowed: true, reason: "controller_pid_recycled", ...fallback };
     return {
       allowed: true,
       reason:
@@ -464,18 +473,14 @@ export async function evaluateNativeControllerTakeover(input: {
       ...fallback,
     };
   }
-
-  const observedStartedAt = await readStartedAt(priorPid);
-  if (
-    owner.controllerProcessStartedAt &&
-    observedStartedAt &&
-    definitivelyDifferentProcessStart(
-      owner.controllerProcessStartedAt,
-      observedStartedAt,
-    )
-  ) {
-    return { allowed: true, reason: "controller_pid_recycled", ...fallback };
+  if (proof.reason === "process_space_unrecorded") return { allowed: false, reason: "controller_host_unrecorded" };
+  if (proof.reason === "different_process_space" || proof.reason === "unknown_process_space"
+    || proof.reason === "different_host") {
+    return { allowed: false, reason: "controller_host_unprovable" };
   }
+  // A live PID observed to start before the recorded controller is an
+  // inconsistent stamp, never proof of reuse.
+  if (proof.reason === "pid_start_inconsistent") return { allowed: false, reason: "controller_pid_start_inconsistent" };
 
   const coordinated = input.coordinatedPreviousController;
   if (
