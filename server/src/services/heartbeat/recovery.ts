@@ -12,8 +12,15 @@ import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-wor
 import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-native-session-cleanup-work.js";
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
-import { pendingCleanupDeadlineSql, recoveredOrphanFirstAttemptSql } from "../environment-cleanup-state.js";
-import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
+import {
+  PENDING_CLEANUP_ATTEMPTS_METADATA_KEY,
+  PENDING_CLEANUP_SWEEP_ATTEMPT_CAP,
+  pendingCleanupAttemptsSql,
+  pendingCleanupDeadlineSql,
+  pendingCleanupMetadataObjectSql,
+  recoveredOrphanFirstAttemptSql,
+} from "../environment-cleanup-state.js";
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -198,12 +205,8 @@ const ENVIRONMENT_CLEANUP_RETRY_LIMIT = 1_000;
 
 const pendingCleanupAttemptsInFlight = new Set<string>();
 
-// Escalate and slow cleanup after this many attempts; never abandon a live lease.
-const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
-
-// The reaper stores its retry state under these keys in the lease metadata.
-const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
-
+// The reaper stores its retry state in the lease metadata (the attempt cap and
+// count key live in environment-cleanup-state.ts).
 const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 
 // The reaper sweeps at most this many orphaned active leases per tick.
@@ -226,43 +229,10 @@ const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
 
 const ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND = "orphaned_active_lease_sweep_failed";
 
-// Read the stored retry attempt count as a safe value, directly in SQL. A
-// provider can write a malformed value under the attempts key. The type guard
-// makes any non-number value read as zero. The reader computes as numeric and
-// never casts to int, so a finite number outside the 32-bit range (for example
-// 1e300) never throws. The reader clamps a negative value to zero and a positive
-// value to the attempt cap. One malformed lease therefore never aborts the page
-// sweep. This matches the TypeScript reader `readPendingCleanupRetryAttempts`,
-// which clamps to the same range. The claim predicate compares the two readers,
-// so both must yield the same value for every input.
-function pendingCleanupAttemptsSql() {
-  return sql`
-    case
-      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}) = 'number'
-        then least(
-          greatest(
-            floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric),
-            0
-          ),
-          ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}
-        )
-      else 0
-    end`;
-}
-
 function pendingCleanupRetryDueSql(explicitRetry = false) {
   return sql`case
     when ${explicitRetry} and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true' then true
     else ${pendingCleanupDeadlineSql()} <= ${Date.now()} end`;
-}
-
-// Choose the `jsonb_set` target root. A provider can write a scalar or array
-// metadata root. `jsonb_set` fails on a non-object root, so the reader uses the
-// stored metadata only when its root is an object. A NULL, scalar, or array root
-// reads as an empty object. `jsonb_typeof(NULL)` is NULL, so the else branch also
-// covers a NULL root.
-function pendingCleanupMetadataObjectSql() {
-  return sql`case when jsonb_typeof(${environmentLeases.metadata}) = 'object' then ${environmentLeases.metadata} else '{}'::jsonb end`;
 }
 
 // Read the stored cap-warned flag as a safe boolean, directly in SQL. A
@@ -1449,62 +1419,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
   }
 
-  // A teardown claim fences other sweeps for 15 minutes. After a restart, a
-  // claim whose server process has exited cannot still be running, so its
-  // fence ends now. The saved process is bound to its own attempt: a later
-  // claim from another path that kept the old record is never released. A live
-  // or unidentified claimer keeps its fence. Pages pass every skipped claim.
-  async function releaseLostPendingCleanupClaims(): Promise<void> {
-    const nowMs = Date.now();
-    let after: string | null = null;
-    for (;;) {
-      const claimed: Array<{ id: string; metadata: Record<string, unknown> | null }> = await db
-        .select({ id: environmentLeases.id, metadata: environmentLeases.metadata })
-        .from(environmentLeases)
-        .where(and(
-          eq(environmentLeases.status, "pending_cleanup"),
-          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
-          sql`jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs') = 'number'`,
-          sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
-          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${environmentLeases.metadata}->>'pendingCleanupAttemptId'`,
-          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'bootId' is distinct from ${currentControllerBootId()}`,
-          after === null ? undefined : gt(environmentLeases.id, after),
-        ))
-        .orderBy(asc(environmentLeases.id))
-        .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
-      for (const row of claimed) {
-        const metadata = row.metadata ?? {};
-        const saved = metadata.pendingCleanupController as Record<string, unknown> | undefined;
-        const controller = readControllerProcess(saved);
-        const attemptId = saved?.attemptId;
-        if (!controller || typeof attemptId !== "string" || !await controllerProcessExited(controller)) continue;
-        // A dead server is not a failed teardown. A sweep claim already counted
-        // its attempt, so give it back; claims from other paths never counted.
-        // The update is single-use: it matches only while the fence is still in
-        // the future and it consumes `countedAttempt`, so an overlapping sweep
-        // that read the same claim cannot refund the attempt again.
-        const returnAttempt = saved?.countedAttempt === true;
-        await db.update(environmentLeases)
-          .set({ metadata: sql`jsonb_set(jsonb_set(jsonb_set(${pendingCleanupMetadataObjectSql()},
-            '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint)),
-            array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}],
-            to_jsonb(greatest(${pendingCleanupAttemptsSql()} - ${returnAttempt ? 1 : 0}, 0)::int), true),
-            '{pendingCleanupController,countedAttempt}', 'false'::jsonb, true)` })
-          .where(and(
-            eq(environmentLeases.id, row.id),
-            eq(environmentLeases.status, "pending_cleanup"),
-            sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
-            sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
-            sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-            sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${attemptId}`,
-            sql`coalesce(${environmentLeases.metadata}->'pendingCleanupController'->>'countedAttempt', 'false') = ${returnAttempt ? "true" : "false"}`,
-          ));
-      }
-      if (claimed.length < PENDING_CLEANUP_SWEEP_PAGE_SIZE) return;
-      after = claimed[claimed.length - 1]!.id;
-    }
-  }
-
   // Atomically claim one retry attempt on a pending_cleanup lease. The update
   // only matches when the lease is still pending_cleanup and its stored attempt
   // count still equals `expectedAttempts`. Two concurrent sweeps read the same
@@ -1798,7 +1712,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       deferredFlushFailed = true;
     }
 
-    await releaseLostPendingCleanupClaims();
+    // A teardown claim whose claimant process is proven gone ends its fence
+    // now, through the shared ownership path. A claim held as a fence (another
+    // host, or a claimant without a process stamp) waits for its deadline.
+    await settleOwnableKind(db, "environment_teardown_claim").catch(() => {
+      logger.warn({ errorKind: "teardown_claim_settle_failed" }, "teardown claim settle failed; a later sweep retries");
+    });
 
     const rows = await db
       .select()
