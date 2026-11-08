@@ -30,3 +30,21 @@ it("forwards the run's warm idle window for a warm sandbox-provider run only",()
  expect(resolveWarmRunnerIdleTimeoutMsForRun(sandbox,"claude_local",{lifecycleMode:"warm"})).toBeUndefined();
  expect(resolveWarmRunnerIdleTimeoutMsForRun({driver:"plugin" as const,config:{}},"paperclip_runner",{lifecycleMode:"warm"})).toBeUndefined();
 });
+
+it.each([
+  [{ provider: "codex" }, true], [{ provider: "opencode" }, true], [{ provider: "acpx", acpxAgent: "claude" }, true],
+  [{ provider: "acpx", acpxAgent: "grok" }, false], [{ provider: "codex", lifecycleMode: "per_turn" }, false], [{}, false],
+] as const)("defaults a measured harness on an inheriting sandbox environment to a reusable warm sandbox: %j", (adapterConfig, warm) => {
+  const sandbox = { driver: "sandbox" as const, config: { provider: "daytona", reuseLease: false } };
+  const resolved = resolveRunnerEnvironmentForRun(sandbox, "paperclip_runner", adapterConfig);
+  expect(resolved.config.reuseLease).toBe(warm);
+  expect(resolveWarmRunnerIdleTimeoutMsForRun(sandbox, "paperclip_runner", adapterConfig)).toBe(warm ? 300_000 : undefined);
+  // The shared environment itself is never rewritten.
+  expect(sandbox.config.reuseLease).toBe(false);
+});
+it("keeps an environment that pins per-turn, and an admitted per-turn recovery, per-turn", () => {
+  const pinned = { driver: "sandbox" as const, config: { provider: "daytona", runnerLifecycleMode: "per_turn" } };
+  expect(resolveRunnerEnvironmentForRun(pinned, "paperclip_runner", { provider: "codex" })).toBe(pinned);
+  const inheriting = { driver: "sandbox" as const, config: { provider: "daytona" } };
+  expect(resolveRunnerEnvironmentForRun(inheriting, "paperclip_runner", { provider: "codex" }, "per_turn")).toBe(inheriting);
+});
