@@ -2290,6 +2290,9 @@ export function agentRoutes(
     claude_local: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
     codex_local: ["OPENAI_API_KEY", "CODEX_API_KEY"],
     grok_local: ["XAI_API_KEY"],
+    // OpenCode reaches its models through OpenRouter, the provider account
+    // AI connections bind for opencode_local.
+    opencode_local: ["OPENROUTER_API_KEY"],
   };
 
   function isInheritableCredentialReference(value: unknown): value is Record<string, unknown> {
