@@ -1048,6 +1048,18 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
+  it.each(["wakeup", "heartbeat/invoke"])("rejects a reserved review handoff idempotency key via %s", async (endpoint) => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/${endpoint}?companyId=company-1`)
+        .send({ idempotencyKey: "review-handoff:issue-1:stage-1:3", payload: { reviewHandoffAttempt: 3 } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toEqual({ code: "reserved_idempotency_key" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   describe("exact native model-rejected review retry", () => {
     const reviewContext = {
       nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",

@@ -71,6 +71,8 @@ import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { environmentService } from "../services/environments.js";
 import {
   REVIEW_HANDOFF_NO_RECEIPT_REASON,
   REVIEW_HANDOFF_REFUSED_REASON,
@@ -247,6 +249,115 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
     await heartbeat.drainActiveRunExecutions();
   });
 
+  it("wakes the reviewer through the recovery worker when the environment lease is released", async () => {
+    const { companyId, issueId, reviewerAgentId, workerAgentId, stageId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const workerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: workerRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      status: "cancelled",
+      runtimeMode: "legacy",
+      contextSnapshot: { issueId },
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+      finishedAt: new Date(),
+    });
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({
+      id: leaseId,
+      companyId,
+      issueId,
+      heartbeatRunId: workerRunId,
+      status: "active",
+    });
+    const reviewerWakes = () =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, reviewerAgentId)));
+
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({
+      owner: db,
+      canRun: () => true,
+      canReconcile: () => true,
+      onError: (error) => errors.push(error),
+    });
+    let released = false;
+    let resolveWake!: () => void;
+    const wakeAfterRelease = new Promise<void>((resolve) => {
+      resolveWake = resolve;
+    });
+    const register = coordinator.register.bind(coordinator);
+    coordinator.register = (queue, task) =>
+      register(
+        queue,
+        queue !== DELIVERY_QUEUES.strandedAssignments
+          ? task
+          : {
+              ...task,
+              run: async (signal) => {
+                const value = await task.run(signal);
+                if (released && (await reviewerWakes()).length > 0) resolveWake();
+                return value;
+              },
+            },
+      );
+    try {
+      await heartbeat.registerIssueStateRecoveryWork(coordinator, () => true).ready;
+      expect(await reviewerWakes()).toHaveLength(0);
+
+      await environmentService(db).releaseLease(leaseId, "released", { cleanupStatus: "success" });
+      released = true;
+      await wakeAfterRelease;
+
+      const wakes = await reviewerWakes();
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]!.idempotencyKey).toBe(buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 1 }));
+    } finally {
+      await coordinator.stop();
+    }
+    expect(errors).toEqual([]);
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("does not count a wake forged by another agent toward the review handoff budget", async () => {
+    const { companyId, issueId, reviewerAgentId, workerAgentId, stageId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: workerAgentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "forged",
+      status: "skipped",
+      payload: { reviewHandoffAttempt: 3 },
+      requestedByActorType: "agent",
+      requestedByActorId: workerAgentId,
+      idempotencyKey: buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 3 }),
+      finishedAt: new Date(),
+    });
+
+    const result = await reconcileReviewHandoffAfterBlockerClear(db, {
+      issueId,
+      companyId,
+      enqueueWakeup: (agentId, req) => heartbeat.wakeup(agentId, req),
+    });
+
+    expect(result.action).toBe("enqueued");
+    expect(
+      await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId)),
+    ).toHaveLength(0);
+    const [reviewerWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, reviewerAgentId)));
+    expect(reviewerWake!.idempotencyKey).toBe(buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 1 }));
+    await heartbeat.drainActiveRunExecutions();
+  });
+
   it("reconciles the owed handoff before the recovery-action resolve response returns", async () => {
     const { companyId, issueId, reviewerAgentId, stageId, workerAgentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
@@ -382,6 +493,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
         companyId,
         agentId,
         source: "automation",
+        requestedByActorType: "system",
         reason: request.reason,
         status: "skipped",
         idempotencyKey: request.idempotencyKey ?? null,
@@ -430,6 +542,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
         companyId,
         agentId,
         source: "automation",
+        requestedByActorType: "system",
         status: "skipped",
         idempotencyKey: `execution-wait:${issueId}`,
         payload: { issueId },
@@ -573,6 +686,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
             companyId: healthy.companyId,
             agentId,
             source: "automation",
+            requestedByActorType: "system",
             reason: opts?.reason ?? null,
             status: "queued",
             idempotencyKey: opts?.idempotencyKey ?? null,
@@ -797,6 +911,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
             companyId,
             agentId,
             source: "automation",
+            requestedByActorType: "system",
             reason: opts?.reason ?? null,
             status: "queued",
             idempotencyKey: opts?.idempotencyKey ?? null,

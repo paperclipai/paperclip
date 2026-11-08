@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -68,6 +68,19 @@ export function buildReviewHandoffRetryIdempotencyKey(input: {
 
 export function isReviewHandoffRetryIdempotencyConflict(error: unknown): boolean {
   return isUniqueViolation(error, REVIEW_HANDOFF_RETRY_IDEMPOTENCY_INDEX);
+}
+
+export function isReservedReviewHandoffIdempotencyKey(key: unknown): boolean {
+  return typeof key === "string" && key.startsWith(REVIEW_HANDOFF_RETRY_IDEMPOTENCY_PREFIX);
+}
+
+function systemReviewHandoffWake(reviewerAgentId: string, keyCondition: SQL) {
+  return and(
+    keyCondition,
+    eq(agentWakeupRequests.agentId, reviewerAgentId),
+    eq(agentWakeupRequests.source, "automation"),
+    eq(agentWakeupRequests.requestedByActorType, "system"),
+  );
 }
 
 export function buildExecutionStageWakeContext(input: {
@@ -208,7 +221,10 @@ async function hasQueuedReviewWake(
       and(
         eq(agentWakeupRequests.companyId, companyId),
         or(
-          sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          systemReviewHandoffWake(
+            reviewerAgentId,
+            sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          ),
           and(
             eq(agentWakeupRequests.agentId, reviewerAgentId),
             sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
@@ -230,6 +246,7 @@ async function getReviewHandoffAttemptLedger(
   companyId: string,
   issueId: string,
   stageId: string,
+  reviewerAgentId: string,
 ): Promise<{ lastAttempt: number; used: number; lastRefusedAt: Date | null }> {
   const keyPrefix = buildReviewHandoffRetryIdempotencyKeyPrefix({ issueId, stageId });
   const [[closedEscalation], rows] = await Promise.all([
@@ -257,7 +274,10 @@ async function getReviewHandoffAttemptLedger(
       .where(
         and(
           eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          systemReviewHandoffWake(
+            reviewerAgentId,
+            sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          ),
         ),
       ),
   ]);
@@ -317,6 +337,7 @@ async function recordRefusedReviewHandoffAttempt(
 async function getReviewHandoffWakeReceipts(
   db: Db,
   companyId: string,
+  reviewerAgentId: string,
   idempotencyKey: string,
 ): Promise<Array<{ status: string; createdAt: Date }>> {
   return db
@@ -325,7 +346,10 @@ async function getReviewHandoffWakeReceipts(
     .where(
       and(
         eq(agentWakeupRequests.companyId, companyId),
-        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        systemReviewHandoffWake(
+          reviewerAgentId,
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        ),
       ),
     );
 }
@@ -583,7 +607,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     hasValidReviewBlocker(db, issue, input.treeControlSvc),
     hasActiveReviewRun(db, issue.companyId, issue.id, target.reviewerAgentId),
     hasQueuedReviewWake(db, issue.companyId, issue.id, target.stageId, target.reviewerAgentId),
-    getReviewHandoffAttemptLedger(db, issue.companyId, issue.id, target.stageId),
+    getReviewHandoffAttemptLedger(db, issue.companyId, issue.id, target.stageId, target.reviewerAgentId),
   ]);
 
   const decision = decideReviewHandoffRetry({
@@ -656,6 +680,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
   const receipts = await getReviewHandoffWakeReceipts(
     db,
     issue.companyId,
+    decision.targetAgentId,
     decision.idempotencyKey,
   );
   if (receipts.some((receipt) => receipt.status !== SKIPPED_WAKE_STATUS)) {
