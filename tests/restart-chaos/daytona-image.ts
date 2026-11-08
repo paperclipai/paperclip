@@ -327,6 +327,22 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
+async function publishStaging(staging: string, finalDir: string): Promise<DaytonaImageArtifacts | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(staging, finalDir);
+      return null;
+    } catch (error) {
+      const concurrent = await readReceipt(finalDir);
+      if (concurrent) { await rm(staging, { recursive: true, force: true }); return concurrent; }
+      if (attempt > 0) throw error;
+      const stale = `${finalDir}.stale-${randomBytes(4).toString("hex")}`;
+      await rename(finalDir, stale).catch(() => undefined);
+      await rm(stale, { recursive: true, force: true });
+    }
+  }
+}
+
 export function defaultDaytonaImageCacheRoot(): string {
   return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
 }
@@ -361,7 +377,6 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
   const finalDir = path.join(path.resolve(input.cacheRoot), match[1]!);
   const cached = await readReceipt(finalDir);
   if (cached) { log(`Daytona image artifacts cached at ${finalDir}`); return cached; }
-  await rm(finalDir, { recursive: true, force: true });
 
   const staging = path.join(path.resolve(input.cacheRoot), `.staging-${match[1]!.slice(0, 12)}-${randomBytes(4).toString("hex")}`);
   const blobs = path.join(staging, "blobs");
@@ -411,15 +426,8 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
     });
     const receipt = { ...receiptFor(finalDir), runnerdSha256: await fileSha256(runnerd) };
     await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-    try {
-      await rename(staging, finalDir);
-    } catch (error) {
-      const concurrent = await readReceipt(finalDir);
-      if (!concurrent) throw error;
-      await rm(staging, { recursive: true, force: true });
-      log(`Daytona image artifacts extracted concurrently at ${finalDir}`);
-      return concurrent;
-    }
+    const published = await publishStaging(staging, finalDir);
+    if (published) { log(`Daytona image artifacts extracted concurrently at ${finalDir}`); return published; }
     log(`Daytona image artifacts ready at ${finalDir}`);
     return receipt;
   } catch (error) {

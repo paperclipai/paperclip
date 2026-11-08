@@ -1,8 +1,9 @@
-import { chmod, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertControllerMatchesImage, copyImageToDir, extractFromLayers, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
+import { assertControllerMatchesImage, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
 
 type Entry =
   | { path: string; type: "file"; content: string; mode?: number }
@@ -224,5 +225,70 @@ echo '{}' > "$dest/manifest.json"
         .rejects.toThrow(/operation timed out/);
       expect(await readFile(path.join(root, "count"), "utf8")).toBe("2\n");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("prepareDaytonaImageArtifacts with a shared cache", () => {
+  const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+  const revision = "a".repeat(40);
+
+  async function fakeImage(root: string): Promise<string> {
+    const source = path.join(root, "image");
+    await mkdir(source, { recursive: true });
+    const elf = Buffer.alloc(64); elf.writeUInt32BE(0x7f454c46, 0); elf[4] = 2; elf[5] = 1; elf.writeUInt16LE(62, 18);
+    const pack = JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest: `sha256:${"b".repeat(64)}`,
+      payload: { runnerSourceRevision: revision } });
+    const layerBytes = tar([
+      { path: RUNNERD, type: "file", content: elf.toString("latin1"), mode: 0o755 },
+      { path: `${PACK}/provider-pack.json`, type: "file", content: pack },
+    ]);
+    const config = Buffer.from(JSON.stringify({ os: "linux", architecture: "amd64",
+      config: { Labels: { "io.paperclip.runner.content-id": "c".repeat(64), "org.opencontainers.image.revision": revision } } }));
+    await writeFile(path.join(source, sha(layerBytes)), layerBytes);
+    await writeFile(path.join(source, sha(config)), config);
+    await writeFile(path.join(source, "manifest.json"), JSON.stringify({ config: { digest: `sha256:${sha(config)}` },
+      layers: [{ digest: `sha256:${sha(layerBytes)}`, mediaType: "application/vnd.oci.image.layer.v1.tar" }] }));
+    const barrier = path.join(root, "barrier");
+    await mkdir(barrier);
+    const script = path.join(root, "skopeo");
+    await writeFile(script, `#!/bin/sh
+dest="\${9#dir:}"
+touch "${barrier}/$$"
+while [ "$(ls "${barrier}" | wc -l)" -lt 2 ]; do sleep 0.05; done
+cp -R "${source}/." "$dest/"
+`);
+    await chmod(script, 0o755);
+    return script;
+  }
+
+  it("lets two runs extract the same image at once; both get a usable receipt", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
+    directories.push(root);
+    const skopeo = await fakeImage(root);
+    const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"d".repeat(64)}`;
+    const cacheRoot = path.join(root, "cache");
+    const [first, second] = await Promise.all([
+      prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo }),
+      prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo }),
+    ]);
+    expect(second.runnerdPath).toBe(first.runnerdPath);
+    for (const receipt of [first, second]) {
+      expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
+      expect(await readFile(path.join(receipt.providerPackPath, "provider-pack.json"), "utf8")).toContain(revision);
+    }
+  });
+
+  it("replaces a corrupt leftover at the final path", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-cache-"));
+    directories.push(root);
+    const skopeo = await fakeImage(root);
+    await writeFile(path.join(root, "barrier", "other"), "");
+    const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"e".repeat(64)}`;
+    const cacheRoot = path.join(root, "cache");
+    await mkdir(path.join(cacheRoot, "e".repeat(64)), { recursive: true });
+    await writeFile(path.join(cacheRoot, "e".repeat(64), "junk"), "partial");
+    const receipt = await prepareDaytonaImageArtifacts({ image, cacheRoot, skopeo });
+    expect((await stat(receipt.runnerdPath)).isFile()).toBe(true);
+    expect(await exists(cacheRoot, `${"e".repeat(64)}/junk`)).toBe(false);
   });
 });
