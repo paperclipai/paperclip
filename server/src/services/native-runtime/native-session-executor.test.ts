@@ -12938,6 +12938,98 @@ describe("native warm session supervision", () => {
     },
   );
 
+  it.each([
+    { name: "unchanged configuration", reuse: true },
+    { name: "unchanged provider key", firstEnvironment: { OPENAI_API_KEY: "fixture-key" }, secondEnvironment: { OPENAI_API_KEY: "fixture-key" }, reuse: true },
+    { name: "rotated provider key", firstEnvironment: { OPENAI_API_KEY: "fixture-key" }, secondEnvironment: { OPENAI_API_KEY: "fixture-rotated-key" }, reuse: false },
+    { name: "rotated Claude token", firstEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" }, secondEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-rotated-token" }, reuse: false },
+    { name: "tool refresh", refreshTools: true, reuse: false },
+    { name: "network access change", firstEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" }, secondEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }, reuse: false },
+    { name: "run-scoped environment broker", firstEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" }, secondEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" }, reuse: false },
+    { name: "Core-hosted GitHub access", managedGitHub: true, reuse: true, adoptionReuse: false },
+  ] as Array<{ name: string; firstEnvironment?: Record<string, string>; secondEnvironment?: Record<string, string>;
+    refreshTools?: boolean; managedGitHub?: boolean; reuse: boolean; adoptionReuse?: boolean }>)(
+    "decides warm and adopted process reuse from one key: $name",
+    async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, managedGitHub = false, reuse, adoptionReuse = reuse }) => {
+      const decisions: Record<string, boolean> = {};
+      for (const path of ["warm", "adoption"] as const) {
+        githubAccess.create.mockReset().mockImplementation(async () => ({ env: {}, ready: true, duplexRequested: false,
+          activate: githubAccess.activate.mockReset().mockImplementation(() => vi.fn()), stop: githubAccess.stop.mockReset().mockResolvedValue(undefined) }));
+        const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runnerd-reuse-key-"));
+        const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+        process.env.PAPERCLIP_HOME = stateBase;
+        const scope = `${path}-${name.replaceAll(" ", "-")}`;
+        const first = {
+          ...execution,
+          binding: { ...execution.binding, runId: `run-reuse-key-first-${scope}`, executionWorkspaceId: "workspace-reuse-key" },
+          workspace: { cwd: "/tmp/runnerd-reuse-key", repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: `session-reuse-key-${scope}`, driverKind: "codex_app_server" as const,
+            protocolVersion: 1 as const, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+        } as NativeExecutionInputV1;
+        const second = { ...first, binding: { ...first.binding, runId: `run-reuse-key-second-${scope}` } } as NativeExecutionInputV1;
+        const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "environment-reuse-key",
+          remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } } as never;
+        const firstSession = { close: vi.fn(async () => undefined) };
+        const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+          normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "provider-reuse-key", driverKind: "test",
+          driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+        state.execute.mockReset()
+          .mockImplementationOnce(async (options) => {
+            await options.onCheckpoint?.({
+              identity: { runId: first.binding.runId, sessionId: first.session.normalizedSessionId,
+                companyId: first.binding.companyId, issueId: first.binding.issueId, agentId: first.binding.agentId },
+              providerSessionId: "provider-reuse-key", activeTurnId: "provider-turn-reuse-key",
+              semanticResult: { summary: "first" }, terminal: { runTerminalState: "succeeded" },
+            });
+            options.onSession?.(firstSession);
+            return result;
+          })
+          .mockImplementationOnce(async (options) => {
+            decisions[path] = options.existingSession === firstSession;
+            return result;
+          });
+        const inspected = vi.spyOn(remoteWarmRecoveryRuntime, "inspectRemoteWarmSessionRecovery").mockImplementation(async request => {
+          decisions[path] = request.canReuseProcess(first);
+          throw new Error("fixture adoption decision recorded");
+        });
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "runner-reuse-key",
+            useRunnerd: true, managedGitHub, runnerExecutionTarget: target,
+            runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...firstEnvironment } });
+          const durableRoot = (await readdir(stateBase, { withFileTypes: true }))
+            .filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)).map(entry => join(stateBase, entry.name))[0]!;
+          const durableIdentity = { runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId,
+            runnerInstanceId: "runner-reuse-key", environmentLeaseId: first.binding.executionWorkspaceId };
+          await mkdir(join(durableRoot, "control-plane"), { recursive: true });
+          await writeFile(join(durableRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
+          await mkdir(join(durableRoot, "runner"), { recursive: true });
+          await writeFile(join(durableRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(durableIdentity, "ready")));
+          if (path === "adoption") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+          const continuation = executePaperclipNativeSession({
+            db: { ...leaseDb(second), select: () => ({ from: () => ({ where: () => ({ limit: () =>
+              Promise.resolve([{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: first } }]) }) }) }) } as unknown as Db,
+            execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
+            runnerExecutionTarget: target, runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
+          if (path === "adoption") await expect(continuation).rejects.toThrow("fixture adoption decision recorded");
+          else await continuation;
+          expect(decisions[path]).toBe(path === "adoption" ? adoptionReuse : reuse);
+          if (path === "warm") expect(firstSession.close).toHaveBeenCalledTimes(reuse ? 0 : 1);
+        } finally {
+          inspected.mockRestore();
+          await closeIdleWarmNativeSessionsForRestart();
+          if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+          else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+          if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+          else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+          await rm(stateBase, { recursive: true, force: true });
+        }
+      }
+      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse });
+    },
+  );
+
   it("does not replace a different company's warm session with the same normalized id", async () => {
     const firstClose = vi.fn(async () => undefined);
     const secondClose = vi.fn(async () => undefined);

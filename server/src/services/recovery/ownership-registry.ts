@@ -33,6 +33,7 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
@@ -49,6 +50,12 @@ import {
 } from "../environment-cleanup-state.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
+import { settleSandboxCreationIntent } from "../sandbox-creation-intent-settlement.js";
+import {
+  nextRetainedOrphanDueAt,
+  releasableRetainedOrphanCondition,
+  settleRetainedOrphanSandbox,
+} from "../environment-retained-orphan-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -122,6 +129,9 @@ export type OwnableKind = {
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
   onUnprovable?: UnprovableAction;
+  /** When a record of this kind next becomes settleable without a signal
+   * (a retention window ending). The reconciler wakes then. */
+  nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
   /** Plan invariants this kind is checked against (1–8). */
   invariantChecks: readonly number[];
   /** Why the kind cannot be listed, when `listInProgress` is null. */
@@ -154,20 +164,8 @@ const runOwner = (runId: string | null | undefined): RecordOwner => runId ? { ki
 
 type NrfRow = typeof nativeRunFinalizations.$inferSelect;
 
-/** NRF records the controller's boot, PID, start time and, since #19868, its
- * PID space (`controller_host_hash`). Rows written before that have no space
- * and stay unprovable for a foreign boot (inventory finding 2). */
-function nrfStamp(row: NrfRow, scope: string): LocalOwnerStamp {
-  return {
-    kind: "local", scope, generation: row.controllerGeneration ?? null, host: null,
-    processSpace: row.controllerHostHash ?? null,
-    // Rows saved before #19868 keep the one-release local proof on single-host
-    // servers (`legacy_host_unknown_dead_pid_proof`, #19883).
-    processSpaceUnrecorded: row.controllerHostHash == null,
-    bootId: row.controllerBootId, pid: row.controllerPid,
-    processStartedAt: row.controllerProcessStartedAt?.toISOString() ?? null, processGroupId: null,
-  };
-}
+/** The NRF controller stamp, shared with native recovery (native-owner-stamps.ts). */
+const nrfStamp = (row: NrfRow, scope: string): LocalOwnerStamp => nativeControllerOwnerStamp(row, scope);
 
 function nrfKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
   owner: (row: NrfRow) => RecordOwner = row => ({ kind: "process", stamp: nrfStamp(row, id) }),
@@ -247,16 +245,9 @@ function runKind(id: string, title: string, obligation: Obligation, where: SQL |
   };
 }
 
-/** heartbeat_runs records the adapter child's PID, start time and, since
- * #19871, its PID space (`process_host_hash`). Older rows have no space and
- * stay unprovable. */
-function runProcessStamp(row: RunRow, scope: string): LocalOwnerStamp {
-  return {
-    kind: "local", scope, generation: null, host: null, processSpace: row.processHostHash ?? null, bootId: null,
-    pid: row.processPid, processStartedAt: row.processStartedAt?.toISOString() ?? null,
-    processGroupId: row.processGroupId,
-  };
-}
+/** The adapter child's stamp (native-owner-stamps.ts). Rows saved before
+ * `process_host_hash` stay unprovable here. */
+const runProcessStamp = (row: RunRow, scope: string): LocalOwnerStamp => runProcessOwnerStamp(row, scope);
 
 const legacyControllerLeaseWhere = and(eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
   isNotNull(heartbeatRuns.controllerBootId), sql`${heartbeatRuns.controllerLeaseExpiresAt} > now()`);
@@ -633,13 +624,18 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
 
   // Environments and sandboxes
   {
+    // Shared path since Phase 2: a creator proven gone makes its intent due
+    // now; creation recovery then reconciles it with the provider. An intent
+    // whose creator is already marked lost belongs to that recovery deadline.
     id: "sandbox_creation_intent", title: "Sandbox creation intent", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [1, 2, 3, 7],
+    settle: settleSandboxCreationIntent, invariantChecks: [1, 2, 3, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: sandboxCreationOperations.id, companyId: sandboxCreationOperations.companyId,
         runId: sandboxCreationOperations.runId, issueId: sandboxCreationOperations.issueId,
         metadata: sandboxCreationOperations.metadata, updatedAt: sandboxCreationOperations.updatedAt })
-        .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending")).orderBy(asc(sandboxCreationOperations.id)).limit(limit + 1).offset(offset);
+        .from(sandboxCreationOperations).where(and(eq(sandboxCreationOperations.state, "pending"),
+          sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`))
+        .orderBy(asc(sandboxCreationOperations.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
@@ -666,6 +662,16 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     row => runOwner(row.heartbeatRunId)),
   leaseKind("environment_retained_hold", "Retained / reusable hold", "workspace_preservation",
     eq(environmentLeases.status, "retained"), () => ({ kind: "none" }), [1, 7]),
+  {
+    // Shared path since Phase 2: a sandbox the orphaned-run-lease settle
+    // stopped and kept is destroyed once nothing references it. Only
+    // releasable orphans are listed, so a held one is never polled; its
+    // retention window end is a due time.
+    ...leaseKind("environment_retained_orphan_sandbox", "Retained orphan sandbox", "workspace_preservation",
+      releasableRetainedOrphanCondition(), row => runOwner(row.heartbeatRunId), [1]),
+    settle: settleRetainedOrphanSandbox,
+    nextDueAt: nextRetainedOrphanDueAt,
+  },
   spoolKind("sandbox_orphan_cleanup_spool", "Orphan cleanup buffer/spool", "ownership", idleOrphanSpoolPath),
   leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
     and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
