@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -1125,6 +1125,34 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
     },
   );
+
+  it("renews the stop-only cleanup claim while the provider stop is still running", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = seeded.reusableLease;
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { ...lease.metadata, reuseLease: false } })
+      .where(eq(environmentLeases.id, lease.id));
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+    const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method === "environmentStopLease") { started.resolve(); await finish.promise; }
+      return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease", "environmentStopLease"] }),
+    } as unknown as PluginWorkerManager });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const releasing = runtime.releaseRunLeases(seeded.runId, "failed", undefined, "stop_and_retain");
+    try {
+      await started.promise;
+      const expiry = async () => Number((await environmentService(db).getLeaseById(lease.id))?.metadata?.pendingCleanupLeaseExpiresAtMs);
+      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupLeaseExpiresAtMs":1}'::jsonb` })
+        .where(eq(environmentLeases.id, lease.id));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(async () => expect(await expiry()).toBeGreaterThan(Date.now() + 14 * 60_000));
+    } finally { finish.resolve(); await releasing; vi.useRealTimers(); }
+    expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "released", cleanupStatus: "success" });
+  });
 
   it("reports an unwired manager separately from a stopped sandbox worker", async () => {
     const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
