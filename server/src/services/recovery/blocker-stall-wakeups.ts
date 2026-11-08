@@ -33,6 +33,8 @@ const WAKEABLE_WAITER_STATUSES = ["todo", "in_progress", "in_review", "blocked"]
 const MAX_STALLS_PER_PASS = 200;
 /** A wake row with one of these statuses was delivered or is still pending. */
 const DELIVERED_OR_PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed", "coalesced", "completed"];
+/** Waiters of one stall woken per pass; delivered ones drop out, so later passes reach the rest. */
+const MAX_WAITERS_PER_STALL = 100;
 /** A refused wake (skipped, failed, cancelled) is retried, but not more often than this. */
 const REFUSED_WAKE_RETRY_MS = 10 * 60_000;
 const NON_INVOKABLE_AGENT_STATUSES = ["paused", "terminated", "pending_approval"];
@@ -199,12 +201,18 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
         inArray(issues.status, WAKEABLE_WAITER_STATUSES),
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
+        // A waiter's own sweep wakes only that waiter for its children and
+        // blockers; the stalled issue's own pass covers all of its waiters.
+        opts.issueId && stall.issueId !== opts.issueId ? eq(issues.id, opts.issueId) : undefined,
+        sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
+          and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
+          and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
         or(
           stall.parentId ? eq(issues.id, stall.parentId) : sql`false`,
           sql`exists (select 1 from ${issueRelations} r where r.company_id = ${stall.companyId}
             and r.type = 'blocks' and r.issue_id = ${stall.issueId} and r.related_issue_id = ${issues.id})`,
         ),
-      ));
+      )).orderBy(issues.id).limit(MAX_WAITERS_PER_STALL);
     for (const waiter of waiters) {
       const idempotencyKey = issueBlockerStalledWakeKey({ waiterIssueId: waiter.id, stalledIssueId: stall.issueId, recoveryActionId: stall.actionId });
       // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.

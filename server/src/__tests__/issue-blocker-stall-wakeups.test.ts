@@ -103,6 +103,24 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .toEqual([[dependentAgent, "blocker"], [f.parentAgent, "child"]].sort());
   });
 
+  it("wakes only the swept waiter for a shared stalled blocker, so N dependents cost N, not N squared", async () => {
+    const f = await fixture();
+    const dependentAgent = randomUUID();
+    await db.insert(agents).values({ id: dependentAgent, companyId: f.companyId, name: "Dependent owner", role: "engineer", status: "idle" });
+    companyIdOf.set(dependentAgent, f.companyId);
+    const dependents = await db.insert(issues).values([1, 2, 3].map(index => ({ companyId: f.companyId,
+      title: `Dependent ${index}`, status: "blocked" as const, assigneeAgentId: dependentAgent }))).returning();
+    await db.insert(issueRelations).values(dependents.map(dependent => ({ companyId: f.companyId, issueId: f.child.id,
+      relatedIssueId: dependent.id, type: "blocks" as const })));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: dependents[0]!.id });
+    expect(calls.map(call => call.input.payload.issueId)).toEqual([dependents[0]!.id]);
+    // The stalled issue's own pass reaches every waiter, skipping those already woken.
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: f.child.id });
+    expect(calls.map(call => call.input.payload.issueId).sort())
+      .toEqual([f.parent.id, ...dependents.map(dependent => dependent.id)].sort());
+  });
+
   it("wakes the dependent when the blocker's board action resolved as blocked (t05 shape)", async () => {
     // t05: CHA-8 blocks CHA-5. Its board-owned action was resolved with outcome
     // "blocked" six seconds after creation, as the issue moved to blocked for
