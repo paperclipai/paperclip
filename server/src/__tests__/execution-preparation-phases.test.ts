@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { createRunPreparationTiming, drainRunPreparationPhases } from "../services/execution-preparation-timing.js";
+import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase } from "../services/execution-preparation-timing.js";
 
 describe("run preparation phases for the run log", () => {
   it("records slow named phases per run, marks failures, and forgets them once drained", async () => {
@@ -18,6 +18,17 @@ describe("run preparation phases for the run log", () => {
     ]);
     expect(phases[0]!.endedAtMs - phases[0]!.startedAtMs).toBeGreaterThanOrEqual(50);
     expect(drainRunPreparationPhases(runId)).toEqual([]);
+  });
+
+  it("records nested run phases inside a preparation phase without a tracer", async () => {
+    const runId = randomUUID();
+    await createRunPreparationTiming(runId)("runtime_selection", async () => {
+      await measureRunPhase("runtime_selection.provider_discovery", () => delay(60));
+      await measureRunPhase("runtime_selection.skill_assets", async () => undefined);
+    });
+    expect(drainRunPreparationPhases(runId).map(phase => phase.name)).toEqual([
+      "runtime_selection.provider_discovery", "heartbeat.prepare.runtime_selection",
+    ]);
   });
 
   it("keeps runs apart", async () => {
