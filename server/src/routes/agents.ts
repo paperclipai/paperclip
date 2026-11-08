@@ -1777,10 +1777,16 @@ export function agentRoutes(
     };
   }
 
-  /** Terminating an agent is a board-only governed action; tell other actors where a person can do it. */
-  function assertBoardCanTerminateAgent(req: Request) {
+  /**
+   * Terminating an agent is a board-only governed action. The denial gives
+   * other actors a ready profile link, so they can send a person to the control.
+   */
+  async function assertBoardCanTerminateAgent(req: Request, target: { id: string; companyId: string }) {
     if (req.actor.type === "board") return;
-    throw forbidden("Board access required: only a board user can terminate an agent, using Terminate in the actions menu on the agent's profile.");
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, target.companyId));
+    const profile = company?.issuePrefix ? `[the agent's profile](/${company.issuePrefix}/agents/${target.id})` : "the agent's profile";
+    throw forbidden(`Board access required: only a board user can terminate an agent. Ask a person with board access to open ${profile} and choose Terminate from its actions menu.`);
   }
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
@@ -5513,7 +5519,7 @@ export function agentRoutes(
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
     // Termination is board-only and irreversible on every route, not just POST /terminate.
-    if (requestedStatus === "terminated") assertBoardCanTerminateAgent(req);
+    if (requestedStatus === "terminated") await assertBoardCanTerminateAgent(req, existing);
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
@@ -5951,12 +5957,12 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoardCanTerminateAgent(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
     }
+    await assertBoardCanTerminateAgent(req, existing);
 
     const agent = existing.status === "pending_approval"
       ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
