@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { materializeAsset } from "./runtime-context.js";
+import { taskBridgeApiRequest } from "./paperclip-runner-tool-authority.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -93,7 +94,17 @@ describe("Runner workspace bridge", () => {
     expect(comment?.description).toContain("existing task's assignee a new or changed requirement");
     expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files");
     expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task");
+    expect(comment?.description).toContain("set resume: true for such a requirement");
+    expect(comment?.description).toContain("delivery still happens if the assignee completes the task first");
     expect(comment?.description).toContain("not as already applied");
+    expect((comment?.inputSchema as { properties?: Record<string, unknown> }).properties?.resume).toEqual({ type: "boolean" });
+  });
+  it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
+    const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
+    expect(taskBridgeApiRequest("comment_on_task", { taskId, body: "Set the headline to Launch sooner.", resume: true }).body)
+      .toEqual({ body: "Set the headline to Launch sooner.", resume: true });
+    expect(taskBridgeApiRequest("comment_on_task", { taskId, body: "FYI only." }).body).toEqual({ body: "FYI only." });
+    expect(taskBridgeApiRequest("comment_on_task", { taskId, body: "FYI only.", resume: false }).body).toEqual({ body: "FYI only." });
   });
 
   it.skipIf(process.platform === "linux")("does not expose or execute commands without descendant containment", async () => {
