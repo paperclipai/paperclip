@@ -5991,7 +5991,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#handle = handle;
     this.#watchRunner(handle);
-    crashPoint("runner.process.after_spawn_before_identity");
+    // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+    if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
     await this.#publishSpawnedProcess(handle);
     this.#assertStartupOpen();
     await registration?.activate?.();
@@ -6829,7 +6830,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (handle) {
       this.#handle = handle;
       this.#watchRunner(handle);
-      crashPoint("runner.process.after_spawn_before_identity");
+      // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+      if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
       await this.#publishSpawnedProcess(handle);
     }
     this.#assertStartupOpen();
