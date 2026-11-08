@@ -480,6 +480,11 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(byPerson.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")).toEqual([]);
     // The agent's run closed it later without reading the message.
     await closeByAgent(f);
+    // Another message's own turn succeeded later; it did not receive this one.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(Date.now() + 2_000), finishedAt: new Date(Date.now() + 3_000),
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [randomUUID()],
+        executionContinuation: { messages: [{ id: f.commentId }] } } });
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")
       .map(row => row.recordId)).toEqual([f.commentId]);

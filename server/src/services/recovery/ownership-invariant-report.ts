@@ -7,6 +7,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
+import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
 import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
@@ -376,14 +377,14 @@ export const USER_COMMENT_DROPPED_BY_STALE_RUN = "user_comment_dropped_by_stale_
  * s9401/t72). A user comment on a done task whose only carrying wakes were
  * cancelled as stale continuations, that a settled agent run which started
  * before it never read (it finished after the comment), and that no later
- * run received. The decision waits for the closing run to settle, so it
+ * run received (the shared per-comment delivery check). The decision waits for the closing run to settle, so it
  * also covers a stale check that ran before that run reached succeeded, or a
  * save that failed. The worker saves it so the release drain reopens the
  * task and delivers it once. */
 async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
   const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
-  const rows = await db.execute<{ id: string; company_id: string; issue_id: string }>(sql`
-    select c.id, c.company_id, c.issue_id from issue_comments c
+  const rows = await db.execute<{ id: string; company_id: string; issue_id: string; agent_id: string }>(sql`
+    select c.id, c.company_id, c.issue_id, i.assignee_agent_id as agent_id from issue_comments c
     join issues i on i.id = c.issue_id and i.company_id = c.company_id
     where c.author_user_id is not null and c.deleted_at is null
       and c.author_agent_id is null and c.created_by_run_id is null and c.created_at >= ${since}::timestamptz
@@ -405,10 +406,18 @@ async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Prom
         and closing.started_at < c.created_at and closing.finished_at >= c.created_at)
       and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id
         and (r.context_snapshot->>'issueId' = c.issue_id::text or r.native_issue_id = c.issue_id)
-        and (r.status in ('queued', 'running', 'scheduled_retry')
-          or (r.status = 'succeeded' and r.started_at >= c.created_at)))
+        and r.status in ('queued', 'running', 'scheduled_retry'))
     order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
-  return [...rows].map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "issue_comment", recordId: row.id,
+  // Consumption is per comment: a later run counts only if it received this
+  // comment (its own wake input, or a retry's task history), never ordinary
+  // task history of another message's turn.
+  const owed: typeof rows[number][] = [];
+  for (const row of rows) {
+    const delivered = await deliveredQueuedCommentIds(db, { companyId: row.company_id, issueId: row.issue_id,
+      agentId: row.agent_id, commentIds: [row.id] });
+    if (!delivered.has(row.id)) owed.push(row);
+  }
+  return owed.map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "issue_comment", recordId: row.id,
     companyId: row.company_id, runId: null, issueId: row.issue_id, reason: USER_COMMENT_DROPPED_BY_STALE_RUN }));
 }
 

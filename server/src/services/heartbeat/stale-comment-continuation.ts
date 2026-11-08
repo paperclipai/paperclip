@@ -1,6 +1,6 @@
 import { agentWakeupRequests, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { saveUndeliveredUserComments } from "../work-intent-outbox.js";
+import { saveUndeliveredUserComments, taskClosedByAgentSql } from "../work-intent-outbox.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -34,6 +34,10 @@ export async function deferUndeliveredCommentsOfStaleRun(db: Db, run: typeof hea
       and completing.started_at < ${issueComments.createdAt} and completing.finished_at >= ${issueComments.createdAt})`));
   const owed = commentIds.filter(id => unread.some(row => row.id === id));
   if (owed.length === 0) return null;
+  // An overlapping run is not proof the agent closed the task: a person can
+  // mark it done while that run finishes. Only an agent-made close reopens.
+  const [closed] = await db.execute<{ byAgent: boolean }>(sql`select ${taskClosedByAgentSql(run.companyId, issueId)} as "byAgent"`);
+  if (closed?.byAgent !== true) return null;
   const [wake] = run.wakeupRequestId ? await db.select().from(agentWakeupRequests)
     .where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, run.wakeupRequestId))) : [];
   return saveUndeliveredUserComments(db, { companyId: run.companyId, issueId, agentId: run.agentId, commentIds: owed,
