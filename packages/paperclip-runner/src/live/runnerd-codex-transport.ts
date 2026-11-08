@@ -105,7 +105,7 @@ import {
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
-import { isTerminalOperation, staleTerminalCallResult, unseenReturnedToolCalls } from "./terminal-call-freshness.js";
+import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -7125,9 +7125,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // had returned but not yet reached the agent (it was held across a
       // controller restart) is stale: refuse it so the agent continues with
       // those results instead of ending the task on a wait that is over.
-      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents, core.store.state.commands,
-        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId });
-      if (unseen.length) return staleTerminalCallResult(call.operationId, unseen);
+      // After a reattach the held calls are recovered while this call is
+      // delivered, so wait for earlier calls that have not returned yet
+      // (restart chaos t05) before judging what the agent had seen.
+      const settled = await settleEarlierToolCalls(
+        () => this.#closed || core !== this.#core ? null : { events: core.store.state.committedEvents, commands: core.store.state.commands },
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId },
+      );
+      if (!settled || this.#closed || core !== this.#core || epoch !== this.#turnStartResponseEpoch || threadId !== this.#threadId) {
+        throw new SemanticToolNotDispatchedError();
+      }
+      if (settled.unseen.length || settled.pending.length) {
+        return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
+      }
     }
     const outcome = unwrapToolResponse(
       await this.#handler({

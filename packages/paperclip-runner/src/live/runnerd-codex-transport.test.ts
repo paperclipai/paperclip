@@ -1352,6 +1352,52 @@ it.each([false, true])("refuses a terminal call decided before earlier results w
   }
 }, 20_000);
 
+it("refuses a terminal call that arrives before a held call's result (restart chaos t05)", async () => {
+  // Restart chaos t05: Codex called write_document during a K4 hold, then
+  // re-sampled until it called paperclip_block. After the reattach the
+  // controller recovered the held write while the Runner delivered the block,
+  // and the block arrived a few milliseconds before the write's result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9100;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `held-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `held-terminal-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-held-write", transport: "dynamic", name: "write_document", status: "running" });
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-held-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    // The recovered write returns just after the block reaches the transport.
+    setTimeout(() => core.queueCommand("semantic_tool.result", { callId: "exec-held-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: false }, isError: false }, "command_tool_held_terminal_write", true), 100);
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "held-block-call", operationId: "paperclip_block",
+      input: { summary: "Paperclip has not confirmed the save" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    expect(handler).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+    expect(JSON.stringify(outcome.result)).toContain("Those calls have now returned");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
