@@ -189,7 +189,7 @@ export function projectRoutes(db: Db) {
     if (actor.type === "board" && actor.userId) {
       if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
       if (actor.userId === project.privacyOwnerUserId || actor.userId === project.personalOwnerUserId) return true;
-      const instanceAdmin = actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+      const instanceAdmin = actor.source !== "cloud_tenant" && !actor.ignoreInstanceAdmin && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
         .where(and(eq(instanceUserRoles.userId, actor.userId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
       if (instanceAdmin) return true;
       const membership = await db.select({ role: companyMemberships.membershipRole }).from(companyMemberships)

@@ -70,6 +70,7 @@ const apiPrefixes: Record<string, string> = {
   "ready.ts": "/api/ready",
   "liveness.ts": "/api/liveness",
   "inbox-agent-policy.ts": "/api",
+  "user-delegates.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",

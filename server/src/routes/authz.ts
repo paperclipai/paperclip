@@ -226,6 +226,8 @@ export function getActorInfo(req: Request): (
     };
   }
 
+  // A delegate acts as the person and is recorded as the person's session; the
+  // `user_delegate.acted` activity row names the delegate agent and its reason.
   const actorSource =
     req.actor.source === "local_implicit" ||
       req.actor.source === "board_key" ||

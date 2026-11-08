@@ -1744,6 +1744,19 @@ export {
   type InboxAgentPolicy,
 } from "./types/inbox-agent-policy.js";
 export {
+  setUserDelegateSchema,
+  type SetUserDelegate,
+} from "./validators/user-delegate.js";
+export {
+  USER_DELEGATE_FOR_HEADER,
+  USER_DELEGATE_REASON_HEADER,
+  USER_DELEGATE_FOR_QUERY_PARAM,
+  USER_DELEGATE_REASON_QUERY_PARAM,
+  USER_DELEGATE_REASON_MAX_LENGTH,
+  type UserDelegate,
+  type UserDelegateActionDescriptor,
+} from "./types/user-delegate.js";
+export {
   RESOURCE_MEMBERSHIP_STATES,
   type ResourceMembershipResourceType,
   type ResourceMembershipState,

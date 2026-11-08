@@ -90,7 +90,9 @@ export function routineRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board") return;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign", {
+      ignoreInstanceAdmin: req.actor.ignoreInstanceAdmin,
+    });
     if (!allowed) {
       throw forbidden("Missing permission: tasks:assign");
     }
@@ -104,7 +106,9 @@ export function routineRoutes(
       const membership = req.actor.memberships.find((item) => item.companyId === companyId);
       if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") return false;
     }
-    return access.canUser(companyId, req.actor.userId, "tasks:assign");
+    return access.canUser(companyId, req.actor.userId, "tasks:assign", {
+      ignoreInstanceAdmin: req.actor.ignoreInstanceAdmin,
+    });
   }
 
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {

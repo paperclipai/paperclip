@@ -87,6 +87,7 @@ export function boardMutationGuard(): RequestHandler {
 
     // Local-trusted mode, board bearer keys, trusted Cloud tenant calls, and
     // signed Cloud control assertions are not browser-session requests.
+    // Delegate actors are agent bearer requests, checked by the delegate middleware.
     // In these modes, origin/referer headers can be absent; do not block those mutations.
     if (
       req.actor.source === "local_implicit"
@@ -94,6 +95,7 @@ export function boardMutationGuard(): RequestHandler {
       || req.actor.source === "mcp_oauth"
       || req.actor.source === "cloud_tenant"
       || req.actor.source === "cloud_control"
+      || req.actor.source === "delegate"
     ) {
       next();
       return;

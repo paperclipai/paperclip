@@ -25,6 +25,8 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
+        /** Never derive instance-admin rights from the user's role (delegate actors). */
+        ignoreInstanceAdmin?: boolean;
         canManageExperimentalSettings?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;
@@ -32,7 +34,15 @@ declare global {
         onBehalfOfUserId?: string | null;
         authorizingUserId?: string;
         identityContextId?: string | null;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "none";
+        /** Set when a person's named delegate agent acts as that person (`source: "delegate"`). */
+        delegate?: {
+          delegationId: string;
+          agentId: string;
+          runId: string | null;
+          reason: string;
+          action: string;
+        };
+        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "delegate" | "none";
       };
     }
   }

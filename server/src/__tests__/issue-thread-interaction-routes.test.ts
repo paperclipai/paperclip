@@ -3335,6 +3335,42 @@ describe("issue thread interaction routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["tool action", { toolAction: { version: 1, actionRequestId: "action-request-delegate", toolName: "send_email" } }],
+    ["secret proposal", { secretProposal: { version: 1, name: "API_KEY" } }],
+  ])("refuses a delegate accepting a governed %s card for the person", async (_label, governed) => {
+    const approveToolActionRequest = vi.fn();
+    const card = {
+      id: "interaction-governed", kind: "request_confirmation", status: "pending",
+      createdByAgentId: ASSIGNEE_AGENT_ID, sourceRunId: RUN_1,
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve?", ...governed },
+    };
+    mockInteractionService.getForIssue.mockResolvedValue(card);
+    const delegate = {
+      type: "board", userId: "local-board", companyIds: ["company-1"], source: "delegate",
+      isInstanceAdmin: false, ignoreInstanceAdmin: true,
+      delegate: { delegationId: "delegation-1", agentId: ASSIGNEE_AGENT_ID, runId: RUN_1, reason: "Clear the inbox", action: "interaction.resolve" },
+    };
+    const app = await createApp(delegate, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-governed/accept`)
+      .send({ rememberAction: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "interaction_governed_action_denied" });
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(approveToolActionRequest).not.toHaveBeenCalled();
+
+    // Control: the person signed in directly passes this gate.
+    const asPerson = await createApp({ ...delegate, source: "session", delegate: undefined }, { approveToolActionRequest });
+    const direct = await request(asPerson)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-governed/accept`)
+      .send({});
+    expect(direct.body?.code).not.toBe("interaction_governed_action_denied");
+  });
+
   describe("suggested-task effect authorization", () => {
     const path = `/api/issues/${ISSUE_ID}/interactions/interaction-suggest/accept`;
     const owner = { type: "board", userId: "local-board", companyIds: ["company-1"], source: "session" };
