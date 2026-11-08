@@ -3112,6 +3112,56 @@ async function runWorkspaceCommand(input: {
   );
 }
 
+/**
+ * `git worktree add` writes the repository's shared `.git/config` (the new
+ * branch's upstream). Two creates on one repository at once fail with "could
+ * not lock config file". Creates in this process run one at a time per
+ * repository, keyed by its git common dir; a create that still meets another
+ * process's lock retries a few times after a short wait.
+ */
+const repositoryWorktreeLocks = new Map<string, Promise<unknown>>();
+export const WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+
+async function withRepositoryWorktreeLock<T>(cwd: string, work: () => Promise<T>): Promise<T> {
+  const commonDir = await executeProcess({ command: "git", args: ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd })
+    .then(result => result.code === 0 && result.stdout.trim() ? result.stdout.trim() : path.resolve(cwd))
+    .catch(() => path.resolve(cwd));
+  const key = await fs.realpath(commonDir).catch(() => commonDir);
+  const previous = repositoryWorktreeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  const tail = current.catch(() => undefined);
+  repositoryWorktreeLocks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (repositoryWorktreeLocks.get(key) === tail) repositoryWorktreeLocks.delete(key);
+  }
+}
+
+function isGitConfigLockFailure(result: { code: number | null; stderr: string }) {
+  return result.code !== 0 && /could not lock config file/i.test(result.stderr);
+}
+
+async function executeGitCommand(args: string[], cwd: string) {
+  if (args[0] !== "worktree" || args[1] !== "add") return executeProcess({ command: "git", args, cwd });
+  return withRepositoryWorktreeLock(cwd, async () => {
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await executeProcess({ command: "git", args, cwd });
+      const delayMs = WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS[attempt];
+      if (!isGitConfigLockFailure(result) || delayMs === undefined) return result;
+      // `worktree add -b` creates the branch, then fails writing its upstream,
+      // and adds no worktree. The branch did not exist before (otherwise git
+      // refuses with "already exists" first), so this command created it:
+      // remove it so the retry creates it again with its upstream.
+      const branchIndex = args.indexOf("-b");
+      if (branchIndex > 0 && args[branchIndex + 1]) {
+        await executeProcess({ command: "git", args: ["branch", "-D", args[branchIndex + 1]!], cwd }).catch(() => undefined);
+      }
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  });
+}
+
 async function recordGitOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
@@ -3124,7 +3174,9 @@ async function recordGitOperation(
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    const result = await executeGitCommand(input.args, input.cwd);
+    if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${input.args.join(" ")} failed`);
+    return result.stdout.trim();
   }
 
   let stdout = "";
@@ -3136,11 +3188,7 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const result = await executeProcess({
-        command: "git",
-        args: input.args,
-        cwd: input.cwd,
-      });
+      const result = await executeGitCommand(input.args, input.cwd);
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
