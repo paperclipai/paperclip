@@ -52,9 +52,9 @@ export function gradeIntegratorSkillImports(value: unknown) {
       && (!skill.currentVersionId || o.skillVersions[skill.id]?.some(row => row.id === skill.currentVersionId && row.fileInventory.some(file => file.path === "SKILL.md" && file.content === sourceSkillMarkdown))), "One intended skill retains the approved local source locator and exact independently read SKILL.md bytes. A current immutable version, when present, must agree; ordinary local import does not promise one.");
     c.add("agent-imported-approved-source", o.activity.some(event => event.action === "company.skills_imported" && event.agentId === o.leadId && event.details?.source === o.state.sourceURL
       && event.details?.importedCount === 1), "The responding agent imports the actual authorized source through the supported company route.");
-    c.add("truthful-installation-and-usage", !!skill && o.reply.includes(skill.name) && skill.usedByAgents.length === 0
+    c.add("truthful-installation-and-usage", !!skill && (o.reply.includes(skill.name) || !!resultHref(o, skill.id, "studio")) && skill.usedByAgents.length === 0
       && !/\b(?:board|human|admin(?:istrator)?)\b[^.!?\n]{0,40}\b(?:approval (?:is )?required|must approve|need(?:s)? to approve)\b/i.test(o.reply)
-      && !/\b(?:enabled|assigned|activated)\b[^.!?\n]{0,30}\b(?:all|every)\s+agents?\b/i.test(o.reply), "The response identifies the saved skill without a fictional approval gate or global usage assignment.");
+      && !/\b(?:enabled|assigned|activated)\b[^.!?\n]{0,30}\b(?:all|every)\s+agents?\b/i.test(o.reply), "The response identifies the saved skill by its saved name or a link to its page, without a fictional approval gate or global usage assignment.");
   } else if (o.scenarioId === "skills.fork-read-only") {
     const before = o.state.upstream as CompanySkillDetail | undefined; const original = o.skills.find(row => row.id === before?.id); const fork = changedFork(o);
     c.add("upstream-remains-read-only-and-identical", !!before && !!original && original.editable === false && original.sourceType === "github" && original.sourceRef === before.sourceRef && original.sourceLocator === before.sourceLocator
@@ -93,7 +93,7 @@ function define(id: "skills.find-and-install" | "skills.fork-read-only") {
     const o = importObservation(value); const skill = o && (id === "skills.find-and-install" ? o.skills.find(row => row.sourceLocator === o.state.sourceURL) : changedFork(o));
     if (!o || !skill) throw new Error("No actual saved skill copy for browser inspection");
     await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name, resultHref(o, skill.id, "studio"));
-  }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
+  }, { ...(id === "skills.find-and-install" ? { oracleVersion: "paperclip.chat-catalog.integrator.skill-import.v2" } : {}), authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
     async cleanup(ctx) { await closeVettedSkillSource(ctx); } });
 }
 export const integratorSkillImportCases = [define("skills.find-and-install"), define("skills.fork-read-only")];

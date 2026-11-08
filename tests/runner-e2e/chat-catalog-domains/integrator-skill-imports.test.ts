@@ -36,6 +36,9 @@ describe("owned vetted source and editable fork controls", () => {
     const replaced = structuredClone(o); replaced.skills[0]!.sourceLocator = "http://other.test/SKILL.md";
     expect(gradeIntegratorSkillImports(replaced).passed).toBe(false);
     expect(gradeIntegratorSkillImports({ ...o, reply: "Board approval is required to install accessibility-review." }).passed).toBe(false);
+    const linked = { ...o, reply: "Added the Accessibility Review skill. Open it: /skills/studio/upstream. It is not assigned to any agent yet.", links: ["/skills/studio/upstream"] };
+    expect(gradeIntegratorSkillImports(linked).passed).toBe(true);
+    expect(gradeIntegratorSkillImports({ ...linked, links: ["/skills/studio/another-skill"] }).passed).toBe(false);
     const wrongBytes = structuredClone(o); wrongBytes.skills[0]!.markdown = "A suggested skill.";
     expect(gradeIntegratorSkillImports(wrongBytes).passed).toBe(false);
   });
