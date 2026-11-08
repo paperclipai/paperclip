@@ -332,8 +332,18 @@ its own read and grep tools, but not arbitrary shell commands.
 
 `agent-filesystem-sandbox.ts` closes that gap for local native cells on Linux.
 The launcher selects the hidden paths: `tests/`, the trusted
-`.manual-private-trusted/` copy, the private evidence directory and
-`RUNNER_TEMP`. The E2E server entry starts each `paperclip-runnerd` through
+`.manual-private-trusted/` copy, the private evidence directory, `RUNNER_TEMP`,
+and the attempt root's `artifacts-private/`, `control/`,
+`selected-private-inputs/` and `playwright-transform-cache/` children.
+Playwright compiles the harness and graders (with source maps) into
+`PWTEST_CACHE_DIR`, which the launcher points at that hidden child. The
+launcher also removes Playwright's default cache in the shared temporary
+directory.
+
+Landlock hides a path by leaving its ancestors ungranted, and an ungranted
+directory accepts no new entries. Agents must keep creating files in `/tmp`, so
+a sandboxed attempt creates its root in `/var/tmp` instead of `/tmp`. The
+agent's workspace, home and Paperclip home stay readable inside that root. The E2E server entry starts each `paperclip-runnerd` through
 `agent-filesystem-sandbox.py`, which applies a Landlock domain and then execs
 runnerd with its original PID, argv, cwd and environment. Runnerd, the provider,
 its tools and every shell command inherit the domain. The domain also sets
@@ -341,7 +351,7 @@ its tools and every shell command inherit the domain. The domain also sets
 unrestricted because it loads its E2E entry from the harness.
 
 Before the product starts an agent, a probe runs a sandboxed shell. The probe
-must be denied the harness and every hidden path, and it must read the product
+must be denied the harness, every hidden path and Playwright's default cache, and it must read the product
 package and write a temporary file. The server log records the probe result and
 each wrapped runnerd launch. In CI a missing or ineffective sandbox stops the
 attempt. Landlock does not hide that a path exists (`stat` still works); it
@@ -351,7 +361,8 @@ Limits: Codex cells keep Codex's own bubblewrap sandbox, which cannot mount
 inside Landlock. Legacy adapters, installed-release launches and macOS run
 without this sandbox. A process that can reach the Docker daemon can still
 mount the checkout into a container, and `ps` shows the launcher's command
-line. Daytona cells run the agent in a remote sandbox that holds only the
+line. Case fixtures that create their own private directories directly in the
+shared temporary directory stay readable. Daytona cells run the agent in a remote sandbox that holds only the
 staged runnerd and provider pack, not the checkout.
 
 Fixture names that an agent can read (company, agent, environment, secret,
