@@ -2872,7 +2872,7 @@
       "chat-catalog-domains/internal-website-delivery.ts",
       "registered-artifact.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.website-revision.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,

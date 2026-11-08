@@ -53,9 +53,9 @@ function valid(scenario: string): InternalObservation {
       const original = { id: "original", issueId: "task", sha256: sha(prior), originatingRunId: "build", contentPath: "/api/attachments/original/content" };
       const file = { id: "new", issueId: "task", sha256: sha(body), originatingRunId: "run", contentPath: "/api/attachments/new/content" };
       Object.assign(o.state, { worker: { id: "morgan" }, priorRunId: "build", producedBody: prior, producedHash: sha(prior), bodyFact: "Research teams stay organized.", signupHref: "https://example.test/signup", marker: "ORCHID", originalAttachment: original, originalProductId: "old-product" });
-      const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
+      const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", title: attachmentId === "original" ? "website-v1.html" : "website-v2.html", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
       Object.assign(o, { attachments: [file, ...(revising ? [original] : [])], products: [product("new-product", "new", "run"), ...(revising ? [product("old-product", "original", "build")] : [])], downloaded: [{ id: "new", sha256: sha(body), body }, ...(revising ? [{ id: "original", sha256: sha(prior), body: prior }] : [])] });
-      o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1");
+      o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : []));
       o.reply = "The updated shorter version is available; the original remains available."; break;
     }
     case "tasks.assignment-conflict": {
@@ -363,7 +363,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },
   "documents-artifacts.find-artifact": o => { o.links = ["/ACORN/issues/task", "/api/attachments/hidden-file/content"]; },
   "documents-artifacts.produce-download": o => { o.links = ["/ACORN/issues/task", "/tmp/website.html"]; },
-  "documents-artifacts.revise-delivery": o => { o.reply = "Here is the old version again."; },
+  // Relabeling: the new bytes are filed under the original version's title, so the two versions are indistinguishable.
+  "documents-artifacts.revise-delivery": o => { (o as unknown as { products: { metadata: { attachmentId: string }; title: string }[] }).products.find(row => row.metadata.attachmentId === "new")!.title = "website-v1.html"; },
   "tasks.assignment-conflict": o => { o.tasks[0]!.assigneeAgentId = "riley"; },
   "activity.find-runs": o => { o.runs = o.runs.filter(run => run.id !== "interrupted"); },
   // The grader does not judge claim wording; the failure that matters is relaying another agent's feedback text.
