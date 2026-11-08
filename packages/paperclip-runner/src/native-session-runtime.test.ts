@@ -522,11 +522,17 @@ describe("executeNativeSession recovery", () => {
   });
 
   it.each([
-    { label: "continues a restart-lost Codex turn", allowed: true, error: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { label: "continues a restart-lost Codex turn", allowed: true, error: { code: "provider_turn_lost_on_restore", recoverable: true }, continues: true },
+    { label: "continues a follow-up run's lost turn after an earlier run's continuation spent the marker", allowed: true,
+      error: { code: "provider_turn_lost_on_restore", recoverable: true }, continues: true, marker: "turn-earlier-continuation" },
+    { label: "does not continue a lost continuation that spent the marker itself", allowed: true,
+      error: { code: "provider_turn_lost_on_restore", recoverable: true }, continues: false, marker: "turn-recovery" },
     { label: "requires the control plane restart claim", allowed: false, error: { code: "provider_turn_lost_on_restore", recoverable: true } },
     { label: "preserves real provider errors", allowed: true, error: { code: "model_not_found", recoverable: false } },
     { label: "does not reopen historical error-null failures", allowed: true, error: null },
-  ])("$label without replaying the task", async ({ label, allowed, error }) => {
+  ])("$label without replaying the task", async ({ allowed, error, continues = false, marker }: {
+    allowed: boolean; error: Record<string, unknown> | null; continues?: boolean; marker?: string;
+  }) => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "runner", driverKind: "codex_app_server", sessionId: "thread-recovery", identity,
       providerSessionId: "provider-recovery", cursor: "0", activeTurnId: "turn-recovery",
@@ -535,7 +541,11 @@ describe("executeNativeSession recovery", () => {
     const failure = error;
     const interrupted: PersistedNativeSession = {
       ...checkpoint, activeTurnId: null,
-      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+      terminalTurns: [
+        ...(marker === "turn-earlier-continuation" ? [{ turnId: marker, fingerprint: JSON.stringify({ terminalState: "completed", error: null, result }) }] : []),
+        { turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) },
+      ],
+      ...(marker ? { dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: marker } : {}),
     };
     const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-continuation" }));
     const session: NativeSession = {
@@ -570,7 +580,7 @@ describe("executeNativeSession recovery", () => {
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
       resumeInterruptedTurn: allowed,
     });
-    if (label !== "continues a restart-lost Codex turn") {
+    if (!continues) {
       await expect(execution).rejects.toMatchObject({ code: "native_provider_terminal_failed" });
       expect(startTurn).not.toHaveBeenCalled();
       return;
