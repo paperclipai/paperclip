@@ -1056,7 +1056,8 @@ impl AcpxCommandExecutor {
     }
 
     // A deploy that restarts the runner mid-turn resumes the SAME heartbeat
-    // run with a saved active turn. A same-build restart recovers that turn
+    // run with a saved active turn or open session. A same-build restart
+    // reopens an open session and recovers an active turn
     // through `restore_conversation_after_lost_turn`; an upgraded build must
     // take the same path instead of refusing the digest. Re-bind only when
     // that recovery's own preconditions hold, so its provider-lifetime fence
@@ -1064,8 +1065,13 @@ impl AcpxCommandExecutor {
     // closed. A different run's active turn stays strict.
     fn rebinds_interrupted_turn(&self, state: &AcpxDurableState) -> bool {
         state.descriptor.run_id == self.context.run_id
-            && matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
-            && state.active_turn_id.is_some()
+            && match state.lifecycle.as_str() {
+                "turn_starting" | "turn_active" => state.active_turn_id.is_some(),
+                // A same-build restart restores an open session between turns
+                // (also the state a lost-turn restore leaves behind).
+                "session_open" => state.active_turn_id.is_none(),
+                _ => false,
+            }
             && state.semantic_result.is_none()
             && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
     }
@@ -6215,6 +6221,40 @@ mod tests {
         // The fixture's provider cannot start, so recovery takes the ordinary
         // close path of a lost turn instead of failing the restore.
         assert!(restored.active_turn_id.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_session_of_the_same_run_rebinds_to_the_upgraded_runner_launch_profile() {
+        let (directory, config, state_path) =
+            interrupted_turn_after_runner_upgrade("upgrade-open-session");
+        let mut state: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        // A lost-turn restore leaves the session open with undelivered events.
+        state.lifecycle = "session_open".into();
+        state.active_turn_id = None;
+        state
+            .push(NormalizedProviderEvent {
+                event_type: "session.resumed".into(),
+                priority: EventPriority::P0,
+                payload: json!({}),
+            })
+            .unwrap();
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // The fixture's provider cannot start; the restore must get that far
+        // instead of refusing the saved state.
+        let error = recovered.restore().unwrap_err();
+        assert!(
+            error.to_string().contains("failed to start ACPX provider"),
+            "{error}"
+        );
+        assert_ne!(
+            error.classification(),
+            Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
