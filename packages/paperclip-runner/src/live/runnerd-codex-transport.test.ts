@@ -105,9 +105,12 @@ describe("controllerAcceptedTurnStartId", () => {
   });
 
   // Codex assigns its own provider turn id; only ACPX echoes the requested one.
-  it("accepts a Codex result whose provider turn id differs from the requested id", () => {
+  it("accepts a Codex result whose provider turn id differs from the requested id while that turn is the runner's live turn", () => {
     const codex = start({ result: { result: { providerTurnId: "019a-provider-turn", status: "accepted" } } });
-    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false })).toBe("019a-provider-turn");
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+    // A turn the restored runner reports lost (no live turn) is left to the restart continuation.
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: null })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "another" })).toBeNull();
     expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: true })).toBeNull();
   });
 
@@ -119,7 +122,7 @@ describe("controllerAcceptedTurnStartId", () => {
 
   it("names the runner's reconciled active turn for an indeterminate turn.start", () => {
     expect(controllerAcceptedTurnStartId([attach, indeterminate], {
-      requireRequestedIdentity: false, indeterminateActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+      requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
   });
 
   it.each([
@@ -128,7 +131,7 @@ describe("controllerAcceptedTurnStartId", () => {
     ["a later run attachment", [{ ...indeterminate, controllerSeq: 1 }, { ...attach, controllerSeq: 2 }], "019a-provider-turn", false],
     ["an ACPX turn other than the requested one", [attach, indeterminate], "turn_lab_other", true],
   ] as const)("fails closed on an indeterminate start with %s", (_label, commands, active, requireRequestedIdentity) => {
-    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, indeterminateActiveTurnId: active })).toBeNull();
+    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, runnerActiveTurnId: active })).toBeNull();
   });
 });
 

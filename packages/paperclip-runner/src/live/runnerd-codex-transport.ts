@@ -612,16 +612,18 @@ function retargetRunAttachPayload(
  * command, which must follow the latest run attachment so a prior run's turn
  * on a reused Runner is never claimed. Either:
  * - the command completed and its authenticated result accepted a provider
- *   turn (ACPX echoes the requested id, so it must match; Codex and OpenCode
- *   assign their own), or
+ *   turn. ACPX echoes the requested id, so it must match; Codex and OpenCode
+ *   assign their own, so the turn must instead be the runner's live active
+ *   turn (`runnerActiveTurnId`): a turn the restored runner reports lost is
+ *   left to the restart continuation; or
  * - the runner crashed after journaling the command, so it settled as
  *   `execution_indeterminate`, and its restored session reconciled that
- *   ambiguous start to a distinct active provider turn
- *   (`indeterminateActiveTurnId`, from the authenticated `session.snapshot`).
+ *   ambiguous start to the live active turn `runnerActiveTurnId`.
+ * `runnerActiveTurnId` comes from the runner's authenticated `session.snapshot`.
  */
 export function controllerAcceptedTurnStartId(commands: readonly unknown[], options: {
   requireRequestedIdentity?: boolean;
-  indeterminateActiveTurnId?: string | null;
+  runnerActiveTurnId?: string | null;
 } = {}): string | null {
   const ordered = commands.map(record).filter(command => typeof command.controllerSeq === "number")
     .sort((left, right) => (left.controllerSeq as number) - (right.controllerSeq as number));
@@ -631,18 +633,20 @@ export function controllerAcceptedTurnStartId(commands: readonly unknown[], opti
   if (latestAttachment && (latestAttachment.controllerSeq as number) > (latestStart.controllerSeq as number)) return null;
   const requestedTurnId = record(latestStart.payload).turnId;
   const requireRequested = options.requireRequestedIdentity ?? true;
-  const identityMatches = (providerTurnId: string) =>
-    !requireRequested || requestedTurnId === undefined || requestedTurnId === providerTurnId;
+  const active = typeof options.runnerActiveTurnId === "string" && options.runnerActiveTurnId.length > 0
+    ? options.runnerActiveTurnId : null;
+  const bound = (providerTurnId: string) => requireRequested
+    ? requestedTurnId === undefined || requestedTurnId === providerTurnId
+    : providerTurnId === active;
   if (latestStart.status === "failed") {
-    const active = options.indeterminateActiveTurnId;
     const indeterminate = record(record(latestStart.result).result).code === "execution_indeterminate";
-    return indeterminate && typeof active === "string" && active.length > 0 && identityMatches(active) ? active : null;
+    return indeterminate && active !== null && bound(active) ? active : null;
   }
   if (latestStart.status !== "completed") return null;
   const accepted = record(record(latestStart.result).result);
   const providerTurnId = accepted.providerTurnId;
   if (accepted.status !== "accepted" || typeof providerTurnId !== "string" || providerTurnId.length === 0) return null;
-  return identityMatches(providerTurnId) ? providerTurnId : null;
+  return bound(providerTurnId) ? providerTurnId : null;
 }
 
 function recoveredRunAttachment(state: {
@@ -3934,7 +3938,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   controllerAcceptedTurnId(): string | null {
     return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? [], {
       requireRequestedIdentity: this.options.provider === "acpx",
-      indeterminateActiveTurnId: this.#snapshotActiveProviderTurnId,
+      runnerActiveTurnId: this.#snapshotActiveProviderTurnId,
     });
   }
 
