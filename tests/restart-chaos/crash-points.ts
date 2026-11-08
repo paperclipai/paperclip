@@ -84,6 +84,7 @@ export function parseSuiteArgs(argv: readonly string[]): SuiteOptions {
     env: { type: "string" }, nth: { type: "string" }, seed: { type: "string" }, list: { type: "boolean" },
     "daytona-image": { type: "string" }, "daytona-cpu": { type: "string" }, "budget-cents": { type: "string" },
     "poll-ms": { type: "string" }, keep: { type: "boolean" }, lifecycle: { type: "string" },
+    "daytona-reuse-lease": { type: "boolean" },
   } });
   const env = values.env ?? "local";
   if (env !== "local" && env !== "daytona") throw new Error("--env must be local or daytona");
@@ -100,6 +101,7 @@ export function parseSuiteArgs(argv: readonly string[]): SuiteOptions {
     if (values[key] !== undefined) passthrough.push(`--${key}`, values[key]!);
   }
   if (values.keep) passthrough.push("--keep");
+  if (values["daytona-reuse-lease"]) passthrough.push("--daytona-reuse-lease");
   return { points: csv(values.points), kinds: csv(values.kinds), adapters, workloads, env, nth, seed, list: values.list === true, passthrough };
 }
 

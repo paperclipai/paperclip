@@ -168,6 +168,13 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
+    expect(() => parseCommand(["--env", "local", "--daytona-reuse-lease"])).toThrow(/only to --env daytona/);
+  });
+  it("keeps reusable Daytona leases only when asked", () => {
+    const reuse = parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-reuse-lease"]);
+    expect(reuse).toMatchObject({ mode: "wave", options: { daytonaReuseLease: true } });
+    const plain = parseCommand(["--env", "daytona", "--daytona-image", image]);
+    if (plain.mode === "wave") expect(plain.options.daytonaReuseLease).toBeUndefined();
   });
 });
 
