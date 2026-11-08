@@ -1330,6 +1330,38 @@ describe("ssh env-lab fixture", () => {
     expect(fourth.workspaceRemoteDir).toBe(first.workspaceRemoteDir);
     await fourth.restoreWorkspace();
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+  it("keeps ignored build outputs on a stable remote folder and still clears them on a per-run import", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, ".gitignore"), "build-cache/\n", "utf8");
+    await writeFile(path.join(localRepo, "README.md"), "primary\n", "utf8");
+    await git(localRepo, ["add", "."]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH stable build outputs test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir, remoteWorkspaceKey: "execution_workspace" as const };
+    const base = { spec, adapterKey: "test-adapter", workspaceLocalDir: localRepo, executionWorkspaceId: "11111111-2222-4333-8444-555555555555" };
+
+    const first = await prepareRemoteManagedRuntime({ ...base, runId: "run-one" });
+    await runSshCommand(spec, `mkdir -p '${first.workspaceRemoteDir}/build-cache' && echo obj > '${first.workspaceRemoteDir}/build-cache/a.o'`);
+    await first.restoreWorkspace();
+    // The copy-back may have brought the cache home; the next run must not depend on that.
+    await rm(path.join(localRepo, "build-cache"), { recursive: true, force: true });
+    const second = await prepareRemoteManagedRuntime({ ...base, runId: "run-two" });
+    expect((await runSshCommand(spec, `cat '${second.workspaceRemoteDir}/build-cache/a.o'`)).stdout.trim()).toBe("obj");
+    await second.restoreWorkspace();
+
+    // A per-run import (no keepIgnoredFiles) still cleans ignored files.
+    await rm(path.join(localRepo, "build-cache"), { recursive: true, force: true });
+    await prepareWorkspaceForSshExecution({ spec, localDir: localRepo, remoteDir: second.workspaceRemoteDir });
+    expect((await runSshCommand(spec, `ls -A '${second.workspaceRemoteDir}/build-cache' 2>/dev/null | wc -l`)).stdout.trim()).toBe("0");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   describe("remote folder cleanup", () => {
     async function makeLocalRepo(rootDir: string) {
       const localRepo = path.join(rootDir, "local-workspace");

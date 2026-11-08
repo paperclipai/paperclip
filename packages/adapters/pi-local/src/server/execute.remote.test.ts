@@ -888,4 +888,36 @@ describe("pi remote execution", () => {
     expect(result.summary).toBe("Hello 😀");
     expect(result.resultJson).toEqual({ stdout: rawStdout, stderr: "diagnostic stderr\n" });
   });
+
+  it("keeps Pi sessions in the stable remote folder so cleanup of the run folder does not delete them", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-stable-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const wsId = "11111111-2222-4333-8444-555555555555";
+    runSshCommand.mockImplementation((async () => ({ stdout: "ACQUIRED\n", stderr: "", exitCode: 0 })) as never);
+
+    const result = await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1", name: "Pi Builder", adapterType: "pi_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "pi", model: "openai/gpt-5.4-mini" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", executionWorkspaceId: wsId },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1", port: 2222, username: "fixture",
+          remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true, remoteWorkspaceKey: "execution_workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    // Not under runs/<runId>, which the post-restore cleanup removes.
+    expect(String(result.sessionId)).toContain(`/remote/workspace/.paperclip-runtime/workspaces/${wsId}/state/pi/sessions/`);
+    runSshCommand.mockImplementation((async () => ({ stdout: "", stderr: "", exitCode: 0 })) as never);
+  });
 });

@@ -46,6 +46,11 @@ export interface PreparedRemoteManagedRuntime {
   workspaceLocalDir: string;
   workspaceRemoteDir: string;
   runtimeRootDir: string;
+  /**
+   * Remote directory that outlives the run, beside the stable workspace folder (null for a per-run folder).
+   * `runtimeRootDir` is removed after every run; an adapter keeps conversations it must resume here.
+   */
+  persistentStateDir: string | null;
   assetDirs: Record<string, string>;
   /**
    * Remote directory of each additional (referenced) project that staged
@@ -276,6 +281,13 @@ async function sweepStaleStableWorkspaces(spec: SshRemoteExecutionSpec, baseDir:
   );
 }
 
+// A failed restore leaves remote edits that never reached the host; the next run must not reset them.
+async function stableWorkspaceHoldsUnsavedWork(spec: SshRemoteExecutionSpec, workspaceDir: string): Promise<boolean> {
+  const marker = shellQuote(path.posix.join(path.posix.dirname(workspaceDir), LAST_RESTORE_MARKER));
+  const result = await runSshCommand(spec, `if [ -f ${marker} ] && grep -q '^failed' ${marker}; then echo UNSAVED; fi; true`);
+  return result.stdout.trim().split("\n").pop() === "UNSAVED";
+}
+
 async function markStableWorkspaceRestore(spec: SshRemoteExecutionSpec, workspaceDir: string, ok: boolean): Promise<void> {
   const marker = shellQuote(path.posix.join(path.posix.dirname(workspaceDir), LAST_RESTORE_MARKER));
   await runSshCommand(spec, `printf '%s %s\n' ${ok ? "ok" : "failed"} "$(date +%s)" > ${marker}`);
@@ -328,7 +340,7 @@ export async function prepareRemoteManagedRuntime(input: {
     UUID_PATTERN.test(input.executionWorkspaceId)
       ? input.executionWorkspaceId
       : null;
-  const stableLock = stableId
+  let stableLock = stableId
     ? await acquireStableWorkspaceLock({
         spec: input.spec,
         baseDir: baseWorkspaceRemoteDir,
@@ -338,6 +350,17 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
       })
     : null;
+  if (stableId && stableLock?.acquired) {
+    const folder = path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "workspaces", stableId, "workspace");
+    if (await stableWorkspaceHoldsUnsavedWork(input.spec, folder).catch(() => true)) {
+      // Leave the folder as it is: it keeps the unsaved edits until the workspace closes (the sweep skips it).
+      await releaseStableWorkspaceLock(input.spec, stableLock.lockDir, input.runId).catch(() => undefined);
+      await input.onProgress?.(
+        `[paperclip] stable remote folder: last restore failed, keeping its unsaved edits at ${folder}; using per-run folder\n`,
+      );
+      stableLock = { lockDir: stableLock.lockDir, acquired: false };
+    }
+  }
   const cleanupRun = (keep: { dir: string } | null) =>
     cleanupRemoteRunFolder(input.spec, baseWorkspaceRemoteDir, input.runId, keep).catch((error) => {
       console.warn(`[paperclip] Failed to remove remote run folder for ${input.runId}. ${String(error)}`);
@@ -361,6 +384,9 @@ export async function prepareRemoteManagedRuntime(input: {
   const runtimeRootDir = stableWorkspaceDir
     ? path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "runs", input.runId, "runtime", input.adapterKey)
     : path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const persistentStateDir = stableWorkspaceDir
+    ? path.posix.join(path.posix.dirname(stableWorkspaceDir), "state", input.adapterKey)
+    : null;
   try {
     return await prepareLockedRemoteManagedRuntime();
   } catch (error) {
@@ -380,6 +406,8 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
         workspaceFileMode: input.workspaceFileMode,
         workspaceExclude: input.workspaceExclude,
+        // A stable folder is a cache between runs: source is reset to the host's state, build outputs stay.
+        keepIgnoredFiles: Boolean(stableWorkspaceDir),
       })
     : null;
   const projectRepositories = preparedWorkspace?.repositories ?? [];
@@ -485,6 +513,7 @@ export async function prepareRemoteManagedRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     runtimeRootDir,
+    persistentStateDir,
     assetDirs,
     additionalSourceDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {

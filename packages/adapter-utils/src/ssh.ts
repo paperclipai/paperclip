@@ -776,6 +776,8 @@ async function importGitWorkspaceToSsh(input: {
   localDir: string;
   remoteDir: string;
   snapshot: LocalGitWorkspaceSnapshot;
+  /** Keep git-ignored files (build outputs) on the remote; untracked files are still removed. */
+  keepIgnoredFiles?: boolean;
   onProgress?: RuntimeProgressSink;
 }): Promise<void> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
@@ -816,7 +818,7 @@ async function importGitWorkspaceToSsh(input: {
         ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
         : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
-      `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+      `git -C ${shellQuote(input.remoteDir)} clean -fd${input.keepIgnoredFiles ? "" : "x"} -e .paperclip-runtime >/dev/null`,
       // Drop the per-import ref on the remote side too so it can't accumulate.
       `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
     ].join("\n");
@@ -1132,6 +1134,7 @@ async function transportGitWorkspaceToSsh(input: {
   remoteDir: string;
   snapshot: LocalGitWorkspaceSnapshot;
   exclude?: string[];
+  keepIgnoredFiles?: boolean;
   onProgress?: RuntimeProgressSink;
   progressLabel: string;
 }): Promise<void> {
@@ -1140,6 +1143,7 @@ async function transportGitWorkspaceToSsh(input: {
     localDir: input.localDir,
     remoteDir: input.remoteDir,
     snapshot: input.snapshot,
+    keepIgnoredFiles: input.keepIgnoredFiles,
     onProgress: input.onProgress,
   });
   await syncDirectoryToSsh({
@@ -1658,6 +1662,8 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
+  /** Git workspaces only: keep git-ignored files on the remote. A plain (non-Git) folder is always cleared. */
+  keepIgnoredFiles?: boolean;
 }): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
@@ -1672,6 +1678,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       remoteDir,
       snapshot: gitSnapshot,
       exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : excludedPaths,
+      keepIgnoredFiles: input.keepIgnoredFiles,
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1687,6 +1694,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         localDir,
         remoteDir: path.posix.join(remoteDir, relative),
         snapshot,
+        keepIgnoredFiles: input.keepIgnoredFiles,
         onProgress: input.onProgress,
         progressLabel: relative,
       });

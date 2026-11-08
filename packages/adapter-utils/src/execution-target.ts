@@ -259,6 +259,8 @@ export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
+  /** Remote directory that outlives the run (SSH stable folder only); keep resumable conversations here. */
+  persistentStateDir?: string | null;
   assetDirs: Record<string, string>;
   /**
    * Remote directory of each additional (referenced) project that staged
@@ -1560,6 +1562,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       target,
       workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
+      persistentStateDir: prepared.persistentStateDir,
       assetDirs: prepared.assetDirs,
       additionalSourceDirs: prepared.additionalSourceDirs,
       // The SSH transport does not stage referenced projects (it is out of scope), so it never

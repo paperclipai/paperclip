@@ -600,6 +600,41 @@ describe.skipIf(process.getuid?.() === 0)("read-only trees on the SSH host", () 
     expect(await exists(old)).toBe(false);
   });
 
+  it("does not reset a stable folder whose last restore failed and runs in a per-run folder instead", async () => {
+    await setup();
+    const dir = path.join(base, ".paperclip-runtime", "workspaces", WS_ID);
+    await mkdir(path.join(dir, "workspace"), { recursive: true });
+    await writeFile(path.join(dir, "workspace", "unsaved.txt"), "remote edit");
+    await writeFile(path.join(dir, ".paperclip-last-restore"), "failed 1\n");
+    const progress: string[] = [];
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: spec("execution_workspace"), runId: "run-a", adapterKey: "claude", workspaceLocalDir: base,
+      executionWorkspaceId: WS_ID, onProgress: (line) => void progress.push(line),
+    });
+    expect(prepared.workspaceRemoteDir).toBe(path.join(base, ".paperclip-runtime", "runs", "run-a", "workspace"));
+    expect(progress.join("")).toContain("last restore failed");
+    await prepared.restoreWorkspace();
+    expect(await exists(path.join(dir, "workspace", "unsaved.txt"))).toBe(true);
+    expect(await exists(path.join(dir, "lock"))).toBe(false);
+  });
+
+  it("keeps a persistent state folder beside the stable workspace, and none for a per-run folder", async () => {
+    await setup();
+    const stableState = path.join(base, ".paperclip-runtime", "workspaces", WS_ID, "state", "claude");
+    const stable = await prepareRemoteManagedRuntime({
+      spec: spec("execution_workspace"), runId: "run-a", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(stable.persistentStateDir).toBe(stableState);
+    await mkdir(stableState, { recursive: true });
+    await writeFile(path.join(stableState, "session.jsonl"), "{}");
+    await stable.restoreWorkspace();
+    expect(await exists(path.join(stableState, "session.jsonl"))).toBe(true);
+    const perRun = await prepareRemoteManagedRuntime({
+      spec: spec(), runId: "run-b", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(perRun.persistentStateDir).toBeNull();
+  });
+
   it("never follows a symlink planted in the folder when making it writable", async () => {
     await setup();
     const outside = path.join(base, "outside");
