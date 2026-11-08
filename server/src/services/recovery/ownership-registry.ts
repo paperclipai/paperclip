@@ -39,6 +39,7 @@ import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObs
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -910,6 +911,19 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       return records;
     },
     settle: settleLegacyControllerLease,
+  },
+  {
+    // A preparation a shutdown interrupted, held before its no-provider-work
+    // proof could exist. Its owner is the recorded controller process: the
+    // shared prover must prove it gone (a missing stamp, or one from another
+    // host or PID space, is unprovable and stays held). The settle re-checks
+    // the durable proof and replays the preparation exactly once.
+    ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
+      heldInterruptedPreparationWhere(), row => {
+        const stamp = legacyControllerOwnerStamp(row);
+        return stamp ? { kind: "process", stamp } : { kind: "none" };
+      }),
+    settle: settleHeldInterruptedPreparation,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),
