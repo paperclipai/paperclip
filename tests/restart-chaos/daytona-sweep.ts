@@ -18,7 +18,7 @@ import { deleteDaytonaEnvironment } from "../runner-e2e/live-fixtures.js";
 import type { ChaosApi } from "./api.js";
 
 export interface DaytonaSandboxRow { id: string; name?: string; state?: string; snapshot?: string; labels?: Record<string, string> }
-export interface LeaseRow { id: string; status: string; providerLeaseId?: string | null; heartbeatRunId?: string | null; issueId?: string | null }
+export interface LeaseRow { id: string; status: string; leasePolicy?: string | null; providerLeaseId?: string | null; heartbeatRunId?: string | null; issueId?: string | null }
 
 /** Lease statuses where Paperclip still owns a provider resource. */
 const HELD_LEASE_STATUSES = new Set(["active", "retained", "pending_cleanup"]);
@@ -43,11 +43,17 @@ export interface DaytonaSweepResult {
   orphanSandboxes: SandboxLeak[];
   /** Leases still `active` or `pending_cleanup` with every task at rest. */
   heldLeases: LeaseLeak[];
-  /** Leases kept on purpose (`retained`), reported but not a leak. */
+  /** Leases kept on purpose (`retained`, or a released reusable lease whose sandbox is stopped for reuse), reported but not a leak. */
   retainedLeases: LeaseLeak[];
   /** Archived sandboxes behind a released lease: expected and reported; Daytona deletes them. */
   archivedSandboxes: string[];
   error: string | null;
+}
+
+/** A stopped sandbox behind a released reuse_by_environment lease: a later run on the same workspace resumes it. */
+function keptForReuse(lease: LeaseRow, sandbox: DaytonaSandboxRow): boolean {
+  return lease.status === "released" && lease.leasePolicy === "reuse_by_environment"
+    && String(sandbox.state ?? "").toLowerCase() === "stopped";
 }
 
 /** Pure reconciliation of one listing. */
@@ -56,10 +62,12 @@ export function reconcileSandboxes(sandboxes: readonly DaytonaSandboxRow[], leas
   const live = sandboxes.filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()));
   const byProviderId = new Map(leases.filter(lease => lease.providerLeaseId).map(lease => [lease.providerLeaseId!, lease]));
   const orphanSandboxes: SandboxLeak[] = [];
+  const keptReusable: LeaseRow[] = [];
   const archivedSandboxes: string[] = [];
   for (const sandbox of live) {
     const lease = byProviderId.get(sandbox.id) ?? (sandbox.name ? byProviderId.get(sandbox.name) : undefined);
     if (lease && HELD_LEASE_STATUSES.has(lease.status)) continue;
+    if (lease && keptForReuse(lease, sandbox)) { keptReusable.push(lease); continue; }
     if (lease && ARCHIVED_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase())) { archivedSandboxes.push(sandbox.id); continue; }
     orphanSandboxes.push({ sandboxId: sandbox.id, state: sandbox.state ?? null, runId: sandbox.labels?.["paperclip-run-id"] ?? null,
       leaseId: lease?.id ?? null, leaseStatus: lease?.status ?? null,
@@ -71,7 +79,7 @@ export function reconcileSandboxes(sandboxes: readonly DaytonaSandboxRow[], leas
     liveSandboxes: live.map(sandbox => sandbox.id),
     orphanSandboxes,
     heldLeases: leases.filter(lease => lease.status === "active" || lease.status === "pending_cleanup").map(toLeak),
-    retainedLeases: leases.filter(lease => lease.status === "retained").map(toLeak),
+    retainedLeases: [...leases.filter(lease => lease.status === "retained"), ...keptReusable].map(toLeak),
     archivedSandboxes,
   };
 }
