@@ -367,6 +367,8 @@ export async function writeManagedCodexMcpConfig(input: { codexHome: string; api
   return { configPath, warnings };
 }
 
+const PAPERCLIP_OWNED_CODEX_PROFILE_PATTERN = /^paperclip-(?:run|observability)-/;
+
 export async function prepareManagedCodexMcpProfile(input: { codexHome: string; apiBaseUrl: string; gateways: ManagedCodexMcpGateway[]; extraArgs: string[]; runId: string }): Promise<{ profileName: string; args: string[]; configPath: string; warnings: string[]; cleanup: () => Promise<void> }> {
   const args: string[] = [];
   let selectedProfile: string | null = null;
@@ -377,6 +379,9 @@ export async function prepareManagedCodexMcpProfile(input: { codexHome: string; 
       if (selectedProfile !== null) throw new Error("Codex profile may only be selected once");
       const name = inline?.[1] ?? input.extraArgs[++index];
       if (!name || !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Invalid Codex profile name");
+      if (PAPERCLIP_OWNED_CODEX_PROFILE_PATTERN.test(name)) {
+        throw new Error("Codex profile names that start with paperclip-run- or paperclip-observability- are reserved for Paperclip runs");
+      }
       selectedProfile = name;
     } else args.push(arg);
   }

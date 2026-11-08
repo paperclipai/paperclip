@@ -291,6 +291,27 @@ describe("run-scoped native MCP profiles", () => {
     },
   );
 
+  it.each(["--profile", "--profile=", "-p"])(
+    "refuses to copy another run's Paperclip-owned profile selected with %s", async (flag) => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-owned-profile-"));
+      try {
+        const victim = await prepareManagedCodexMcpProfile({
+          codexHome: home, apiBaseUrl: "https://paperclip.test", runId: "run-victim", extraArgs: [],
+          gateways: [{ name: "direct", endpointPath: "/mcp", bearerToken: "only-run-victim" }],
+        });
+        await fs.writeFile(path.join(home, "paperclip-observability-run-victim.config.toml"), 'Authorization = "Bearer only-run-victim"\n');
+        for (const owned of [victim.profileName, "paperclip-observability-run-victim"]) {
+          const extraArgs = flag.endsWith("=") ? [`${flag}${owned}`] : [flag, owned];
+          const before = (await fs.readdir(home)).sort();
+          await expect(prepareManagedCodexMcpProfile({ codexHome: home, apiBaseUrl: "https://paperclip.test",
+            gateways: [], runId: "run-attacker", extraArgs })).rejects.toThrow(/reserved for Paperclip runs/);
+          expect((await fs.readdir(home)).sort()).toEqual(before);
+        }
+        await victim.cleanup();
+      } finally { await fs.rm(home, { recursive: true, force: true }); }
+    },
+  );
+
   it("exposes the run profile's gateway to the supported Codex executable only when the run selects that profile", async () => {
     // The Codex release that the runner pins (packages/paperclip-runner).
     const runnerManifest = fileURLToPath(new URL("../../../../paperclip-runner/package.json", import.meta.url));
