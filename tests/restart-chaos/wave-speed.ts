@@ -120,7 +120,8 @@ function firstActivityByGroup(runs: readonly BaselineRun[]): Map<string, number[
 }
 
 export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly BaselineRun[], faults: readonly BaselineFault[],
-  runBudgetExceeded: number, errors: string[] = [], outage: { adjusted: number; removedMs: number } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
+  runBudgetExceeded: number, errors: string[] = [],
+  outage: { adjusted: number; removedMs: number; windows?: readonly OutageWindow[] } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
   const rows: SpeedRow[] = [];
   const activity = firstActivityByGroup(runs);
   for (const row of baselineRows(runs)) {
@@ -131,7 +132,9 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
       rows.push({ adapter: row.adapter, metric, start: row.warmth, measured, budget, breaches: breachesOf(measured, budget) });
     }
   }
-  const samples = recoverySamples(runs, faults);
+  const clock = outageFreeClock(outage.windows ?? []);
+  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample
+    : { ...sample, latencyMs: Math.max(0, clock(sample.readyAt + sample.latencyMs) - clock(sample.readyAt)) });
   for (const adapter of [...new Set(samples.map(sample => sample.adapter))].sort()) {
     const measured = distribution(samples.flatMap(sample => sample.adapter === adapter && sample.latencyMs !== null ? [sample.latencyMs] : []));
     const budget = budgetFor(environment, adapter, "restart_recovery", "restart");
@@ -178,7 +181,7 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const timing: Array<{ id: string; createdAt: number; finishedAt: number | null }> = [];
   const errors: string[] = [];
   const windows = outageWindows(faults);
-  const outage = { adjusted: 0, removedMs: 0 };
+  const outage = { adjusted: 0, removedMs: 0, windows };
   for (const task of tasks) {
     const seen = new Map<string, RunSample>();
     for (const sample of task.samples) for (const run of sample.runs ?? []) if (run.createdAt) seen.set(run.id, run);

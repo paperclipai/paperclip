@@ -92,8 +92,8 @@ describe("ttft baseline statistics", () => {
     ]);
     const silent = run("r2", "restart", []);
     expect(recoverySamples([recovered, silent], [{ kind: "K1", readyAt, runIds: ["r1", "r2", "missing"] }])).toEqual([
-      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", latencyMs: 3_250 },
-      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", latencyMs: null },
+      { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", readyAt, latencyMs: 3_250 },
+      { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", readyAt, latencyMs: null },
     ]);
   });
 });

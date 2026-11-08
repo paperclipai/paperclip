@@ -47,6 +47,7 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
+export const CHILD_WAKE_GRACE_MS = 60_000;
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
 export const RETRY_BUDGET_MS = 15 * 60_000;
 
@@ -139,6 +140,7 @@ export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
+  private childrenSettledAt: number | null = null;
   private stallSince: number | null = null;
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
@@ -457,6 +459,15 @@ export class TaskObserver {
     // C1: a follow-up posted after rest must be served before the task counts as resting.
     if (this.definition.followUp && !this.record.followUp) return;
     const faultSinceRetry = this.record.retry !== null && (this.record.lastFaultAt ?? 0) > this.record.retry.at;
+    if (status !== "done" && this.definition.collect.childDocuments && this.record.issueId) {
+      const children = await this.collectChildren(this.record.issueId).catch(() => null);
+      const pending = !children || children.some(child => !["done", "cancelled"].includes(child.status ?? ""));
+      this.childrenSettledAt = pending ? null : (this.childrenSettledAt ?? now);
+      if (pending || now - this.childrenSettledAt! < CHILD_WAKE_GRACE_MS) {
+        this.restCandidateSince = null;
+        return;
+      }
+    }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);

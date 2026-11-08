@@ -46,6 +46,15 @@ describe("wave speed grade", () => {
     expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ adapter: "claude", breaches: ["p50", "p95"] });
   });
 
+  it("removes a later outage from restart recovery", () => {
+    const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
+      events: [{ eventType: "turn.started", createdAt: new Date(10_000 + 302_000).toISOString() }] };
+    const windows = outageWindows([{ startedAt: 12_000, readyAt: 312_000 } as FaultReceipt]);
+    const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0, [],
+      { adjusted: 0, removedMs: 0, windows });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
+  });
+
   it("has no budget for remote environments or unbudgeted adapters", () => {
     expect(budgetFor("daytona", "codex", "ttft", "cold")).toBeNull();
     expect(budgetFor("local", "unknown", "ttft", "cold")).toBeNull();
