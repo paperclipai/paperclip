@@ -221,12 +221,10 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
         }
         const resolvedAuthPath = await realpath(authPath);
         const source = await stat(resolvedAuthPath);
-        // Windows has no Unix uid. Only the host-prepared managed account home
-        // may supply a regular credential file there; ambient homes and links
-        // retain the owner check instead of inheriting this exception.
-        const managedWindowsSource = process.platform === "win32"
-          && Boolean(context.managedAiCredentialHome?.trim()) && !linked;
-        if (!source.isFile() || (!managedWindowsSource && source.uid !== process.getuid?.())) throw new Error("Invalid Codex source credential owner.");
+        // Windows uses the existing descriptor-based credential reader. Unix
+        // keeps its owner check; unbound credential links were refused above.
+        if (!source.isFile() || (process.platform !== "win32" && source.uid !== process.getuid?.())) throw new Error("Invalid Codex source credential owner.");
+        if (process.platform === "win32" && !linked) await readLocalAiCredentialFile(resolvedAuthPath);
         if (linked) sourceAuthJson = await readLocalAiCredentialFile(resolvedAuthPath);
         credentialRefreshAuthPath = resolvedAuthPath;
       } catch (error) {

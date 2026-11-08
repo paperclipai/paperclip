@@ -1,5 +1,6 @@
 import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
+import { setWindowsRuntimeTreeReadOnly } from "./windows-runtime-permissions.js";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -133,7 +134,7 @@ async function protectStagedTree(root: string): Promise<void> {
     // Seal directories only after their descendants. Traversal needs execute
     // permission, but provider processes must not be able to rewrite assigned
     // skills after the immutable snapshot has been published.
-    await rootHandle.chmod(0o555);
+    if (process.platform !== "win32") await rootHandle.chmod(0o555);
   } finally {
     await rootHandle.close();
   }
@@ -153,7 +154,7 @@ async function unprotectMaterializedTree(root: string): Promise<void> {
     }
     // Restore directory mutation before descending so every child can be
     // unlinked. Handles plus O_NOFOLLOW keep cleanup inside the sealed tree.
-    await rootHandle.chmod(0o700);
+    if (process.platform !== "win32") await rootHandle.chmod(0o700);
     for (const entry of await readdir(root, { withFileTypes: true })) {
       const child = join(root, entry.name);
       if (entry.isDirectory()) {
@@ -191,6 +192,10 @@ async function removeMaterializedTree(
     },
   );
   if (!exists) return;
+  if (process.platform === "win32") {
+    await assertSafeTree(skillsHome);
+    await setWindowsRuntimeTreeReadOnly(skillsHome, false);
+  }
   await unprotectMaterializedTree(skillsHome);
   await removeTree(skillsHome);
 }
@@ -273,6 +278,7 @@ export async function materializeNativeRuntimeSkills(
       });
       await assertSafeTree(target);
       await protectStagedTree(target);
+      if (process.platform === "win32") await setWindowsRuntimeTreeReadOnly(target, true);
     }
 
     // The caller supplies a new isolated home for each provider launch. Never
@@ -289,6 +295,12 @@ export async function materializeNativeRuntimeSkills(
 }
 
 async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
+  const entry = process.platform === "win32"
+    ? await lstat(sourceAuth).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }) : undefined;
+  if (entry !== undefined && (!entry || !entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1)) return null;
   const handle = await open(
     sourceAuth,
     constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
@@ -300,6 +312,9 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) return null;
+    if (entry && (entry.dev !== stat.dev || entry.ino !== stat.ino || stat.nlink !== 1)) {
+      throw new Error("source Codex auth file changed during open");
+    }
     if (stat.size > 1024 * 1024) {
       throw new Error("source Codex auth file exceeds the 1 MiB limit");
     }
