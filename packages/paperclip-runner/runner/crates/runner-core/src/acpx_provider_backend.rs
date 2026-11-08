@@ -6175,6 +6175,7 @@ mod tests {
     /// The same heartbeat run resumes after a deploy restarted its runner
     /// mid-turn (K14 upgrade mid-run). The old build saved an interrupted turn
     /// under its launch profile digest.
+    #[cfg(unix)]
     fn interrupted_turn_after_runner_upgrade(
         label: &str,
     ) -> (PathBuf, DurableRunnerConfig, PathBuf) {
