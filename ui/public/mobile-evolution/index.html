@@ -16,6 +16,8 @@
         --paper-deep: #0c1a2c;
         --device-ink: #07111f;
         --ink: #eaf2ff;
+        --ink-text-soft: rgba(7, 17, 31, 0.76);
+        --screen-ink: #07111f;
         --muted: #9aacc2;
         --line: #263a54;
         --orange: #ff8068;
@@ -665,6 +667,10 @@
         line-height: 1.04;
       }
 
+      .chapter:nth-child(-n + 2) .chapter-era {
+        color: var(--screen-ink);
+      }
+
       .chapter p {
         max-width: 31rem;
         margin-bottom: 0;
@@ -767,6 +773,11 @@
         text-transform: uppercase;
       }
 
+      .tone-orange .art-caption,
+      .tone-yellow .art-caption {
+        color: var(--screen-ink);
+      }
+
       .brick-phone {
         position: relative;
         display: grid;
@@ -863,6 +874,7 @@
         border: 0.42rem solid var(--device-ink);
         border-radius: 1rem;
         background: var(--white);
+        color: var(--screen-ink);
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
         padding: 1.1rem 0.65rem;
       }
@@ -916,6 +928,7 @@
         height: 10rem;
         overflow: hidden;
         background: var(--white);
+        color: var(--screen-ink);
         padding: 0.5rem;
       }
 
@@ -948,6 +961,7 @@
         border: 1px solid var(--ink-border-light);
         border-radius: 0.8rem;
         background: var(--white);
+        color: var(--screen-ink);
         box-shadow: 0 0.5rem 1rem var(--ink-shadow-light);
         font-size: 1.2rem;
       }
