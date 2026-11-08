@@ -320,6 +320,7 @@ import {
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
+import { deferUndeliveredCommentsOfStaleRun } from "./heartbeat/stale-comment-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -3796,6 +3797,10 @@ export function heartbeatService(
         // The queued continuation became obsolete before adapter dispatch.
         // Use cancellation settlement so wakeup, issue ownership, agent state,
         // and notifications agree; do not retry work for the previous owner.
+        // A user's message it carried that no run read is saved first, so the
+        // release reopens the finished task for it (work-intent outbox).
+        await deferUndeliveredCommentsOfStaleRun(db, run).catch(err =>
+          logger.warn({ err, runId: run.id }, "could not save the messages of a stale continuation"));
         await cancelRunInternal(run.id, outerErr.code, {
           errorCode: outerErr.code,
           eventMessage: "stale execution continuation cancelled before dispatch",

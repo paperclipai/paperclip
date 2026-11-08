@@ -1,6 +1,8 @@
-import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@paperclipai/db";
-import { notifyDeferredExecutionEligibility, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { agentWakeupRequests, issueComments, issues, type Db } from "@paperclipai/db";
+import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
+import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
+import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 
@@ -37,6 +39,8 @@ export const TEMPORARY_REFUSAL_TRIGGERS: Readonly<Record<string, WorkIntentHoldT
   "agent.not_invokable": "pause_lifted",
   "issue_tree_hold_active": "tree_hold_released",
   "heartbeat.scheduling_suppressed": "scheduling_resumed",
+  /** A user message whose wake was lost (the reconciler saved it). */
+  wake_lost: "reconciler_backstop",
 };
 
 export function temporaryRefusalTrigger(reason: string): WorkIntentHoldTrigger | null {
@@ -77,4 +81,55 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
     sql`${agentWakeupRequests.updatedAt} > now() - ${DEFERRED_RETRY_BACKOFF}`,
     input.issueId ? sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}` : undefined,
   ));
+}
+
+const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+
+/**
+ * Record the missing outbox entry for user messages whose wake was lost or
+ * ended without delivering them: one deferred receipt of the user that
+ * carries the undelivered comments. Only the task's assigned agent, and only
+ * live user comments that no completed run received, are saved. Statuses the
+ * caller allows (for example `done`, which the release drain reopens for a
+ * user's message) gate it. Normal admission and the release drain deliver
+ * the receipt once. Returns the receipt id, or null when nothing is owed.
+ */
+export async function saveUndeliveredUserComments(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; commentIds: string[];
+  allowedStatuses: readonly string[]; requestedByActorId?: string | null;
+  source?: string | null; triggerDetail?: string | null;
+  /** Names why the receipt waits and what promotes it. */
+  executionWait?: Record<string, unknown>;
+}): Promise<string | null> {
+  if (input.commentIds.length === 0) return null;
+  return db.transaction(async tx => {
+    const [issue] = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+      conversationAgentId: issues.conversationAgentId }).from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    // A reassigned or cancelled task ends the intent; a conversation keeps
+    // its own inbound authorization path.
+    if (!issue || issue.assigneeAgentId !== input.agentId || issue.conversationAgentId ||
+        !input.allowedStatuses.includes(issue.status)) return null;
+    const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId }).from(issueComments).where(and(
+      eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, input.commentIds), isNotNull(issueComments.authorUserId), isNull(issueComments.deletedAt)));
+    const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: input.companyId,
+      issueId: input.issueId, agentId: input.agentId, commentIds: live.map(row => row.id) });
+    const remaining = input.commentIds.filter(id => live.some(row => row.id === id) && !delivered.has(id));
+    if (remaining.length === 0) return null;
+    const latest = remaining.at(-1)!;
+    await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
+    await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
+    const [saved] = await tx.insert(agentWakeupRequests).values({
+      companyId: input.companyId, agentId: input.agentId, source: input.source ?? "automation",
+      triggerDetail: input.triggerDetail ?? "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: input.requestedByActorId ?? live.find(row => row.id === latest)?.authorUserId ?? null,
+      payload: withQueuedCommentIdsInWakePayload({ issueId: input.issueId, mutation: "comment", commentId: latest,
+        ...(input.executionWait ? { executionWait: input.executionWait } : {}),
+        [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
+          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest } }, remaining),
+    }).returning({ id: agentWakeupRequests.id });
+    return saved?.id ?? null;
+  });
 }
