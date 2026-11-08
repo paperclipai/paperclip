@@ -626,9 +626,10 @@
     "sourceFiles": [
       "chat-catalog-domains/runtime-support.ts",
       "chat-catalog-domains/runtime-agents.ts",
+      "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.hire-denied.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

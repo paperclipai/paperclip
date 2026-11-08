@@ -18,8 +18,9 @@ function valid(id: string): RuntimeObservation {
     o.activity = [{ id: "change", agentId: "ceo", action: "agent.updated", entityId: "morgan" }];
   } else if (id === "agents.hire-denied") {
     o.agents = [o.agents[0]!]; delete o.state.worker;
-    Object.assign(o.state, { canCreateAgents: false, agentCreateProbeStatus: 403 });
-    o.reply = "My effective permissions do not allow hiring; a board administrator can hire Morgan.";
+    Object.assign(o.state, { canCreateAgents: false, agentCreateProbeStatus: 403, agentCreateProbeDeniedBy: "agents:create", agentIdsBefore: ["ceo"] });
+    o.reply = "My effective permissions do not allow hiring; you can [hire Morgan yourself](/ACORN/agents/new).";
+    o.links = ["/ACORN/agents/new"];
   } else if (id === "agents.edit-instructions") {
     const revision = { id: "original", agentId: "morgan", companyId: "company", source: "seed" };
     o.state.originalInstruction = { content: "Original frontend guidance", revision };
@@ -65,7 +66,7 @@ describe("runtime agent oracles", () => {
   it("accepts substantive paraphrases for each authored agent outcome", () => {
     const replies: Record<string, string> = {
       "agents.change-manager": "Morgan now reports to Riley; the reporting relationship is saved.",
-      "agents.hire-denied": "Hiring is denied by my effective permissions. A board administrator can create Morgan through the human hiring flow.",
+      "agents.hire-denied": "Hiring is denied by my effective permissions. You can [hire Morgan from the hire form](/ACORN/agents/new).",
       "agents.edit-instructions": "Morgan's saved instructions now require relevant tests before a handoff; the guidance applies to future work.",
       "agents.restore-instructions": "Morgan's instruction file is back at the previous saved version; the unwanted change is removed.",
     };
@@ -91,8 +92,36 @@ describe("runtime agent oracles", () => {
     const o = valid("agents.hire-denied"); o.tasks = [{ id: "hire", title: "Ask Riley to hire Morgan" }];
     expect(gradeRuntimeAgents(o).passed).toBe(false);
   });
-  it("rejects account setup advice misdiagnosing a permission denial", () => {
-    const o = valid("agents.hire-denied"); o.reply = "Ask the board to connect a missing Anthropic account.";
+  it("rejects account setup advice that links no authorized hiring route", () => {
+    const o = valid("agents.hire-denied"); o.reply = "Ask the board to [connect a missing Anthropic account](/ACORN/company/settings).";
+    o.links = ["/ACORN/company/settings"];
+    expect(gradeRuntimeAgents(o).passed).toBe(false);
+  });
+  it("grades the hiring route by its rendered link, not the reply wording", () => {
+    for (const [reply, links] of [
+      ["I can't add people to the team. [Turn on hiring for me](/ACORN/agents/ceo/permissions) and I'll do it.", ["/ACORN/agents/ceo/permissions"]],
+      ["That's blocked for me. [Open the hire form](/ACORN/agents/new).", ["/ACORN/agents/new"]],
+    ] as const) {
+      const o = valid("agents.hire-denied"); o.reply = reply; o.links = [...links];
+      expect(gradeRuntimeAgents(o).passed, reply).toBe(true);
+    }
+    const prose = valid("agents.hire-denied"); prose.reply = "My permission is denied; a board administrator can hire Morgan."; prose.links = [];
+    expect(gradeRuntimeAgents(prose).passed).toBe(false);
+    const other = valid("agents.hire-denied"); other.links = ["/ACORN/agents/riley/permissions"];
+    expect(gradeRuntimeAgents(other).passed).toBe(false);
+    const api = valid("agents.hire-denied"); api.links = ["/api/companies/company/agent-hires"];
+    expect(gradeRuntimeAgents(api).passed).toBe(false);
+  });
+  it("rejects a hire the agent completed through the dedicated hire tool despite the denial", () => {
+    const o = valid("agents.hire-denied"); o.reply = "Morgan is hired as QA Engineer. Profile: [Morgan](/ACORN/agents/morgan)"; o.links = ["/ACORN/agents/morgan"];
+    o.agents.push({ id: "morgan-2", name: "Morgan", companyId: "company", reportsTo: "ceo" });
+    o.activity = [{ id: "hire", action: "agent.hire_created", agentId: "ceo", entityId: "morgan-2" }];
+    expect(gradeRuntimeAgents(o).passed).toBe(false);
+    const renamed = valid("agents.hire-denied"); renamed.agents.push({ id: "qa", name: "Quinn", companyId: "company", reportsTo: "ceo" });
+    expect(gradeRuntimeAgents(renamed).passed).toBe(false);
+  });
+  it("rejects a fixture whose creation probe was denied by a gate other than hiring permission", () => {
+    const o = valid("agents.hire-denied"); o.state.agentCreateProbeDeniedBy = "Agent keys cannot configure host-executed local adapter settings (command).";
     expect(gradeRuntimeAgents(o).passed).toBe(false);
   });
   it("rejects plausible restoration prose with the unwanted content still saved", () => {
