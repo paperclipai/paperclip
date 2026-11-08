@@ -168,6 +168,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/tasks\/[^/]+$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/deliveries\/[^/]+$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/email\/send$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/slack\/tasks\/[^/]+\/tools$/ },
 
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },

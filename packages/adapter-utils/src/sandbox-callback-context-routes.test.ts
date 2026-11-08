@@ -8,6 +8,7 @@ const contextRequests = [
   { method: "GET", path: "/api/assets/screenshot-1/content" },
   { method: "GET", path: "/api/companies/company-1/skills/skill-1" },
   { method: "GET", path: "/api/companies/company-1/skills/skill-1/files", query: "?path=references%2Fworkflow.md" },
+  { method: "POST", path: "/api/companies/company-1/slack/tasks/task-1/tools" },
   { method: "GET", path: "/api/issues/task-1/diagnostics/wakes" },
   { method: "POST", path: "/api/issues/task-1/monitor/check-now" },
 ];
@@ -20,6 +21,9 @@ const deniedRequests = [
   { method: "PATCH", path: "/api/companies/company-1/skills/skill-1/files" },
   { method: "DELETE", path: "/api/companies/company-1/skills/skill-1/files" },
   { method: "GET", path: "/api/companies/company-1/skills/skill-1/files/extra" },
+  { method: "GET", path: "/api/companies/company-1/slack/tasks/task-1/tools" },
+  { method: "POST", path: "/api/companies/company-1/slack/tasks/task-1/tools/extra" },
+  { method: "POST", path: "/api/companies/company-1/slack/connections" },
   { method: "POST", path: "/api/issues/task-1/diagnostics/wakes" },
   { method: "GET", path: "/api/issues/task-1/diagnostics/wakes/extra" },
   { method: "GET", path: "/api/issues/task-1/monitor/check-now" },
