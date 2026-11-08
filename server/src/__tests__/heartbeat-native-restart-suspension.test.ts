@@ -547,4 +547,29 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       await coordinator.stop();
     }
   }, 180_000);
+
+  it("keeps an idle issue's grace deadline while only the settle watch is due", async () => {
+    // Rule I7: an in-progress issue with no next action becomes checkable when
+    // its grace window ends. While a live result-lease owner keeps the worker
+    // on light re-checks, that deadline must still trigger a full pass.
+    const f = await seedAcceptedResult("ACCEPTED-WATCH-WITH-GRACE", (runner) => `${runner}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt,
+      hostHash: currentProcessSpaceHash() });
+    // Grace (5 min) ends about 50 s from now: after the worker turns watch-only.
+    await f.db.insert(issues).values({ id: randomUUID(), companyId: fixture.current.companyId, title: "Idle in progress",
+      status: "in_progress", assigneeAgentId: fixture.current.agentId, updatedAt: new Date(Date.now() - 5 * 60_000 + 50_000) });
+    const reports: OwnershipReport[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
+    const worker = registerOwnershipReconciliationWork(f.db, coordinator, () => true, { onReport: report => reports.push(report) });
+    try {
+      await worker.ready;
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(2);
+      expect(reports[1]!.settleWatch).toBeGreaterThan(0);
+      // The third pass is due by the grace deadline, so it is a full pass.
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(3);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 180_000);
 });

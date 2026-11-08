@@ -840,6 +840,9 @@ export function registerOwnershipReconciliationWork(
   // True when the only reason a pass is due is the settle watch: the next run
   // re-checks the settling kinds alone, not every kind and invariant.
   let watchOnly = false;
+  // Rule I7's grace deadline from the last full pass; the light re-check keeps
+  // it and runs a full pass once it is due.
+  let graceDueAt: number | null = null;
   const unsubscribers: Array<() => void> = [];
   const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
     retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
@@ -861,14 +864,15 @@ export function registerOwnershipReconciliationWork(
         nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
         return;
       }
-      if (watchOnly && !pendingWake) {
+      if (watchOnly && !pendingWake && (graceDueAt === null || Date.now() < graceDueAt)) {
         // Bounded and cheap: indexed listings of the settling kinds only.
         lastPassAt = Date.now();
         const recheck = await recheckSettlingKinds(db);
         // A settle changes the set; the next full pass reports it.
         if (recheck.settled.length > 0) { watchOnly = false; nextRunAt = Date.now(); return; }
-        nextRunAt = recheck.watched > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
         if (recheck.watched === 0) watchOnly = false;
+        const watchDue = recheck.watched > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+        nextRunAt = watchDue === null ? graceDueAt : graceDueAt === null ? watchDue : Math.min(watchDue, graceDueAt);
         return;
       }
       lastPassAt = Date.now();
@@ -884,6 +888,7 @@ export function registerOwnershipReconciliationWork(
         ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;
+      graceDueAt = graceDue;
       nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
       if (fingerprint !== lastFingerprint) {
         // One line per change of the in-progress set: the verdict counts per
