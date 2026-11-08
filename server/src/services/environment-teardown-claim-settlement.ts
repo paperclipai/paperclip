@@ -5,6 +5,7 @@ import {
   pendingCleanupAttemptsSql,
   pendingCleanupMetadataObjectSql,
 } from "./environment-cleanup-state.js";
+import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 
@@ -49,6 +50,9 @@ export async function settleEnvironmentTeardownClaim(db: Db, record: InProgressR
     const expiresAtMs = metadata?.pendingCleanupLeaseExpiresAtMs;
     if (typeof expiresAtMs !== "number" || expiresAtMs <= nowMs) return { settled: false, reason: "fence_already_ended" };
     const returnAttempt = controller?.countedAttempt === true;
+    // Wake the cleanup worker before the write it announces, so it reads the
+    // ended fence after commit instead of sleeping until the old deadline.
+    if (record.companyId) await notifyEnvironmentCleanup(tx, { companyId: record.companyId, leaseId: record.recordId });
     const updated = await tx.update(environmentLeases)
       .set({ metadata: sql`jsonb_set(jsonb_set(jsonb_set(${pendingCleanupMetadataObjectSql()},
         '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint)),

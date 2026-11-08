@@ -1,13 +1,19 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, environmentLeases, environments } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { currentControllerProcessStamp, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-controller.js";
 import { environmentService } from "../services/environments.js";
-import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
+import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import {
+  createOwnershipReportState,
+  recheckSettlingKinds,
+  runOwnershipReconciliationPass,
+} from "../services/recovery/ownership-invariant-report.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -127,6 +133,28 @@ suite("environment lease owner stamps (login/probe lease, teardown claim)", () =
       expect(settled.pendingCleanupLeaseExpiresAtMs).toBeLessThanOrEqual(Date.now());
       expect(settled).toMatchObject({ pendingCleanupInFlight: true, pendingCleanupAttemptId: attemptId,
         pendingCleanupRetryAttempts: 2, pendingCleanupController: { countedAttempt: false } });
+    });
+
+    it("wakes the cleanup worker for the ended fence, and a malformed flag beside it never blocks the settle", async () => {
+      const attemptId = randomUUID();
+      const malformed = await claim({ pendingCleanupInFlight: "maybe", pendingCleanupAttemptId: randomUUID(),
+        pendingCleanupRetryAfterMs: Date.now() + 20 * 60_000 });
+      const leaseId = await claim({ pendingCleanupAttemptId: attemptId, pendingCleanupLeaseExpiresAtMs: Date.now() + 14 * 60_000,
+        pendingCleanupController: { bootId: "earlier-boot", pid: await exitedPid(), hostHash: currentProcessSpaceHash(),
+          processStartedAt: null, attemptId } });
+      expect(await nextEnvironmentCleanupAt(db)).toBeGreaterThan(Date.now() + 10 * 60_000);
+      let wakes = 0;
+      const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.environmentCleanup, () => { wakes += 1; });
+      try {
+        const result = await recheckSettlingKinds(db);
+        expect(result.settled.map(record => record.recordId)).toEqual([leaseId]);
+        await vi.waitFor(() => expect(wakes).toBeGreaterThan(0));
+      } finally {
+        unsubscribe();
+      }
+      // The worker's next run follows the ended fence, not the old deadline.
+      expect(await nextEnvironmentCleanupAt(db)).toBeLessThan(Date.now() + 10 * 60_000);
+      expect((await lease(malformed)).metadata?.pendingCleanupInFlight).toBe("maybe");
     });
 
     it("never ends the fence of a live claimant, another PID space, or a claim held as a fence", async () => {
