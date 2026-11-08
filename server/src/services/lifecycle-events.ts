@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { registerPostCommitHook, type Db, type heartbeatRuns, type issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import type { DbTransaction, HeartbeatRunStatusTransition } from "./heartbeat-run-lifecycle.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
@@ -45,8 +46,7 @@ export function logRunTransitionAfterCommit(
   run: typeof heartbeatRuns.$inferSelect,
   transition: HeartbeatRunStatusTransition,
 ) {
-  const issueId = run.nativeIssueId
-    ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+  const issueId = boundRunIssueId(run);
   logAfterCommit(tx, {
     eventType: "run_transition",
     eventId: transition.eventId,

@@ -47,8 +47,8 @@ describePostgres("lifecycle events of committed status changes", () => {
       .filter((event) => event?.eventType === eventType);
   }
 
-  async function createRun(status: string) {
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, invocationSource: "on_demand" }).returning();
+  async function createRun(status: string, binding: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, invocationSource: "on_demand", ...binding }).returning();
     return run!.id;
   }
 
@@ -91,6 +91,18 @@ describePostgres("lifecycle events of committed status changes", () => {
     expect(loggedBeforeCommit).toBe(0);
     expect(lifecycleEvents("run_transition")).toEqual([
       expect.objectContaining({ runId, fromStatus: "queued", toStatus: "running", terminal: false }),
+    ]);
+  });
+
+  it("names the task of a legacy run from its issue id before its context", async () => {
+    const legacyIssueId = await createIssue("in_progress");
+    const contextIssueId = await createIssue("in_progress");
+    const runId = await createRun("queued", { issueId: legacyIssueId, contextSnapshot: { issueId: contextIssueId } });
+
+    await transitionHeartbeatRunStatus(db, runId, { toStatus: "running" });
+
+    expect(lifecycleEvents("run_transition")).toEqual([
+      expect.objectContaining({ runId, issueId: legacyIssueId, toStatus: "running" }),
     ]);
   });
 
