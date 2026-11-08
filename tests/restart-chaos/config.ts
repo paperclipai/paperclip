@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -96,13 +97,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "crash-point": { type: "string" },
       "crash-point-hold-ms": { type: "string" },
       "upgrade-from": { type: "string" },
+      "workspace-repo": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -138,7 +140,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
     // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1")),
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1")),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
@@ -169,6 +171,16 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (env !== "local") throw new Error("--upgrade-from runs only with --env local");
     if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
     options.upgradeFrom = path.resolve(upgradeFrom);
+  }
+  const workspaceRepo = values["workspace-repo"];
+  if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
+    throw new Error("R1 (code change in a cloned repository) and --workspace-repo <git repository> go together: pass both or neither");
+  }
+  if (workspaceRepo !== undefined) {
+    if (env !== "local") throw new Error("--workspace-repo runs only with --env local");
+    if (options.workloads.some(id => id === "B1" || id === "B5")) throw new Error("--workspace-repo replaces the chaoscli fixture that B1 and B5 need");
+    options.workspaceRepo = path.resolve(workspaceRepo);
+    options.workspaceCommit = execFileSync("git", ["-C", options.workspaceRepo, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   }
   // H1 pauses the whole company when its budget hard stop is crossed: no other task can share its
   // wave, its tasks run one at a time, and the hard stop must be on.

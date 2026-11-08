@@ -46,6 +46,19 @@ describe("scheduler determinism", () => {
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });
 
+  it("pairs R1 with --workspace-repo, locally, without the chaoscli fixture workloads", () => {
+    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "."]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.workspaceRepo).toBe(process.cwd());
+    expect(command.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(() => parseCommand(["--workloads", "R1"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "A1", "--workspace-repo", "x"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "R1,B1", "--workspace-repo", "x"])).toThrow(/chaoscli fixture/);
+    const defaults = parseCommand([]);
+    if (defaults.mode !== "wave") throw new Error("expected a wave");
+    expect(defaults.options.workloads).not.toContain("R1");
+  });
+
   it("pairs K14 (upgrade mid-run) with --upgrade-from, locally, with no hold and outside storm defaults", () => {
     const command = parseCommand(["--faults", "K14", "--upgrade-from", "../older-checkout", "--seed", "5"]);
     if (command.mode !== "wave") throw new Error("expected a wave");

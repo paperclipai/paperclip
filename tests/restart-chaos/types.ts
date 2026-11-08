@@ -7,7 +7,7 @@ export type FaultKind = (typeof FAULT_KINDS)[number];
 export type TaskFaultKind = FaultKind | "K13";
 
 /** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -72,6 +72,8 @@ export interface WaveOptions {
    * and instance directory. Later K14 faults restart the current build, like K2.
    */
   upgradeFrom?: string;
+  workspaceRepo?: string;
+  workspaceCommit?: string;
 }
 
 export interface StormFault {

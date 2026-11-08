@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -758,7 +758,11 @@ export class TaskObserver {
         files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
       }
       // Agent-editable code: run it sandboxed, away from the operator's home directory.
-      for (const command of definition.collect.commands) commands[command.name] = await runOracleCommand(command.argv, workspacePath, { protectedRoots: this.protectedRoots });
+      for (const command of definition.collect.commands) {
+        const argv = typeof command.argv === "function" ? command.argv(this.plan.nonce) : command.argv;
+        commands[command.name] = await runOracleCommand(argv, workspacePath, { protectedRoots: this.protectedRoots,
+          readableFiles: argv[0] === process.execPath ? [process.execPath] : [] });
+      }
     }
     return {
       issueStatus: issue?.status ?? this.record.finalStatus,

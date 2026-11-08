@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { BENCH_EXPECTED, parseBenchRecord, workloadDefinitions } from "./workloads.js";
+import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-06T12:00:00Z");
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
@@ -227,6 +227,27 @@ describe("T-oracles", () => {
       commands: { unittest: { exitCode: 0, stdout: "", stderr: "OK" }, slugify: { exitCode: 0, stdout: "hello-chaos-world\n", stderr: "" } } };
     expect(workloadDefinitions.B1.grade("abcd1234", base).verdict).toBe("pass");
     expect(workloadDefinitions.B1.grade("abcd1234", { ...base, commands: { ...base.commands, unittest: { exitCode: 1, stdout: "", stderr: "FAILED" } } }).verdict).toBe("fail");
+  });
+
+  it("grades R1 by running the agent's node test and a hidden case against its module", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
+      files: { "packages/shared/src/chaos/slug-abcd1234.ts": "export function chaosSlug() {}",
+        "packages/shared/src/chaos/slug-abcd1234.test.ts": [
+          "import test from \"node:test\";", "import assert from \"node:assert/strict\";", "import { chaosSlug } from \"./slug-abcd1234.ts\";",
+          "test(\"slug\", () => {", "  assert.equal(chaosSlug(\"Hello Chaos World\"), \"hello-chaos-world\");",
+          "  assert.equal(chaosSlug(\"a  b\"), \"a-b\");", "  assert.equal(chaosSlug(\"--x--\"), \"x\");", "});"].join("\n") },
+      commands: { node_test: { exitCode: 0, stdout: "", stderr: "" },
+        slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"r1-paperclip-chaos-2026\"]\n", stderr: "" } } };
+    expect(workloadDefinitions.R1.grade("abcd1234", base).verdict).toBe("pass");
+    expect(workloadDefinitions.R1.grade("abcd1234", { ...base, commands: { ...base.commands,
+      slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"-r1-paperclip-chaos-2026-\"]\n", stderr: "" } } }).verdict).toBe("fail");
+    expect(r1TestChecksSlug("import test from \"node:test\";")).toBe(false);
+    expect(r1TestChecksSlug("import test from \"node:test\"; import assert from \"node:assert\"; assert.ok(chaosSlug(\"x\"));")).toBe(false);
+    expect(r1TestChecksSlug([ "import test from \"node:test\";", "import assert from \"node:assert/strict\";",
+      "for (const [input, want] of [[\"Hello Chaos World\", \"hello-chaos-world\"], [\"a b\", \"a-b\"], [\"-x-\", \"x\"]])",
+      "  test(input, () => assert.equal(chaosSlug(input), want));"].join("\n"))).toBe(true);
+    const argv = workloadDefinitions.R1.collect.commands.find(command => command.name === "node_test")!.argv;
+    expect(typeof argv === "function" ? argv("abcd1234") : argv).toEqual([process.execPath, "--test", "packages/shared/src/chaos/slug-abcd1234.test.ts"]);
   });
 
   it("grades B5 against the deterministic bench result", () => {

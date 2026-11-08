@@ -22,6 +22,20 @@ export interface ChaosLab {
 }
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
+export function cloneWorkspaceRepository(source: string, directory: string, commit?: string): string {
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  execFileSync("git", ["clone", "--quiet", "--depth", "1", "--no-hardlinks", `file://${source}`, directory], { stdio: "pipe" });
+  if (commit && git("rev-parse", "HEAD") !== commit) {
+    try {
+      git("fetch", "--quiet", "--depth", "1", "origin", commit);
+      git("checkout", "--quiet", "--detach", commit);
+    } catch (error) {
+      throw new Error(`--workspace-repo ${source} no longer has commit ${commit} that this wave used`, { cause: error });
+    }
+  }
+  return directory;
+}
+
 export async function createFixtureRepository(directory: string, benchSeconds?: number): Promise<string> {
   await mkdir(directory, { recursive: true });
   for (const [relative, file] of Object.entries(fixtureRepositoryFiles(benchSeconds))) {
@@ -116,6 +130,8 @@ export async function seedChaosLab(input: {
   budgetCents: number;
   masks?: readonly string[];
   fixtureRoot: string;
+  workspaceRepo?: string;
+  workspaceCommit?: string;
   waveId: string;
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
@@ -130,7 +146,9 @@ export async function seedChaosLab(input: {
     await installFixtureDaytonaProvider(runnerApiView(input.api), { environment: { id: "daytona" } } as MatrixExecution);
     timeline.add("seed_daytona_plugin", {});
   }
-  const fixtureRepositoryPath = await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
+  const fixtureRepositoryPath = input.workspaceRepo
+    ? cloneWorkspaceRepository(input.workspaceRepo, path.join(input.fixtureRoot, "workspace-repo"), input.workspaceCommit)
+    : await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
   const company = await api.post<{ id: string }>("/api/companies", {
     name: "Chaos Lab",
     description: `Restart chaos harness wave ${input.waveId}`,
