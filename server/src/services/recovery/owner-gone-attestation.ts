@@ -93,10 +93,11 @@ export async function recordVersionAttestations(db: Db, kindId: string,
 /** Board attestation for exactly the record recovery asked about. Recovery then settles it on its normal path. */
 export async function confirmOwnerGone(input: {
   db: Db; kinds: readonly OwnableKind[]; companyId: string; issueId: string;
-  actionId: string; recordId: string; stopEvidence: string; actorId: string;
+  actionId: string; recordId: string; stopEvidence: string; actorId: string; recordVersion?: string;
 }) {
   const confirmation = confirmOwnerGoneSchema.parse({
     actionId: input.actionId, recordId: input.recordId, stopEvidence: input.stopEvidence,
+    ...(input.recordVersion === undefined ? {} : { recordVersion: input.recordVersion }),
   });
   const committed = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
@@ -104,12 +105,16 @@ export async function confirmOwnerGone(input: {
       eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
       eq(issueRecoveryActions.id, input.actionId))).for("update");
     const kind = input.kinds.find(candidate => candidate.id === action?.evidence?.kind);
+    // A request names the record version the board was shown; the confirmation must be for that
+    // same version, so a form opened before the request was refreshed cannot approve a newer one.
+    const requestedVersion = typeof action?.evidence?.recordUpdatedAt === "string" ? action.evidence.recordUpdatedAt : null;
+    if (requestedVersion && confirmation.recordVersion !== requestedVersion) throw changed();
     if (!action || !kind?.attestOwnerGone || action.cause !== OWNER_UNPROVABLE_CAUSE || action.ownerType !== "board"
       || !["active", "escalated"].includes(action.status) || action.evidence?.recordId !== input.recordId) throw changed();
     const now = new Date();
     const proof = { actorId: input.actorId, stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
     const attestation = await kind.attestOwnerGone(tx, { companyId: input.companyId, recordId: input.recordId,
-      requestedVersion: typeof action.evidence?.recordUpdatedAt === "string" ? action.evidence.recordUpdatedAt : null }, proof);
+      requestedVersion }, proof);
     if (attestation === "changed") throw changed();
     // Released by another path: close the request; nothing remains to attest.
     const released = attestation === "released";

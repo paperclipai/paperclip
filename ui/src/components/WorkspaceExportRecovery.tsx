@@ -87,7 +87,9 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
       <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}`}
         action={action} issueId={issueId} companyId={companyId} className={className}
         confirmStop={stopEvidence => issuesApi.confirmOwnerGone(issueId, {
-          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence })}
+          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence,
+          // The version shown here: a request refreshed since must be confirmed again.
+          ...(typeof action.evidence.recordUpdatedAt === "string" ? { recordVersion: action.evidence.recordUpdatedAt } : {}) })}
         copy={{ waiting: `${resource.what} was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. It stays reserved until then.`,
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",

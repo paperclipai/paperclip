@@ -56,7 +56,7 @@ describe("board confirmation that an unrecorded owner stopped", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))).toHaveLength(1);
 
     await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action!.id, recordId: leaseId,
-      stopEvidence, actorId: "board-user" })).resolves.toEqual({ recordId: leaseId, status: "queued" });
+      stopEvidence, actorId: "board-user", recordVersion: action!.evidence.recordUpdatedAt as string })).resolves.toEqual({ recordId: leaseId, status: "queued" });
     expect(await actionFor(issueId)).toMatchObject({ status: "resolved", evidence: { ownerGone: { actorId: "board-user", stopEvidence } } });
     const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
       eq(activityLog.action, "issue.ownership_owner_gone_confirmed")));
@@ -73,12 +73,12 @@ describe("board confirmation that an unrecorded owner stopped", () => {
     await pass();
     const action = (await actionFor(issueId))!;
     await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: randomUUID(),
-      stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
+      stopEvidence, actorId: "board-user", recordVersion: action.evidence.recordUpdatedAt as string })).rejects.toMatchObject({ status: 409 });
     // A holder stamped since the board was asked owns the lease now: its stamp decides.
     await db.update(environmentLeases).set({ metadata: { [ENVIRONMENT_LEASE_CONTROLLER_KEY]: {
       bootId: "new-boot", pid: 7, hostHash: "another-host", processStartedAt: null } } }).where(eq(environmentLeases.id, leaseId));
     await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: leaseId,
-      stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
+      stopEvidence, actorId: "board-user", recordVersion: action.evidence.recordUpdatedAt as string })).rejects.toMatchObject({ status: 409 });
     expect(await actionFor(issueId)).toMatchObject({ status: "active" });
     expect((await lease(leaseId)).status).toBe("active");
   });
@@ -97,7 +97,7 @@ describe("board confirmation that an unrecorded owner stopped", () => {
     const action = (await actionFor(issueId))!;
     await db.update(environmentLeases).set({ status: "released" }).where(eq(environmentLeases.id, leaseId));
     await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: leaseId,
-      stopEvidence, actorId: "board-user" })).resolves.toEqual({ recordId: leaseId, status: "released" });
+      stopEvidence, actorId: "board-user", recordVersion: action.evidence.recordUpdatedAt as string })).resolves.toEqual({ recordId: leaseId, status: "released" });
     const resolved = await actionFor(issueId);
     expect(resolved).toMatchObject({ status: "resolved", evidence: { ownerGoneNotNeeded: { actorId: "board-user" } } });
     expect(resolved?.evidence).not.toHaveProperty("ownerGone");
@@ -150,7 +150,7 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       });
       try {
         await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: runId,
-          stopEvidence, actorId: "board-user" })).resolves.toEqual({ recordId: runId, status: "queued" });
+          stopEvidence, actorId: "board-user", recordVersion: action.evidence.recordUpdatedAt as string })).resolves.toEqual({ recordId: runId, status: "queued" });
         for (let wait = 0; wait < 50 && !wakes.some(hint => hint.includes(runId)); wait++) await new Promise(resolve => setTimeout(resolve, 20));
       } finally { stopWatching(); }
       expect(wakes.some(hint => hint.includes(runId))).toBe(true);
@@ -173,7 +173,7 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       await legacyPass();
       const action = (await actionFor(issueId))!;
       await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: action.id, recordId: runId,
-        stopEvidence, actorId: "board-user" });
+        stopEvidence, actorId: "board-user", recordVersion: action.evidence.recordUpdatedAt as string });
       // The record moved on (for example, a new controller took it over) after the confirmation.
       await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
       expect(await legacyPass()).toMatchObject({ settled: 0, reasons: { missing_identity: 1 } });
@@ -185,7 +185,7 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       // Confirming the current version applies, even with the older confirmation still on record.
       const fresh = requests.find(request => request.status === "active")!;
       await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: fresh.id, recordId: runId,
-        stopEvidence, actorId: "board-user" });
+        stopEvidence, actorId: "board-user", recordVersion: fresh.evidence.recordUpdatedAt as string });
       expect(await legacyPass()).toMatchObject({ settled: 1, reasons: { operator_attested: 1 } });
       expect(await leaseLive(runId)).toBe(false);
     });
@@ -196,14 +196,19 @@ describe("board confirmation that an unrecorded owner stopped", () => {
       const asked = (await actionFor(issueId))!;
       await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
       await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: asked.id, recordId: runId,
-        stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
+        stopEvidence, actorId: "board-user", recordVersion: asked.evidence.recordUpdatedAt as string })).rejects.toMatchObject({ status: 409 });
       // The next pass refreshes the open request to the current version; that confirmation applies.
       await legacyPass();
       const refreshed = (await actionFor(issueId))!;
       expect(refreshed.id).toBe(asked.id);
       expect(refreshed.evidence.recordUpdatedAt).not.toBe(asked.evidence.recordUpdatedAt);
+      // A form opened before the refresh still names the old version: it cannot approve the new one.
+      await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: refreshed.id, recordId: runId,
+        stopEvidence, actorId: "board-user", recordVersion: asked.evidence.recordUpdatedAt as string })).rejects.toMatchObject({ status: 409 });
+      await expect(confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: refreshed.id, recordId: runId,
+        stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
       await confirmOwnerGone({ db, kinds: OWNABLE_KINDS, companyId, issueId, actionId: refreshed.id, recordId: runId,
-        stopEvidence, actorId: "board-user" });
+        stopEvidence, actorId: "board-user", recordVersion: refreshed.evidence.recordUpdatedAt as string });
       expect(await legacyPass()).toMatchObject({ settled: 1, reasons: { operator_attested: 1 } });
     });
 
