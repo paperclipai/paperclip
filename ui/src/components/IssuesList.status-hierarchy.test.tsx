@@ -358,6 +358,38 @@ describe("IssuesList", () => {
     } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 
+  it.each([
+    { streamlined: true, projectId: undefined },
+    { streamlined: false, projectId: undefined },
+    { streamlined: true, projectId: "project-1" },
+    { streamlined: false, projectId: "project-1" },
+  ])("excludes completed ancestors from active context ($streamlined, $projectId)", async ({ streamlined, projectId }) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const ancestor = createIssue({ id: "done-ancestor", title: "Completed ancestor", status: "done", projectId });
+    const match = createIssue({ id: "active-match", title: "Active matching task", parentId: ancestor.id, projectId });
+    const child = createIssue({ id: "active-context", title: "Active automated context", parentId: match.id, createdByAgentId: "agent-1", projectId });
+    localStorage.setItem("paperclip:test-active-ancestors:company-1", JSON.stringify({ statuses: ["todo"] }));
+    mockIssuesApi.list.mockImplementation(async (_company, filters) => {
+      if (filters.ids?.includes(ancestor.id)) return [ancestor];
+      if (filters.parentIds?.includes(match.id)) return [child];
+      return [];
+    });
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[match]} agents={[]} projects={[]} projectId={projectId} viewStateKey="paperclip:test-active-ancestors"
+      initialStatuses={["todo"]} enableAgentCreatedVisibilityFilter onUpdateIssue={() => undefined}
+    />, container);
+    try {
+      await waitForAssertion(() => {
+        const titles = [...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.firstElementChild?.textContent);
+        expect(titles).toContain(match.title);
+        expect(titles).toContain(child.title);
+        expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({ ids: [ancestor.id] }), expect.anything());
+        expect(queryClient.getQueriesData<Issue[]>({ queryKey: ["issues"] }).some(([, data]) => Array.isArray(data) && data.some(issue => issue.id === ancestor.id))).toBe(true);
+        expect(titles).not.toContain(ancestor.title);
+      });
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it.each([true, false])("keeps Done context beyond excluded intermediate tasks (streamlined=%s)", async (streamlined) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
     const parent = createIssue({ id: "done-root", title: "Completed human parent", status: "done", createdByUserId: "person" });
