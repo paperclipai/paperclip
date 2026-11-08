@@ -142,8 +142,18 @@ function lastMatchBefore(text: string, pattern: RegExp, before: number) {
   return last;
 }
 
+/** Whether a declared type excludes status, following a type alias declared in the same file. */
+function typeIsStatusFree(text: string, type: string, seen = new Set<string>()): boolean {
+  const trimmed = type.trim();
+  if (STATUS_FREE_TYPE.test(trimmed)) return !trimmed.includes("\"status\"");
+  const alias = /^[A-Za-z_$][\w$]*(?![\w$<.[])/.exec(trimmed)?.[0];
+  if (!alias || seen.has(alias)) return false;
+  const definition = new RegExp(`\\btype\\s+${alias}\\s*=\\s*([^;]+);`).exec(text)?.[1];
+  return definition !== undefined && typeIsStatusFree(text, definition, seen.add(alias));
+}
+
 function declaredStatusWrite(text: string, name: string, usedAt: number): string | null {
-  const isStatusFree = (type: string) => STATUS_FREE_TYPE.test(type.trim()) && !type.includes("\"status\"");
+  const isStatusFree = (type: string) => typeIsStatusFree(text, type);
   const variable = lastMatchBefore(text, new RegExp(`(?:const|let)\\s+${name}\\b\\s*(?::\\s*([^=]+?))?\\s*=\\s*`, "g"), usedAt);
   const parameter = lastMatchBefore(text, new RegExp(`[(,]\\s*${name}\\??\\s*:\\s*`, "g"), usedAt);
   const parameterIsStatusFree = parameter
@@ -206,6 +216,13 @@ describe("the status write check", () => {
     expect(write("{ ...patch }", "const patch = { status: \"running\" };")).toEqual([expect.stringMatching(/sets status/)]);
     expect(write("{ ...patch }", "const patch: HeartbeatRunStatusPatch = makePatch();")).toEqual([]);
     expect(write("{ ...patch }", "const patch = makePatch();")).toEqual([expect.stringMatching(/does not exclude status/)]);
+  });
+
+  it("follows a parameter type alias to its Pick definition", () => {
+    const parameter = (pick: string) => `type RunUpdate = Partial<Pick<Insert,\n  ${pick}>>;\nasync function f(db: Db, runUpdate: RunUpdate = {}) {`;
+    expect(write("{ ...runUpdate, updatedAt: now }", parameter("\"processPid\" | \"processStartedAt\""))).toEqual([]);
+    expect(write("{ ...runUpdate, updatedAt: now }", parameter("\"processPid\" | \"status\""))).toEqual([expect.stringMatching(/does not exclude status/)]);
+    expect(write("{ ...runUpdate }", "async function f(db: Db, runUpdate: RunUpdate = {}) {")).toEqual([expect.stringMatching(/does not exclude status/)]);
   });
 
   it("rejects a direct or shorthand status member", () => {
