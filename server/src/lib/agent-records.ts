@@ -163,7 +163,7 @@ export function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) 
 }
 
 export function changedPendingApprovalConfigFields(
-  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleRequiredPluginIds">,
+  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleRequiredPluginIds" | "harnessVerifiedDigest" | "harnessVerifiedAt">,
   data: Partial<typeof agents.$inferInsert>,
 ) {
   return CONFIG_REVISION_FIELDS.filter((field) =>
