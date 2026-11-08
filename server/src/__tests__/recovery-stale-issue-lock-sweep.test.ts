@@ -163,6 +163,26 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(after.updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
   });
 
+  it("does not promote a saved message when the guarded clear keeps the lock", async () => {
+    const { companyId, agentId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lock taken back", status: "in_progress",
+      priority: "high", assigneeAgentId: agentId, checkoutRunId: failedRunId, executionRunId: failedRunId });
+    const savedAt = new Date();
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      status: "deferred_issue_execution", requestedByActorType: "user", updatedAt: savedAt,
+      payload: { issueId, executionWait: { reason: "company.inactive", trigger: "pause_lifted" } } }).returning();
+    // A resume returns the run to running after the sweep read it.
+    const beforeStaleLockClear = vi.fn(async () => {
+      await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, failedRunId));
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), beforeStaleLockClear }).sweepStaleIssueLocks({ companyId, issueId });
+    expect(result.issueIds).toEqual([]);
+    const [after] = await db.select({ updatedAt: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, saved.id));
+    expect(after.updatedAt.getTime()).toBe(savedAt.getTime());
+  });
+
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {
     const { companyId, agentId, failedRunId } = await seed();
     const issueId = randomUUID();
