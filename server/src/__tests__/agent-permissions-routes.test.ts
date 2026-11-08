@@ -2171,6 +2171,29 @@ describe("agent permission routes", () => {
     expect(res.body.permissions.canCreateSkills).toBe(false);
   });
 
+  it("does not let a CEO denied hiring restore it for itself or grant it to another agent", async () => {
+    const ceo = { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: { canCreateAgents: false, canCreateSkills: true } };
+    const worker = { ...baseAgent, permissions: { canCreateAgents: false, canCreateSkills: true } };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === ceo.id ? ceo : id === worker.id ? worker : null));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId: ceo.id, companyId, runId: "run-1", source: "agent_jwt" });
+
+    for (const target of [ceo.id, worker.id]) {
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${target}/permissions`)
+        .send({ canCreateAgents: true, canAssignTasks: true }));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("Missing permission: agents:create.");
+    }
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
   it("rejects CEO permission updates outside the caller company scope", async () => {
     const app = await createApp({
       type: "agent",

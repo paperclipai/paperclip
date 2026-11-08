@@ -187,4 +187,22 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       metadata: { source: "hire-form" },
     });
   });
+
+  it("keeps a CEO's hiring authority as saved when another permission changes", async () => {
+    const companyId = await seedCompany();
+    const service = agentService(db);
+    const insertCeo = (permissions: Record<string, unknown>) => db.insert(agents).values({
+      companyId, name: `CEO ${randomUUID()}`, role: "ceo", permissions,
+      adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+    }).returning().then(rows => rows[0]!);
+    const stored = (id: string) => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0]!.permissions as Record<string, unknown>);
+
+    const legacy = await insertCeo({});
+    await service.updatePermissions(legacy.id, { canCreateSkills: false } as never);
+    expect(await stored(legacy.id)).toMatchObject({ canCreateAgents: true, canCreateSkills: false });
+
+    const denied = await insertCeo({ canCreateAgents: false, canCreateSkills: true });
+    await service.updatePermissions(denied.id, { canCreateSkills: false } as never);
+    expect(await stored(denied.id)).toMatchObject({ canCreateAgents: false, canCreateSkills: false });
+  });
 });
