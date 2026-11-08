@@ -126,7 +126,7 @@ What the data does and does not show:
 
 ### Phase 2 data: harsh local waves (2026-11-07)
 
-Storms, crash loops and outages up to 588 s, all unmasked, are in [`2026-11-07-phase2-reconciler-data.md`](2026-11-07-phase2-reconciler-data.md). Existing paths settle most run-lifecycle records within 45 s of `ready`. This is not a bound: one environment lease took 119 s, and some native claims stayed proven gone during a load spike. One leak was found: a claimed wake whose run ended without settling it. The unowned pending-cleanup queue and unstamped accounting rows are the main I1 findings. Daytona was not run in this pass (see the data doc).
+Storms, crash loops and outages up to 588 s, all unmasked, are in [`2026-11-07-phase2-reconciler-data.md`](2026-11-07-phase2-reconciler-data.md). Existing paths settle most run-lifecycle records within 45 s of `ready`. This is not a bound: one environment lease took 119 s, and some native claims stayed proven gone during a load spike. One leak was found: a claimed wake whose run ended without settling it. The unowned pending-cleanup queue and unstamped accounting rows are the main I1 findings. One Daytona wave found the same claimed-wake leak, remote settling of 76–107 s, and a Retry blocked by the company-wide accounting gate (Phase 3).
 
 ## Relationship to the zero-downtime upgrade work
 
