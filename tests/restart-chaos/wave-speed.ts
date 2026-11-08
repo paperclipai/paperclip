@@ -100,14 +100,14 @@ export function withoutOutage(run: BaselineRun, windows: readonly OutageWindow[]
   return { run: { ...run, events }, adjusted, removedMs, anchored: true };
 }
 
-export function faultBeforeFirstActivity(run: BaselineRun, faultStarts: readonly number[]): boolean {
+export function faultBeforeFirstActivity(run: BaselineRun, faultStarts: readonly number[], runCreatedAt: number): boolean {
   const traceStart = traceStartMs(run);
   if (traceStart === null) return false;
   const spans = runSpans(run);
   const first = spans.find(span => span.name === "task.time_to_first_agent_activity")
     ?? spans.find(span => span.name === "task.time_to_first_token");
   const end = first ? traceStart + first.startOffsetMs + first.durationMs : Number.POSITIVE_INFINITY;
-  return faultStarts.some(at => at >= traceStart && at <= end);
+  return faultStarts.some(at => at >= runCreatedAt && at <= end);
 }
 
 export function firstActivityMs(run: BaselineRun): number | null {
@@ -198,7 +198,8 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
       try {
         const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
           events: await runEventsWithRetry(api, run.id) };
-        if (faultBeforeFirstActivity(raw, faults.map(fault => fault.startedAt))) raw.phase = "restart";
+        if (faultBeforeFirstActivity(raw, faults.filter(fault => fault.readyAt !== null).map(fault => fault.startedAt),
+          Date.parse(run.createdAt!))) raw.phase = "restart";
         const trimmed = withoutOutage(raw, windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
         runs.push(trimmed.run);
