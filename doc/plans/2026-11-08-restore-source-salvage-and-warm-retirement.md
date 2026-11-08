@@ -109,7 +109,8 @@ retried with backoff.
      inserts and assets are unique on `(company_id, object_key)`, so a retry
      first looks up an existing receipt or asset by object key and reuses it.
      It never creates a second artifact or comment.
-   - Re-stop the sandbox through the stop-only contract (step 1's `finally`).
+   - The re-stop happens in the single resume window's `finally` (see Fencing),
+     after the export, not between compare and export.
    - **Exposure.** The filter (`omitDeniedWorkspaceFiles`) only denies known
      secret names and directories; a credential in an ordinary file would be
      included. The export is therefore restricted to the issue's existing
@@ -132,6 +133,28 @@ fails, the lease stays suspended, and the stage retries with backoff up to a
 bounded retention window. Past the window it is handed to the board as an
 issue recovery action ("salvage failed; the sandbox is kept"). It is never
 destroyed without a clean compare or a confirmed export.
+
+## Fencing (required before implementation)
+
+- **One claim status that the sweep skips.** The retirement claim sets the lease
+  to `pending_cleanup` and records `keptSandboxRetirement` with `stage` set to
+  `compare` or `export` and an attempt id. The pending-cleanup sweep must treat
+  a lease with an in-flight `keptSandboxRetirement` stage as held, exactly as
+  it treats `workspaceRecoveryCleanup` or an in-flight cleanup claim. Only
+  stage 3 clears the marker and queues the destroy. Otherwise the sweep could
+  destroy the sandbox while its files are still being saved.
+- **Admission claims before it resumes.** Run admission must win a
+  compare-and-swap on the reusable lease's status before it calls the
+  provider's resume. A resume that loses the claim provisions a fresh sandbox
+  and never touches this one. This closes two overlaps: a turn that already
+  selected the sandbox, and a provider resume in flight when retirement claims.
+  Today `environmentResumeLease` runs before `acquireLease` updates the old row,
+  so this ordering change is part of the work. Test: a turn racing a retirement
+  claim leaves exactly one owner of the sandbox, and the loser never calls the
+  provider for it.
+- **One resume lifetime.** Compare and export run inside a single resumed
+  window. The re-stop `finally` wraps both stages together, so the sandbox is
+  running for the capture and stopped on every exit (clean, dirty or failed).
 
 ## Provider I/O steps and their receipts
 
