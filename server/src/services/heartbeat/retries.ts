@@ -21,6 +21,8 @@ import {
   executionFailureRetryCount,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
+  INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
+  INTERRUPTED_PREPARATION_RETRY_REASON,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
@@ -478,13 +480,17 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
       && (run.status === "interrupted" || await isInterruptedNativePreparation(db, run));
     const retryReason = opts?.retryReason ??
-      (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+      (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    // Interrupted preparation spent no provider work: its own lane, bounded
+    // like the native controller-generation cap (execution-recovery-attempt).
+    const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        opts?.maxAttempts ?? (interruptedPreparationLane
+          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
@@ -503,7 +509,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : null
         : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
+          ? interruptedPreparationLane
+            ? (() => {
+              // Later lane attempts keep the longest transient delay.
+              const schedule = computeBoundedTransientHeartbeatRetrySchedule(
+                Math.min(nextAttempt, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, opts?.random);
+              return schedule ? { ...schedule, attempt: nextAttempt } : null;
+            })()
+            : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
               opts?.random,

@@ -2546,7 +2546,6 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     ["the state was adopted", { mutate: core => { core.store.state.bootstrapHistory!.adopted = true; } },
       "ambiguous_remote_recovery_evidence"],
     ["no checkpoint exists", { checkpoint: false }, "ambiguous_remote_recovery_evidence"],
-    ["the bootstrap budget is spent", { attempt: 3 }, "execution_recovery_budget_exhausted"],
   ])("keeps a claimed remote bootstrap held when %s", async (label, options, reason) => {
     const fixture = await seedClaimedRemoteBootstrap(label.replace(/\W+/g, "-"), options);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
@@ -2683,12 +2682,36 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
     ["a runner event was committed", { bootstrapRetry: true, event: { eventType: "item.updated", sourceEventId: "runner-event-1" } },
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
-    ["the bootstrap budget is spent", { bootstrapRetry: true, attempt: 3 },
-      { kind: "blocked", reason: "execution_recovery_budget_exhausted" }],
   ])("keeps a remote bootstrap retry held when %s", async (label, options, expected) => {
     const fixture = await seedUnlaunchedRemoteClaim(`RETRY-${label.replace(/\W+/g, "-")}`, options);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
+  });
+
+  // RC-22 / section F: a bootstrap whose provider never accepted a turn spent
+  // no provider work, so a restart does not charge it, even at the last
+  // attempt. The controller-generation cap still bounds a crash loop.
+  it.each([
+    ["claimed remote bootstrap", () => seedClaimedRemoteBootstrap("UNCHARGED-CLAIMED", { attempt: 3 })],
+    ["remote bootstrap retry", () => seedUnlaunchedRemoteClaim("UNCHARGED-RETRY", { bootstrapRetry: true, attempt: 3 })],
+    ["claimed unlaunched remote run", () => seedUnlaunchedRemoteClaim("UNCHARGED-UNLAUNCHED", { attempt: 3 })],
+  ] as const)("does not charge a %s at its last attempt when no provider turn was accepted", async (_label, seed) => {
+    const fixture = await seed();
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 3, chargesProviderAttempt: false })]);
+  });
+
+  it.each([
+    ["claimed remote bootstrap", (label: string) => seedClaimedRemoteBootstrap(label, { attempt: 3 })],
+    ["remote bootstrap retry", (label: string) => seedUnlaunchedRemoteClaim(label, { bootstrapRetry: true, attempt: 3 })],
+  ] as const)("blocks a %s at its last attempt once the controller generation cap is reached", async (label, seed) => {
+    const fixture = await seed(`GEN-CAP-${label.replace(/\W+/g, "-")}`);
+    await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
   });
 
   it("keeps a paused agent's remote bootstrap retry waiting instead of starting it", async () => {
@@ -2747,8 +2770,6 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
     ["a provider session is recorded", { run: { sessionIdAfter: "provider-session" } },
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
-    ["the bootstrap budget is spent", { attempt: 3 },
-      { kind: "blocked", reason: "execution_recovery_budget_exhausted" }],
     ["the claiming controller is still alive", { liveController: true },
       { kind: "awaiting_evidence", reason: "controller_still_alive" }],
   ])("keeps a claimed unlaunched remote run held when %s", async (label, options, expected) => {
@@ -2784,6 +2805,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "continuation-turn" } : {}),
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await fixture.db.update(nativeRunFinalizations).set({ attempt }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    // The interrupted attempt's provider accepted a turn and completed no work.
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: lostContinuation ? "continuation-turn" : "interrupted-turn" }]);
     const dispositions = await claimNativeRestartRecoveries({
       db: fixture.db, controller: successor, restartKind: "hot", runIds: [fixture.runId],
     });
@@ -2809,9 +2833,12 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         error: { code: "provider_turn_lost_on_restore", recoverable: true },
       }) }],
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
-    // The original execution claimed attempt 1.
+    // The original execution claimed attempt 1, and its provider accepted the
+    // turn that the restart then interrupted before it completed any work.
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 1, controllerGeneration: 1 })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: "interrupted-turn" }]);
     return fixture;
   }
 
@@ -2889,8 +2916,57 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
     await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" }]);
+    // That retry spawned but its provider never accepted a turn: not charged.
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 3 });
+    // The next resume's provider accepts a turn and does no work. The first
+    // resume's work belongs to an earlier attempt, so this one is charged.
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: "retry" }]);
     const { disposition } = await resumeThenCrash(fixture);
     expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
+  // Section F: the not-charged outcomes, judged on the attempt a crash
+  // interrupted. Each starts at the last attempt, so a charge would block.
+  it.each([
+    { label: "the runner was never requested", events: [] },
+    { label: "the runner spawned but was never admitted", events: [{ eventType: "native.process_start_requested" },
+      { eventType: "native.process_identity_recorded" }, { eventType: "session.resumed" }] },
+    { label: "the provider did not accept turn.start", events: [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.submitted" }, { eventType: "turn.failed", turnId: "never-accepted" }] },
+  ])("does not charge a resume whose provider never accepted a turn ($label)", async ({ label, events }) => {
+    const fixture = await seedInterruptedCheckpoint(`NOT-CHARGED-${label.replace(/\W+/g, "-")}`);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    // The previous resume is recorded to run as attempt 3.
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text, 'progressAttempt'], '3'::jsonb)`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, events);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 3 });
+  });
+
+  it.each([
+    { label: "turn.accepted", eventType: "turn.accepted" },
+    { label: "the provider's turn.started", eventType: "turn.started" },
+  ])("charges a resume whose provider accepted a turn and made no progress ($label)", async ({ eventType }) => {
+    const fixture = await seedInterruptedCheckpoint(`CHARGED-${eventType}`);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" }, { eventType, turnId: "accepted" },
+      { eventType: "item.completed", turnId: "accepted", kind: "usage" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: true }, attempt: 3 });
+  });
+
+  it("does not charge the first restart when the original attempt already made progress", async () => {
+    const fixture = await seedInterruptedCheckpoint("ORIGINAL-PROGRESS");
+    await appendRunEvents(fixture, [{ eventType: "tool.execution.completed", turnId: "interrupted-turn" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 1 });
   });
 
   it("still exhausts the budget when restart resumes complete no work between crashes", async () => {

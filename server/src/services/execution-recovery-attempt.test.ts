@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountingForScheduledRetry, executionFailureRetryCount, executionRetryAttemptCount } from "./execution-recovery-attempt.js";
+import { accountingForScheduledRetry, executionFailureRetryCount, executionRetryAttemptCount, INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
 import { RUNNER_REVISION_WAIT_RETRY_REASON as DISPATCH_RUNNER_REVISION_WAIT_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
@@ -65,5 +65,32 @@ describe("Runner update waits", () => {
       contextSnapshot: { ...ledger(1), executionRetryAccounting: accountingForScheduledRetry(failed, "runner_revision_wait", 3) } };
     expect(executionFailureRetryCount(waited)).toBe(1);
     expect(executionRetryAttemptCount(waited, "transient_failure")).toBe(1);
+  });
+});
+
+// Section F: a preparation interrupted before provider work started spent no
+// provider work, so it never charges the failure budget. Its own lane counts
+// its retries, up to the same cap as native controller generations.
+describe("interrupted preparation retries", () => {
+  const accounting = (failureRetries: number) => ({ version: 1, failureRetries, maxTurnContinuations: 0 });
+  it("keeps the failure count when scheduling an interrupted-preparation retry", () => {
+    const source = { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1,
+      contextSnapshot: { executionRetryAccounting: accounting(1) } };
+    expect(executionRetryAttemptCount(source, INTERRUPTED_PREPARATION_RETRY_REASON)).toBe(0);
+    expect(accountingForScheduledRetry(source, INTERRUPTED_PREPARATION_RETRY_REASON, 1)).toEqual(accounting(1));
+  });
+  it("counts consecutive interrupted preparations in their own lane, never as failures", () => {
+    const retry = { scheduledRetryReason: INTERRUPTED_PREPARATION_RETRY_REASON, scheduledRetryAttempt: 5,
+      contextSnapshot: { executionRetryAccounting: accounting(0) } };
+    expect(executionRetryAttemptCount(retry, INTERRUPTED_PREPARATION_RETRY_REASON)).toBe(5);
+    expect(executionFailureRetryCount(retry)).toBe(0);
+    expect(accountingForScheduledRetry(retry, INTERRUPTED_PREPARATION_RETRY_REASON, 6)).toEqual(accounting(0));
+    expect(INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS).toBe(12);
+  });
+  it("still charges a real failure after interrupted preparations", () => {
+    const retry = { scheduledRetryReason: INTERRUPTED_PREPARATION_RETRY_REASON, scheduledRetryAttempt: 3,
+      contextSnapshot: { executionRetryAccounting: accounting(1) } };
+    expect(executionRetryAttemptCount(retry, "transient_failure")).toBe(1);
+    expect(accountingForScheduledRetry(retry, "transient_failure", 2).failureRetries).toBe(2);
   });
 });

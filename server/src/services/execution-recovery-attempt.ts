@@ -1,4 +1,21 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
+import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
+
+/**
+ * A preparation that a restart interrupted before any provider work started
+ * (its certificate records `providerWorkStarted: false`) spent no provider
+ * work, so it never charges the failure budget (durable-ownership plan,
+ * section F). Its own counter keeps a crash loop bounded, at the same limit
+ * as the native controller-generation cap.
+ */
+export const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
+export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
+
+/** Retry lanes that keep their own counter and never spend failures. */
+const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
+  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", RUNNER_REVISION_WAIT_RETRY_REASON,
+  INTERRUPTED_PREPARATION_RETRY_REASON,
+]);
 
 type RetryRun = {
   scheduledRetryAttempt?: number | null;
@@ -44,7 +61,8 @@ function historicalFailureCount(run: RetryRun): number {
 
 export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccounting {
   const saved = savedAccounting(run);
-  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", RUNNER_REVISION_WAIT_RETRY_REASON].includes(run.scheduledRetryReason ?? "");
+  const reason = run.scheduledRetryReason ?? "";
+  const nonFailureLane = reason === "max_turns_continuation" || reason === "issue_disposition_repair" || UNCHARGED_RETRY_LANES.has(reason);
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
@@ -59,7 +77,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 }
 
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
-  if (reason === "workspace_busy" || reason === "ai_connection_busy" || reason === "ai_connection_pool_wait" || reason === RUNNER_REVISION_WAIT_RETRY_REASON) {
+  if (UNCHARGED_RETRY_LANES.has(reason)) {
     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
   }
   const accounting = executionRetryAccounting(run);
@@ -69,7 +87,6 @@ export function executionRetryAttemptCount(run: RetryRun, reason: string): numbe
 export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number): ExecutionRetryAccounting {
   const accounting = executionRetryAccounting(run);
   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
-  else if (reason !== "workspace_busy" && reason !== "ai_connection_busy" && reason !== "ai_connection_pool_wait"
-    && reason !== RUNNER_REVISION_WAIT_RETRY_REASON) accounting.failureRetries = attempt;
+  else if (!UNCHARGED_RETRY_LANES.has(reason)) accounting.failureRetries = attempt;
   return accounting;
 }

@@ -34,6 +34,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
+import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT, providerAttemptChargesBudget, providerAttemptWindowStart, readProviderAttemptOutcome } from "./provider-attempt-outcome.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { persistActivity } from "../activity-log.js";
@@ -169,20 +170,18 @@ export function suspendedByCleanDrain(coordinator: {
 }
 
 /**
- * A controller restart (a crash, so no drain record) that interrupts a resume
- * which had already made progress is also not the run's failure. Each claim
- * records the run's event-log position; the next claim does not charge an
- * attempt when, after that position, the provider accepted a new turn and then
- * completed work in it (a tool execution or a non-usage item). A resume that
- * dies before it completes any work in a new turn still charges, so a crash
- * loop without progress, a resume that fails each time, and provider failures
- * stay bounded. A resume the controller died before starting is not charged
- * either (restartResumeKeepsAttempt). Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
- * controller generations, so a run that makes progress and then crashes the
- * controller every time is still bounded.
+ * A controller restart (a crash, so no drain record) charges the interrupted
+ * attempt only by the work-based rule in provider-attempt-outcome.ts: the
+ * provider accepted a turn in that attempt and no accepted turn completed work
+ * before the crash. Each claim records the run's event-log position, so the
+ * next claim judges only what happened after it. A resume the controller died
+ * before starting, a runner that never admitted its provider, and a turn.start
+ * the provider did not accept are not charged. Credit stops after
+ * NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT controller generations, so a crash
+ * loop that never starts the provider, or that makes progress and then crashes
+ * the controller every time, is still bounded.
  */
-export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = 12;
-const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed"] as const;
+export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
 
 type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
 
@@ -193,6 +192,13 @@ type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?
 export function lastRecoveryClaimResume(
   recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
 ): { watermark: number; attempt: number; launchesRunner: boolean } | null {
+  const previous = previousRecoveryClaim(recoveryHistory);
+  return previous === "none" || previous === "unrecorded" ? null : previous;
+}
+
+function previousRecoveryClaim(
+  recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
+): { watermark: number; attempt: number; launchesRunner: boolean } | "none" | "unrecorded" {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
@@ -202,9 +208,9 @@ export function lastRecoveryClaimResume(
     const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
     return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
       && typeof attempt === "number" && Number.isSafeInteger(attempt)
-      ? { watermark, attempt, launchesRunner } : null;
+      ? { watermark, attempt, launchesRunner } : "unrecorded";
   }
-  return null;
+  return "none";
 }
 
 /**
@@ -240,15 +246,18 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
 
 /**
  * Whether this restart claim keeps the provider attempt instead of charging
- * one. Both cases are judged from the previous claim's recorded position:
- * - That resume launched a new runner (not a reattachment) and never started:
- *   no runner was requested and no runner event was
- *   recorded before the controller died (for example in a K6 crash loop). It
- *   used no provider work, so this claim replaces it and carries its charge:
- *   the attempt ends at the attempt that resume was to run as, never above it.
- * - That resume made progress on the current attempt (see above). A normal
- *   retry in between starts a new attempt, and earlier work does not count.
- * Neither applies at or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT.
+ * one, judged by the work-based rule (provider-attempt-outcome.ts) over the
+ * attempt the restart interrupted:
+ * - The first restart judges the original execution's attempt.
+ * - A later restart judges the attempt that ran after the previous claim's
+ *   recorded position. A normal retry in between starts a new attempt window,
+ *   so earlier work does not count for it.
+ * - When the previous claim launched a new runner but that resume never
+ *   reached execution, it consumed nothing and this claim replaces it. Its
+ *   charge decision was never applied, so this claim carries it: the attempt
+ *   ends at the attempt that resume was to run as, never above it.
+ * - A claim history written before claims recorded their position charges.
+ * At or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT every restart charges.
  */
 export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   runId: string;
@@ -260,32 +269,21 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
 }): Promise<boolean> {
   if (input.coordinator.attempt <= 0) return false;
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
-  const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
-  if (previous === null) return false;
-  // Only a claim that launches a new runner can be unstarted. A reattachment
-  // adopted provider work that had already started, so only progress counts.
-  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+  const previous = previousRecoveryClaim(input.coordinator.recoveryHistory);
+  if (previous === "unrecorded") return false;
+  if (previous !== "none" && previous.launchesRunner
+    && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
     return input.coordinator.attempt >= previous.attempt;
-  if (previous.attempt !== input.coordinator.attempt) return false;
-  const watermark = previous.watermark;
-  const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
-  const [work] = await tx
-    .select({ seq: heartbeatRunEvents.seq })
-    .from(heartbeatRunEvents)
-    .where(and(
-      eq(heartbeatRunEvents.runId, input.runId),
-      gt(heartbeatRunEvents.seq, watermark),
-      inArray(heartbeatRunEvents.eventType, [...RESUME_PROGRESS_EVENT_TYPES]),
-      sql`coalesce(${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind', '') <> 'usage'`,
-      // The inner alias hides the table name, so unqualified outer references
-      // below resolve to the outer completed-work row.
-      sql`exists (select 1 from ${heartbeatRunEvents} as accepted_turn where accepted_turn.run_id = ${input.runId}
-        and accepted_turn.seq > ${watermark} and accepted_turn.seq < ${heartbeatRunEvents.seq}
-        and accepted_turn.event_type = 'turn.accepted'
-        and accepted_turn.payload -> 'prpEvent' ->> 'turnId' = ${workTurnId})`,
-    ))
-    .limit(1);
-  return work !== undefined;
+  const claimedAt = previous === "none" ? 0 : previous.watermark;
+  const windowStart = await providerAttemptWindowStart(tx, { runId: input.runId, sinceSeq: claimedAt });
+  const outcome = await readProviderAttemptOutcome(tx, {
+    runId: input.runId,
+    sinceSeq: windowStart,
+    // A reattachment adopted a provider that had already started, unless a
+    // later normal retry started a new attempt.
+    adoptedProviderWork: previous !== "none" && !previous.launchesRunner && windowStart === claimedAt,
+  });
+  return !providerAttemptChargesBudget(outcome);
 }
 
 
