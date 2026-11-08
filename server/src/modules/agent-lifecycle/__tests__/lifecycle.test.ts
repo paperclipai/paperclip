@@ -472,6 +472,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(response.body.lifecycleState).toBe("ready");
   });
 
+  it("registers the shared lifecycle wake in the transaction before a resume during pausing clears the backoff", async () => {
+    const retryAt = new Date(Date.now() + 60_000).toISOString();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Shared resume wake", adapterType: "process",
+      status: "paused", lifecycleState: "pausing", lifecycleHolds: ["manual"], lifecycleVersion: 1,
+      lifecycleRequiredPluginIds: [], lifecycleOperation: { id: randomUUID(), hostComplete: false,
+        completedPluginIds: [], attempts: 1, retryAt } }).returning();
+    const effects = createAgentLifecycleEffects();
+    const retryAtWhenNotified: Array<string | null> = [];
+    const lifecycle = createLifecycleCommands(db, { ...effects, notifyWork: async tx => {
+      const [row] = await tx.select().from(agents).where(eq(agents.id, agent.id));
+      retryAtWhenNotified.push(row.lifecycleOperation?.retryAt ?? null);
+      await effects.notifyWork(tx);
+    } });
+
+    await lifecycle.resumeAgent(agent.id, "manual");
+
+    expect(retryAtWhenNotified).toEqual([retryAt]);
+    expect((await current(agent.id)).lifecycleOperation?.retryAt).toBeUndefined();
+  });
+
   it("does not advance termination while a cancelled process still runs", async () => {
     const agent = await hire();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,

@@ -123,6 +123,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
     // operation as a resume. Clear its failure backoff so the worker can act now.
     const clearBackoff = command === "resume" && next === "pausing" && !holds.length;
     if (clearBackoff || JSON.stringify(holds) !== JSON.stringify(agent.lifecycleHolds) || agent.pauseReason !== (holds[0] ?? null)) {
+      if (clearBackoff) await effects.notifyWork(tx);
       const [updated] = await tx.update(agents).set({
         lifecycleHolds: holds, pauseReason: holds[0] ?? null,
         ...(clearBackoff ? { lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` } : {}),
