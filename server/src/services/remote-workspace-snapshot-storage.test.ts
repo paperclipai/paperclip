@@ -19,6 +19,17 @@ import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
+// Pass-through, so one test can report a changed archive between the two
+// identity reads that bracket encryption.
+const lstatOverride = vi.hoisted(() => ({ current: null as null | ((file: string, real: (file: string) => Promise<import("node:fs").Stats>) => Promise<import("node:fs").Stats>) }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const lstat = ((file: Parameters<typeof actual.lstat>[0], ...rest: unknown[]) => lstatOverride.current
+    ? lstatOverride.current(String(file), target => actual.lstat(target))
+    : (actual.lstat as (...args: unknown[]) => unknown)(file, ...rest)) as typeof actual.lstat;
+  return { ...actual, lstat, default: { ...actual, lstat } };
+});
+
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalDatabaseUrl && !/^remote_workspace_[a-z_]*test$/.test(new URL(externalDatabaseUrl).pathname.slice(1))) {
   throw new Error("Workspace storage tests require a disposable remote_workspace_*test database");
@@ -135,6 +146,51 @@ suite("remote workspace snapshot storage", () => {
     await expect(uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath })).rejects.toThrow();
     expect(await fs.lstat(verifiedArchivePath).catch(() => null)).toBeNull();
     expect((await fs.readdir(root)).some(name => name.startsWith(".workspace-upload-readback-"))).toBe(false);
+  });
+  it("confirms only the stored size when the backend verified every uploaded part", async () => {
+    const f = await fixture(randomBytes(2 * 1024 * 1024 + 91)); const put = storage.putFile.bind(storage);
+    let sourceFile: string | undefined;
+    storage.putFile = async input => {
+      sourceFile = "sourceFile" in input ? input.sourceFile : undefined;
+      return { ...await put(input), integrity: "server_verified_md5" };
+    };
+    const get = vi.spyOn(storage, "getObject"), head = vi.spyOn(storage, "headObject");
+    const ref = await uploadWorkspaceSnapshot(f.upload);
+    expect(sourceFile).toMatch(/archive\.encrypted$/);
+    expect(get).not.toHaveBeenCalled();
+    expect(head).toHaveBeenCalledWith(f.companyId, ref.objectKey, expect.anything());
+    const restoredArchive = path.join(root, "restored-verified.pcws");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restoredArchive });
+    expect((await fs.readFile(restoredArchive)).equals(await fs.readFile(f.archivePath))).toBe(true);
+  });
+  it("still reads back a server-verified upload when the caller keeps the read-back file", async () => {
+    const f = await fixture(); const put = storage.putFile.bind(storage);
+    storage.putFile = async input => ({ ...await put(input), integrity: "server_verified_md5" });
+    const get = vi.spyOn(storage, "getObject"), verifiedArchivePath = path.join(root, "kept.pcws");
+    await uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath });
+    expect(get).toHaveBeenCalled();
+    expect((await fs.readFile(verifiedArchivePath)).equals(await fs.readFile(f.archivePath))).toBe(true);
+  });
+  it("rejects a server-verified upload whose stored size differs", async () => {
+    const f = await fixture(); const put = storage.putFile.bind(storage), head = storage.headObject.bind(storage);
+    storage.putFile = async input => ({ ...await put(input), integrity: "server_verified_md5" });
+    storage.headObject = async (...args) => { const result = await head(...args); return { ...result, contentLength: (result.contentLength ?? 0) + 1 }; };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("object_size_mismatch");
+    const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(row?.status).toBe("pending");
+  });
+  it("rejects an archive that changes while it is encrypted, before any upload", async () => {
+    const f = await fixture(); const put = vi.spyOn(storage, "putFile");
+    let reads = 0;
+    lstatOverride.current = async (file, real) => {
+      const stats = await real(file);
+      if (file !== f.archivePath || ++reads < 2) return stats;
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: stats.mtimeMs + 1 });
+    };
+    try { await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("archive_changed"); }
+    finally { lstatOverride.current = null; }
+    expect(reads).toBe(2);
+    expect(put).not.toHaveBeenCalled();
   });
   it("reconciles an upload whose reply was lost after object persistence, without the old scratch file", async () => {
     const f = await fixture(); const put = storage.putFile.bind(storage); let loseReply = true;

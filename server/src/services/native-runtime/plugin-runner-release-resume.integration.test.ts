@@ -41,9 +41,12 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
   const environment = nativeRestartFixture();
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
+    ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const adopted = mode.startsWith("adopted"), cancellation = mode.includes("cancellation"), qualifiedCancellation = mode === "adopted cancellation";
+    const managedGitHub = mode.endsWith("managed GitHub"), brokerUrl = "https://core.example.test/api", brokerToken = (runId: string) => `fixture-broker-${runId}`;
+    const preparedBrokers: Array<{ runId: string; token?: string }> = [];
     const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
@@ -130,9 +133,12 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const task = async (raw: unknown, authorityRunId: string): Promise<unknown> => {
       const operation = environmentTaskOperationSchema.parse(raw);
       if (operation.kind === "describe") return { kind: "description", taskId, launchPreparationVersion: 1,
-        projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact, ...(qualifiedCancellation ? { executionContextVersion: 1 } : {}) };
+        projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact, ...(qualifiedCancellation ? { executionContextVersion: 1 } : {}),
+        ...(managedGitHub ? { githubCredentialBrokerVersion: 1 } : {}) };
       if (operation.kind === "prepare") {
         expect(operation.requirements.identity.runId).toBe(authorityRunId);
+        expect(operation.githubBroker).toEqual(managedGitHub ? { url: brokerUrl, token: brokerToken(authorityRunId) } : undefined);
+        preparedBrokers.push({ runId: authorityRunId, token: operation.githubBroker?.token });
         expect(operation.accountIdentity).toBe("fixture-account");
         if (operation.priorIdentity) expect(sameSource(operation.priorIdentity, await state())).toBe(true);
         expect(operation.requirements.settings.managedProfile).toBeUndefined();
@@ -204,7 +210,9 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: current }, runnerInstanceId: native.runnerInstanceId, completionContractId: contract!.id, completionContractSha256: contract!.canonicalSha256, nativeSessionId: current.session.normalizedSessionId })
         .where(eq(heartbeatRuns.id, current.binding.runId));
       return executePaperclipNativeSession({ db, execution: current, runnerInstanceId: native.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
-        runnerEnvironment: harness === "claude" ? { ANTHROPIC_API_KEY: "synthetic-fixture" } : {},
+        runnerEnvironment: { ...(harness === "claude" ? { ANTHROPIC_API_KEY: "synthetic-fixture" } : {}),
+          ...(managedGitHub ? { PAPERCLIP_GITHUB_BROKER_URL: brokerUrl, PAPERCLIP_GITHUB_BROKER_TOKEN: brokerToken(current.binding.runId) } : {}) },
+        managedGitHub,
         managedAiCredentialHome: home, managedAiCredentialIdentity: "fixture-revision", managedAiAccountIdentity: "fixture-account", turnTimeoutMs: 15_000,
         runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: workspace, environmentId, leaseId, providerKey: "plugin:fixture:tasks", runnerTask: operation => task(operation, current.binding.runId),
           sandboxLeaseAcquisition: { outcome: leaseId === leaseA ? "created" : "resumed", providerLeaseId: taskId } } });
@@ -283,6 +291,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       }
       expect(claims).toEqual(releases.slice(0, -1)); expect(releases[1]!.runId).toBe(runB);
       expect(releases[1]!.environmentLeaseId).toBe(leaseA); expect(handle!.child.pid).toBe(pid); expect(submissions).toBe(1);
+      expect([...new Set(preparedBrokers.map(prepared => prepared.runId))]).toEqual(releases.map(release => release.runId));
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       if (harness === "codex") {
         expect(methods.filter(method => method === "process-start")).toHaveLength(1);

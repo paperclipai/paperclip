@@ -1232,8 +1232,10 @@ class OpenCodeHarnessSession implements HarnessSession {
           validation.result.completionClaim.contractRevision !==
           this.#taskEnvelope.completionContract.revision
         ) {
+          // Name the expected revision so the provider can repair its claim
+          // in this turn, as the criteria error below does.
           throw new Error(
-            "Semantic result completion contract revision does not match",
+            `Semantic result completion contract revision does not match. Use contractRevision ${JSON.stringify(this.#taskEnvelope.completionContract.revision)}.`,
           );
         }
         const expectedIds = this.#taskEnvelope.completionContract.criteria.map((criterion) => criterion.id);

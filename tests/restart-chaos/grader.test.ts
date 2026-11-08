@@ -127,6 +127,27 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(gradeR4(record(afterSuccess)).detail).toMatch(/comment_consumed_twice: c1 by r1,r2/);
   });
 
+  // s9401/t72: the message's run was claimed just before the first run ended,
+  // then cancelled as stale before dispatch; a later run delivered the message.
+  it("passes R4 for a stale continuation cancelled before dispatch whose message a later run delivered once", () => {
+    const samples = [sample(90_000, "done", [
+      run("r1", "succeeded", 1_000, 40_000),
+      run("r2", "cancelled", 30_000, 40_060, { startedAt: iso(39_960), wakeCommentIds: ["c1"],
+        errorCode: "continuation_task_ownership_changed" }),
+      run("r3", "succeeded", 45_000, 80_000, { wakeCommentIds: ["c1"] }),
+    ])];
+    expect(gradeR4(record(samples))).toMatchObject({ verdict: "pass" });
+    // A poll that saw both running (claiming marks running before dispatch)
+    // does not change that.
+    const polled = [sample(39_990, "in_progress", [run("r1", "running", 1_000), run("r2", "running", 30_000, null, { startedAt: iso(39_960) })]),
+      ...samples];
+    expect(gradeR4(record(polled))).toMatchObject({ verdict: "pass" });
+    // Any other cancelled run that overlapped still executed.
+    const executed = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 40_000),
+      run("r2", "cancelled", 30_000, 40_060, { startedAt: iso(39_960), errorCode: "cancelled" })])];
+    expect(gradeR4(record(executed)).detail).toMatch(/concurrent_runs/);
+  });
+
   it("fails R5 on a silent stall longer than three minutes after ready, but not during outages or named waits", () => {
     const idle = (at: number, extra: Partial<TaskSample> = {}) => sample(at, "in_progress", [run("r1", "failed", 1_000, 30_000)], extra);
     const stalled = [idle(60_000), idle(60_000 + STALL_LIMIT_MS / 2), idle(60_000 + STALL_LIMIT_MS + 5_000)];

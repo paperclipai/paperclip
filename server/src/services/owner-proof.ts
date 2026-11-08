@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import {
   currentControllerBootId,
+  currentControllerDeployment,
   currentControllerProcessStamp,
   currentProcessSpaceHash,
   observedProcessStartedAt,
@@ -9,6 +10,13 @@ import {
   PROCESS_START_PRECISION_MS,
   UNKNOWN_PROCESS_SPACE,
 } from "./controller-process-identity.js";
+import type { WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+
+/** `processSpace` value written when a board operator confirmed that this exact
+ * recorded owner stopped (native-controller-host-recovery.ts). The attestation
+ * is the proof. */
+export const OPERATOR_ATTESTED_PROCESS_SPACE = "operator_attested";
 
 /**
  * The owner recorded on an in-progress durable record (plan section A).
@@ -35,6 +43,20 @@ export type LocalOwnerStamp = {
   /** Start time of the process group's leader (PID = `processGroupId`). When
    * the owner leads its own group this is `processStartedAt`. */
   processGroupStartedAt?: string | null;
+  /** The platform deployment that ran the owner, when the platform names one. */
+  worker?: WorkspaceWorker | null;
+  /** The platform volume mounted by that deployment, when the stamp recorded one. */
+  volumeId?: string | null;
+  /** False when the owner's deployment was not volume-exclusive. Missing on older stamps. */
+  exclusiveVolume?: boolean | null;
+  /**
+   * The record was saved before its kind stored a PID space (`processSpace`
+   * is null for that reason, not because the space is unknown). Such rows keep
+   * the previous local proof for one release on single-host servers only, and
+   * the proof says so (`legacyHostFallback`) so the caller can record each use.
+   * An ephemeral (multi-host) server never judges them.
+   */
+  processSpaceUnrecorded?: boolean;
 };
 
 export type RemoteOwnerStamp = {
@@ -48,7 +70,15 @@ export type RemoteOwnerStamp = {
 
 export type OwnerVerdict = "gone" | "alive" | "unprovable";
 
-export type OwnerProof = { verdict: OwnerVerdict; reason: OwnerProofReason };
+export type OwnerProof = {
+  verdict: OwnerVerdict;
+  reason: OwnerProofReason;
+  /** The local proof judged a row saved before its PID space was recorded. */
+  legacyHostFallback?: true;
+  /** The caller named every run this process executes, so a record of another
+   * run is not held here (`settleOwnableKind` with `currentProcessIdle`). */
+  localExecutionsKnown?: true;
+};
 
 export type OwnerProofReason =
   // gone
@@ -57,6 +87,12 @@ export type OwnerProofReason =
   | "fence_superseded"
   | "generation_superseded"
   | "provider_stopped"
+  | "deployment_replaced"
+  | "operator_attested"
+  /** This process owns the record and is not executing its run. Only a
+   * caller that knows this process's executions may conclude it
+   * (`settleOwnableKind` with `currentProcessIdle`); the prover never does. */
+  | "current_process_idle"
   // alive
   | "current_process"
   | "pid_alive"
@@ -68,6 +104,7 @@ export type OwnerProofReason =
   | "unknown_process_space"
   | "different_process_space"
   | "different_host"
+  | "process_space_unrecorded"
   | "pid_start_unreadable"
   | "pid_start_inconsistent"
   | "process_group_ambiguous"
@@ -94,6 +131,10 @@ export type ProcessProbe = {
   pidExists(pid: number): boolean;
   processGroupExists(processGroupId: number): boolean;
   readStartedAt(pid: number): Promise<Date | null>;
+  /** This process's platform deployment. `exclusiveVolume` is true only when
+   * the platform stops every earlier deployment of the service before it
+   * starts this one (a Railway service with an attached volume). */
+  deployment?: { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId?: string | null } | null;
 };
 
 function processGroupExists(processGroupId: number): boolean {
@@ -107,8 +148,16 @@ function processGroupExists(processGroupId: number): boolean {
   }
 }
 
+/** Railway mounts a volume into one deployment of a service at a time: it stops
+ * the previous deployment before the new one starts, so the two never overlap.
+ * A service with a volume cannot have replicas. */
+export function currentDeploymentIdentity(env: NodeJS.ProcessEnv = process.env): ProcessProbe["deployment"] {
+  return currentControllerDeployment(env);
+}
+
 export function currentProcessProbe(): ProcessProbe {
   return {
+    deployment: currentDeploymentIdentity(),
     bootId: currentControllerBootId(),
     host: hostname(),
     processSpace: currentProcessSpaceHash(),
@@ -182,7 +231,21 @@ export async function proveOwnerGone(
 
 async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe): Promise<OwnerProof> {
   if (stamp.bootId && stamp.bootId === probe.bootId) return { verdict: "alive", reason: "current_process" };
-  if (!validPid(stamp.pid) || !stamp.processSpace) return { verdict: "unprovable", reason: "missing_identity" };
+  // The platform stopped the owner's whole deployment, with every process and
+  // orphaned child in it, before it started this one. Host and PID are moot.
+  if (deploymentReplaced(stamp, probe.deployment)) return { verdict: "gone", reason: "deployment_replaced" };
+  if (stamp.processSpace === OPERATOR_ATTESTED_PROCESS_SPACE) return { verdict: "gone", reason: "operator_attested" };
+  // A row saved before its kind stored a PID space: one-release local
+  // fallback on single-host servers; an ephemeral server cannot assume the
+  // PID was recorded here, so a board operator decides.
+  const legacy = !stamp.processSpace && stamp.processSpaceUnrecorded === true;
+  if (legacy && ephemeralServerEnabled()) return { verdict: "unprovable", reason: "process_space_unrecorded" };
+  if (!validPid(stamp.pid) || (!stamp.processSpace && !legacy)) return { verdict: "unprovable", reason: "missing_identity" };
+  if (legacy) {
+    const proof = await proveLocalOwnerGone({ ...stamp, processSpace: probe.processSpace, host: null,
+      processSpaceUnrecorded: false }, probe);
+    return proof.verdict === "gone" ? { ...proof, legacyHostFallback: true } : proof;
+  }
   if (stamp.processSpace === UNKNOWN_PROCESS_SPACE || probe.processSpace === UNKNOWN_PROCESS_SPACE) {
     return { verdict: "unprovable", reason: "unknown_process_space" };
   }
@@ -222,6 +285,20 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
     if (order !== "later") return { verdict: "unprovable", reason: "process_group_ambiguous" };
   }
   return { verdict: "gone", reason: processReason };
+}
+
+function deploymentReplaced(stamp: LocalOwnerStamp, current: ProcessProbe["deployment"]): boolean {
+  const stamped = stamp.worker;
+  if (!stamped || !current?.exclusiveVolume) return false;
+  // A stamp that recorded its volume must name this same volume. Older stamps
+  // predate the field; the service and environment then name the volume.
+  if (stamp.exclusiveVolume === false) return false;
+  if (stamp.volumeId != null && stamp.volumeId !== current.volumeId) return false;
+  const worker = current.worker;
+  return stamped.provider === worker.provider && stamped.projectId === worker.projectId
+    && stamped.environmentId === worker.environmentId && stamped.serviceId === worker.serviceId
+    && typeof stamped.deploymentId === "string" && stamped.deploymentId.length > 0
+    && stamped.deploymentId !== worker.deploymentId;
 }
 
 /** "same" within `ps lstart` precision (1 s), "later" when the observed process

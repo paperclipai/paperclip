@@ -5036,8 +5036,9 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     let rejectDelivery!: (error: Error) => void;
     const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject; });
     const actionQueue = { ...queue, protocol: action === "interrupt" ? "legacy" as const : queue.protocol };
+    // Exercises the explicit Steer button, so automatic steering is off here.
     const props = { comments: [queuedComment], onAdd: async () => {}, queuedCommentQueue: actionQueue,
-      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery };
+      onSteerQueuedComment: () => delivery, onInterruptQueued: () => delivery, queuedMessageAutoSteerDelayMs: null };
     render(<TaskChatThread {...props} />);
     await act(async () => {
       container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-queued-prp-1"]`)!.click();

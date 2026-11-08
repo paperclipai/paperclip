@@ -26,7 +26,7 @@ import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } fr
 import { projectCompanyHolds } from "../adapters/company-policy.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
-import type { LifecycleAgent } from "../application/ports.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 
@@ -53,7 +53,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle test", issuePrefix: `L${companyId.slice(0, 7)}` });
   });
-  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete") {
     const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
     workers.push(value); return value;
   }
