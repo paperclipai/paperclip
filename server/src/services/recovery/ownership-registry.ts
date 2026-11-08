@@ -319,6 +319,34 @@ function runLeaseKind(): OwnableKind {
   };
 }
 
+/**
+ * Owner of an in-flight teardown claim. A claimant that stamps
+ * `pendingCleanupController` for this exact attempt is a process, proved by
+ * identity. Other claimants (workspace recovery, native export retry, and
+ * claims saved by an earlier release) hold the claim as a fence: the attempt
+ * id is the token and `pendingCleanupLeaseExpiresAtMs` is the deadline that
+ * the claimant renews. An expired fence is never proof by itself; another
+ * host takes over only through the fence. A controller stamp left by an
+ * earlier attempt names a different claimant and is ignored.
+ */
+function teardownClaimOwner(row: LeaseRow): RecordOwner {
+  const metadata = json(row.metadata);
+  const attemptId = str(metadata.pendingCleanupAttemptId);
+  const controller = json(metadata.pendingCleanupController);
+  if (attemptId && controller.attemptId === attemptId) {
+    const stamped = controllerStamp(controller, "environment_teardown_claim");
+    if (stamped.kind !== "none") return stamped;
+  }
+  if (!attemptId) return { kind: "none" };
+  const expiresAtMs = typeof metadata.pendingCleanupLeaseExpiresAtMs === "number" ? metadata.pendingCleanupLeaseExpiresAtMs : null;
+  return {
+    kind: "fence",
+    stamp: { kind: "remote", scope: "environment_teardown_claim", generation: null, fenceToken: attemptId },
+    fence: { currentFenceToken: attemptId, currentGeneration: null,
+      leaseExpiresAt: expiresAtMs !== null && Number.isFinite(expiresAtMs) ? new Date(expiresAtMs) : null },
+  };
+}
+
 /** `ControllerProcess` metadata ({bootId, pid, hostHash, processStartedAt}). */
 function controllerStamp(value: unknown, scope: string): RecordOwner {
   const controller = readControllerProcess(value);
@@ -554,7 +582,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   runLeaseKind(),
   leaseKind("environment_teardown_claim", "Teardown claim (in-flight cleanup)", "ownership",
     and(eq(environmentLeases.status, "pending_cleanup"), sql`(${environmentLeases.metadata}->>'pendingCleanupInFlight')::boolean is true`),
-    row => controllerStamp(json(row.metadata).pendingCleanupController, "environment_teardown_claim")),
+    teardownClaimOwner),
   leaseKind("environment_pending_cleanup", "Pending-cleanup obligation (not in flight)", "ownership",
     and(eq(environmentLeases.status, "pending_cleanup"),
       sql`coalesce((${environmentLeases.metadata}->>'pendingCleanupInFlight')::boolean, false) is false`),
@@ -569,7 +597,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     eq(environmentLeases.status, "retained"), () => ({ kind: "none" }), [1, 7]),
   spoolKind("sandbox_orphan_cleanup_spool", "Orphan cleanup buffer/spool", "ownership", idleOrphanSpoolPath),
   leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
-    and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)), () => ({ kind: "none" })),
+    and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
+    // Stamped by the write that makes the lease active. A lease saved before
+    // the stamp existed names no owner; it ends with its login session.
+    row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
 
   // Workspaces
   operationKind("workspace_runtime_control_operation", "Managed runtime-control operation", "ownership",
