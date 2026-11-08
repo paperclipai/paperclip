@@ -5,6 +5,7 @@ import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
+import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -5040,6 +5041,13 @@ export function agentRoutes(
       if (actorAgent.role !== "ceo") {
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
+      }
+      // Hiring authority is granted only by an actor that holds it. A CEO the
+      // board denied hiring must not restore it for itself or pass it to
+      // another agent to hire through.
+      const savedCanCreateAgents = normalizeAgentPermissions(existing.permissions, { role: existing.role }).canCreateAgents;
+      if (typeof req.body.canCreateAgents === "boolean" && req.body.canCreateAgents !== savedCanCreateAgents) {
+        await assertCanCreateAgentsForCompany(req, existing.companyId);
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
