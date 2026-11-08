@@ -4309,12 +4309,30 @@ export function environmentRuntimeService(
      * throw leaves the lease in place — so the caller re-checks the blast
      * radius instead of trusting these counts for the delete decision.
      */
+    /**
+     * The operator consented to deleting this environment and the files only
+     * its restore sources hold (the delete dialog says so). That consent is the
+     * decision that releases the restore protection: drop `workspaceRestoreRecovery`
+     * from every row on each of the environment's restore-source sandboxes, and
+     * record who released it, so the consented teardown can destroy them.
+     * Without this, every teardown refuses a protected restore source and the
+     * delete stays blocked with nothing the operator can do.
+     */
+    async releaseRestoreSourcesForEnvironmentDelete(input: { environmentId: string; consentedBy: string }): Promise<number> {
+      return await releaseRestoreSourcesForEnvironmentDelete(db, input);
+    },
+
     async destroyReusableSandboxLeasesForEnvironment(input: {
       environmentId: string;
       failureReason?: string;
+      /** The operator who consented to the delete; releases restore protection. */
+      consentedBy?: string;
     }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
       const environment = await environmentsSvc.getById(input.environmentId);
       if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
+      if (input.consentedBy) {
+        await releaseRestoreSourcesForEnvironmentDelete(db, { environmentId: input.environmentId, consentedBy: input.consentedBy });
+      }
       const leaseRows = await db
         .select()
         .from(environmentLeases)
@@ -4512,5 +4530,31 @@ export function environmentRuntimeService(
     },
   };
 }
+
+async function releaseRestoreSourcesForEnvironmentDelete(db: Db, input: { environmentId: string; consentedBy: string }): Promise<number> {
+  const sources = await db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+    .from(environmentLeases).where(and(
+      eq(environmentLeases.environmentId, input.environmentId),
+      eq(environmentLeases.leasePolicy, "retain_on_failure"),
+      inArray(environmentLeases.status, ["released", "retained", "failed", "pending_cleanup"]),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+      sql`${environmentLeases.providerLeaseId} is not null`,
+    ));
+  let released = 0;
+  for (const source of sources) {
+    const rows = await db.update(environmentLeases).set({ updatedAt: new Date(),
+      metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery') || ${JSON.stringify({
+        restoreSourceReleasedByEnvironmentDelete: { consentedBy: input.consentedBy, releasedAt: new Date().toISOString() },
+      })}::jsonb`,
+    }).where(and(
+      sql`${environmentLeases.provider} is not distinct from ${source.provider}`,
+      eq(environmentLeases.providerLeaseId, source.providerLeaseId!),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+    )).returning({ id: environmentLeases.id });
+    released += rows.length;
+  }
+  return released;
+}
+
 
 export type EnvironmentRuntimeService = ReturnType<typeof environmentRuntimeService>;
