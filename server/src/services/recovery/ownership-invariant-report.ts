@@ -330,7 +330,14 @@ async function checkDeferredIntentsPromoted(db: Db, now: Date, limit: number): P
   // Only refusals whose hold this check can read cheaply and exactly.
   const pauseRefusal = sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`;
   const holdCleared = sql`exists (select 1 from companies c where c.id = ${agentWakeupRequests.companyId} and c.status = 'active')
-    and exists (select 1 from agents a where a.id = ${agentWakeupRequests.agentId} and a.status not in ('paused', 'terminated', 'pending_approval'))`;
+    and exists (select 1 from agents a where a.id = ${agentWakeupRequests.agentId} and a.status not in ('paused', 'terminated', 'pending_approval'))
+    -- A message saved behind a live run or a held lock still has an owner.
+    and not exists (select 1 from issues i where i.id::text = ${agentWakeupRequests.payload}->>'issueId'
+      and i.company_id = ${agentWakeupRequests.companyId} and i.execution_run_id is not null)
+    and not exists (select 1 from heartbeat_runs live_run where live_run.company_id = ${agentWakeupRequests.companyId}
+      and (live_run.context_snapshot->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'
+        or live_run.native_issue_id::text = ${agentWakeupRequests.payload}->>'issueId')
+      and live_run.status in ('queued', 'running', 'scheduled_retry'))`;
   const graceStart = new Date(now.getTime() - DEFERRED_PROMOTION_GRACE_MS);
   const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
     issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'` }).from(agentWakeupRequests)
@@ -371,6 +378,9 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
       .from(agentWakeupRequests).where(and(inArray(agentWakeupRequests.status, ["skipped", "failed"]),
         sql`(${agentWakeupRequests.updatedAt}, ${agentWakeupRequests.id}) > (${position.at}::timestamptz, ${position.id}::uuid)`,
         inArray(agentWakeupRequests.reason, Object.keys(TEMPORARY_REFUSAL_TRIGGERS)),
+        // A reached hard stop is a terminal outcome that shares the budget code.
+        sql`not (${agentWakeupRequests.reason} = 'budget.blocked'
+          and coalesce(${agentWakeupRequests.error}, '') ~* 'hard-stop|no reliable price')`,
         or(eq(agentWakeupRequests.requestedByActorType, "user"),
           sql`${agentWakeupRequests.payload} ? 'commentId'`,
           sql`jsonb_typeof(${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}') = 'array'`)))

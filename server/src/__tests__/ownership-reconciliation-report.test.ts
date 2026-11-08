@@ -342,6 +342,20 @@ describe("report-only ownership reconciliation", () => {
       expect.objectContaining({ rule: "I4_exactly_once_intent", recordId: id, reason: "deferred_after_hold_cleared" })]);
   });
 
+  it("does not report a hard-stop refusal or a message saved behind a live run", async () => {
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "skipped",
+      reason: "budget.blocked", requestedByActorType: "user", error: "Company is paused because its budget hard-stop was reached." });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "running", invocationSource: "manual",
+      contextSnapshot: { issueId } });
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt: minutesAgo(10),
+      payload: { issueId, executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
   it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {
     const updatedAt = minutesAgo(1);
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "deferred_issue_execution",
