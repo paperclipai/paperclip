@@ -193,6 +193,11 @@ function providerRefusal() {
     await svc.sweepTerminalWorkspaces(100);
     expect(await retryAfter()).toEqual({ failures: 3, delay: 20 * MINUTE });
     svc.terminalWorkspaceWorkSettled();
+    await svc.sweepTerminalWorkspaces(100);
+    expect(s.callsFor(workspace.id, "inspect")).toHaveLength(3);
+    const edited = await executionWorkspaceService(db).update(workspace.id, { metadata: { note: "operator edit" } });
+    expect(edited!.metadata).toMatchObject({ note: "operator edit", terminalCleanupRetry: { failures: 3 } });
+    clock += 20 * MINUTE;
     s.failures.inspect = false;
     await svc.sweepTerminalWorkspaces(100);
     expect(s.callsFor(workspace.id, "inspect")).toHaveLength(4);

@@ -234,8 +234,9 @@ When terminal cleanup inspection or removal fails, Core records
 `metadata.terminalCleanupRetry` on the workspace with the failure count, the
 next attempt time, and the failure `kind`, `reason`, and Core's message. Retries
 back off from 5 minutes, doubling up to 4 hours. A successful inspection or
-removal clears the record. A reopen, which raises the lifecycle generation, and
-a provider upgrade or activation discard the backoff.
+removal clears the record, and a reopen, which raises the lifecycle generation,
+discards it. Other wakes, including provider upgrades, wait for the next attempt
+time. Core keeps the record through workspace metadata updates.
 
 The optional `prepared.destinationRef` records the resolved delivery branch as
 `refs/heads/<branch>`, up to 266 characters including the prefix. Providers should

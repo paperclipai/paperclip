@@ -300,10 +300,10 @@ function preserveWorkspaceMetadataForPatch(
       }
     }
   }
-  const freshIntentKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner"] as const;
-  if (patch.metadata !== undefined && (patch.metadata !== null || freshIntentKeys.some(key => current.metadata?.[key] !== undefined))) {
+  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY] as const;
+  if (patch.metadata !== undefined && (patch.metadata !== null || coreOwnedKeys.some(key => current.metadata?.[key] !== undefined))) {
     nextPatch.metadata = { ...(nextPatch.metadata ?? patch.metadata) };
-    for (const key of freshIntentKeys) {
+    for (const key of coreOwnedKeys) {
       if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
       else delete nextPatch.metadata[key];
     }
@@ -1909,7 +1909,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
   const terminalWorkspaceDeadlines = new Map<string, number>();
-  let terminalRetryResetAt = 0;
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
   const ISOLATED_REHOME_RETRY_MS = 60 * 60 * 1000;
@@ -3868,7 +3867,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         const terminalRetry = readTerminalWorkspaceRetry(workspace.metadata, readExecutionWorkspaceLifecycleGeneration(workspace.metadata));
-        if (terminalRetry && Date.parse(terminalRetry.failedAt) > terminalRetryResetAt && Date.parse(terminalRetry.retryAt) > now().getTime()) {
+        if (terminalRetry && Date.parse(terminalRetry.retryAt) > now().getTime()) {
           terminalWorkspaceDeadlines.set(workspace.id, Date.parse(terminalRetry.retryAt));
           result.skippedBackoff += 1;
           continue;
@@ -4314,7 +4313,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
         }
       }
-      if (!hints) { terminalInspections.clear(); terminalRetryResetAt = now().getTime(); return; }
+      if (!hints) { terminalInspections.clear(); return; }
       for (const [id, inspection] of terminalInspections) {
         if (hints.has(`workspace:${id}`) || [...inspection.issueIds].some(issueId => hints.has(`issue:${issueId}`))) {
           terminalInspections.delete(id);
