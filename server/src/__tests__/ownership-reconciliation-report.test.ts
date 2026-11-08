@@ -16,6 +16,7 @@ import {
   issues,
   nativeRunFinalizations,
   sandboxCreationOperations,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -65,7 +66,7 @@ describe("report-only ownership reconciliation", () => {
 
   beforeEach(async () => {
     await rm(orphanSpool, { recursive: true, force: true });
-    await db.execute(sql`truncate budget_policies, activity_log, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
+    await db.execute(sql`truncate budget_policies, activity_log, workspace_operations, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
       native_run_finalizations, heartbeat_runs, issues, agents, companies cascade`);
     companyId = randomUUID(); agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Ownership fixture", issuePrefix: "OWN" });
@@ -142,7 +143,7 @@ describe("report-only ownership reconciliation", () => {
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
       .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "environment_run_lease_active",
-        "environment_teardown_claim", "wake_request_claimed", "legacy_controller_lease"]);
+        "environment_teardown_claim", "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -286,6 +287,52 @@ describe("report-only ownership reconciliation", () => {
     const second = await runOwnershipReconciliationPass(db, { state });
     expect(second.violations.filter(violation => violation.kind === "wake_request_claimed").map(violation => violation.recordId).sort())
       .toEqual([wakes.pending.id, wakes.unprojected.id].sort());
+  });
+
+  it("settles a finalize attempt whose process died mid-copyback, and keeps live or independent ones", async () => {
+    // Crash points workspace.finalize.after_start_before_copyback and
+    // .after_copyback_before_done: the run finished through a later attempt,
+    // but the interrupted attempt stayed `running`.
+    const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
+      ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
+    const runs = { done: randomUUID(), live: randomUUID(), legacyDone: randomUUID(), legacyLive: randomUUID() };
+    await db.insert(heartbeatRuns).values([run(runs.done, "succeeded"), run(runs.live, "running"),
+      run(runs.legacyDone, "succeeded"), run(runs.legacyLive, "running")]);
+    const dead = { bootId: "previous-boot", pid: 4_194_303, hostHash: currentProcessSpaceHash(),
+      processStartedAt: "2026-11-07T09:00:00.000Z" };
+    const ops = { dead: randomUUID(), live: randomUUID(), foreign: randomUUID(), uncertain: randomUUID(),
+      legacyDone: randomUUID(), legacyLive: randomUUID() };
+    const op = (id: string, runId: string, metadata: Record<string, unknown>) => ({ id, companyId, heartbeatRunId: runId,
+      phase: "workspace_finalize", status: "running", metadata });
+    await db.insert(workspaceOperations).values([
+      op(ops.dead, runs.done, { finalizeOwner: dead }),
+      // Stamped by this process and still running here (current boot): alive.
+      op(ops.live, runs.live, { finalizeOwner: { bootId: currentControllerBootId(), pid: process.pid,
+        hostHash: currentProcessSpaceHash(), processStartedAt: null } }),
+      // Another PID space is never proof.
+      op(ops.foreign, runs.done, { finalizeOwner: { ...dead, hostHash: "another-pid-space" } }),
+      op(ops.uncertain, runs.done, { finalizeOwner: dead, uncertain: true }),
+      // Written before the stamp: owned by its run.
+      op(ops.legacyDone, runs.legacyDone, {}),
+      op(ops.legacyLive, runs.legacyLive, {}),
+    ]);
+    const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
+      .from(workspaceOperations)).map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(Object.values(await statuses()).every(status => status === "running")).toBe(true);
+
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state });
+    expect(kindReport(first, "native_workspace_finalize_attempt")).toMatchObject({ inProgress: 6, settled: 2 });
+    expect(await statuses()).toEqual({ dead: "failed", live: "running", foreign: "running", uncertain: "running",
+      legacyDone: "failed", legacyLive: "running" });
+    const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.dead));
+    expect(settled.metadata).toMatchObject({ abandonedFinalization: { reason: "abandoned_workspace_finalization", proof: "pid_dead" } });
+    expect(settled.finishedAt).not.toBeNull();
+    // The run's outcome never changes.
+    const [doneRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.done));
+    expect(doneRun.status).toBe("succeeded");
   });
 
   it("writes nothing when recording is off", async () => {

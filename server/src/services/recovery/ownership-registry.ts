@@ -32,6 +32,7 @@ import {
   settleNativeAcceptedResultLease,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
+import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
@@ -634,9 +635,18 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         generation: null, host: null, processSpace: str(owner.hostHash), bootId: str(owner.ownerId), pid,
         processStartedAt: null, processGroupId: null } } : { kind: "none" };
     }),
-  operationKind("native_workspace_finalize_attempt", "Native workspace finalize attempt (copyback export)", "workspace_preservation",
-    and(eq(workspaceOperations.phase, "workspace_finalize"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)),
+  {
+    // Shared path since Phase 2: a finalize attempt whose process died (a
+    // restart between start and copyback, or between copyback and done) is
+    // settled so it cannot stay `running` forever (crash points
+    // workspace.finalize.after_start_before_copyback / after_copyback_before_done).
+    ...operationKind("native_workspace_finalize_attempt", "Native workspace finalize attempt (copyback export)", "workspace_preservation",
+      and(eq(workspaceOperations.phase, "workspace_finalize"), inArray(workspaceOperations.status, ["running", "pending"])),
+      // Rows written before `finalizeOwner` existed are owned by their run.
+      row => json(row.metadata).finalizeOwner ? controllerStamp(json(row.metadata).finalizeOwner, "native_workspace_finalize_attempt")
+        : runOwner(row.heartbeatRunId)),
+    settle: settleAbandonedWorkspaceFinalizeAttempt,
+  },
   operationKind("remote_provision_command", "Remote provision command intent", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_provision"), or(eq(workspaceOperations.status, "running"),
       sql`(${workspaceOperations.metadata}->>'uncertain')::boolean is true`)),
