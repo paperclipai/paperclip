@@ -89,6 +89,14 @@ export async function requestNativeAcceptedResultLeaseOperatorAction(db: Db, rec
   if (context.proof.reason !== "process_space_unrecorded" || record.owner.kind !== "process" || !record.issueId
     || !record.companyId) return;
   const stamp = record.owner.stamp;
+  // Ask only while this exact controller still holds an outstanding lease:
+  // an expired or taken-over lease no longer needs the board's proof.
+  const [held] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, record.recordId), gt(nativeRunFinalizations.leaseExpiresAt, context.now),
+      isNull(nativeRunFinalizations.controllerHostHash),
+      stamp.bootId === null ? isNull(nativeRunFinalizations.controllerBootId) : eq(nativeRunFinalizations.controllerBootId, stamp.bootId),
+      stamp.pid === null ? isNull(nativeRunFinalizations.controllerPid) : eq(nativeRunFinalizations.controllerPid, stamp.pid)));
+  if (!held) return;
   await requestNativeControllerStopConfirmation(db, {
     runId: record.recordId, companyId: record.companyId, issueId: record.issueId,
     controllerBootId: stamp.bootId, controllerPid: stamp.pid,

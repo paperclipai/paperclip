@@ -862,7 +862,9 @@ export function registerOwnershipReconciliationWork(
       const report = await runOwnershipReconciliationPass(db, { state });
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
-      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded
+      // A settling kind's live owner can die without writing a signal, so
+      // keep one bounded re-check due while such records exist.
+      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded || report.settleWatch > 0
         ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;

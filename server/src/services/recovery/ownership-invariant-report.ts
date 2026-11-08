@@ -62,6 +62,10 @@ export type KindReport = {
   reasons: Record<string, number>;
   /** Records this pass settled (kinds with a registered `settle`). */
   settled: number;
+  /** Records of a settling kind whose owner was alive or gone-but-kept: the
+   * owner can still die without writing a signal, so the worker keeps a
+   * bounded re-check due while any exist. */
+  watched: number;
   coverageGap?: string;
   error?: string;
 };
@@ -79,6 +83,8 @@ export type OwnershipReport = {
   awaitingSecondProof: number;
   /** Earliest time a record inside a grace window becomes checkable, if any. */
   nextDueAt: Date | null;
+  /** In-progress records of settling kinds that a later pass must re-prove. */
+  settleWatch: number;
   /** Work left for a later pass: failed listings or checks, unsaved
    * violations, and an unfinished I4 window. The worker keeps a retry due. */
   retryNeeded: boolean;
@@ -195,10 +201,16 @@ export async function settleOwnableKind(db: Db, kindId: string, options: {
   const now = options.now ?? new Date();
   const wanted = options.runIds ? new Set(options.runIds) : null;
   const records: InProgressRecord[] = [];
-  for (let offset = 0; offset < MAX_RECORDS_PER_KIND; offset += 200) {
-    const listed = await kind.listInProgress(db, 200, offset);
-    records.push(...listed.records);
-    if (!listed.truncated) break;
+  if (wanted && kind.listForRuns) {
+    // Scope before any page limit, so a requested run is never skipped.
+    records.push(...await kind.listForRuns(db, [...wanted]));
+  } else {
+    // A one-shot settle reads the whole kind; only the periodic pass is capped.
+    for (let offset = 0; ; offset += 200) {
+      const listed = await kind.listInProgress(db, 200, offset);
+      records.push(...listed.records);
+      if (!listed.truncated) break;
+    }
   }
   await resolveFenceHolders(db, records);
   const unique = [...new Map(records.map(record => [record.recordId, record])).values()]
@@ -353,7 +365,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
 
   for (const kind of kinds) {
     const report: KindReport = { kind: kind.id, obligation: kind.obligation, storage: kind.storage, inProgress: 0,
-      truncated: false, verdicts: { gone: 0, alive: 0, unprovable: 0 }, reasons: {}, settled: 0,
+      truncated: false, verdicts: { gone: 0, alive: 0, unprovable: 0 }, reasons: {}, settled: 0, watched: 0,
       ...(kind.coverageGap ? { coverageGap: kind.coverageGap } : {}) };
     kindReports.push(report);
     if (!kind.listInProgress) continue;
@@ -391,6 +403,8 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
         if (outcome === "settled") { report.settled += 1; continue; }
         if (outcome === "failed") retryNeeded = true;
+        // An unprovable owner changes only by operator action, which signals.
+        if (proof.verdict !== "unprovable") report.watched += 1;
       }
       if (kind.invariantChecks.includes(2) && proof.verdict === "gone") {
         const key = `${kind.id}:${record.recordId}`;
@@ -470,8 +484,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   }
 
   const inProgress = kindReports.reduce((total, report) => total + report.inProgress, 0);
+  const settleWatch = kindReports.reduce((total, report) => total + report.watched, 0);
   const report: OwnershipReport = { at: now.toISOString(), inProgress, kinds: kindReports, violations,
-    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt, retryNeeded };
+    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt, settleWatch, retryNeeded };
   if (newViolations.length > 0 || kindReports.some(kind => kind.error)) {
     logger.info({
       inProgress, violations: violations.length, newViolations: newViolations.length,

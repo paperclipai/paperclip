@@ -11,7 +11,8 @@ import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
-import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind } from "../services/recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 
 
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
@@ -491,5 +492,28 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .toMatchObject({ settled: 0, verdicts: { alive: 1 } });
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(owner.leaseExpiresAt).toEqual(f.leaseExpiresAt);
+  }, 60_000);
+
+  it("drops an expired executor lease from the kind and asks the board nothing for it", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-EXPIRED-LEGACY", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(null));
+    await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease")!;
+      expect(await kind.listForRuns!(f.db, [f.runId])).toEqual([]);
+      await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    } finally { vi.unstubAllEnvs(); }
+    expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+  }, 60_000);
+
+  it("lists a requested run's lease directly, so a run-scoped settle never misses it", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-RUN-SCOPED", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(currentProcessSpaceHash()));
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_accepted_result_lease")!;
+    expect((await kind.listForRuns!(f.db, [f.runId, randomUUID()])).map(record => record.runId)).toEqual([f.runId]);
+    const settled = await settleOwnableKind(f.db, "native_accepted_result_lease", { runIds: [f.runId] });
+    expect(settled.map(record => record.runId)).toEqual([f.runId]);
   }, 60_000);
 });

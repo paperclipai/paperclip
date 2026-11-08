@@ -357,6 +357,24 @@ describe("report-only ownership reconciliation", () => {
     }
   }, 90_000);
 
+  it("keeps re-proving a settling kind's live owner, which can die without a signal", async () => {
+    const settle = vi.fn(async () => ({ settled: true, reason: "pid_dead" }));
+    const liveOwner = { kind: "process" as const, stamp: { kind: "local" as const, scope: "fixture", generation: null, host: null,
+      processSpace: currentProcessSpaceHash(), bootId: currentControllerBootId(), pid: process.pid, processStartedAt: null } };
+    const fixture = { ...OWNABLE_KINDS.find(kind => kind.id === "native_accepted_result_lease")!, id: "fixture_settling_kind",
+      settle, listInProgress: async () => ({ truncated: false, records: [{ recordId: "r1", companyId, runId: null, issueId: null,
+        owner: liveOwner, updatedAt: null }] }) };
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state, kinds: [fixture] });
+    const second = await runOwnershipReconciliationPass(db, { state, kinds: [fixture] });
+    // The set is unchanged, so only the settle watch keeps a re-check due.
+    expect([first.settleWatch, second.settleWatch]).toEqual([1, 1]);
+    expect(settle).not.toHaveBeenCalled();
+    const reportOnly = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
+      kinds: [{ ...fixture, settle: null }] });
+    expect(reportOnly.settleWatch).toBe(0);
+  });
+
   it("goes quiet with nothing in progress and follows up while records change", async () => {
     const errors: unknown[] = [];
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });

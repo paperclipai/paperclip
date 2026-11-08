@@ -93,6 +93,9 @@ export type OwnableKind = {
   /** Lists one page in a stable order; the report pages through the kind
    * within one pass. */
   listInProgress: ((db: Db, limit: number, offset: number) => Promise<ListResult>) | null;
+  /** Lists only the in-progress records of these runs, uncapped. Settling
+   * kinds provide it so a run-scoped settle never misses a requested run. */
+  listForRuns?: (db: Db, runIds: readonly string[]) => Promise<InProgressRecord[]>;
   /** Null while the kind is report-only. */
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
@@ -146,15 +149,25 @@ function nrfStamp(row: NrfRow, scope: string): LocalOwnerStamp {
 function nrfKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
   owner: (row: NrfRow) => RecordOwner = row => ({ kind: "process", stamp: nrfStamp(row, id) }),
   invariantChecks: readonly number[] = [1, 2]): OwnableKind {
+  const record = (row: NrfRow): InProgressRecord => ({
+    recordId: row.runId, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
+    owner: owner(row), updatedAt: row.updatedAt,
+  });
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select().from(nativeRunFinalizations).where(where).orderBy(asc(nativeRunFinalizations.runId)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
-      return { truncated: result.truncated, records: result.rows.map(row => ({
-        recordId: row.runId, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
-        owner: owner(row), updatedAt: row.updatedAt,
-      })) };
+      return { truncated: result.truncated, records: result.rows.map(record) };
+    },
+    listForRuns: async (db, runIds) => {
+      const records: InProgressRecord[] = [];
+      for (let index = 0; index < runIds.length; index += 500) {
+        const rows = await db.select().from(nativeRunFinalizations)
+          .where(and(where, inArray(nativeRunFinalizations.runId, [...runIds.slice(index, index + 500)])));
+        records.push(...rows.map(record));
+      }
+      return records;
     },
   };
 }
@@ -358,9 +371,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // Shared path since Phase 2: a hard kill after `run.result` is accepted
     // leaves the result leased to the dead controller; settle expires that
     // exact lease so finalization runs now (RC-41).
+    // Outstanding leases only: an expired lease no longer holds the result,
+    // so it is not in progress for this kind (finalization reclaims it).
     ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
       and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup)),
+        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
+        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`)),
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
