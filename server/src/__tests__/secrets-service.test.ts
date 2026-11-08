@@ -2195,6 +2195,47 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows.filter((row) => row.key === "github_token" && row.deletedAt === null)).toHaveLength(1);
   });
 
+  it("generates distinct provider keys for users saving values for a long-keyed definition", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    // A definition key long enough that normalizeSecretKey's 120-char truncation
+    // would drop the per-user random UUID suffix if it is not capped, colliding
+    // two users' provider keys (and their Vault paths) into the same value.
+    const longKey = `very_long_user_secret_definition_key_${"x".repeat(90)}`;
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: longKey,
+      name: "Long key secret",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockImplementation(async (input) =>
+      preparedAwsVersion(
+        `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context!.secretKey}`,
+        "aws-version-1",
+        "value-sha-1",
+        "fingerprint-sha-1",
+      ),
+    );
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "user-one-secret",
+    });
+    const userTwoSecret = await svc.createCurrentUserSecretValue(companyId, "user-2", {
+      definitionId: definition.id,
+      value: "user-two-secret",
+    });
+
+    const uuidSuffix =
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    // The random UUID suffix must survive truncation for both users.
+    expect(userOneSecret.key).toMatch(uuidSuffix);
+    expect(userTwoSecret.key).toMatch(uuidSuffix);
+    expect(userOneSecret.key).not.toBe(userTwoSecret.key);
+  });
+
   it("removes user secret values and provider material when deleting a definition", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

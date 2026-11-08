@@ -3047,7 +3047,12 @@ export function secretService(db: Db | DbTransaction) {
       providerConfigId,
     });
     const idSuffix = randomUUID();
-    const key = normalizeSecretKey(`user.${definition.key}.${idSuffix}`);
+    // Cap the definition-key portion so the random UUID suffix always survives
+    // normalizeSecretKey's 120-char truncation. Without this, two users saving
+    // values for a long-keyed definition (> 60 normalized chars) truncate to the
+    // same key, collide in the provider path (e.g. Vault), and the second write fails.
+    const defKeyPart = normalizeSecretKey(definition.key).slice(0, 60);
+    const key = normalizeSecretKey(`user.${defKeyPart}.${idSuffix}`);
     const name = `${definition.name} (${ownerUserId})`;
     const providerWriteContext = {
       companyId,
