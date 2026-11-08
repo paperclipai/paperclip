@@ -142,6 +142,15 @@ The root postinstall links the development plugin SDK with Windows directory
 junctions. This link operation does not require Developer Mode or elevation.
 Existing SDK installs are preserved, and repeated postinstalls reuse the link.
 
+Codex observability configuration uses a compact, agent-and-settings-specific
+directory on Windows. The managed account's temporary provider path is already
+long; extra nested identity directories can prevent Codex from opening its SQLite
+state. Credentials and conversation directories still link to the managed home.
+To exercise initialization with a real installed Codex executable, set
+`PAPERCLIP_TEST_CODEX_BINARY` to its full path and run
+`pnpm exec vitest run packages/adapter-utils/src/codex-observability-home.windows.test.ts`.
+The test uses synthetic credentials and makes no model request.
+
 Native Codex uses the executable from its matching Windows platform package.
 The native Windows runtime uses the separate `@openai/codex-native` dependency
 (Codex 0.166.0) and the MXC sandbox. The ACP bridge retains its independently
