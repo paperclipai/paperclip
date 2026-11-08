@@ -74,6 +74,7 @@ const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_request
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
+const SELF_REVIEW_RETREAT_STATUSES = new Set(["backlog", "todo", "in_progress", "blocked"]);
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
@@ -933,10 +934,13 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         principalsEqual(participant, existingState!.returnAssignee!),
       );
 
-    if ((input.allowBoardOverride || selfReviewStage) && attemptedStageAdvance) {
+    const selfReviewRetreat =
+      selfReviewStage && requestedStatus !== undefined && SELF_REVIEW_RETREAT_STATUSES.has(requestedStatus);
+
+    if ((input.allowBoardOverride || selfReviewRetreat) && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
-        if (selfReviewStage) {
+        if (selfReviewRetreat) {
           Object.assign(patch, patchForPrincipal(existingState!.returnAssignee!));
         }
         return { patch };

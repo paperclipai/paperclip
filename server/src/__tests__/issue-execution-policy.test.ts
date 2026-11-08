@@ -817,6 +817,39 @@ describe("issue execution policy transitions", () => {
       expect(result.decision).toBeUndefined();
     });
 
+    it("non-participant cannot complete a self-review stage", () => {
+      const selfReviewPolicy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: ctoAgentId }] },
+      ]);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: selfReviewPolicy,
+            executionState: {
+              status: "pending",
+              currentStageId: selfReviewPolicy.stages[0].id,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: coderAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy: selfReviewPolicy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+        }),
+      ).toThrow("Only the active reviewer or approver can advance");
+    });
+
     it("non-participant still cannot retreat a review stage held by a different reviewer", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
