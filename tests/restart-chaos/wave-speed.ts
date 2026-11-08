@@ -18,6 +18,9 @@ export interface SpeedRow {
 export interface WaveSpeed {
   environment: EnvironmentKind;
   rows: SpeedRow[];
+  /** Spans shortened by control-plane outage time (fault start to ready), and the time removed. */
+  outageAdjustedSpans: number;
+  outageRemovedMs: number;
   /** Restart samples with no provider event after the control plane came back. */
   recoveryWithoutProviderEvent: number;
   /** Per-run `run.performance.budget_exceeded` rows (single runs over the p95 budget). */
@@ -52,8 +55,37 @@ export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{
       .map(run => run.id) }));
 }
 
+/** A fault's outage: from its start until the replacement server was ready. */
+export interface OutageWindow { startedAt: number; readyAt: number }
+
+export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
+  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
+}
+
+/**
+ * The run with every performance span shortened by the outage time inside it,
+ * so a held or restarting control plane is never graded as a slow turn.
+ * Span offsets are relative to the run's creation.
+ */
+export function withoutOutage(run: BaselineRun, createdAtMs: number, windows: readonly OutageWindow[]):
+  { run: BaselineRun; adjusted: number; removedMs: number } {
+  let adjusted = 0, removedMs = 0;
+  const events = run.events.map(event => {
+    const payload = event.payload;
+    if (event.eventType !== "run.performance.span" || !payload) return event;
+    const start = createdAtMs + Number(payload.startOffsetMs), duration = Number(payload.durationMs);
+    if (!Number.isFinite(start) || !Number.isFinite(duration)) return event;
+    const overlap = windows.reduce((total, window) =>
+      total + Math.max(0, Math.min(start + duration, window.readyAt) - Math.max(start, window.startedAt)), 0);
+    if (overlap <= 0) return event;
+    adjusted += 1; removedMs += overlap;
+    return { ...event, payload: { ...payload, durationMs: Math.max(0, duration - overlap) } };
+  });
+  return { run: { ...run, events }, adjusted, removedMs };
+}
+
 export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly BaselineRun[], faults: readonly BaselineFault[],
-  runBudgetExceeded: number, errors: string[] = []): WaveSpeed {
+  runBudgetExceeded: number, errors: string[] = [], outage: { adjusted: number; removedMs: number } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
   const rows: SpeedRow[] = [];
   for (const row of baselineRows(runs)) {
     for (const [metric, measured] of [["ttft", row.ttftAfterRunCreated], ["agent_boot", row.boot]] as const) {
@@ -69,7 +101,7 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
   }
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + runBudgetExceeded;
   return { environment, rows, recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null).length,
-    runBudgetExceeded, breaches, errors };
+    runBudgetExceeded, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
 }
 
 async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]> {
@@ -89,14 +121,19 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const runs: BaselineRun[] = [];
   const timing: Array<{ id: string; createdAt: number; finishedAt: number | null }> = [];
   const errors: string[] = [];
+  const windows = outageWindows(faults);
+  const outage = { adjusted: 0, removedMs: 0 };
   for (const task of tasks) {
     const seen = new Map<string, RunSample>();
     for (const sample of task.samples) for (const run of sample.runs ?? []) if (run.createdAt) seen.set(run.id, run);
     const ordered = [...seen.values()].sort((a, b) => Date.parse(a.createdAt!) - Date.parse(b.createdAt!));
     for (const [index, run] of ordered.entries()) {
       try {
-        runs.push({ runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
-          events: await runEvents(api, run.id) });
+        const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
+          events: await runEvents(api, run.id) };
+        const trimmed = withoutOutage(raw, Date.parse(run.createdAt!), windows);
+        outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
+        runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });
       } catch (error) {
         errors.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -105,14 +142,15 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   }
   const runBudgetExceeded = runs.reduce((total, run) =>
     total + run.events.filter(event => event.eventType === "run.performance.budget_exceeded").length, 0);
-  return gradeWaveSpeed(environment, runs, faultRuns(faults, timing), runBudgetExceeded, errors);
+  return gradeWaveSpeed(environment, runs, faultRuns(faults, timing), runBudgetExceeded, errors, outage);
 }
 
 export function speedMarkdown(speed: WaveSpeed): string {
   const s = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
   const lines = [`## Speed (${speed.environment})`, "",
     `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.runBudgetExceeded} single-run budget_exceeded events).`,
-    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}.`, "",
+    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}.`,
+    `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];
   for (const row of speed.rows) {
     lines.push(`| ${row.adapter} | ${row.metric} | ${row.start} | ${row.measured.n} | ${s(row.measured.p50)} | ${s(row.measured.p95)} | `

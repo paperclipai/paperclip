@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BaselineRun } from "./ttft-baseline-stats.js";
 import type { FaultReceipt } from "./types.js";
-import { breachesOf, budgetFor, faultRuns, gradeWaveSpeed, speedMarkdown } from "./wave-speed.js";
+import { breachesOf, budgetFor, faultRuns, gradeWaveSpeed, outageWindows, speedMarkdown, withoutOutage } from "./wave-speed.js";
 
 const span = (name: string, startOffsetMs: number, durationMs: number) =>
   ({ eventType: "run.performance.span", createdAt: "2026-11-08T00:00:00.000Z", payload: { span: name, startOffsetMs, durationMs } });
@@ -35,6 +35,20 @@ describe("wave speed grade", () => {
     expect(budgetFor("daytona", "codex", "ttft", "cold")).toBeNull();
     expect(budgetFor("local", "unknown", "ttft", "cold")).toBeNull();
     expect(breachesOf({ n: 1, p50: 99_000, p95: 99_000, max: 99_000 }, null)).toEqual([]);
+  });
+
+  it("removes control-plane outage time from the spans it overlaps", () => {
+    const created = 1_000_000;
+    const held = run("h", "claude", 300_000);
+    const windows = outageWindows([{ startedAt: created + 10_000, readyAt: created + 260_000 } as FaultReceipt,
+      { startedAt: 0, readyAt: null } as unknown as FaultReceipt]);
+    const trimmed = withoutOutage(held, created, windows);
+    expect(trimmed.adjusted).toBe(1);
+    expect(trimmed.removedMs).toBe(250_000);
+    const speed = gradeWaveSpeed("local", [trimmed.run], [], 0, [], trimmed);
+    expect(speed.rows.find(row => row.metric === "ttft")?.measured.p50).toBe(50_000);
+    expect(speedMarkdown(speed)).toContain("Outage time removed from 1 spans: 250.0 s");
+    expect(withoutOutage(run("n", "claude", 5_000), created, windows).adjusted).toBe(0);
   });
 
   it("attributes each fault to the runs it crossed", () => {
