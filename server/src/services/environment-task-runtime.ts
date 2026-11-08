@@ -19,6 +19,19 @@ import { NativeExecutionContext } from "./native-runtime/native-execution-contex
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
+export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
+  const commands = state.processedCommands;
+  return state.schema === "paperclip.runner.durable.state.v1" && state.lifecycle === "ready" &&
+    Array.isArray(state.outbox) && state.outbox.length === 0 && Number.isSafeInteger(state.nextSourceSeq) &&
+    Number(state.nextSourceSeq) > 0 && state.ackedSourceSeq === Number(state.nextSourceSeq) - 1 &&
+    state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null &&
+    commands !== null && typeof commands === "object" && !Array.isArray(commands) &&
+    Object.values(commands).every(command => {
+      const status = command !== null && typeof command === "object" ? (command as { status?: unknown }).status : undefined;
+      return typeof status === "string" && status !== "" && status !== "pending" && status !== "indeterminate";
+    });
+}
+
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
   const metadata = lease.metadata ?? {};
   if (metadata.driver !== "plugin" || typeof metadata.pluginId !== "string" || typeof metadata.driverKey !== "string") return false;
@@ -117,6 +130,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     || (activeProbe && (runner.sessionId !== probe.sessionId || (launches && operation.projectIds.length > 0))))) {
     throw new Error("Plugin-provided Runner execution identity mismatch");
   }
+  let stoppedSourceCheckpoint = false;
   if (runner && resumeFrom && !sourceRecovery) {
     const inspectCheckpoint = operation.kind === "read_state";
     const sources = await db.select({ id: environmentLeases.id, runId: environmentLeases.heartbeatRunId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
@@ -146,6 +160,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         throw new Error("Plugin Runner retained session is not authorized");
       }
     }
+    stoppedSourceCheckpoint = true;
   }
   if (metadata.driver !== "plugin" || typeof metadata.pluginId !== "string" || typeof metadata.driverKey !== "string") {
     throw new Error("Plugin-provided Runner execution lease has no pinned plugin driver");
@@ -393,6 +408,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
+    if (stoppedSourceCheckpoint && parsed.kind === "state" && isSettledReadyRunnerState(parsed.state)) {
+      parsed.state = { ...parsed.state, lifecycle: "suspended" };
+    }
     if (sourceRecovery && (operation.kind === "prepare" || operation.kind === "submit")) {
       await assertPluginTaskSourceRecovery(db, { companyId: input.companyId, leaseId: lease.id,
         context: context instanceof NativeExecutionContext ? context : undefined, operation });
