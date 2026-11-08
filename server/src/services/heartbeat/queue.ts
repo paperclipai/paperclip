@@ -2517,8 +2517,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // temporary hold is saved as a deferred intent that names the refusal and
     // the hold-release event that promotes it, never written as a terminal
     // skip. Promotion runs normal admission again, once.
-    const canSaveDeferredMessage = () => !executionWaitRequestId && !caseRequest && !durableRequest &&
-      Boolean(issueId && isUuidLike(issueId)) && opts.requestedByActorType === "user" && Boolean(wakeCommentId);
+    // The release drain promotes a saved message behind the task's latest
+    // terminal run. A task that never ran has none: its message stays in the
+    // task, and stranded-work recovery starts the task once the hold lifts.
+    const canSaveDeferredMessage = async () => {
+      if (executionWaitRequestId || caseRequest || durableRequest || !issueId || !isUuidLike(issueId) ||
+          opts.requestedByActorType !== "user" || !wakeCommentId) return false;
+      const [latest] = await db.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, agent.companyId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+      return Boolean(latest && isHeartbeatRunTerminalStatus(latest.status) &&
+        (latest.runtimeMode === "legacy" || latest.runtimeMode === "native"));
+    };
     const saveDeferredMessage = async (refusal: string, message: string, details: Record<string, unknown> = {}) => {
       const savedIssueId = issueId!;
       const condition = deferredWorkIntentWait(refusal, `${message} Your message is saved.`, details);
@@ -2575,7 +2586,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const companyStatus = company?.status ?? "missing";
       if (opts.requestedByActorType === "user") {
         // A paused company is a temporary hold; an archived one is not.
-        if (companyStatus === "paused" && canSaveDeferredMessage())
+        if (companyStatus === "paused" && (await canSaveDeferredMessage()))
           throw await saveDeferredMessage("company.inactive", "Company is not active", { status: companyStatus });
         throw conflict("Company is not active", { status: companyStatus });
       }
@@ -2762,7 +2773,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     if (budgetBlock) {
       // A budget block that is not a reached hard stop is an explicit pause.
-      if (canSaveDeferredMessage() && !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock)))
+      if ((await canSaveDeferredMessage()) && !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock)))
         throw await saveDeferredMessage("budget.blocked", budgetBlock.reason,
           { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
@@ -2780,7 +2791,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (caseRequest) return null;
       // Only a pause defers through the release drain (wake-queue policy); a
       // pending approval still fails a promoted wake, so it is not saved here.
-      if (invokability.reason === "paused" && canSaveDeferredMessage())
+      if (invokability.reason === "paused" && (await canSaveDeferredMessage()))
         throw await saveDeferredMessage("agent.not_invokable", invokability.message,
           { status: agent.status, reason: invokability.reason });
       let waitSaved = false;

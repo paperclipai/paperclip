@@ -239,6 +239,31 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
+  // A task that never ran has no terminal run for the release drain to promote
+  // a saved message behind. Its message stays in the task, and stranded-work
+  // recovery starts the task once the pause lifts.
+  it("starts a never-run task commented during an agent pause once the pause lifts", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Never ran", status: "todo",
+      assigneeAgentId: f.agentId, responsibleUserId: f.userId, issueNumber: 3 }).returning();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: task.id,
+      authorUserId: f.userId, body: "Please start with the FOLLOWUP line." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: task.id, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: task.id, taskId: task.id, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => wake.status === "deferred_issue_execution" && (wake.payload as { issueId?: string }).issueId === task.id)).toEqual([]);
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    await heartbeat.drainActiveRunExecutions();
+    const started = (await issueRuns({ companyId: f.companyId, issueId: task.id })).filter(run => run.startedAt);
+    expect(started).toHaveLength(1);
+  }, 180_000);
+
   it("keeps the terminal outcomes closed and every temporary refusal mapped to a release trigger", () => {
     expect([...WORK_INTENT_TERMINAL_OUTCOMES]).toEqual(["delivered", "consumed", "task_cancelled", "hard_stop"]);
     for (const refusal of ["budget.blocked", "company.inactive", "agent.not_invokable", "issue_tree_hold_active",

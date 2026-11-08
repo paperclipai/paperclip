@@ -342,6 +342,17 @@ describe("report-only ownership reconciliation", () => {
       expect.objectContaining({ rule: "I4_exactly_once_intent", recordId: id, reason: "deferred_after_hold_cleared" })]);
   });
 
+  it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {
+    const updatedAt = minutesAgo(1);
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt,
+      payload: { executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([]);
+    // Without a release event the worker still checks again when grace ends.
+    expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
+  });
+
   it("attributes spool files to their company", async () => {
     await mkdir(orphanSpool, { recursive: true });
     const runId = randomUUID();

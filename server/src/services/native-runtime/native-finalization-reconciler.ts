@@ -793,6 +793,9 @@ const OWNERSHIP_REPORT_WAKE_QUEUES = [
   DELIVERY_QUEUES.staleIssueLocks,
   DELIVERY_QUEUES.queuedRunDispatch,
   DELIVERY_QUEUES.accounting,
+  // Company and agent pause changes: the hold-release watch of the deferred
+  // work-intent backstop (section E).
+  DELIVERY_QUEUES.agentLifecycle,
 ] as const;
 
 /** Interval between report passes while in-progress records keep changing. */
