@@ -29,8 +29,17 @@ async function main(): Promise<PrivateKeyReceipt> {
       return receipt;
     }
     if (![input.agentId, input.companyId, input.sourceIssueId].every(id => typeof id === "string" && /^[a-f0-9-]{36}$/i.test(id)) || !input.profileURL || new URL(input.profileURL).origin !== base.origin) throw new Error("Invalid exact private key resource binding");
+    // The profile replaces an id route with the agent's urlKey and remounts the key form, which drops a name typed before then.
+    const { urlKey } = await json<{ urlKey: string }>(`/api/agents/${input.agentId}`);
     await page.goto(input.profileURL, { waitUntil: "domcontentloaded" });
-    await page.getByPlaceholder("Key name (e.g. production)").fill("local integration"); await page.getByRole("button", { name: "Create", exact: true }).click();
+    await page.waitForURL(url => url.pathname.split("/").map(decodeURIComponent).join("/").endsWith(`/agents/${urlKey}/api-keys`));
+    const keyName = page.getByPlaceholder("Key name (e.g. production)");
+    for (let attempt = 1; ; attempt++) {
+      await keyName.fill("local integration"); await page.waitForTimeout(750);
+      if (await keyName.inputValue() === "local integration") break;
+      if (attempt >= 5) throw new Error("Key name input did not keep its value");
+    }
+    await page.getByRole("button", { name: "Create", exact: true }).click();
     await page.getByText("API key created — copy it now, it will not be shown again.", { exact: true }).waitFor({ state: "visible" });
     const token = (await page.locator("code").filter({ hasText: /^pcp_/ }).first().textContent())?.trim();
     if (!token || token.length < 20) throw new Error("Missing private one-time credential");
