@@ -55,7 +55,7 @@ often:
 - Create, change and run any agent's routine and its triggers (not secret rotation)
 - Wake, invoke, pause and resume another agent (not terminate or delete)
 - Review new catalog tools and manage tool rules
-- Start adding a Composio account (the provider sign-in stays with the person)
+- Start adding a Composio account (`action: "add"` only; renaming or removing an account stays with the person, and so does the provider sign-in)
 - Decide stalled-task reviews and recovery items, retry tasks and workspace recovery
 - Decide stuck-run watchdog items
 - Read the person's inbox (attention feed and Mine)

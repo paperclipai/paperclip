@@ -25,6 +25,8 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
+        /** Never derive instance-admin rights from the user's role (delegate actors). */
+        ignoreInstanceAdmin?: boolean;
         canManageExperimentalSettings?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;

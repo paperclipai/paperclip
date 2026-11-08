@@ -5346,7 +5346,7 @@ export function issueRoutes(
     return false;
     }
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-    const instanceAdmin = req.actor.source !== "cloud_tenant"
+    const instanceAdmin = req.actor.source !== "cloud_tenant" && !req.actor.ignoreInstanceAdmin
       ? await db
           .select({ id: instanceUserRoles.id })
           .from(instanceUserRoles)

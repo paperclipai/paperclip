@@ -11,6 +11,7 @@ import {
   companyMemberships,
   createDb,
   heartbeatRuns,
+  instanceUserRoles,
   userDelegates,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
@@ -19,6 +20,7 @@ import { userDelegateActorMiddleware } from "../middleware/user-delegate.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { assertBoard } from "../routes/authz.js";
 import { userDelegateRoutes } from "../routes/user-delegates.js";
+import { authorizationService } from "../services/authorization.js";
 import { matchUserDelegateAction } from "../services/user-delegates.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -39,7 +41,6 @@ describe("user delegate action allowlist", () => {
     ["POST", "/api/tool-profiles/abc/new-tools/review", "tools.review_new"],
     ["POST", "/api/companies/c/tools/policies/reorder", "tools.policy_create"],
     ["POST", "/api/companies/c/tools/policies/p/duplicate", "tools.policy_create"],
-    ["POST", "/api/tool-connections/abc/composio/apps/gmail/accounts", "composio.account_add"],
     ["POST", "/api/issues/DAY-1/stalled-review-decision", "stalled.review_decision"],
     ["POST", "/api/issues/DAY-1/recovery-actions/resolve", "recovery.resolve"],
     ["POST", "/api/issues/DAY-1/recovery-actions/recover-workspace", "recovery.workspace"],
@@ -70,6 +71,14 @@ describe("user delegate action allowlist", () => {
   ])("refuses %s %s", (method, path) => {
     expect(matchUserDelegateAction(method, path)).toBeNull();
   });
+
+  it("allows only adding a Composio account, not renaming or removing one", () => {
+    const path = "/api/tool-connections/abc/composio/apps/gmail/accounts";
+    expect(matchUserDelegateAction("POST", path, { action: "add" })?.key).toBe("composio.account_add");
+    expect(matchUserDelegateAction("POST", path, { action: "rename", accountId: "a", alias: "x" })).toBeNull();
+    expect(matchUserDelegateAction("POST", path, { action: "remove", accountId: "a" })).toBeNull();
+    expect(matchUserDelegateAction("POST", path)).toBeNull();
+  });
 });
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -88,6 +97,7 @@ describeEmbeddedPostgres("user delegates", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(userDelegates);
+    await db.delete(instanceUserRoles);
     await db.delete(heartbeatRuns);
     await db.delete(companyMemberships);
     await db.delete(agents);
@@ -209,8 +219,10 @@ describeEmbeddedPostgres("user delegates", () => {
       type: "board",
       source: "delegate",
       userId,
+      runId: actor.runId,
       companyIds: [companyId],
       isInstanceAdmin: false,
+      ignoreInstanceAdmin: true,
       delegate: { delegationId: delegation.id, agentId: delegateAgentId, runId: actor.runId, reason: "Start the stall check", action: "agent.wake" },
     });
 
@@ -231,6 +243,32 @@ describeEmbeddedPostgres("user delegates", () => {
     const mine = await request(app).get(`/api/companies/${companyId}/user-delegations/mine`);
     expect(mine.status).toBe(200);
     expect(mine.body.delegations).toEqual([expect.objectContaining({ id: delegation.id, userId })]);
+  });
+
+  it("never gives the delegate instance-admin rights, even when the person has them", async () => {
+    const { companyId, userId, delegateAgentId } = await seed();
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    await nameDelegate(companyId, userId, delegateAgentId);
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: `Other ${otherCompanyId}`,
+      issuePrefix: `UO${otherCompanyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+    });
+
+    const wake = await request(appFor(agentActor(companyId, delegateAgentId)))
+      .post(`/api/agents/${randomUUID()}/wakeup`)
+      .set("X-Paperclip-Delegate-For", userId).set("X-Paperclip-Delegate-Reason", "Check admin scope").send({});
+    expect(wake.status).toBe(200);
+    const delegateActor = wake.body.actor as Express.Request["actor"];
+
+    const request_ = { action: "agents:create" as const, resource: { type: "company" as const, companyId: otherCompanyId } };
+    const asDelegate = await authorizationService(db).decide({ actor: delegateActor, ...request_ });
+    expect(asDelegate.allowed).toBe(false);
+    expect(asDelegate.reason).not.toBe("allow_instance_admin");
+    // Control: the same person signed in directly is an instance admin.
+    const asPerson = await authorizationService(db).decide({ actor: { type: "board", userId, source: "session" }, ...request_ });
+    expect(asPerson).toMatchObject({ allowed: true, reason: "allow_instance_admin" });
   });
 
   it("requires a reason, an allowlisted action, the named agent and an unrestricted credential", async () => {

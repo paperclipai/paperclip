@@ -1,17 +1,26 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companyMemberships, userDelegates, type Db } from "@paperclipai/db";
 import type { UserDelegate, UserDelegateActionDescriptor } from "@paperclipai/shared";
+import { isUniqueViolation } from "../db-errors.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 const ID = "[^/]+";
 
 interface UserDelegateAction extends UserDelegateActionDescriptor {
   pattern: RegExp;
+  /** Extra check on the request body for routes that do more than the allowed action. */
+  allowsBody?: (body: unknown) => boolean;
 }
 
-function action(key: string, method: string, path: string, description: string): UserDelegateAction {
+function action(
+  key: string,
+  method: string,
+  path: string,
+  description: string,
+  allowsBody?: (body: unknown) => boolean,
+): UserDelegateAction {
   const source = path.replace(/:[A-Za-z]+/g, ID).replace(/\((?!\?)/g, "(?:");
-  return { key, method, path, description, pattern: new RegExp(`^${source}/?$`) };
+  return { key, method, path, description, pattern: new RegExp(`^${source}/?$`), allowsBody };
 }
 
 /**
@@ -38,7 +47,9 @@ export const USER_DELEGATE_ACTIONS: readonly UserDelegateAction[] = [
   action("tools.policy_update", "PATCH", "/api/companies/:companyId/tools/policies/:policyId", "Change a tool rule"),
   action("tools.policy_delete", "DELETE", "/api/companies/:companyId/tools/policies/:policyId", "Remove a tool rule"),
   action("composio.account_add", "POST", "/api/tool-connections/:connectionId/composio/apps/:toolkit/accounts",
-    "Start adding a Composio account; the person still completes the provider sign-in"),
+    "Start adding a Composio account; the person still completes the provider sign-in",
+    // The same route also renames and removes accounts; a delegate may only add.
+    (body) => typeof body === "object" && body !== null && (body as { action?: unknown }).action === "add"),
   action("stalled.review_decision", "POST", "/api/issues/:id/stalled-review-decision", "Decide a stalled-task review"),
   action("recovery.resolve", "POST", "/api/issues/:id/recovery-actions/resolve", "Resolve a recovery item"),
   action("recovery.workspace", "POST", "/api/issues/:id/recovery-actions/(recover-workspace|resume-workspace-finalization|retry-workspace-export)",
@@ -48,9 +59,10 @@ export const USER_DELEGATE_ACTIONS: readonly UserDelegateAction[] = [
   action("inbox.read", "GET", "/api/companies/:companyId/(attention|attention/summary|attention/tasks|inbox/mine)", "Read the person's inbox"),
 ];
 
-export function matchUserDelegateAction(method: string, path: string): UserDelegateActionDescriptor | null {
+export function matchUserDelegateAction(method: string, path: string, body?: unknown): UserDelegateActionDescriptor | null {
   const upper = method.toUpperCase();
-  const match = USER_DELEGATE_ACTIONS.find((entry) => entry.method === upper && entry.pattern.test(path));
+  const match = USER_DELEGATE_ACTIONS.find((entry) =>
+    entry.method === upper && entry.pattern.test(path) && (!entry.allowsBody || entry.allowsBody(body)));
   return match ? { key: match.key, method: match.method, path: match.path, description: match.description } : null;
 }
 
@@ -70,10 +82,6 @@ function toUserDelegate(row: UserDelegateRow): UserDelegate {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
-}
-
-function isUniqueViolation(error: unknown) {
-  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
 }
 
 export function userDelegateService(db: Db) {

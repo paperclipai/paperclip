@@ -122,4 +122,21 @@ describe("UserDelegateControl", () => {
     expect(mockUserDelegateApi.setMine).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
+  it("keeps an unavailable saved delegate visible so it can be turned off", async () => {
+    mockAgentsApi.list.mockRejectedValue(new Error("agents down"));
+    mockUserDelegateApi.getMine.mockResolvedValue({ delegate: { ...delegate, delegateAgentId: "agent-2" }, actions });
+    mockUserDelegateApi.clearMine.mockResolvedValue({ delegate: null, actions });
+    const root = render(container);
+
+    await waitForAssertion(() => expect(select(container).value).toBe("agent-2"));
+    expect(container.textContent).toContain("(unavailable)");
+    await waitForAssertion(() => expect(container.querySelector("[role=alert]")).not.toBeNull());
+    expect(saveButton(container).disabled).toBe(true);
+
+    await choose(container, "");
+    expect(saveButton(container).disabled).toBe(false);
+    await act(() => saveButton(container).click());
+    await waitForAssertion(() => expect(mockUserDelegateApi.clearMine).toHaveBeenCalledWith("company-1"));
+    act(() => root.unmount());
+  });
 });

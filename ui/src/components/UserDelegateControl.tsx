@@ -38,6 +38,11 @@ export function UserDelegateControl({ companyId }: { companyId: string | null | 
     () => (agentsQuery.data ?? []).filter(isAgentTaskTarget),
     [agentsQuery.data],
   );
+  // Keep the saved delegate selectable even when it is no longer a task
+  // target or the agent list failed, so the select never shows "Off" while
+  // the saved agent is still active, and turning it off stays possible.
+  const savedAgentMissing = savedAgentId !== NONE && !selectableAgents.some((agent) => agent.id === savedAgentId);
+  const savedAgentName = (agentsQuery.data ?? []).find((agent) => agent.id === savedAgentId)?.name;
 
   useEffect(() => {
     if (delegateQuery.data) setDraft(savedAgentId);
@@ -92,10 +97,18 @@ export function UserDelegateControl({ companyId }: { companyId: string | null | 
           onChange={(event) => setDraft(event.target.value)}
         >
           <option value={NONE}>Off</option>
+          {savedAgentMissing ? (
+            <option value={savedAgentId}>{`${savedAgentName ?? "Current delegate"} (unavailable)`}</option>
+          ) : null}
           {selectableAgents.map((agent) => (
             <option key={agent.id} value={agent.id}>{agent.name}</option>
           ))}
         </NativeSelect>
+        {agentsQuery.isError ? (
+          <p className="text-sm text-destructive" role="alert">
+            {describeError(agentsQuery.error, { action: "load agents" }).body} You can still turn your delegate off.
+          </p>
+        ) : null}
       </div>
 
       {actions.length > 0 ? (

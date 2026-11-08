@@ -78,7 +78,7 @@ export function userDelegateActorMiddleware(db: Db): RequestHandler {
         throw forbidden("This agent is not this person's delegate", { code: "user_delegate_not_authorized" });
       }
       const method = req.method.toUpperCase();
-      const delegateAction = matchUserDelegateAction(method, req.path);
+      const delegateAction = matchUserDelegateAction(method, req.path, req.body);
       if (!delegateAction) {
         throw forbidden("A delegate cannot do this action for the person", { code: "user_delegate_action_not_allowed" });
       }
@@ -112,9 +112,11 @@ export function userDelegateActorMiddleware(db: Db): RequestHandler {
       req.actor = {
         type: "board",
         userId,
+        runId: actor.runId,
         companyIds: [companyId],
         memberships: [{ companyId, membershipRole: membership.membershipRole, status: membership.status }],
         isInstanceAdmin: false,
+        ignoreInstanceAdmin: true,
         source: "delegate",
         delegate: {
           delegationId: delegation.id,
