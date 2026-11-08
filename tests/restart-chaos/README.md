@@ -287,6 +287,10 @@ release path) and `environment.stop_retain.after_claim_before_stop` (a
 stop-and-retain export) were not reached by any workload on 2026-11-08; a
 `not_reached` result prints what each needs.
 
+`environment.stop_retain.after_claim_before_stop` needs `--daytona-reuse-lease`:
+the chaos environment then keeps reusable sandboxes, so each per-turn run stops
+and keeps its sandbox.
+
 **CI.** `.github/workflows/crash-points.yml` runs the same command on demand
 (`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).
 It is not a required PR check. It runs only from the default branch, for

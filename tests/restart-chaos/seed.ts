@@ -58,7 +58,7 @@ export function chaosDaytonaShape(cpu: number) {
   return { cpu, memory: 4, disk: 10 };
 }
 
-async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; waveId: string;
+async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; reuseLease: boolean; waveId: string;
   secretRefs: SecretReferenceMap; timeline: Timeline }): Promise<string> {
   const fixture = runnerEnvironments.find(candidate => candidate.id === "daytona");
   if (!fixture) throw new Error("runner-e2e catalog has no daytona environment fixture");
@@ -67,8 +67,9 @@ async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: strin
   const payload = fixture.buildEnvironment({ secretRefs: input.secretRefs, daytonaImage: input.image, executionId: input.waveId });
   const shape = chaosDaytonaShape(input.cpu);
   const environment = await input.api.post<{ id: string; driver: string }>(`/api/companies/${input.companyId}/environments`,
-    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape } });
-  input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape });
+    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
+  input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape,
+    reuseLease: input.reuseLease });
   return environment.id;
 }
 
@@ -108,6 +109,7 @@ export async function seedChaosLab(input: {
   env: EnvironmentKind;
   daytonaImage?: string;
   daytonaCpu?: number;
+  daytonaReuseLease?: boolean;
   adapters: readonly AdapterId[];
   concurrency: number;
   budgetCents: number;
@@ -158,7 +160,7 @@ export async function seedChaosLab(input: {
   let environmentId: string;
   if (input.env === "daytona") {
     environmentId = await createDaytonaEnvironment({ api, companyId: company.id, image: input.daytonaImage!, cpu: input.daytonaCpu ?? 4,
-      waveId: input.waveId, secretRefs, timeline });
+      reuseLease: input.daytonaReuseLease === true, waveId: input.waveId, secretRefs, timeline });
     input.onEnvironment?.({ companyId: company.id, environmentId, environmentKind: "daytona" });
     if (input.adapters.includes("codex")) await qualifyNativeCodex({ api, companyId: company.id, environmentId, timeline });
   } else {

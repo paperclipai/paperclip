@@ -83,6 +83,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       replay: { type: "string" },
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
+      "daytona-reuse-lease": { type: "boolean" },
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
@@ -95,7 +96,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -140,7 +141,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,
-    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
+    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
+      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
     ...(lifecycle ? { lifecycle } : {}),
     // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
@@ -149,6 +151,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     ...(crashPoint ? { crashPoint } : {}),
   };
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
+  if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
     const budget = integer(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET, "RESTART_CHAOS_DAYTONA_VCPU_BUDGET", DAYTONA_VCPU_BUDGET, 1, 1_000);
     if (options.concurrency * options.daytonaCpu > budget) {

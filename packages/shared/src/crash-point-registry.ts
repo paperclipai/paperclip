@@ -113,7 +113,7 @@ export const CRASH_POINTS = {
     environments: ["daytona"],
     kinds: ["environment_stop_and_retain_intent"],
     invariants: ["I2", "I7"],
-    prerequisite: "A stop-and-retain intent: a run whose sandbox must be stopped but kept, for a native workspace export resume.",
+    prerequisite: "A stop-and-retain intent: run with --daytona-reuse-lease, so each per-turn run stops and keeps its reusable sandbox.",
   },
   "environment.lease.after_release_before_runtime_services": {
     description: "The run's environment leases are released; its workspace runtime services are not.",
