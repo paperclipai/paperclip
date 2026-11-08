@@ -15,9 +15,12 @@ beforeEach(() => { vi.stubGlobal("fetch", () => { throw new Error("No real netwo
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); mock.gate.mockReset(); });
 it("actual inventory preflight accepts real completed manual pauses instead of impossible ready-plus-paused lifecycle", async () => {
  const first=pause(),second=pause(owner(secondId)),rows=[first,second];
- const ctx={ input:{fixtures:{company:{id:companyId},agent:{id:leadId}},api:{get:async(path:string)=>path.endsWith(leadId)?owner(leadId):rows.find(x=>path.endsWith(x.before.id))!.settled}}} as unknown as ChatCatalogContext;
- const grade=await inventory.taskInventoryCases[0]!.verifySetup!(ctx,{workerIds:[firstId,secondId],ownerPauseReceipts:rows.map(({before,requested})=>({before,requested}))});
- expect(grade.passed).toBe(true);
+ const ctx={ input:{fixtures:{company:{id:companyId},agent:{id:leadId}},api:{get:async(path:string)=>path.endsWith(leadId)?owner(leadId):rows.find(x=>path.endsWith(x.before.id))!.settled,getRunObservation:async()=>tasks}}} as unknown as ChatCatalogContext;
+ const tasks=[{id:"t1",companyId,title:"Launch work 001",description:"d",projectId:"p",status:"blocked",priority:"medium",assigneeAgentId:firstId,goalId:null}];
+ const state={workerIds:[firstId,secondId],ownerPauseReceipts:rows.map(({before,requested})=>({before,requested})),originalTasks:structuredClone(tasks)};
+ expect((await inventory.taskInventoryCases[0]!.verifySetup!(ctx,state)).passed).toBe(true);
+ tasks[0]!.status="todo";
+ expect((await inventory.taskInventoryCases[0]!.verifySetup!(ctx,state)).checks.find(check=>check.id==="inventory-settled")?.passed).toBe(false);
 });
 function passesBoardGuard(headers:Record<string,string>) { let passed=false;let status=200;const req={method:"POST",actor:{type:"board",source:"session"},header:(k:string)=>k==="host"?"127.0.0.1:3218":headers[k]??headers[k[0]!.toUpperCase()+k.slice(1)],socket:{},app:{get:()=>undefined}} as unknown as Request;const res={status:(value:number)=>{status=value;return res;},json:()=>{}} as unknown as Response;boardMutationGuard()(req,res,()=>{passed=true;});return{passed,status}; }
 it("actual delegation upload uses the owned browser Origin and reaches the unchanged authenticated board guard", async () => {
@@ -52,7 +55,7 @@ it("preserves all501 open seeds, both paused owners, genuine unassigned work and
  expect(rows.some(r=>r.status==="blocked")).toBe(true);expect(rows.some(r=>!r.assigneeAgentId&&r.status==="in_progress")).toBe(false);
 });
 it("requires distinct actual paused owners in the real preflight", async () => {
- const r=pause();const ctx={input:{fixtures:{company:{id:companyId},agent:{id:leadId}},api:{get:async(p:string)=>p.endsWith(leadId)?owner(leadId):r.settled}}} as unknown as ChatCatalogContext;
+ const r=pause();const ctx={input:{fixtures:{company:{id:companyId},agent:{id:leadId}},api:{get:async(p:string)=>p.endsWith(leadId)?owner(leadId):r.settled,getRunObservation:async()=>[]}}} as unknown as ChatCatalogContext;
  const grade=await inventory.taskInventoryCases[0]!.verifySetup!(ctx,{workerIds:[firstId,firstId],ownerPauseReceipts:[r,r]});expect(grade.passed).toBe(false);
 });
 it.each(["absent", "foreign"])("the actual unchanged board guard rejects %s Origin", kind => {
