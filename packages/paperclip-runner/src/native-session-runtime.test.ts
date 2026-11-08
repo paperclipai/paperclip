@@ -6571,6 +6571,36 @@ describe("executeNativeSession recovery", () => {
     expect(openReplacementSession).toHaveBeenCalledOnce();
   });
 
+  it("continues in a fresh session when a new run's saved session is incompatible and the checkpoint allows replacement", async () => {
+    // A provider release changed between turns (for example an agent-server
+    // bump). The next run's checkpoint allows replacement, so the user's task
+    // continues automatically in a fresh provider session, with no Retry.
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-upgraded", identity,
+      providerSessionId: "provider-upgraded", providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+      cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const replacementAttempted = new Error("replacement attempted");
+    const openReplacementSession = vi.fn(async () => { throw replacementAttempted; });
+    const backend: NativeSessionBackend = {
+      descriptor: async () => ({ kind: "mock", name: "upgraded", version: "1",
+        capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
+      openSession: vi.fn(), openReplacementSession,
+      recoverSession: async () => ({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE,
+        reason: "ACPX durable launch profile digest does not match runner startup" }),
+    };
+    const port: ControlPlanePort = {
+      openRun: vi.fn(async () => undefined), appendEvent: vi.fn(), completeRun: vi.fn(),
+      loadSessionCheckpoint: async () => structuredClone(checkpoint),
+      replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    })).rejects.toBe(replacementAttempted);
+    expect(openReplacementSession).toHaveBeenCalledOnce();
+  });
+
   it("bounds paginated recovery replay with one signal and observes a late rejection", async () => {
     vi.useFakeTimers();
     let rejectStalledReplay = (_error: Error) => {};
