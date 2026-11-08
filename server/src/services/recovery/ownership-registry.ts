@@ -847,6 +847,31 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES])),
     row => ({ kind: "operator", ownerType: row.ownerType }), [3, 7]),
+  // Work-intent outbox (section E). Each pending intent is owned by the event
+  // that releases it: a hold-release trigger, run dispatch, or its retry due
+  // time. The I4 check reports a deferred intent left after its hold cleared,
+  // and the reconciliation worker promotes it as a backstop.
+  {
+    id: "wake_request_deferred", title: "Wake request (deferred)", obligation: "ownership", storage: "database",
+    settle: null, invariantChecks: [4],
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+        issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'`,
+        trigger: sql<string | null>`${agentWakeupRequests.payload}->'executionWait'->>'trigger'`,
+        updatedAt: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.status, "deferred_issue_execution")).orderBy(asc(agentWakeupRequests.id))
+        .limit(limit + 1).offset(offset);
+      const result = page(rows, limit);
+      return { truncated: result.truncated, records: result.rows.map(row => ({
+        recordId: row.id, companyId: row.companyId, runId: null, issueId: row.issueId,
+        owner: { kind: "operator" as const, ownerType: `hold_release:${row.trigger ?? "issue_execution"}` }, updatedAt: row.updatedAt,
+      })) };
+    },
+  },
+  runKind("queued_run", "Queued run", "ownership", eq(heartbeatRuns.status, "queued"),
+    () => ({ kind: "operator", ownerType: "run_dispatch" }), [4]),
+  runKind("scheduled_retry_run", "Scheduled retry run", "ownership", eq(heartbeatRuns.status, "scheduled_retry"),
+    () => ({ kind: "operator", ownerType: "retry_schedule" }), [4]),
 ];
 
 /** Resolve the current holder of fences that live on another row (the

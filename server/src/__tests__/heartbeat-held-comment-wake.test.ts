@@ -12,6 +12,7 @@ import { requestTaskRetry } from "../services/task-retry.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { promoteDeferredWorkIntents, TEMPORARY_REFUSAL_TRIGGERS, WORK_INTENT_TERMINAL_OUTCOMES } from "../services/work-intent-outbox.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -192,6 +193,212 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.startedAt)).toHaveLength(1);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).not.toBe("blocked");
   }, 180_000);
+
+  // Section E (invariant 4): a pause is the temporary hold left after Phase 3.
+  // A message refused by it is saved with its refusal and trigger, promoted
+  // by the one hold-release function, and delivered exactly once.
+  it.each([
+    { hold: "agent pause", refusal: "agent.not_invokable",
+      apply: (f: { agentId: string }) => db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId)),
+      lift: (f: { agentId: string }) => db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId)) },
+    { hold: "company pause", refusal: "company.inactive",
+      apply: (f: { companyId: string }) => db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+        .where(eq(companies.id, f.companyId)),
+      lift: (f: { companyId: string }) => db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null })
+        .where(eq(companies.id, f.companyId)) },
+  ])("saves a message refused by a $hold and delivers it once when the pause lifts", async ({ refusal, apply, lift }) => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await apply(f as never);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the pause." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
+    // Never a terminal skip: one deferred intent naming its refusal and trigger.
+    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null,
+      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: refusal, trigger: "pause_lifted" }) }) })]);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    // The pause's own stop sweep (agent lifecycle "pausing") keeps the message
+    // it deferred; a terminate or cleanup stop would end it.
+    expect(await heartbeat.stopInvocationsForAgents([f.agentId], "Agent lifecycle stop requested",
+      { preservePauseDeferred: true })).toBe(true);
+    expect((await readWake(saved[0].id)).status).toBe("deferred_issue_execution");
+
+    await lift(f as never);
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    // Promotion skips the 30 s refusal backoff; it does not wait it out.
+    expect((await readWake(saved[0].id)).updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    // A repeated release event, or the reconciler backstop, never delivers it twice.
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "reconciler_backstop" }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
+  // A company pause stops runs asynchronously. A message posted while the
+  // task's run is still stopping is saved behind that run, and delivered once
+  // after the run ends and the pause lifts.
+  it("saves a message posted while the paused company's run is still stopping, and delivers it once", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted while the run was stopping." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
+    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution",
+      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: "company.inactive" }) }) })]);
+    // The run stops without reading the message; then the pause lifts.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
+  // A pause stops the task's run with a clean, acknowledged cancellation. The
+  // release drain never promotes queued work behind an acknowledged stop, so
+  // the lifted pause issues the task's next explicit wake, which adopts the
+  // saved message once. The pause's own stop sweep keeps the message.
+  it("delivers a message saved behind a run the pause stopped, once, after the pause lifts", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ executionRunId: f.sourceRunId }).where(eq(issues.id, f.issueId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted while the pause stopped the run." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // The pause's stop is acknowledged: the run ends cancelled with a clean stop
+    // record, and the stop releases the task's execution lock.
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled",
+      resultJson: { executionCancellation: { state: "acknowledged" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    expect(await heartbeat.stopInvocationsForAgents([f.agentId], "Agent lifecycle stop requested",
+      { preservePauseDeferred: true })).toBeTypeOf("boolean");
+    expect(deliveries(comment.id)).toHaveLength(0);
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
+  // Consumption is per comment: a retry that already received the paused
+  // message as task history consumed it, so lifting the pause never sends it
+  // again (RC-53 shape through the pause-lift path).
+  it("does not replay a paused message that a completed retry already received", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the pause.", createdAt: new Date(Date.now() - 5_000),
+      updatedAt: new Date(Date.now() - 5_000) }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // A second message, posted later in the pause, that no run has read.
+    const [later] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Also posted during the pause." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: later.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: later.id, wakeCommentId: later.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // A retry of the source run read the whole thread, the first comment included.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(), finishedAt: new Date(), retryOfRunId: f.sourceRunId,
+      contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry",
+        executionContinuation: { messages: [{ id: comment.id }] } } });
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    const saved = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
+    expect(saved).toEqual([expect.objectContaining({ status: "cancelled",
+      error: "Queued messages were already delivered to a completed run" })]);
+    // The wake that adopts the task's saved messages delivers only the unread one.
+    expect(deliveries(later.id)).toHaveLength(1);
+  }, 180_000);
+
+  // External chat input resumes only through its live inbound authorization,
+  // never through the generic pause-lift wake.
+  it("never replays a chat-inbound receipt through the pause-lift path", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "From an external chat." }).returning();
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: `chat-inbound:${randomUUID()}`,
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment",
+        executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted", message: "Agent is paused." },
+        _paperclipWakeContext: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: comment.id, wakeCommentIds: [comment.id],
+          wakeReason: "issue_commented", source: "chat:slack" } } }).returning();
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    expect((await readWake(receipt.id)).runId).toBeNull();
+  }, 180_000);
+
+  // A task that never ran has no terminal run for the release drain to promote
+  // a saved message behind. Its message stays in the task, and stranded-work
+  // recovery starts the task once the pause lifts.
+  it("starts a never-run task commented during an agent pause once the pause lifts", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Never ran", status: "todo",
+      assigneeAgentId: f.agentId, responsibleUserId: f.userId, issueNumber: 3 }).returning();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: task.id,
+      authorUserId: f.userId, body: "Please start with the FOLLOWUP line." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: task.id, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: task.id, taskId: task.id, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => wake.status === "deferred_issue_execution" && (wake.payload as { issueId?: string }).issueId === task.id)).toEqual([]);
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    await heartbeat.drainActiveRunExecutions();
+    const started = (await issueRuns({ companyId: f.companyId, issueId: task.id })).filter(run => run.startedAt);
+    expect(started).toHaveLength(1);
+  }, 180_000);
+
+  it("keeps the terminal outcomes closed and every temporary refusal mapped to a release trigger", () => {
+    expect([...WORK_INTENT_TERMINAL_OUTCOMES]).toEqual(["delivered", "consumed", "task_cancelled", "hard_stop"]);
+    for (const refusal of ["budget.blocked", "company.inactive", "agent.not_invokable", "issue_tree_hold_active",
+      "heartbeat.scheduling_suppressed"]) expect(TEMPORARY_REFUSAL_TRIGGERS[refusal]).toBeTruthy();
+  });
 
   it.each([
     { delivery: "task history", context: (commentId: string) => ({ executionContinuation: { messages: [{ id: commentId }] } }) },

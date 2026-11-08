@@ -6,6 +6,7 @@ import {
   issues,
   type Db,
 } from "@paperclipai/db";
+import { TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
 import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
@@ -136,9 +137,6 @@ const MAX_RECORDS_PER_KIND = 2_000;
 const MAX_WRITE_ATTEMPTS = 5;
 /** First I4 scan after boot looks back this far. */
 const INTENT_LOOKBACK_MS = 60 * 60_000;
-/** Refusal texts that name a temporary condition (invariant 4), as a
- * PostgreSQL case-insensitive regular expression. */
-const TEMPORARY_REFUSAL_PATTERN = "budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout";
 
 type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true; localExecutionsKnown?: true };
 
@@ -321,10 +319,56 @@ async function checkAdmissionIndependence(db: Db, state: OwnershipReportState, n
   return violations;
 }
 
-/** A wake request that ended terminally on a refusal that names a temporary
- * condition. Heuristic until section E gives wake requests closed reasons. The
- * filter runs in SQL and the scan pages by (updated_at, id), so a busy window
- * is read in full across passes and unrelated failures never hide a match. */
+/** A deferred intent still waiting this long after its hold can have
+ * cleared missed its release event (invariant 4). */
+const DEFERRED_PROMOTION_GRACE_MS = 5 * 60_000;
+
+/** Deferred pause refusals whose pause has lifted (company active, agent not paused)
+ * but that no release event promoted. The reconciliation worker promotes them
+ * through `promoteDeferredWorkIntents` as a backstop. */
+async function checkDeferredIntentsPromoted(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+  // Only messages the pause path saved, whose hold this check can read
+  // exactly. Each read is capped like every other check in this report.
+  const pauseRefusal = sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' = 'pause_lifted'
+    and ${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`;
+  const holdCleared = sql`exists (select 1 from companies c where c.id = ${agentWakeupRequests.companyId} and c.status = 'active')
+    and exists (select 1 from agents a where a.id = ${agentWakeupRequests.agentId} and a.status not in ('paused', 'terminated', 'pending_approval'))
+    -- A message saved behind a live run or a held lock still has an owner.
+    and not exists (select 1 from issues i where i.id::text = ${agentWakeupRequests.payload}->>'issueId'
+      and i.company_id = ${agentWakeupRequests.companyId} and i.execution_run_id is not null)
+    and not exists (select 1 from heartbeat_runs live_run where live_run.company_id = ${agentWakeupRequests.companyId}
+      and (live_run.context_snapshot->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'
+        or live_run.native_issue_id::text = ${agentWakeupRequests.payload}->>'issueId')
+      and live_run.status in ('queued', 'running', 'scheduled_retry'))`;
+  const graceStart = new Date(now.getTime() - DEFERRED_PROMOTION_GRACE_MS);
+  const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+    issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'` }).from(agentWakeupRequests)
+    .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"), pauseRefusal,
+      lt(agentWakeupRequests.updatedAt, graceStart), holdCleared))
+    .orderBy(asc(agentWakeupRequests.id)).limit(Math.min(limit, MAX_RECORDS_PER_KIND));
+  // A cleared hold inside its grace window is a saved deadline: the worker
+  // checks again when it ends. A hold still in force needs no deadline; its
+  // release (company or agent lifecycle change) wakes the worker.
+  const pending = await db.select({ at: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
+    .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"), pauseRefusal,
+      sql`${agentWakeupRequests.updatedAt} >= ${graceStart.toISOString()}::timestamptz`, holdCleared))
+    .limit(MAX_RECORDS_PER_KIND);
+  const due = pending.length ? { at: new Date(Math.min(...pending.map(row => new Date(row.at).getTime()))) } : null;
+  return {
+    violations: rows.map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "wake_request_deferred", recordId: row.id,
+      companyId: row.companyId, runId: null, issueId: row.issueId, reason: DEFERRED_INTENT_NOT_PROMOTED })),
+    nextDueAt: due?.at ? new Date(new Date(due.at).getTime() + DEFERRED_PROMOTION_GRACE_MS) : null,
+  };
+}
+
+export const DEFERRED_INTENT_NOT_PROMOTED = "deferred_after_hold_cleared";
+
+/** Invariant 4 with section E's closed outcomes: an accepted intent (a user's
+ * request or a message) ended terminally on a refusal that
+ * `TEMPORARY_REFUSAL_TRIGGERS` lists as temporary. The refusal code is the
+ * wake's `reason`, never its free-text error, so a retry that delivered the
+ * intent is not a false positive. The scan pages by (updated_at, id), so a
+ * busy window is read in full across passes. */
 async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now: Date, limit: number): Promise<InvariantViolation[]> {
   // The cursor keeps PostgreSQL's microsecond text form: a JS Date would round
   // it down and read the boundary row again.
@@ -337,7 +381,13 @@ async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now:
       runId: agentWakeupRequests.runId, updatedAt: sql<string>`${agentWakeupRequests.updatedAt}::text` })
       .from(agentWakeupRequests).where(and(inArray(agentWakeupRequests.status, ["skipped", "failed"]),
         sql`(${agentWakeupRequests.updatedAt}, ${agentWakeupRequests.id}) > (${position.at}::timestamptz, ${position.id}::uuid)`,
-        sql`(coalesce(${agentWakeupRequests.error}, '') || ' ' || coalesce(${agentWakeupRequests.reason}, '')) ~* ${TEMPORARY_REFUSAL_PATTERN}`))
+        inArray(agentWakeupRequests.reason, Object.keys(TEMPORARY_REFUSAL_TRIGGERS)),
+        // A reached hard stop is a terminal outcome that shares the budget code.
+        sql`not (${agentWakeupRequests.reason} = 'budget.blocked'
+          and coalesce(${agentWakeupRequests.error}, '') ~* 'hard-stop|no reliable price')`,
+        or(eq(agentWakeupRequests.requestedByActorType, "user"),
+          sql`${agentWakeupRequests.payload} ? 'commentId'`,
+          sql`jsonb_typeof(${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}') = 'array'`)))
       .orderBy(asc(agentWakeupRequests.updatedAt), asc(agentWakeupRequests.id)).limit(limit);
     for (const row of rows) {
       violations.push({ rule: "I4_exactly_once_intent", kind: "wake_request", recordId: row.id, companyId: row.companyId,
@@ -472,8 +522,13 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     () => checkAdmissionIndependence(db, state, now, limit),
     () => checkExactlyOnceIntents(db, state, now, limit),
     async () => {
+      const result = await checkDeferredIntentsPromoted(db, now, limit);
+      if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
+      return result.violations;
+    },
+    async () => {
       const result = await checkVisibleNextAction(db, now, limit);
-      nextDueAt = result.nextDueAt;
+      if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
       return result.violations;
     },
   ]) {
