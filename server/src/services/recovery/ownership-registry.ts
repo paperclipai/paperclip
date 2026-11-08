@@ -978,6 +978,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
+    // Keep this entry after the environment teardown kinds: a lease they settle
+    // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
         const stamp = legacyControllerOwnerStamp(row);
