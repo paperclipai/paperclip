@@ -22,7 +22,7 @@ import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
-import { seedChaosLab } from "./seed.js";
+import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
@@ -186,6 +186,7 @@ async function main(): Promise<number> {
       adapters: [...new Set(plan.tasks.map(task => task.adapter))],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,
+      adapterConfigOverrides: chaosLifecycleOverrides(plan.options.lifecycle),
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
       } });

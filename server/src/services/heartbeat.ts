@@ -1,5 +1,6 @@
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isContextCompactionRun } from "./context-compaction.js";
+import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -2190,10 +2191,16 @@ export function heartbeatService(
       const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
+      const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
       if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
         const changed = await executionWorkspacesSvc.applyPendingTaskWorkspaceSelection({ companyId: agent.companyId,
           issueId, runId: run.id, actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_key" } });
-        if (changed) {
+        // A subtask an older release bound to its parent's workspace gets its own
+        // here. A process-loss retry or a continuation that keeps the current
+        // workspace still finishes the interrupted attempt there first.
+        const released = run.processLossRetryCount > 0 || (freshWorkspace && freshWorkspace.mode !== "fresh_isolated_workspace") ? false
+          : await executionWorkspacesSvc.releaseAncestorWorkspaceBindingAtAdmission({ companyId: agent.companyId, issueId, runId: run.id });
+        if (changed || released) {
           delete context.resumeSessionParams;
           delete context.resumeSessionDisplayId;
           context.workspaceSelectionChanged = true;
@@ -2216,11 +2223,14 @@ export function heartbeatService(
           // Claim the issue under the same active-status predicate used by the
           // queued-run staleness gate. This is the final atomic guard before
           // dispatch: an operator parking the issue after claim but before this
-          // checkout must not be overwritten by the continuation.
+          // checkout must not be overwritten by the continuation. A todo task
+          // that has never started has nothing parked, so it may start here.
+          const startsUnstartedTask = issueContext.status === "todo" &&
+            await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
           await issuesSvc.checkout(
             issueId,
             agent.id,
-            [...resolvedInteractionCheckoutExpectedStatuses()],
+            [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
             run.id,
           );
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
@@ -2319,7 +2329,6 @@ export function heartbeatService(
       const externalProvider = heartbeatExternalProvider({ run, agent }) ?? providerApiPlacement?.provider;
       const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
-      const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
       const contextProjectId = readNonEmptyString(context.projectId);
       const boundSourceWorkspace = !externalProvider && issueContext?.executionWorkspaceId
         ? await executionWorkspacesSvc.getStoredById(agent.companyId, issueContext.executionWorkspaceId) : null;

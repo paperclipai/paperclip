@@ -642,6 +642,48 @@ Use it for:
 
 Do not treat `parentId` as execution dependency by itself.
 
+A child never shares its parent's execution workspace. Every new child task,
+from every creation path, gets its own workspace on its first run, realized from
+the project base (the project workspace or base branch) exactly as a top-level
+task in that project would be. It never starts from the parent's checkout,
+branch, saved snapshot, or unmerged changes. The child keeps the parent's
+company, project, goal, privacy, and workspace strategy (mode, environment,
+runtime, network egress, shared-workspace concurrency, branch template, base
+ref). It does not keep a pinned existing branch, a `reuse_existing` preference,
+or the workspace id. A child in another project takes that project's defaults
+instead of the parent's strategy, and so does a child of a parent that has no
+project workspace (its strategy described its own task files). In a project
+without a project workspace, where tasks acquire repositories into their own
+task files, the child's new workspace repeats the parent's repository requests
+as its own: admission clones a fresh copy at the requested ref through the
+normal acquisition path and the child's own access checks, never the parent's
+checkout, branch, or pinned commit. No route can bind a task to
+a workspace that an ancestor created or is bound to: an explicit
+`executionWorkspaceId` naming one is dropped at create, and
+`inheritExecutionWorkspaceFromIssueId` copies only the source issue's project and
+strategy. The deprecated internal `executionWorkspaceInheritanceMode` is ignored.
+This keeps a parent and its child from writing into one realized workspace at
+the same time, which made the waking parent wait with `workspace_busy` and
+crossed sandbox lease ownership from the parent into the child. Project-level
+configuration still applies to the child exactly as to a top-level task: in a
+project configured for `shared_workspace`, every task uses the project's one
+folder under the shared-workspace concurrency policy, and a branch the project
+itself pins applies to every task in the project.
+
+Older releases bound children to the parent's realized workspace by default.
+Such a child, including one that depth placement put beside its requester
+(recorded as its privacy parent), moves on its next normal admission: when it starts a new run and no
+earlier run of the child is still running, finalizing, or under workspace
+recovery, the server clears the child's binding (keeping its project workspace
+and strategy) and the run realizes the child's own workspace. A running child
+finishes its current run in the shared workspace first, and a process-loss retry
+or a Retry that keeps the current workspace also finishes there. The parent keeps
+its workspace, and no files in it are moved or removed. Nobody is asked to act.
+The same admission rule covers any task bound to a workspace that a relative in
+its task tree created: the task that created the workspace keeps it, and the
+relative bound to it (for example a parent that selected its child's workspace)
+moves to its own on its next admission.
+
 ### Blockers (`blockedByIssueIds`)
 
 This is dependency semantics.
@@ -1250,8 +1292,8 @@ recovery names this failure for the statuses it scans; for other statuses, such 
 a `blocked` task woken by a reply, the failure path records the action directly.
 
 A retained sandbox can still hold a workspace's earlier root after the workspace
-moved to another allocation, for example when child tasks inherit a parent's
-workspace and save newer work on their own sandboxes. When the parent wakes on its
+moved to another allocation, for example when child tasks that an older release
+bound to a parent's workspace saved newer work on their own sandboxes. When the parent wakes on its
 retained sandbox, the restore may replace that occupied root only when the server
 proves it is the workspace's own earlier allocation on this sandbox: the last
 recorded use of that root on this sandbox is an earlier epoch that ended in a
@@ -1812,6 +1854,23 @@ provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
 
+A recorded process is judged only in the PID space that recorded it. Native
+controller rows store `controller_host_hash` and run processes store
+`process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
+never proves that a process on another host, in another PID namespace, or in a
+sandbox is gone; such a record keeps its lease, fence or staleness TTL.
+
+Rows saved before those columns existed have no recorded host. For one release
+only, a single-host server keeps the previous local proof for them, and each use
+writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
+removes this fallback can confirm that no rows still depend on it. An ephemeral
+server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
+controller rows with no recorded host wait as `controller_host_unrecorded`, with
+a board recovery action to confirm that the previous server stopped. Its run
+processes with no recorded host are left to the run's Stop control. The next
+release removes the fallback and treats every row with no recorded host as
+unprovable.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Native finalization reconciliation (part of native recovery and the orphan
@@ -2289,6 +2348,41 @@ These identities do not grant execution or ancestry authority. New generation
 proof must match exactly; an absent or foreign field cannot certify a folded
 legacy Retry. Ordinary legacy history that already names the exact preservation
 generation retains only its existing passive proof, without status ownership.
+
+Retained-file recovery verifies the recorded source strictly, including the
+reusable-lease chain of its sandbox. When that verification refuses the source
+permanently (`allocation_ownership_ambiguous`, `source_binding_invalid`,
+`source_unavailable` or `historical_source_missing`), retrying repeats the
+refusal. The recovery worker then continues the task from its last committed
+workspace save, with the named outcome
+`retained_source_unverifiable_continued_from_last_saved`. The unverified files
+are never applied. When the retained root can still be read, the worker copies it
+without writing to the sandbox and attaches the copy to the task as unverified
+files of that run. The copy follows the workspace file policy: secrets,
+repository metadata and dependency directories are omitted. Otherwise it records why the root could not be read. In one
+transaction the worker then abandons the unverified remote workspace epoch:
+the writer and dirty flag are cleared, the last save is kept, the location and
+published root are dropped and the epoch advances. The next writer therefore
+restores the last save into a new directory and never reuses the old root. The
+same transaction resolves the hold and denies native replacement. A Blocked
+task belongs to the hold only while the hold's own Blocked receipt still owns
+the status, or, for holds saved before receipts existed, while the block was set
+by the run's terminal failure and no status decision followed. Only then is the
+task restored to `todo`; otherwise the newer block is kept and no continuation is
+started. If no user input is waiting, one continuation is delivered through the
+reconciled execution path; the decision carries the workspace repair evidence
+that a restore failure requires. Its recovery outcome tells the agent which
+changes were not applied and where the attached copy is. Every allocation of
+the source run must carry a provider stop receipt; the worker obtains a missing
+one through the same stop-only cleanup as normal recovery, but never stops a
+sandbox that another lease holds. The fallback does not run while a writer is
+live, a status effect is pending, or an external action has an uncertain
+outcome; those keep their existing reconciliation. A deferred check records its
+reason. Transient reasons are checked again after five minutes, at most twelve
+times; new input, Retry or a new recovery generation reconsiders the hold. The
+recovery worker discovers these holds itself, so holds saved by earlier releases
+take the same path after deploy. An exhausted hold whose run's files a sibling
+recovery action already saved settles as recovered.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
@@ -4015,6 +4109,20 @@ transaction can retire that run's completed file-preservation hold only when
 its bound recovery and finalization receipts prove completion. Unrelated holds,
 later task blocks, normal dispatch admission, and the three-attempt budget remain
 effective.
+
+A native run can also fail before its first coordinator claim, for example
+while it restores the previous harness backup. The claim is the only gate to
+provider dispatch, so a coordinator still at attempt 0 and controller generation
+0 proves that no provider process, turn or tool started. The failure path records
+`native_continuation_requires_reconciliation` with a no-replay file hold. Once
+that hold's file recovery completes, or the run had no workspace to save, the
+same safe-replacement worker schedules one fresh-session continuation and
+retires the hold and its task block. It requires no process identity, no
+provider, turn, item or tool events, no tool invocations, no recorded provider
+work, no Stop, no explicit user continuation and no later run for the task.
+Holds recorded by earlier releases take this path. The successor is marked
+`nativePreClaimContinuationOf`; if it also fails, it keeps the ordinary
+reconciliation hold instead of chaining another continuation.
 
 Historical replacement discovery reads at most 100 candidates per pass and
 keeps a cursor only for the remaining scan. A work notification preserves forward

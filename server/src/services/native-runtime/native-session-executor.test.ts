@@ -16086,7 +16086,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -17573,6 +17573,8 @@ describe("runnerd provider runtime wiring", () => {
     "ambiguous turn start",
     "state symlink",
     "newer provider checkpoint",
+    "warm reconnect grace expired",
+    "other recoverable failure",
   ])(
     "automatically recovers only a proven settled local session: %s",
     async (scenario) => {
@@ -17728,6 +17730,13 @@ describe("runnerd provider runtime wiring", () => {
             join(root, "runner", "runner-state.json"),
             JSON.stringify({
               ...durableRunnerState(identity, "ready"),
+              // An idle warm runner whose controller died exits after its
+              // reconnect grace with this settled, preserved state.
+              ...(scenario === "warm reconnect grace expired"
+                ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_grace_exceeded" }
+                : scenario === "other recoverable failure"
+                  ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_deadline_exceeded" }
+                  : {}),
               outbox:
                 scenario === "unacknowledged events" ? [{ sourceSeq: 10 }] : [],
               pendingTerminalDelivery: null,
@@ -17839,6 +17848,7 @@ describe("runnerd provider runtime wiring", () => {
           "empty retry shell",
           "unsuspended current",
           "active goal",
+          "warm reconnect grace expired",
         ].includes(scenario);
         if (shouldRecover) {
           await createRunnerdBackend({
@@ -17891,7 +17901,7 @@ describe("runnerd provider runtime wiring", () => {
                 "utf8",
               ),
             ).lifecycle,
-          ).toBe("ready");
+          ).toBe(scenario === "other recoverable failure" ? "recoverable_failure" : "ready");
           expect(onLog).not.toHaveBeenCalled();
           expect(state.createBackend).not.toHaveBeenCalled();
         }

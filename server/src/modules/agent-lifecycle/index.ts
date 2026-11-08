@@ -1,6 +1,6 @@
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
-import { agents } from "@paperclipai/db";
-import { inArray, sql } from "drizzle-orm";
+import { agents, companies } from "@paperclipai/db";
+import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
@@ -8,12 +8,12 @@ import { updateAgentConfiguration } from "./adapters/configuration.js";
 import type { AgentConfigurationPatch, UpdateAgentOptions } from "../../lib/agent-records.js";
 import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
-import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork } from "./adapters/postgres.js";
+import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork, lifecycleSignalWait, requestAgentLifecycleRecheckInTransaction } from "./adapters/postgres.js";
 import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-policy.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { applyAgentPolicyHoldsInTransaction } from "./adapters/postgres.js";
+export { applyAgentPolicyHoldsInTransaction, requestAgentLifecycleRecheckInTransaction } from "./adapters/postgres.js";
 export { companyHoldMismatch, fenceActiveCompanyAgentStopsInTransaction } from "./adapters/company-policy.js";
 
 export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, isAgentSetupDraft } from "./domain/policy.js";
@@ -105,6 +105,35 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
   let running: Promise<void> | undefined;
   let stopped = false;
   let nextDeadline: number | null = null;
+  const recoveryStartedAt = new Date();
+  let recoveryInitialized = false, recoveryDone = false;
+  let recoveryThrough: string | undefined, recoveryAfter: string | undefined;
+  let recoveryInitialization: Promise<void> | undefined;
+  const recoveryCondition = and(lifecycleSignalWait, lte(agents.createdAt, recoveryStartedAt));
+  async function initializeRecovery() {
+    if (recoveryInitialized) return;
+    return recoveryInitialization ??= (async () => {
+      const [last] = await db.select({ id: agents.id }).from(agents).where(recoveryCondition)
+        .orderBy(desc(agents.id)).limit(1);
+      recoveryThrough = last?.id; recoveryDone = !last; recoveryInitialized = true;
+    })().catch(error => { recoveryInitialization = undefined; throw error; });
+  }
+  async function recoverPage() {
+    await initializeRecovery();
+    if (recoveryDone || !recoveryThrough) return;
+    const page = await db.select({ id: agents.id, companyId: agents.companyId, version: agents.lifecycleVersion })
+      .from(agents).innerJoin(companies, eq(companies.id, agents.companyId))
+      .where(and(recoveryCondition, eq(companies.status, "active"), lte(agents.id, recoveryThrough),
+        recoveryAfter ? gt(agents.id, recoveryAfter) : undefined)).orderBy(asc(agents.id)).limit(100);
+    for (const agent of page) {
+      if (stopped || !canRun()) return;
+      await effects.transaction(db, agent.companyId, tx => requestAgentLifecycleRecheckInTransaction(tx,
+        { companyId: agent.companyId, agentId: agent.id, expectedVersion: agent.version, onlyIfWaiting: true },
+        () => effects.notifyWork(tx)));
+      recoveryAfter = agent.id;
+    }
+    if (page.length < 100) recoveryDone = true;
+  }
   // The coordinator supplies the wake after construction. No direct work escapes it.
   wakes.set(db, () => {});
   return {
@@ -112,6 +141,10 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
     nextRunAt: () => nextDeadline,
     async hasPending() {
       if (stopped) { nextDeadline = null; return false; }
+      if (canRun()) {
+        await initializeRecovery();
+        if (!recoveryDone) return true;
+      }
       const [pending] = await db.select({ due: sql<number | null>`min(greatest(
         coalesce(extract(epoch from (${agents.lifecycleOperation}->>'leaseUntil')::timestamptz) * 1000, 0),
         coalesce(extract(epoch from (${agents.lifecycleOperation}->>'retryAt')::timestamptz) * 1000, 0)))::double precision` })
@@ -128,6 +161,8 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
       return running ??= (async () => {
         try { await projectCompanyHolds(db, effects); }
         catch (error) { effects.reportFailure({ stage: "policy_scan" }, error); throw error; }
+        try { await recoverPage(); }
+        catch (error) { effects.reportFailure({ stage: "scan" }, error); throw error; }
         await worker.sweep();
       })().finally(() => { running = undefined; });
     },

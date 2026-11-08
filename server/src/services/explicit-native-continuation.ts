@@ -415,7 +415,7 @@ export async function admitExplicitNativeContinuation(input: {
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
           sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`));
         if (live.some(row => row.ownerHold))
-          return blocked("workspace_owner_stop_required", "A board member must confirm that the previous server stopped copying files. Your Retry is saved.");
+          return blocked("workspace_owner_stop_required", "Paperclip is waiting to confirm that the previous server stopped saving files. Your Retry is saved.");
         // A spent recovery budget finishes nothing by itself. Another Retry
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).

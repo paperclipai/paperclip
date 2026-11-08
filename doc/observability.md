@@ -1026,7 +1026,16 @@ receives a successful HTTP delivery response. The process retains the latest
 processing backpressure, network errors and rate limits can discard the event.
 Unconfirmed captures wait 60 seconds before a later task read can try again;
 this pending cache also holds at most 1,000 entries and starts no background
-timer. A server restart or cache eviction can report an old failure again.
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
 This task-state event can accompany a separate terminal run-failure report;
 the `failure_source` tag distinguishes them.
 

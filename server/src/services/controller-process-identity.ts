@@ -20,7 +20,7 @@ export type ControllerProcess = { bootId: string; pid: number; hostHash: string;
  * from any earlier boot never did.
  */
 const bootId = randomUUID();
-const UNKNOWN_PROCESS_SPACE = "unknown";
+export const UNKNOWN_PROCESS_SPACE = "unknown";
 
 /**
  * Names the space in which PIDs are comparable: one kernel boot and, on Linux,
@@ -48,7 +48,8 @@ function processSpaceHash(): string {
 
 const hostHash = processSpaceHash();
 
-async function observedProcessStartedAt(pid: number): Promise<number | null> {
+/** OS-observed start time of any PID (epoch ms), or null when it cannot be read. */
+export async function observedProcessStartedAt(pid: number): Promise<number | null> {
   try {
     const startedAt = Date.parse(await readProcessStartedAt(pid) ?? "");
     return Number.isFinite(startedAt) ? startedAt : null;
@@ -62,6 +63,8 @@ async function observedProcessStartedAt(pid: number): Promise<number | null> {
 // claim, preparation check and lease renewal. A failed read is not cached, so
 // a transient failure is retried by the next caller.
 let ownStartedAt: Promise<number | null> | undefined;
+/** The start time from the last resolved read, for `currentControllerProcessStamp`. */
+let resolvedProcessStartedAt: string | null = null;
 
 /** OS-observed start time of this server process (epoch ms), read at most once
  * successfully per process. Null when the OS cannot report it. */
@@ -71,6 +74,8 @@ export function currentProcessStartedAtMs(): Promise<number | null> {
     ownStartedAt = read;
     void read.then(value => {
       if (value === null && ownStartedAt === read) ownStartedAt = undefined;
+      // Any resolved read also feeds the no-I/O stamp.
+      if (value !== null) resolvedProcessStartedAt = new Date(value).toISOString();
     });
   }
   return ownStartedAt;
@@ -84,8 +89,6 @@ export function resetCurrentProcessStartedAtForTests(): void {
 export function currentControllerBootId(): string {
   return bootId;
 }
-
-let resolvedProcessStartedAt: string | null = null;
 
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();

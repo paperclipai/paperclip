@@ -1033,6 +1033,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const branchNameForInitialPersistence =
     pendingForwardBranchReconcile?.recordedBranchName ??
     executionWorkspace.branchName;
+  // A workspace created by this admission may inherit its parent's repository
+  // requests (never its files); see executionWorkspaceRepositoryService.
+  let createdExecutionWorkspaceThisRun = false;
   try {
     if (remoteAuthority) {
       if (!remoteSourceState.value || !issueId) throw new Error("remote_workspace_source_missing");
@@ -1095,7 +1098,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
             },
           ))
         : !controllerOnly && !persistedNativeExecutionInput && (resolvedProjectId || issueRef)
-          ? await timeWorkspace("workspace_record_create", () => executionWorkspacesSvc.create({
+          ? await timeWorkspace("workspace_record_create", () => (createdExecutionWorkspaceThisRun = true, executionWorkspacesSvc.create({
               companyId: agent.companyId,
               projectId: resolvedProjectId,
               projectWorkspaceId: resolvedProjectWorkspaceId,
@@ -1129,7 +1132,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
               lastUsedAt: new Date(),
               openedAt: new Date(),
               metadata: nextExecutionWorkspaceMetadata,
-            }))
+            })))
           : null;
   } catch (error) {
     if (executionWorkspace.created) {
@@ -1223,7 +1226,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     const taskRepositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
         issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
-        agentId: agent.id, runId: run.id, responsibleUserId }));
+        agentId: agent.id, runId: run.id, responsibleUserId,
+        inheritRepositorySelections: createdExecutionWorkspaceThisRun && !resolvedProjectWorkspaceId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
   if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && executionWorkspace.projectId

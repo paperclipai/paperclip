@@ -3404,6 +3404,23 @@ describe("isWorkspaceSyncConflictFailure", () => {
   });
 });
 
+describe("native lifecycle default and saved task sessions", () => {
+  const native = (lifecycle: Record<string, unknown>) => buildSessionConfigMetadata({
+    adapterType: "paperclip_runner",
+    effectiveAdapterConfig: { provider: "codex", model: "gpt-6.1-sol", codexPermissionMode: "never", ...lifecycle },
+  });
+
+  it("keeps a session saved before migration 0443 cleared the stored per_turn default", async () => {
+    // Before the migration the agent stored per_turn; afterwards it stores nothing.
+    expect((await native({})).fingerprint).toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
+  });
+
+  it("still starts a new session for an explicit change to warm", async () => {
+    expect((await native({ lifecycleMode: "warm", idleTimeoutMs: 300_000 })).fingerprint)
+      .not.toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
+  });
+});
+
 describe("reconcileReusedExecutionWorkspaceProjectWorkspaceId", () => {
   it("backfills a null existing binding from the resolved value", () => {
     expect(
