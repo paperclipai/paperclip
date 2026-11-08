@@ -2707,6 +2707,25 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(run).toMatchObject({ status: "running", errorCode: null });
   });
 
+  it("bootstraps an exited remote runner at its last attempt without charging it (no provider work)", async () => {
+    // #19948: only a turn the provider accepted is charged; a runner that
+    // exited before provider work keeps the attempt.
+    const fixture = await seedExitedRemoteRunner("EXITED-LAST-ATTEMPT", {}, 3);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 3, chargesProviderAttempt: false })]);
+  });
+
+  it("blocks an exited remote runner at its last attempt once the controller generation cap is reached", async () => {
+    // Repeated exits before provider work stay bounded by the generation cap.
+    const fixture = await seedExitedRemoteRunner("EXITED-GEN-CAP", {}, 3);
+    await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
+  });
+
   it.each(["a provider event committed after the failure", "a session checkpoint saved after the failure"])(
     "keeps an exited remote runner's retry held when %s contradicts the saved failure", async (label) => {
       // The saved failure still says no provider work; fresh evidence wins.
@@ -2729,7 +2748,6 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     ["the provider session was established", { providerSessionEstablished: true }, 2, "ambiguous_remote_recovery_evidence"],
     ["provider events exist", { providerEventsExist: true }, 2, "ambiguous_remote_recovery_evidence"],
     ["a checkpoint exists", { checkpointExists: true }, 2, "ambiguous_remote_recovery_evidence"],
-    ["the bootstrap budget is spent", {}, 3, "execution_recovery_budget_exhausted"],
   ])("keeps an exited remote runner's retry held when %s", async (label, failure, attempt, reason) => {
     const fixture = await seedExitedRemoteRunner(`EXITED-${label.replace(/\W+/g, "-")}`, failure, attempt);
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
