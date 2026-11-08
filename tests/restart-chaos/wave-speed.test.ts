@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BaselineRun } from "./ttft-baseline-stats.js";
 import type { FaultReceipt } from "./types.js";
-import { breachesOf, budgetFor, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
+import { breachesOf, budgetFor, faultBeforeFirstActivity, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
 import { runMetrics } from "./ttft-baseline-stats.js";
 
 const span = (name: string, startOffsetMs: number, durationMs: number, extra: Record<string, unknown> = {}) =>
@@ -66,6 +66,15 @@ describe("wave speed grade", () => {
     runId: "t", adapter: "claude", environment: "local", phase: "cold",
     events: spans.map(([name, offset, duration]) => ({ eventType: "run.performance.span",
       createdAt: new Date(trace + offset + duration).toISOString(), payload: { span: name, startOffsetMs: offset, durationMs: duration } })),
+  });
+
+  it("treats a run that a fault hit before its first activity as a restart, not a cold start", () => {
+    const hit = traced(1_000_000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 30_000]]);
+    expect(faultBeforeFirstActivity(hit, [1_010_000])).toBe(true);
+    expect(faultBeforeFirstActivity(hit, [1_040_000, 990_000])).toBe(false);
+    const cold = { ...hit, phase: "cold" as const };
+    expect(gradeWaveSpeed("local", [cold], [], 0).rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ measured: { n: 1 } });
+    expect(gradeWaveSpeed("local", [{ ...cold, phase: "restart" }], [], 0).rows.find(row => row.metric === "time_to_first_activity")).toBeUndefined();
   });
 
   it("finds the trace start from when its spans were written, never later than it", () => {
