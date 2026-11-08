@@ -69,6 +69,7 @@ import {
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
   controllerAcceptedTurnStartId,
+  committedEventWindowComplete,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -77,6 +78,18 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("committedEventWindowComplete", () => {
+  const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));
+  it("is complete only when every acknowledged event from the first one is retained", () => {
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 3), ackedSourceSeq: 3 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: [], ackedSourceSeq: 0 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 3, 4), ackedSourceSeq: 4 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(2, 3), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 2), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete(undefined)).toBe(false);
+  });
+});
 
 describe("controllerAcceptedTurnStartId", () => {
   // Shapes copied from the RC-59 durable controller journal.
