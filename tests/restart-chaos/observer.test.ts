@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
 import type { TaskPlan } from "./types.js";
@@ -85,6 +86,43 @@ describe("TaskObserver", () => {
     expect(observer.record.preFaultSnapshotError).toMatch(/ENOENT/);
   });
 
+  it("keeps an M1 parent watched while a subtask runs, then rests it once a subtask is blocked", async () => {
+    let childStatus = "in_progress";
+    const { api } = fakeApi({ "parentIds=": () => [{ id: "c1", parentId: "i1", status: "done" }, { id: "c2", parentId: "i1", status: childStatus }],
+      "/documents/": () => null }, "blocked");
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver({ ...plan, workload: "M1", followUpAfterMs: null }, api, lab, timeline, ready);
+    await observer.launch();
+    let now = observer.record.createdAt! + 1_000;
+    const restWindow = async () => { await observer.poll(now); now += REST_CONFIRM_MS + 1; await observer.poll(now); now += 1_000; };
+    await restWindow();
+    await restWindow();
+    expect(observer.done).toBe(false);
+    childStatus = "blocked";
+    await restWindow();
+    expect(observer.done).toBe(false);
+    expect(timeline.entries.filter(entry => entry.kind === "task_child_blocked")).toHaveLength(1);
+    now += CHILD_WAKE_GRACE_MS;
+    await restWindow();
+    expect(observer.done).toBe(true);
+    expect(observer.record.finalStatus).toBe("blocked");
+  });
+
+  it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
+    const { api } = fakeApi({}, "in_progress");
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, timeline, ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 1_000);
+    observer.markUnfinished();
+    expect(observer.done).toBe(true);
+    expect(observer.record).toMatchObject({ timedOut: true, finalStatus: "in_progress" });
+    expect(timeline.entries.some(entry => entry.kind === "task_unfinished_at_interrupt")).toBe(true);
+    const grade = gradeTask(observer.record, [], observer.definition.budgetMs, { verdict: "pass", checks: [] });
+    expect(grade.pass).toBe(false);
+    expect(grade.rules.R1.detail).toMatch(/no_rest_within_budget/);
+  });
+
   it("fires the planned fault once, after its offset", async () => {
     const { api } = fakeApi();
     const observer = new TaskObserver({ ...plan, fireAfterMs: 5_000 }, api, lab, new Timeline(null), ready);
@@ -115,4 +153,13 @@ describe("fixture repository", () => {
     const record = parseBenchRecord(await readFile(path.join(root, ".bench", "run-abcd1234.txt"), "utf8"));
     expect(record?.result).toBe(BENCH_EXPECTED);
   }, 60_000);
+});
+
+describe("childrenPending", () => {
+  it("waits on running subtasks and stops waiting once each is done, cancelled or blocked", () => {
+    expect(childrenPending(null)).toBe(true);
+    expect(childrenPending([{ status: "done" }, { status: "in_progress" }])).toBe(true);
+    expect(childrenPending([{ status: "done" }, { status: "cancelled" }])).toBe(false);
+    expect(childrenPending([{ status: "done" }, { status: "blocked" }])).toBe(false);
+  });
 });

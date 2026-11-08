@@ -102,9 +102,7 @@ export function withoutOutage(run: BaselineRun, windows: readonly OutageWindow[]
 
 export function firstActivityMs(run: BaselineRun): number | null {
   const metrics = runMetrics(run);
-  const span = runSpans(run).find(candidate => candidate.name === "task.time_to_first_agent_activity");
-  if (!span) return metrics.ttftAfterRunCreatedMs;
-  return Math.max(0, span.durationMs - (metrics.inputWaitMs ?? 0));
+  return metrics.firstActivityAfterRunCreatedMs ?? metrics.ttftAfterRunCreatedMs;
 }
 
 function firstActivityByGroup(runs: readonly BaselineRun[]): Map<string, number[]> {

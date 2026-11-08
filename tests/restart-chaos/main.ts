@@ -425,7 +425,10 @@ async function main(): Promise<number> {
     // An injected fault that did not complete invalidates the wave, even when
     // bounded recovery brought the server back and the tasks passed.
     if (faultFailures) harnessError ??= new Error(`${faultFailures} injected fault(s) failed; see fault_error in the timeline`);
-    if (interrupted) throw new Error("Harness interrupted before the wave finished");
+    if (interrupted) {
+      harnessError ??= new Error("Harness interrupted before the wave finished");
+      for (const observer of launched) observer.markUnfinished();
+    }
 
     // R6: let finalizers settle, then sweep for anything still pending.
     const quietFor = Date.now() - lastDoneAt;
