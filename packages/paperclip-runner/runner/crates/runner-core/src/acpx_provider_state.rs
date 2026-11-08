@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::acpx_event_payload::{
-    decode_acpx_event, AcpxEventPayload, AcpxRuntimeEventKind, AcpxTurnStatus,
+    admit_acpx_event_payload_size, decode_acpx_event, AcpxEventPayload, AcpxRuntimeEventKind,
+    AcpxTurnStatus,
 };
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -240,6 +241,8 @@ impl AcpxProviderState {
         event: &AcpxSidecarEvent,
     ) -> Result<Vec<AcpxProviderStateEvent>, LocalRunnerError> {
         if self.scope.names_settled_turn(event) {
+            // History still passes payload admission like any other event.
+            admit_acpx_event_payload_size(event)?;
             // A late event for a settled turn (for example a sidecar that
             // reports the previous turn after the next one started) is
             // history. Record it; never fail the current turn.

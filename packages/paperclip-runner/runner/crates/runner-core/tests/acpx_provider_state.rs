@@ -896,7 +896,19 @@ fn records_late_events_for_a_settled_turn_as_history() {
     for sequence in 6..60 {
         state.accept_event(&late(sequence)).unwrap();
     }
-    assert!(state.accept_event(&late(60)).unwrap().is_empty());
+    assert!(state.accept_event(&late(59)).unwrap().is_empty());
+
+    // History still passes payload admission.
+    let oversized = state.accept_event(&event(
+        60,
+        GeneratedAcpxSidecarEventType::RuntimeEvent,
+        Some("turn-1"),
+        json!({"type":"text_delta","text":"x".repeat(300 * 1024)}),
+    ));
+    assert!(oversized
+        .unwrap_err()
+        .to_string()
+        .contains("256 KiB admission limit"));
 
     // A turn this scope never saw is not history.
     let unknown = state.accept_event(&event(

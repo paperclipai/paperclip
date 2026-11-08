@@ -73,6 +73,11 @@ describe("Codex driver stale-generation events", () => {
   it.each([
     ["an item completion", "item/completed", { turnId: "turn-1", item: { id: "late-1", type: "agentMessage", text: "late" } }],
     ["an item update", "item/agentMessage/delta", { turnId: "turn-1", itemId: "late-1", delta: "late" }],
+    ["a tool start", "item/started", { turnId: "turn-1",
+      item: { id: "cmd-1", type: "commandExecution", command: "ls", status: "inProgress" } }],
+    ["a tool completion", "item/completed", { turnId: "turn-1",
+      item: { id: "cmd-1", type: "commandExecution", command: "ls", status: "completed" } }],
+    ["a plan update", "turn/plan/updated", { turnId: "turn-1", plan: [{ step: "Inspect", status: "completed" }] }],
   ] as const)("records %s for a settled turn as history before the next turn starts", async (_label, method, params) => {
     const { transport, session, events, consume, pushHistory } = await settledThenActive(
       `between-${method.replace(/\W+/g, "-")}`, { betweenTurns: true });
@@ -91,6 +96,9 @@ describe("Codex driver stale-generation events", () => {
     expect(events.find((event) => event.eventType === "harness.diagnostic"
       && event.payload.classification === "stale_generation_event")?.payload)
       .toMatchObject({ receivedTurnId: "turn-1", expectedTurnId: null });
+    // Only a history diagnostic: the old activity never re-enters the stream.
+    expect(events.filter((event) => event.eventType.startsWith("tool.execution.")
+      || event.eventType === "plan.updated" || (event.turnId === "turn-1" && event.eventType.startsWith("item.")))).toEqual([]);
   });
 
   // A recovered session's checkpointed turns belong to an earlier

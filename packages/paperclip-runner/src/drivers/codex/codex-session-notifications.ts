@@ -54,6 +54,11 @@ const DELTA_KINDS: Record<string, string> = {
 
 // Turn-scoped activity a resumed runner can replay from committed history.
 // turn/completed is excluded: its replay still passes the fingerprint check.
+/** Methods that keep their own handling for a turn the history rule covers. */
+const HISTORY_RULE_EXEMPT_METHODS: ReadonlySet<string> = new Set([
+  "turn/completed", "turn/started", "thread/tokenUsage/updated", "paperclip/canonicalProviderEvent",
+]);
+
 const REPLAYABLE_TURN_METHODS = new Set([
   "turn/started",
   "item/started",
@@ -194,6 +199,17 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     if (identity.classification === "stale_turn") {
       // History by the one stale-event rule (CodexSessionState.isHistoryTurn).
       state.recordHistoryEvent(notification.method, identity.turnId ?? "");
+      return;
+    }
+    // Apply the rule before any canonical mapping, so a settled turn's late
+    // items and plans never re-enter the stream as fresh work. Its terminal
+    // keeps its own conflict check below, a provider that starts it again
+    // still fails, and canonical provider diagnostics keep flowing.
+    if (identity.classification === "root" && identity.turnId !== null
+      && identity.threadId === state.opened.threadId
+      && state.isHistoryTurn(identity.turnId)
+      && !HISTORY_RULE_EXEMPT_METHODS.has(notification.method)) {
+      state.recordHistoryEvent(notification.method, identity.turnId);
       return;
     }
     if (identity.classification !== "root") {
