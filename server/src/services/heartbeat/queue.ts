@@ -1,4 +1,5 @@
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2512,6 +2513,32 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     };
 
+    // Work-intent outbox (invariant 4): a user's message refused by a
+    // temporary hold is saved as a deferred intent that names the refusal and
+    // the hold-release event that promotes it, never written as a terminal
+    // skip. Promotion runs normal admission again, once.
+    const canSaveDeferredMessage = () => !executionWaitRequestId && !caseRequest && !durableRequest &&
+      Boolean(issueId && isUuidLike(issueId)) && opts.requestedByActorType === "user" && Boolean(wakeCommentId);
+    const saveDeferredMessage = async (refusal: string, message: string, details: Record<string, unknown> = {}) => {
+      const savedIssueId = issueId!;
+      const condition = deferredWorkIntentWait(refusal, `${message} Your message is saved.`, details);
+      await db.transaction(async tx => {
+        await tx.execute(sql`select id from issues where id = ${savedIssueId} and company_id = ${agent.companyId} for update`);
+        await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId, agentId, source, triggerDetail, reason,
+          payload: withQueuedCommentIdsInWakePayload({
+            ...payload, issueId: savedIssueId, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot, executionWait: condition,
+          }, [...new Set([...queuedCommentIdsFromRunContext(enrichedContextSnapshot), wakeCommentId!])]),
+          status: "deferred_issue_execution",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        });
+      });
+      return new PersistedExecutionWaitRefusal(message, details);
+    };
+
     const schedulingSuppression = await getSchedulingSuppression();
     // A task drain holds ADMISSION, not the request. The drain is a
     // process-local pre-restart hold, so a wake that arrives while it is
@@ -2547,6 +2574,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (caseRequest) return null;
       const companyStatus = company?.status ?? "missing";
       if (opts.requestedByActorType === "user") {
+        // A paused company is a temporary hold; an archived one is not.
+        if (companyStatus === "paused" && canSaveDeferredMessage())
+          throw await saveDeferredMessage("company.inactive", "Company is not active", { status: companyStatus });
         throw conflict("Company is not active", { status: companyStatus });
       }
       await writeSkippedRequest("company.inactive", {
@@ -2731,31 +2761,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     );
     if (budgetBlock) {
-      // A user's message refused by a temporary hold (accounting still settling)
-      // is saved as a deferred receipt, not skipped. It is promoted through
-      // normal admission once the run it waits behind ends or the hold clears.
-      if (!executionWaitRequestId && !caseRequest && !durableRequest && issueId && isUuidLike(issueId) &&
-          opts.requestedByActorType === "user" && wakeCommentId &&
-          !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock))) {
-        const savedIssueId = issueId;
-        const condition = { reason: "budget.blocked", message: `${budgetBlock.reason} Your message is saved.`,
-          scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId };
-        await db.transaction(async tx => {
-          await tx.execute(sql`select id from issues where id = ${savedIssueId} and company_id = ${agent.companyId} for update`);
-          await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId, agentId, source, triggerDetail, reason,
-            payload: withQueuedCommentIdsInWakePayload({
-              ...payload, issueId: savedIssueId, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot, executionWait: condition,
-            }, [...new Set([...queuedCommentIdsFromRunContext(enrichedContextSnapshot), wakeCommentId])]),
-            status: "deferred_issue_execution",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          });
-        });
-        throw new PersistedExecutionWaitRefusal(budgetBlock.reason, { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
-      }
+      // A budget block that is not a reached hard stop is an explicit pause.
+      if (canSaveDeferredMessage() && !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock)))
+        throw await saveDeferredMessage("budget.blocked", budgetBlock.reason,
+          { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
@@ -2769,6 +2778,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
     if (!invokability.invokable) {
       if (caseRequest) return null;
+      // Only a pause defers through the release drain (wake-queue policy); a
+      // pending approval still fails a promoted wake, so it is not saved here.
+      if (invokability.reason === "paused" && canSaveDeferredMessage())
+        throw await saveDeferredMessage("agent.not_invokable", invokability.message,
+          { status: agent.status, reason: invokability.reason });
       let waitSaved = false;
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         const wait = await writeSkippedRequest("agent.not_invokable", {

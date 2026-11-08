@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { agents, environments, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginHasAgentEnvironments, pluginServesAgentEnvironment } from "./plugin-environment-driver.js";
@@ -14,6 +15,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
   return {
     async onReady(agent) {
+      await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: agent.companyId, trigger: "pause_lifted" }));
       await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
     },
     async requiredPluginIds(agent) {

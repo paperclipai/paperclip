@@ -17,11 +17,13 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "../d
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import {
   createOwnershipReportState,
+  DEFERRED_INTENT_NOT_PROMOTED,
   ownershipReportFingerprint,
   recheckSettlingKinds,
   runOwnershipReconciliationPass,
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
+import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -816,6 +818,18 @@ export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
  * deadline: an idle instance runs no SQL here. The pass runs in the shared
  * scheduler only, never on the path before `turn.start`.
  */
+/** Section E backstop: a deferred intent whose hold cleared without a
+ * release event is promoted through the one promotion function. Promotion
+ * re-runs normal admission, so a wrong report never bypasses a gate. */
+async function promoteMissedDeferredIntents(db: Db, report: OwnershipReport) {
+  const companies = new Set(report.violations.filter(violation => violation.reason === DEFERRED_INTENT_NOT_PROMOTED)
+    .flatMap(violation => violation.companyId ? [violation.companyId] : []));
+  for (const companyId of companies) {
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId, trigger: "reconciler_backstop" }))
+      .catch(error => logger.warn({ err: error, companyId }, "deferred intent backstop promotion failed"));
+  }
+}
+
 export function registerOwnershipReconciliationWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -878,6 +892,7 @@ export function registerOwnershipReconciliationWork(
       lastPassAt = Date.now();
       pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
+      await promoteMissedDeferredIntents(db, report);
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
       // A settling kind's live owner can die without writing a signal, so

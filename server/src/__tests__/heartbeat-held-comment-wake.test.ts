@@ -12,6 +12,7 @@ import { requestTaskRetry } from "../services/task-retry.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { promoteDeferredWorkIntents, TEMPORARY_REFUSAL_TRIGGERS, WORK_INTENT_TERMINAL_OUTCOMES } from "../services/work-intent-outbox.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -192,6 +193,57 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.startedAt)).toHaveLength(1);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).not.toBe("blocked");
   }, 180_000);
+
+  // Section E (invariant 4): a pause is the temporary hold left after Phase 3.
+  // A message refused by it is saved with its refusal and trigger, promoted
+  // by the one hold-release function, and delivered exactly once.
+  it.each([
+    { hold: "agent pause", refusal: "agent.not_invokable",
+      apply: (f: { agentId: string }) => db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId)),
+      lift: (f: { agentId: string }) => db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId)) },
+    { hold: "company pause", refusal: "company.inactive",
+      apply: (f: { companyId: string }) => db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+        .where(eq(companies.id, f.companyId)),
+      lift: (f: { companyId: string }) => db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null })
+        .where(eq(companies.id, f.companyId)) },
+  ])("saves a message refused by a $hold and delivers it once when the pause lifts", async ({ refusal, apply, lift }) => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await apply(f as never);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the pause." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
+    // Never a terminal skip: one deferred intent naming its refusal and trigger.
+    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null,
+      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: refusal, trigger: "pause_lifted" }) }) })]);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    expect((await readWake(saved[0].id)).status).toBe("deferred_issue_execution");
+
+    await lift(f as never);
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    // Promotion skips the 30 s refusal backoff; it does not wait it out.
+    expect((await readWake(saved[0].id)).updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    // A repeated release event, or the reconciler backstop, never delivers it twice.
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "reconciler_backstop" }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
+  }, 180_000);
+
+  it("keeps the terminal outcomes closed and every temporary refusal mapped to a release trigger", () => {
+    expect([...WORK_INTENT_TERMINAL_OUTCOMES]).toEqual(["delivered", "consumed", "task_cancelled", "hard_stop"]);
+    for (const refusal of ["budget.blocked", "company.inactive", "agent.not_invokable", "issue_tree_hold_active",
+      "heartbeat.scheduling_suppressed"]) expect(TEMPORARY_REFUSAL_TRIGGERS[refusal]).toBeTruthy();
+  });
 
   it.each([
     { delivery: "task history", context: (commentId: string) => ({ executionContinuation: { messages: [{ id: commentId }] } }) },

@@ -1,7 +1,5 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
-import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
@@ -128,9 +126,7 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
 async function notifyAccountingHoldRelease(tx: object, companyId: string) {
-  await notifyRunDispatch(tx, { companyId });
-  await notifyDeferredExecutionEligibility(tx, { companyId });
-  await notifyIssueRecovery(tx, { companyId });
+  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled" });
 }
 
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;

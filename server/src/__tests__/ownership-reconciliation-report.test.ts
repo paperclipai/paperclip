@@ -116,7 +116,7 @@ describe("report-only ownership reconciliation", () => {
         processStartedAt: "2026-11-01T00:00:00.000Z" } } });
     // A wake request ended terminally on a temporary refusal.
     await db.insert(agentWakeupRequests).values({ id: ids.wake, companyId, agentId, source: "assignment",
-      status: "skipped", error: "Company budget hold: admission paused" });
+      status: "skipped", reason: "agent.not_invokable", requestedByActorType: "user", error: "Agent is paused" });
     // A work intent refused for another run's unfinished accounting (the gate
     // Phase 3 removed). Saved, not dropped, so it is not an I4 violation.
     await db.insert(agentWakeupRequests).values({ id: ids.heldWake, companyId, agentId, source: "automation",
@@ -309,12 +309,37 @@ describe("report-only ownership reconciliation", () => {
       source: "assignment", status: "failed", error: "adapter exited with code 1" })));
     const refused = Array.from({ length: 5 }, () => randomUUID());
     await db.insert(agentWakeupRequests).values(refused.map(id => ({ id, companyId, agentId, source: "assignment",
-      status: "skipped", error: "issue lock busy" })));
+      status: "skipped", reason: "company.inactive", requestedByActorType: "user", error: "Company is not active" })));
     const report = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
     expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")
       .map(violation => violation.recordId).sort()).toEqual([...refused].sort());
     const again = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
     expect(again.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  // Section E: I4 reads the closed refusal code, not free text. Phase 2's
+  // false positive was a delivered retry whose error said "retrying once".
+  it("does not report a wake whose error text only mentions a retry", async () => {
+    const state = createOwnershipReportState();
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "failed",
+      reason: "process_lost", requestedByActorType: "user", error: "Process lost; retrying once" });
+    const report = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  it("reports a saved message whose pause lifted without promotion, and not one still paused", async () => {
+    const id = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id, companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt: minutesAgo(10),
+      payload: { executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const paused = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(paused.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([]);
+    expect(kindReport(paused, "wake_request_deferred")).toMatchObject({ inProgress: 1, verdicts: { alive: 1 } });
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const lifted = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(lifted.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([
+      expect.objectContaining({ rule: "I4_exactly_once_intent", recordId: id, reason: "deferred_after_hold_cleared" })]);
   });
 
   it("attributes spool files to their company", async () => {

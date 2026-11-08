@@ -1793,6 +1793,18 @@ per task, ends when the owner releases them, and wakes the successor through
 the work-intent promotion path. A predecessor run row that no longer exists
 owns nothing and never holds its successor.
 
+**Accepted work intents are delivered exactly once.** An accepted work intent
+(an assignment, a comment, a Retry or a recovery) ends in one of four terminal
+outcomes only: delivered, consumed by a later run that received it, task
+cancelled, or a reached hard stop. Every other refusal is temporary. The intent
+is saved as a deferred wake whose `executionWait` names the refusal and the
+event that clears it (a lifted pause, a released lock, settled accounting, a
+released task-tree hold, or resumed scheduling). Each such event promotes
+deferred intents through one promotion function, and the ownership reconciler
+promotes any intent whose hold cleared without that event. Promotion re-runs
+normal admission. Consumption is recorded per comment or intent id, so a
+promotion never delivers an intent that a later run already received.
+
 Accepted cumulative per-run usage checkpoints contribute observed running spend
 before the final ledger charge. Admission counts each unfinished operation's
 maximum of its reservation and observed spend; hard stops count actual ledger
