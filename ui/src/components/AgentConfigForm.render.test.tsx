@@ -1086,7 +1086,8 @@ describe("AgentConfigForm environment selector", () => {
       await act(async () => { const select = result.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "smart"; select.dispatchEvent(new Event("change", { bubbles: true })); });
       await clickByText(result.container, "Save");
       const patch = result.onSave.mock.calls[0]![0];
-      expect({ ...source, ...patch.adapterConfig }).toMatchObject({ provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "deny-all" });
+      expect(patch.replaceAdapterConfig).toBe(true);
+      expect(patch.adapterConfig).toEqual(source);
       expect(patch.runtimeConfig.harnessPool).toEqual({ poolId: "smart" });
     } finally { list.mockRestore(); }
   });

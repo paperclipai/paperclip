@@ -1835,7 +1835,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onChange={(choice) => {
                   if (choice === "pool") {
                     if (isCreate || adapterType !== "paperclip_runner") return;
-                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...prev.adapterConfig, homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
+                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...config, ...prev.adapterConfig, homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
                     return;
                   }
                   if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, harnessPool: undefined });
