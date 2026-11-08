@@ -1235,7 +1235,7 @@ describe("original-host controller containment in task recovery", () => {
   it("does not expose a confirmation form to non-board runtime managers", () => {
     const node = mount(false);
     expect(node.querySelector("button")).toBeNull();
-    expect(node.textContent).toContain("board operator");
+    expect(node.textContent).toContain("company owner");
     expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
   });
   it.each(["owner", "admin", "operator", "viewer"] as const)("shows the containment form only for a board %s with owner-stop authority", role => {

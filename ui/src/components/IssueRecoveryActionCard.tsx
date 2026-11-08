@@ -1565,6 +1565,6 @@ export function NativeControllerContainmentRecovery({ issue, canManage, onRecord
       <Button disabled={submit.isPending || !controllerStopped || !providerStopped || !outcome || evidence.trim().length < 20}
         onClick={() => submit.mutate()}>{submit.isPending ? "Recording…" : "Record containment"}</Button>
       {submit.error && <p role="alert">{describeError(submit.error).body}</p>}
-    </> : <p>A board operator with runtime access must review this original-host execution.</p>}
+    </> : <p>A company owner, company administrator, or instance administrator must review this original-host execution.</p>}
   </section>;
 }
