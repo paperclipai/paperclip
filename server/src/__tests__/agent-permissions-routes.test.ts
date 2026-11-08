@@ -244,6 +244,7 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
             Promise.resolve(resolve([{
               id: companyId,
               name: "Paperclip",
+              issuePrefix: "PAP",
               requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
             }])),
           ),
@@ -1725,7 +1726,7 @@ describe("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("only a board user can terminate an agent");
-    expect(res.body.error).toContain("agent's profile");
+    expect(res.body.error).toContain(`[the agent's profile](/PAP/agents/${agentId})`);
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelInvocationsForAgents).not.toHaveBeenCalled();
