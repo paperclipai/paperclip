@@ -17,7 +17,7 @@ export function registerIssueRecoveryWork(
   owner: {
     stranded(scope: Scope): Promise<unknown>;
     orphanBlockers(scope: { companyId: string }): Promise<unknown>;
-    recoveryActions(scope: { companyId: string }): Promise<unknown>;
+    recoveryActions(scope: { companyId: string }): Promise<{ blockerStallWakeFailures?: number } | unknown>;
     dependencies(scope: Scope): Promise<{ enqueueFailed: number }>;
     locks(scope: Scope): Promise<unknown>;
     watchdogs(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number }>;
@@ -98,7 +98,13 @@ export function registerIssueRecoveryWork(
   }
   const assignments = register(DELIVERY_QUEUES.strandedAssignments, ["todo", "in_progress", "in_review"], owner.stranded);
   const orphanBlockers = registerCompany(DELIVERY_QUEUES.orphanBlockers, "blockers", owner.orphanBlockers);
-  const recoveryActions = registerCompany(DELIVERY_QUEUES.activeRecoveryActions, "actions", owner.recoveryActions);
+  const recoveryActions = registerCompany(DELIVERY_QUEUES.activeRecoveryActions, "actions", async scope => {
+    const result = await owner.recoveryActions(scope);
+    // A stall wake that failed to enqueue must be retried, not dropped with the entry.
+    const failures = result && typeof result === "object" && "blockerStallWakeFailures" in result
+      ? Number(result.blockerStallWakeFailures) : 0;
+    if (failures > 0) throw new Error("Blocker stall wake remains undelivered");
+  });
   const dependencies = register(DELIVERY_QUEUES.resolvedDependencies, ["blocked"], async scope => {
     const result = await owner.dependencies(scope);
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");

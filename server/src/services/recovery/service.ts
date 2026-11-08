@@ -3639,7 +3639,8 @@ export function recoveryService(
     }
     // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
     const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
-    return { ...result, blockerStallWakes: stalls.woken };
+    // A failed delivery is reported so the recovery worker retries this pass.
+    return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed };
   }
 
   async function escalateDispositionRepair(input: {
@@ -6084,8 +6085,10 @@ export function recoveryService(
     // (blocker-stall-wakeups.ts). This sweep visits each blocked issue, which
     // covers a board action already resolved as "blocked".
     if (!opts?.runId && !opts?.blockerIssueId) {
-      await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup,
+      const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup,
         { companyId: opts?.companyId ?? null, issueId: opts?.issueId ?? null });
+      // Counted with the dependency wakes, so the worker retries a failed one.
+      result.enqueueFailed += stalls.failed;
     }
     return result;
   }

@@ -1,5 +1,5 @@
-import type { IssueBlockerStalledWakeContext } from "@paperclipai/shared";
-import { useQuery } from "@tanstack/react-query";
+import type { Issue, IssueBlockerStalledWakeContext } from "@paperclipai/shared";
+import { useQueries } from "@tanstack/react-query";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,20 @@ import { describeError } from "../api/errors";
  * each one from here, with the child's own Retry, without opening it.
  */
 export function StalledDependencyNotice({ stalled }: { stalled: IssueBlockerStalledWakeContext[] | null | undefined }) {
-  if (!stalled || stalled.length === 0) return null;
+  const entries = stalled ?? [];
+  // The child's own task state decides whether Retry is offered, as on its page.
+  const children = useQueries({
+    queries: entries.map(entry => {
+      const ref = entry.stalledIssueIdentifier ?? entry.stalledIssueId;
+      return { queryKey: queryKeys.issues.detail(ref), queryFn: () => issuesApi.get(ref) };
+    }),
+  });
+  // The waiter's saved list refreshes only with the waiter. Once a child's own
+  // refreshed state has moved on (its Retry started it, or it was unblocked),
+  // drop it here rather than show a cleared stall.
+  const rows = entries.map((entry, index) => ({ entry, child: children[index] }))
+    .filter(({ entry, child }) => !child?.data || child.data.status === entry.stalledIssueStatus);
+  if (rows.length === 0) return null;
   return (
     <div
       data-testid="stalled-dependency-notice"
@@ -25,22 +38,21 @@ export function StalledDependencyNotice({ stalled }: { stalled: IssueBlockerStal
     >
       <div className="flex items-center gap-1.5 font-medium">
         <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        {stalled.length === 1 ? "A dependency needs the board" : `${stalled.length} dependencies need the board`}
+        {rows.length === 1 ? "A dependency needs the board" : `${rows.length} dependencies need the board`}
       </div>
       <ul className="mt-1.5 space-y-1.5">
-        {stalled.map(entry => <StalledDependencyRow key={entry.recoveryAction.id} entry={entry} />)}
+        {rows.map(({ entry, child }) => <StalledDependencyRow key={entry.recoveryAction.id} entry={entry}
+          child={child?.data} readError={child?.error ?? null} isFetching={child?.isFetching ?? false}
+          refetch={() => void child?.refetch()} />)}
       </ul>
     </div>
   );
 }
 
-function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext }) {
+function StalledDependencyRow({ entry, child, readError, isFetching, refetch }: {
+  entry: IssueBlockerStalledWakeContext; child: Issue | undefined; readError: Error | null; isFetching: boolean; refetch: () => void;
+}) {
   const ref = entry.stalledIssueIdentifier ?? entry.stalledIssueId;
-  // The child's own task state decides whether Retry is offered, as on its page.
-  const { data: child, error: readError, refetch, isFetching } = useQuery({
-    queryKey: queryKeys.issues.detail(ref),
-    queryFn: () => issuesApi.get(ref),
-  });
   const retry = useTaskRetry(child);
   const canRetry = child?.interruption?.canRetry === true;
   // Same states as the task's own Retry (ExecutionBlockerNotice): a refused
@@ -61,7 +73,7 @@ function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext
       {readError && !child ? (
         <span role="alert" className="flex basis-full items-center gap-2 text-xs text-destructive">
           Could not load this task's state: {describeError(readError).body}
-          <Button size="sm" variant="outline" className="h-6 px-2" disabled={isFetching} onClick={() => void refetch()}>
+          <Button size="sm" variant="outline" className="h-6 px-2" disabled={isFetching} onClick={refetch}>
             Reload
           </Button>
         </span>
