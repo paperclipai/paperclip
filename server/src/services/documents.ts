@@ -186,7 +186,6 @@ export function documentService(db: Db) {
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
-      // An exact read also states whether it is still current, so a reader cannot report an older revision as the latest one.
       return revision ? { ...revision, isLatest: revision.latestRevisionId === revision.id } : null;
     },
 
