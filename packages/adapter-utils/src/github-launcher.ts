@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 
 /** Standalone source for local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string } = {}): string {
+export function githubLauncherSource(options: { accountHome?: string; brokerFile?: boolean; interpreterPath?: string } = {}): string {
   if (options.interpreterPath !== undefined && (typeof options.interpreterPath !== "string"
     || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
     throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
@@ -10,7 +10,7 @@ export function githubLauncherSource(options: { brokerFile?: boolean; interprete
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 // A PATH shim can capture this launcher's absolute path and call it again.
 // Reject that cycle before resolving another executable or capturing authority.
 if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
@@ -19,6 +19,30 @@ if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
 }
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
+const SIGNING_KEYS = '^(commit|tag)\\.gpgsign$|^gpg\\.format$|^gpg\\.ssh\\.allowedsignersfile$|^user\\.signingkey$';
+// Without the account's signing policy only commands that never create commits or tags may run.
+// Aliases and unknown subcommands can create them, so they are refused too.
+const SAFE_WITHOUT_SIGNING = new Set(['add', 'archive', 'blame', 'branch', 'bundle', 'cat-file', 'check-ignore', 'checkout', 'clean',
+  'clone', 'config', 'describe', 'diff', 'diff-files', 'fetch', 'for-each-ref', 'grep', 'help', 'init', 'log', 'ls-files', 'ls-remote',
+  'ls-tree', 'merge-base', 'mv', 'push', 'remote', 'reset', 'restore', 'rev-list', 'rev-parse', 'rm', 'show', 'show-ref',
+  'sparse-checkout', 'status', 'submodule', 'switch', 'symbolic-ref', 'var', 'version', 'worktree', 'write-tree']);
+// Finds the subcommand and the options that choose the repository a command runs in, so the
+// signing lookup is evaluated in the same context (includeIf rules depend on it).
+function parseGitInvocation(args) {
+  const lookup = [];
+  const valued = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source']);
+  const targeting = new Set(['-C', '--git-dir', '--work-tree']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('-')) return { lookup, subcommand: arg };
+    if (valued.has(arg)) {
+      if (targeting.has(arg) && i + 1 < args.length) lookup.push(arg, args[i + 1]);
+      i += 1;
+    } else if (/^--(git-dir|work-tree)=/.test(arg)) lookup.push(arg);
+  }
+  return { lookup, subcommand: '' };
+}
+const invocation = program === 'git' ? parseGitInvocation(process.argv.slice(2)) : { lookup: [], subcommand: '' };
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
@@ -139,6 +163,84 @@ ${options.brokerFile ? String.raw`
       }
     } else if (askBroker) { diagnostic('capability_missing'); }
     } catch { diagnostic('broker_transport_unavailable'); }
+  }
+  // Honour the commit-signing configuration of the account that owns this machine, so that
+  // enabling managed GitHub credentials never turns signed commits into unsigned ones.
+  // Only these non-executable keys are read, from the real account home (adapters may
+  // redirect $HOME) and in the repository context of the requested command. They go into a
+  // scratch global config, so repository configuration keeps its normal precedence over them.
+  let signingUnreadable = false;
+  try {
+    const gitBinary = program === 'git' ? executable : originalPath.map(p => path.join(p, 'git')).find(p => {
+      try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
+    });
+    const accountHome = ${JSON.stringify(options.accountHome ?? null)} || os.userInfo().homedir;
+    if (gitBinary && accountHome) {
+      // The marker makes a PATH shim that re-enters this launcher fail fast instead of recursing.
+      const lookupEnv = { PATH: originalPath.join(path.delimiter), HOME: accountHome, LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
+      // Git reads $XDG_CONFIG_HOME/git/config next to ~/.gitconfig; an isolated directory has none.
+      if (process.env.XDG_CONFIG_HOME) lookupEnv.XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
+      const read = spawnSync(gitBinary, [...invocation.lookup, 'config', '--global', '--includes', '--null', '--get-regexp', SIGNING_KEYS],
+        { env: lookupEnv, encoding: 'utf8', timeout: 5000 });
+      // A lookup that re-enters this launcher through a PATH shim is the recursion cycle itself.
+      if (read.status === 126 && /launcher_recursion_rejected/.test(read.stderr || '')) {
+        process.stderr.write(read.stderr);
+        process.exitCode = 126;
+        return;
+      }
+      if (read.error || (read.status !== 0 && read.status !== 1)) {
+        signingUnreadable = true; // status 1 only means that no signing key is configured
+      } else if (read.status === 0 && read.stdout) {
+        const settings = new Map();
+        for (const record of read.stdout.split('\0')) {
+          if (!record) continue;
+          const at = record.indexOf('\n');
+          // A key written without a value is a Git boolean and means true.
+          settings.set(at < 0 ? record : record.slice(0, at), at < 0 ? 'true' : record.slice(at + 1));
+        }
+        for (const key of ['gpg.ssh.allowedsignersfile', 'user.signingkey']) {
+          const value = settings.get(key);
+          if (value && value.startsWith('~/')) settings.set(key, path.join(accountHome, value.slice(2)));
+        }
+        // A public-key path relies on ssh-agent, which this launcher deliberately does not
+        // inherit; use the matching private key file when it is readable.
+        const signingKey = settings.get('user.signingkey');
+        if (signingKey && signingKey.endsWith('.pub')) {
+          try { fs.accessSync(signingKey.slice(0, -4), fs.constants.R_OK); settings.set('user.signingkey', signingKey.slice(0, -4)); } catch {}
+        }
+        // OpenPGP keys live under the account's GnuPG home, which a redirected $HOME hides.
+        const signs = ['commit.gpgsign', 'tag.gpgsign'].some(key => /^(true|yes|on|1)$/i.test(settings.get(key) || ''));
+        const format = settings.get('gpg.format');
+        const gnupgHome = path.join(accountHome, '.gnupg');
+        if (signs && (!format || format === 'openpgp') && !env.GNUPGHOME && fs.existsSync(gnupgHome)) env.GNUPGHOME = gnupgHome;
+        if (!configReady) {
+          signingUnreadable = true;
+        } else {
+          const quote = value => '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"';
+          // Keep the managed default author: this file replaces GIT_CONFIG_GLOBAL, and the settings
+          // above carry no user.name or user.email, so the include cannot shadow the account's choice.
+          const lines = authorReady ? ['[include]', '\tpath = ' + quote(path.join(configDirectory, 'gitconfig'))] : [];
+          for (const [key, value] of settings) {
+            const parts = key.split('.');
+            const name = parts.pop();
+            const section = parts.shift();
+            lines.push(parts.length ? '[' + section + ' "' + parts.join('.') + '"]' : '[' + section + ']', '\t' + name + ' = ' + quote(value));
+          }
+          const file = path.join(configDirectory, 'signing.gitconfig');
+          fs.writeFileSync(file, lines.join('\n') + '\n', { mode: 0o600 });
+          env.GIT_CONFIG_GLOBAL = file;
+        }
+      }
+    }
+  } catch { signingUnreadable = true; }
+  if (signingUnreadable) {
+    process.stderr.write('Paperclip: the account commit-signing configuration could not be read.\n');
+    // A lookup failure is not the same as "no signing configured": never create an unsigned object.
+    if (invocation.subcommand && !SAFE_WITHOUT_SIGNING.has(invocation.subcommand)) {
+      process.stderr.write('Paperclip: refusing to run git ' + invocation.subcommand + ' without it.\n');
+      process.exitCode = 1;
+      return;
+    }
   }
   // Only this invocation and its children inherit the captured credential.
   env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
