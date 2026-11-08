@@ -61,7 +61,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
     sourceHistoryBound: comments.filter(row => !row.authorAgentId).length === 1 && comments.some(row => !row.authorAgentId
       && row.body?.includes(busy.task.identifier ?? busy.task.id) && row.body.includes(logo.identifier ?? logo.id) && row.body.includes(artifact.attachmentId)), setupRunIds: saved.runs.map(row => row.id) };
 }, gradeMultipleHandoffs, {
-  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v3",
+  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v4",
   sourceFiles: ["chat-catalog-domains/runtime-multiple-handoffs.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/agent-chat.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
