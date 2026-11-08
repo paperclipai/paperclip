@@ -231,7 +231,19 @@ export function stormFaultDue(storm: StormPlan, state: StormState, now: number):
 
 /** Written after every fault: each task's launch time and the faults that crossed it so far. */
 export const TASK_FAULT_LOG = "task-faults.json";
-export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[] }>;
+export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[]; serverBuildAtLaunch?: "upgrade_from" | "current" }>;
+
+/**
+ * A replay of a K14 wave task that launched on the current build: it starts on the current build
+ * too (no `--upgrade-from`), and its recorded K14 restarts were current-build restarts (K2).
+ */
+export function replayOnCurrentBuild(plan: WavePlan): WavePlan {
+  const asK2 = <T extends { kind?: FaultKind; fault?: TaskFaultKind }>(item: T): T => ({ ...item,
+    ...(item.kind === "K14" ? { kind: "K2" as const } : {}), ...(item.fault === "K14" ? { fault: "K2" as const } : {}) });
+  const { upgradeFrom: _upgradeFrom, ...options } = plan.options;
+  return { ...plan, options: { ...options, faults: options.faults.map(kind => kind === "K14" ? "K2" : kind) },
+    tasks: plan.tasks.map(task => ({ ...asK2(task), ...(task.replayFaults ? { replayFaults: task.replayFaults.map(asK2) } : {}) })) };
+}
 
 /** The crossing record for a replay: the graded record, else the live fault log (interrupted or wedged waves). */
 export function replayRecordFor(taskId: string, graded: { createdAt: number | null; faultIds: string[] } | null,

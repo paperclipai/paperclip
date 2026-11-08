@@ -117,6 +117,8 @@ function approvalChecks(nonce: string, artifacts: OracleArtifacts) {
     { name: "board_decided_after_restart", ok: governance?.decision !== undefined && governance.decision.error === null
       && governance.decision.afterFault, detail: JSON.stringify(governance?.decision ?? null) },
     { name: "approval_pending_across_restart", ok: governance?.decision?.pendingWhenDecided === true },
+    { name: "action_gated_by_approval", ok: governance?.childrenBeforeDecision === 0,
+      detail: `subtasks_before_decision=${governance?.childrenBeforeDecision ?? "not checked"}` },
     { name: "approval_decided", ok: approvals.length === 1 && approvals[0]!.status === (decision === "approve" ? "approved" : "rejected"),
       detail: approvals.map(approval => approval.status).join(",") },
     { name: decision === "approve" ? "approved_action_ran_once" : "rejected_action_never_ran",
@@ -130,6 +132,7 @@ function budgetChecks(artifacts: OracleArtifacts) {
     { name: "budget_set", ok: typeof governance?.budgetSetCents === "number" && !governance.budgetSetError,
       detail: governance?.budgetSetError ?? `budget=${governance?.budgetSetCents ?? "unset"}` },
     { name: "company_paused_for_budget", ok: typeof governance?.budgetPausedAt === "number" },
+    { name: "pause_held_until_resume", ok: typeof governance?.budgetPausedAt === "number" && !governance.pauseLostAt },
     { name: "nothing_dispatched_while_paused", ok: governance?.runsStartedWhilePaused !== undefined && governance.runsStartedWhilePaused.length === 0,
       detail: (governance?.runsStartedWhilePaused ?? ["not checked"]).join(",") },
     { name: "board_resumed_after_restart", ok: governance?.resume !== undefined && governance.resume.error === null && governance.resume.afterFault,

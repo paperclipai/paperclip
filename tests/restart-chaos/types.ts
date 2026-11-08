@@ -246,6 +246,10 @@ export interface GovernanceRecord {
   resume?: { at: number; amount: number | null; incidentId: string | null; httpStatus: number | null; error: string | null; afterFault: boolean };
   /** H1: the company was active again at rest. */
   companyActiveAtRest?: boolean;
+  /** H1: the pause cleared on its own (before the board resumed it). */
+  pauseLostAt?: number | null;
+  /** G1: subtasks named after the nonce that existed before the board decided (must be 0). */
+  childrenBeforeDecision?: number | null;
 }
 
 export interface OracleResult { verdict: Exclude<Verdict, "n/a">; checks: Array<{ name: string; ok: boolean; detail?: string }> }
@@ -294,6 +298,8 @@ export interface TaskRecord {
   resultRunId?: string | null;
   triggerMissed?: TriggerId[];
   governance?: GovernanceRecord;
+  /** K14 waves: the build serving when the task launched. */
+  serverBuildAtLaunch?: "upgrade_from" | "current";
 }
 
 export interface TaskGrade {

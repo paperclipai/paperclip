@@ -155,6 +155,9 @@ export class ChaosSupervisor {
     return supervisor;
   }
 
+  /** K14 waves: whether the older build or this checkout is serving. */
+  get serverBuild(): "upgrade_from" | "current" { return this.serverRoot === this.repositoryRoot ? "current" : "upgrade_from"; }
+
   serverLogOffset(): number {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
   }

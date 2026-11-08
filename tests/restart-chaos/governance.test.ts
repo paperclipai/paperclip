@@ -3,10 +3,10 @@ import type { ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
 import { gradeR1 } from "./grader.js";
 import { BUDGET_PAUSE_HOLD_MS, BUDGET_RESUME_HEADROOM_CENTS, REST_CONFIRM_MS, TaskObserver, approvalTitleMatches, runsStartedAfter } from "./observer.js";
-import { planTasks, triggerFitsWorkload } from "./scheduler.js";
+import { planTasks, replayOnCurrentBuild, triggerFitsWorkload } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
-import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
+import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample, WavePlan } from "./types.js";
 import { g1ApprovalTitle, g1ChildTitle, g1Decision, workloadDefinitions } from "./workloads.js";
 
 process.env.RESTART_CHAOS_QUIET = "1";
@@ -44,7 +44,7 @@ describe("G1: approval-gated action across a restart", () => {
   it.each([[APPROVE, "approve"], [REJECT, "reject"]] as const)("decides (%s) only after the fault the pending approval armed, with the server ready",
     async (nonce, kind) => {
       const pending = { id: "ap1", status: "pending", payload: { title: g1ApprovalTitle(nonce) } };
-      const { api, writes } = fakeApi({ "/approvals": () => [pending] });
+      const { api, writes } = fakeApi({ "/approvals": () => [pending], "view=index": () => [] });
       const observer = new TaskObserver(g1Plan(nonce), api, lab, new Timeline(null), ready);
       await observer.launch();
       const start = observer.record.createdAt!;
@@ -56,6 +56,7 @@ describe("G1: approval-gated action across a restart", () => {
       observer.noteFault("f01", start + 1_001);
       await observer.poll(start + 60_000);
       expect(observer.record.governance?.decision).toMatchObject({ kind, error: null, pendingWhenDecided: true, afterFault: true });
+      expect(observer.record.governance?.childrenBeforeDecision).toBe(0);
       expect(writes.filter(write => write.route === `/api/approvals/ap1/${kind}`)).toHaveLength(1);
       expect(writes.some(write => write.method === "PATCH" && (write.body as { status?: string }).status === "cancelled")).toBe(kind === "reject");
     });
@@ -80,7 +81,8 @@ describe("G1: approval-gated action across a restart", () => {
     return { issueStatus: approve ? "done" : "cancelled", documents: {}, agentComments: [], files: {}, commands: {}, workspacePath: null,
       approvals: [{ id: "ap1", status: approve ? "approved" : "rejected", title: g1ApprovalTitle(nonce) }],
       children: approve ? [{ id: "c1", title: g1ChildTitle(nonce), status: "backlog", assigneeAgentId: null, documents: {} }] : [],
-      governance: { approvalSeenAt: 1, decision: { kind: g1Decision(nonce), at: 2, httpStatus: 200, error: null, pendingWhenDecided: true, afterFault: true } },
+      governance: { approvalSeenAt: 1, childrenBeforeDecision: 0,
+        decision: { kind: g1Decision(nonce), at: 2, httpStatus: 200, error: null, pendingWhenDecided: true, afterFault: true } },
       ...overrides };
   };
 
@@ -97,8 +99,27 @@ describe("G1: approval-gated action across a restart", () => {
     const child = { id: "c", title: g1ChildTitle(APPROVE), status: "backlog", assigneeAgentId: null, documents: {} };
     expect(failed(APPROVE, { children: [child, { ...child, id: "d" }] })).toEqual(["approved_action_ran_once"]);
     expect(failed(REJECT, { children: [{ ...child, title: g1ChildTitle(REJECT) }] })).toEqual(["rejected_action_never_ran"]);
-    expect(failed(APPROVE, { governance: { approvalSeenAt: 1, decision: { kind: "approve", at: 2, httpStatus: 200, error: null,
-      pendingWhenDecided: true, afterFault: false } } })).toEqual(["board_decided_after_restart"]);
+    expect(failed(APPROVE, { governance: { approvalSeenAt: 1, childrenBeforeDecision: 0, decision: { kind: "approve", at: 2, httpStatus: 200,
+      error: null, pendingWhenDecided: true, afterFault: false } } })).toEqual(["board_decided_after_restart"]);
+    // The agent created the subtask while the approval was still pending: the approval did not gate it.
+    expect(failed(APPROVE, { governance: { approvalSeenAt: 1, childrenBeforeDecision: 1, decision: { kind: "approve", at: 2, httpStatus: 200,
+      error: null, pendingWhenDecided: true, afterFault: true } } })).toEqual(["action_gated_by_approval"]);
+  });
+
+  it("ends a task whose approval a restart lost at its deadline instead of waiting forever", async () => {
+    let approvals: unknown[] = [{ id: "ap1", status: "pending", payload: { title: g1ApprovalTitle(APPROVE) } }];
+    const { api } = fakeApi({ "/approvals": () => approvals, "view=index": () => [] });
+    const observer = new TaskObserver({ ...g1Plan(APPROVE), trigger: undefined, triggerDelayMs: undefined, fireAfterMs: 999_999 },
+      api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    approvals = [];
+    const late = observer.record.deadlineAt! + 1;
+    await observer.poll(late - REST_CONFIRM_MS - 1);
+    await observer.poll(late);
+    expect(observer.done).toBe(true);
+    expect(observer.record.timedOut).toBe(true);
   });
 
   it("grades a rejected task that rests cancelled as continuing correctly (R1)", () => {
@@ -123,13 +144,14 @@ describe("H1: budget hard stop across a restart", () => {
     const pausedAt = new Date(Date.now() + 2_000).toISOString();
     let paused = false;
     const { api, writes } = fakeApi({
-      "/budgets/overview": () => ({ policies: [{ scopeType: "company", observedAmount: 40 }],
-        activeIncidents: paused ? [{ id: "inc1", scopeType: "company", amountObserved: 55 }] : [] }),
+      "/budgets/overview": () => ({ policies: [{ scopeType: "company", observedAmount: 40.25 }],
+        activeIncidents: paused ? [{ id: "inc1", scopeType: "company", amountObserved: 55.5 }] : [] }),
       "/api/companies/c1": () => paused ? { id: "c1", status: "paused", pauseReason: "budget", pausedAt } : { id: "c1", status: "active" },
     });
     const observer = new TaskObserver(h1Plan, api, lab, new Timeline(null), ready);
     await observer.launch();
-    expect(writes[0]).toMatchObject({ method: "PATCH", route: "/api/companies/c1/budgets", body: { budgetMonthlyCents: 41 } });
+    // Whole cents: observed spend can be fractional.
+    expect(writes[0]).toMatchObject({ method: "PATCH", route: "/api/companies/c1/budgets", body: { budgetMonthlyCents: 42 } });
     const start = observer.record.createdAt!;
     paused = true;
     await observer.poll(start + 3_000);
@@ -140,11 +162,31 @@ describe("H1: budget hard stop across a restart", () => {
     await observer.poll(start + 10_000);
     expect(observer.record.governance?.resume).toBeUndefined();
     await observer.poll(start + 10_000 + BUDGET_PAUSE_HOLD_MS + 1);
-    expect(observer.record.governance?.resume).toMatchObject({ incidentId: "inc1", amount: 55 + BUDGET_RESUME_HEADROOM_CENTS,
+    expect(observer.record.governance?.resume).toMatchObject({ incidentId: "inc1", amount: 56 + BUDGET_RESUME_HEADROOM_CENTS,
       error: null, afterFault: true });
     expect(observer.record.governance?.runsStartedWhilePaused).toEqual([]);
     expect(writes.at(-1)).toMatchObject({ method: "POST", route: "/api/companies/c1/budget-incidents/inc1/resolve",
-      body: { action: "raise_budget_and_resume", amount: 55 + BUDGET_RESUME_HEADROOM_CENTS } });
+      body: { action: "raise_budget_and_resume", amount: 56 + BUDGET_RESUME_HEADROOM_CENTS } });
+  });
+
+  it("records a pause that clears before the board resumes it, and does not resume", async () => {
+    let paused = true;
+    const { api, writes } = fakeApi({
+      "/budgets/overview": () => ({ policies: [{ scopeType: "company", observedAmount: 0 }], activeIncidents: [{ id: "inc1", scopeType: "company" }] }),
+      "/api/companies/c1": () => paused ? { id: "c1", status: "paused", pauseReason: "budget" } : { id: "c1", status: "active" },
+    });
+    const observer = new TaskObserver(h1Plan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    observer.faultDue(start + 1_001);
+    observer.noteFault("f01", start + 1_001);
+    paused = false;
+    await observer.poll(start + 1_000 + BUDGET_PAUSE_HOLD_MS + 10_000);
+    await observer.poll(start + 1_000 + 2 * BUDGET_PAUSE_HOLD_MS + 20_000);
+    expect(observer.record.governance?.pauseLostAt).toBeDefined();
+    expect(observer.record.governance?.resume).toBeUndefined();
+    expect(writes.some(write => write.route.includes("/resolve"))).toBe(false);
   });
 
   it("finds runs that started while the company was paused", () => {
@@ -163,8 +205,23 @@ describe("H1: budget hard stop across a restart", () => {
     const failed = (governance: OracleArtifacts["governance"]) => workloadDefinitions.H1.grade("abcd1234", { ...base, governance })
       .checks.filter(check => !check.ok).map(check => check.name);
     expect(failed({ ...base.governance, budgetPausedAt: null })).toContain("company_paused_for_budget");
+    expect(failed({ ...base.governance, pauseLostAt: 5 })).toEqual(["pause_held_until_resume"]);
     expect(failed({ ...base.governance, runsStartedWhilePaused: ["r2"] })).toEqual(["nothing_dispatched_while_paused"]);
     expect(failed({ ...base.governance, resume: { ...base.governance!.resume!, afterFault: false } })).toEqual(["board_resumed_after_restart"]);
+  });
+});
+
+describe("K14 replay", () => {
+  it("replays a task that launched after the upgrade on the current build, its K14 restarts as K2", () => {
+    const plan = { schema: "paperclip.restart-chaos.wave-plan/v1", waveId: "w", seed: 1, createdAt: "",
+      options: { env: "local", adapters: ["codex"], workloads: ["A1"], faults: ["K14", "K1"], concurrency: 1, tasks: 1, seed: 1,
+        budgetCents: 3_000, pollMs: 3_000, upgradeFrom: "/old" },
+      tasks: [{ taskId: "t02", index: 0, workload: "A1", adapter: "codex", fault: "K14", fireAfterMs: 1, holdMs: 0, followUpAfterMs: null,
+        nonce: "n", replayFaults: [{ kind: "K14", holdMs: 0, atMs: 5 }, { kind: "K1", holdMs: 0, atMs: 9 }] }] } as WavePlan;
+    const replay = replayOnCurrentBuild(plan);
+    expect(replay.options.upgradeFrom).toBeUndefined();
+    expect(replay.options.faults).toEqual(["K2", "K1"]);
+    expect(replay.tasks[0]).toMatchObject({ fault: "K2", replayFaults: [{ kind: "K2" }, { kind: "K1" }] });
   });
 });
 

@@ -23,7 +23,7 @@ import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from ".
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver } from "./observer.js";
-import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
+import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
@@ -45,14 +45,23 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     const source = JSON.parse(await readFile(path.join(sourceDir, "plan.json"), "utf8")) as WavePlan;
     // Replay the faults that actually crossed the task, including other tasks' faults.
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
-      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+      .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[]; serverBuildAtLaunch?: "upgrade_from" | "current" } })
+      .catch(() => null);
     // An interrupted or wedged wave has no grade files; its fault log was written after every fault.
     const logged = await readFile(path.join(sourceDir, TASK_FAULT_LOG), "utf8").then(text => JSON.parse(text) as TaskFaultLog).catch(() => null);
     const crossed = replayRecordFor(command.ref.taskId, graded?.record ?? null, logged);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
     const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
-    return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
+    let plan = replayWave(source, command.ref, Date.now(), command.overrides, observed);
+    // K14: a task that launched after the upgrade replays on the current build.
+    const launchBuild = graded?.record.serverBuildAtLaunch ?? logged?.[command.ref.taskId]?.serverBuildAtLaunch;
+    if (plan.options.upgradeFrom && launchBuild === "current") plan = replayOnCurrentBuild(plan);
+    // H1 needs the hard stop that the RC-06 mask turns off.
+    if (plan.tasks.some(task => task.workload === "H1") && plan.options.masks?.includes("rc06")) {
+      throw new Error("An H1 replay needs the budget hard stop; do not combine it with --rc06-masked");
+    }
+    return { plan, keep: command.keep };
   }
   return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
 }
@@ -112,6 +121,10 @@ function preflight(plan: WavePlan) {
   if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
   // K14: the older checkout must be prepared (installed and built) before the wave, like this one.
   const upgradeFrom = plan.options.upgradeFrom;
+  // One runner binary for both builds would not test the older runner's saved state.
+  if (upgradeFrom && process.env.PAPERCLIP_RUNNER_BINARY) {
+    throw new Error("--upgrade-from runs each build's own runner; unset PAPERCLIP_RUNNER_BINARY");
+  }
   if (upgradeFrom) {
     for (const required of ["tests/runner-e2e/server-entry.ts", "node_modules", "packages/paperclip-runner/runner/target/debug/paperclip-runnerd"]) {
       if (!existsSync(path.join(upgradeFrom, required))) {
@@ -255,7 +268,8 @@ async function main(): Promise<number> {
         for (const candidate of exposed) {
           candidate.noteFault(receipt.faultId, receipt.startedAt);
           candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
-          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
         }
         void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
@@ -265,7 +279,8 @@ async function main(): Promise<number> {
           faults.push(receipt);
           for (const candidate of exposed) {
             candidate.noteFault(receipt.faultId, receipt.startedAt);
-            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
           }
           void persistFaultLog();
         }
@@ -282,7 +297,8 @@ async function main(): Promise<number> {
       for (const candidate of active.filter(observer => !observer.done)) {
         candidate.noteFault(receipt.faultId, receipt.startedAt);
         candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
-        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds],
+            ...(candidate.record.serverBuildAtLaunch ? { serverBuildAtLaunch: candidate.record.serverBuildAtLaunch } : {}) };
       }
       checkWorktree(receipt.faultId);
       void persistFaultLog();

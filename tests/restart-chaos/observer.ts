@@ -15,7 +15,7 @@ import type {
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
-import { g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
+import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -174,7 +174,8 @@ export class TaskObserver {
   processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
-    private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean },
+    private readonly timeline: Timeline,
+    private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current" },
     /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
     private readonly protectedRoots: readonly string[] = [os.homedir()]) {
     this.record = { plan, issueId: null, identifier: null, createdAt: null, launchError: null, samples: [], retry: null,
@@ -235,6 +236,8 @@ export class TaskObserver {
       });
       this.record.issueId = String(issue.id);
       this.record.identifier = issue.identifier ?? null;
+      // K14: which build launched the task, so a replay starts it on the same one.
+      if (this.supervisor.serverBuild) this.record.serverBuildAtLaunch = this.supervisor.serverBuild;
       this.record.createdAt = Date.now();
       this.record.deadlineAt = this.record.createdAt + definition.budgetMs;
       this.timeline.add("task_launched", { taskId: this.plan.taskId, issueId: issue.id, identifier: issue.identifier,
@@ -413,7 +416,8 @@ export class TaskObserver {
       this.restCandidateSince ??= now;
       if (now - this.restCandidateSince >= REST_CONFIRM_MS) {
         await this.onRest(sample, now);
-        return;
+        // A task still waiting (for the board, or on a Retry it just got) keeps its deadline.
+        if (this.done) return;
       }
     }
     if (this.record.deadlineAt !== null && now > this.record.deadlineAt && !this.supervisor.faultInProgress) {
@@ -558,7 +562,7 @@ export class TaskObserver {
   private awaitingBoard(): boolean {
     const governance = this.record.governance;
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
-    if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume;
+    if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     return false;
   }
 
@@ -577,7 +581,8 @@ export class TaskObserver {
       const overview = await this.api.get<Json>(`/api/companies/${this.lab.companyId}/budgets/overview`, 10_000);
       const policy = ((overview?.policies ?? []) as Json[]).find(row => row.scopeType === "company");
       const observed = typeof policy?.observedAmount === "number" ? policy.observedAmount : 0;
-      governance.budgetSetCents = observed + 1;
+      // The budget routes take whole cents; observed spend can be fractional.
+      governance.budgetSetCents = Math.ceil(observed) + 1;
       await this.api.patch(`/api/companies/${this.lab.companyId}/budgets`, { budgetMonthlyCents: governance.budgetSetCents });
       this.timeline.add("governance_budget_set", { taskId: this.plan.taskId, budgetCents: governance.budgetSetCents, observedCents: observed });
     } catch (error) {
@@ -605,6 +610,10 @@ export class TaskObserver {
       this.timeline.add("governance_approval_pending", { taskId: this.plan.taskId, approvalId: pending.id });
     }
     if (!this.boardMayAct(sample)) return;
+    // The gated action must not exist before the board decides.
+    const before = await this.collectChildren(this.record.issueId!).catch(() => null);
+    governance.childrenBeforeDecision = before === null ? null
+      : before.filter(child => (child.title ?? "").includes(g1ChildTitle(this.plan.nonce))).length;
     const kind = g1Decision(this.plan.nonce);
     const decision: NonNullable<GovernanceRecord["decision"]> = { kind, at: now, httpStatus: null, error: null,
       pendingWhenDecided: true, afterFault: (this.record.lastFaultAt ?? 0) > governance.approvalSeenAt };
@@ -628,6 +637,14 @@ export class TaskObserver {
     const company = await this.api.get<Json>(`/api/companies/${this.lab.companyId}`, 5_000).catch(() => null);
     if (!company) return;
     const paused = company.status === "paused" && company.pauseReason === "budget";
+    // A pause must hold until the board resumes it: one that clears on its own (a restart lost it)
+    // is recorded, and the board does not resume what is no longer paused.
+    if (!paused && governance.budgetPausedAt != null) {
+      governance.pauseLostAt ??= now;
+      this.timeline.add("governance_budget_pause_lost", { taskId: this.plan.taskId, status: company.status ?? null,
+        pauseReason: company.pauseReason ?? null });
+      return;
+    }
     if (paused && governance.budgetPausedAt == null) {
       const recorded = typeof company.pausedAt === "string" ? Date.parse(company.pausedAt) : Number.NaN;
       governance.budgetPausedAt = Number.isFinite(recorded) ? Math.min(recorded, now) : now;
@@ -646,7 +663,7 @@ export class TaskObserver {
       const policy = ((overview?.policies ?? []) as Json[]).find(row => row.scopeType === "company");
       const observed = Math.max(Number(incident.amountObserved) || 0, Number(policy?.observedAmount) || 0);
       resume.incidentId = String(incident.id);
-      resume.amount = observed + BUDGET_RESUME_HEADROOM_CENTS;
+      resume.amount = Math.ceil(observed) + BUDGET_RESUME_HEADROOM_CENTS;
       await this.api.post(`/api/companies/${this.lab.companyId}/budget-incidents/${incident.id}/resolve`,
         { action: "raise_budget_and_resume", amount: resume.amount, decisionNote: DECISION_NOTE });
       resume.httpStatus = 200;
