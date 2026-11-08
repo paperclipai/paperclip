@@ -62,6 +62,8 @@ export interface WaveOptions {
    * SIGKILLs itself at its nth hit and is restarted like K1.
    */
   crashPoint?: string;
+  /** Crash-point suite: hold the control plane down this long after each self-kill (K4-style). */
+  crashPointHoldMs?: number;
 }
 
 export interface StormFault {

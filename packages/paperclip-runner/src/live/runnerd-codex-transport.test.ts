@@ -1283,6 +1283,62 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   }
 }, 20_000);
 
+it.each([false, true])("refuses a terminal call decided before earlier results were seen (seen: %s)", async seen => {
+  // Restart chaos t03: Codex called write_document, the controller was held,
+  // and Codex re-sampled the model until it called paperclip_block. After the
+  // reattach the Runner delivered the backlog in order: write_document ran and
+  // returned, then the stale block arrived before Codex had seen that result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stale-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9000;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `stale-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `stale-terminal-${seq}`;
+    };
+    const write = { executionId: "exec-write", transport: "dynamic", name: "write_document" };
+    commit("tool.execution.started", { ...write, status: "running" });
+    // Paperclip's result, recorded as the controller records it for the Runner.
+    core.queueCommand("semantic_tool.result", { callId: "exec-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: true }, isError: false }, "command_tool_stale_terminal_write", true);
+    if (seen) commit("tool.execution.completed", { ...write, status: "completed" });
+    // The terminal call's own event bounds the history (in production its
+    // semantic_tool.input event; any later event works the same way).
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    const blockInput = { summary: "Paperclip has not returned the save" };
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "block-call", operationId: "paperclip_block",
+      input: blockInput, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    if (seen) {
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(outcome.isError).not.toBe(true);
+    } else {
+      expect(handler).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+      expect(JSON.stringify(outcome.result)).toContain("write_document");
+    }
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
