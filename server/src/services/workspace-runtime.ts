@@ -3987,7 +3987,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
     );
   }
-  const repoRoot = await resolveGitOwnerRepoRoot(baseCwd);
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   return withRepositoryMutation(repoRoot, () =>
     restoreGitWorktree(input, realized, cwd, provisionCommand, repoRoot));
 }

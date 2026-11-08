@@ -1167,6 +1167,23 @@ describeEmbeddedPostgres("repository-scoped task worktree preparation", () => {
     for (const workspace of workspaces) await expectUpstream(repoRoot, workspace.branchName!);
   });
 
+  it("gives the selected linked checkout, not the primary checkout, to the restore source callback", async () => {
+    const { repoRoot } = await fixture();
+    const linkedCheckout = path.join(path.dirname(repoRoot), "linked-source-checkout");
+    await runGit(repoRoot, ["worktree", "add", "--detach", linkedCheckout, "origin/master"]);
+    const input = request(linkedCheckout, "TASK-1");
+    const workspace = await realizeExecutionWorkspace(input);
+    const sources: string[] = [];
+
+    await ensurePersistedExecutionWorkspaceAvailable({
+      base: input.base, issue: input.issue, agent: input.agent, workspace: persistedWorkspace(workspace),
+      recorder: await operationRecorder(),
+      beforeSourceCopy: async sourceCwd => { sources.push(await fs.realpath(sourceCwd)); },
+    });
+
+    expect(sources).toEqual([await fs.realpath(linkedCheckout)]);
+  });
+
   it("preserves a complete existing upstream and the existing branch tip", async () => {
     const { repoRoot } = await fixture();
     const input = request(repoRoot, "TASK-1");
