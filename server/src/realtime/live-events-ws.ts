@@ -31,6 +31,7 @@ interface WsSocket {
 
 interface WsServer {
   clients: Set<WsSocket>;
+  close(): void;
   on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
   on(event: "close", listener: () => void): void;
   handleUpgrade(
@@ -248,6 +249,7 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
+    subscribeInvalidation?: (companyId: string, resync: () => void) => () => void;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
     /**
      * Resolves a Cloud-proxied browser's identity from the trusted
@@ -353,6 +355,7 @@ export function setupLiveEventsWebSocketServer(
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
       } };
       if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
+      if (event.type === "agent.runtime_state.updated") return { ...event, payload: { agentId: payload.agentId } };
       if (event.type === "external_object.updated") return { ...event, payload: { externalObjectId: payload.externalObjectId } };
       if (event.type.startsWith("plugin.")) return event;
       return null;
@@ -375,11 +378,12 @@ export function setupLiveEventsWebSocketServer(
       onError: err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"),
     });
     const unsubscribe = subscribeCompanyLiveEvents(context.companyId, event => delivery.enqueue(event));
+    const unsubscribeInvalidation = opts.subscribeInvalidation?.(context.companyId, delivery.requestResync);
     socket.on("message", (data, isBinary) => {
       if (isBinary) { socket.close(1003, "text messages required"); return; }
       delivery.receive(data.toString());
     });
-    cleanupByClient.set(socket, () => { unsubscribe(); delivery.dispose(); });
+    cleanupByClient.set(socket, () => { unsubscribe(); unsubscribeInvalidation?.(); delivery.dispose(); });
     aliveByClient.set(socket, true);
 
     socket.on("pong", () => {

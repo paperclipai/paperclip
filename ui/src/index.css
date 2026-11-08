@@ -203,10 +203,9 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Keep this font runtime-resolved: the proposal/sandbox theme substitutes
-   Paper Mono for every shared font-mono consumer, including portaled content. */
+/* Use bundled Paper Mono for all monospace surfaces, including portals. */
 @theme {
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-mono: var(--font-paper-mono);
 }
 
 :root {
@@ -349,6 +348,8 @@
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
+  --status-task-monitoring: var(--status-task-in_progress);
+  --status-task-icon-monitoring: var(--status-task-icon-in_progress);
   --status-task-in_review: #7c3aed;
   --status-task-done: #22c55e;
   --status-task-blocked: #dc2626;
@@ -373,6 +374,16 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
+  /* Inline edit diffs (task chat edit rows and the turn changes card). Line
+     tints derive from the status icon hues so both modes stay in step. */
+  --diff-add-fg: var(--status-task-icon-done);
+  --diff-remove-fg: var(--status-task-icon-blocked);
+  --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
+  --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --patch-add-fg: #116329;
+  --patch-remove-fg: #9a1c1c;
+  --patch-meta-fg: color-mix(in oklab, var(--foreground) 85%, var(--background));
+  --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -438,6 +449,8 @@
   --motion-diff-reveal: var(--motion-duration-base);
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
+  /* Harness status chip fading to a receipt once a retry recovers. */
+  --motion-status-notice-fade: var(--motion-duration-deliberate);
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
@@ -534,6 +547,8 @@
   --artifact-play-scrim: rgba(0, 0, 0, 0.55);
   --artifact-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
   --tc-interaction-card-max-h: 50dvh;
+  /* About 3.5 queued rows, and less on short windows so the conversation stays visible. */
+  --tc-queued-list-max-h: min(calc(var(--spacing) * 40), 28dvh);
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
@@ -560,6 +575,12 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
+
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker
      card available as an explicit lab alternative. */
@@ -578,9 +599,11 @@
   --tc-shell-max-w: 60rem;
   --sz-66px: 66px;
 
-  /* Active-turn status island and its checklist overlay. */
+  /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
-  --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
+  --sz-turn-plan-list-max-h: min(40dvh, 22rem);
+  /* A subagent result scrolls inside its card instead of taking over the thread. */
+  --sz-subagent-result-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
@@ -591,6 +614,37 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Agent detail page (Refine-v2). Surfaces mix the theme's own foreground
+     into its background, so the same tokens read in light and dark. */
+  --agent-detail-module-gap: 12px;
+  --agent-detail-band-gap: 48px;
+  --agent-detail-module-inset: 20px;
+  --agent-detail-tile-min-h: 122px;
+  --agent-detail-control-h: 40px;
+  --agent-detail-logo-rows-h: 60px;
+  --agent-detail-dialog-max-h: 85vh;
+  --agent-detail-history-cols: minmax(0, 1.5fr) minmax(0, 1fr) 140px 104px;
+  --agent-detail-tile: color-mix(in oklab, var(--foreground) 4%, var(--background));
+  --agent-detail-tile-hover: color-mix(in oklab, var(--foreground) 7%, var(--background));
+  --agent-detail-tile-chip: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-identity-chip-bg: var(--muted);
+  --agent-identity-chip-hover: color-mix(in oklab, var(--foreground) 14%, var(--background));
+  --agent-detail-tile-input: color-mix(in oklab, var(--foreground) 5%, var(--agent-detail-tile));
+  --agent-detail-table-head: color-mix(in oklab, var(--foreground) 3%, transparent);
+  --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
+  --agent-detail-control-bg: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
+  --agent-detail-dot-unsaved: var(--status-task-icon-todo);
+  --agent-detail-dot-saved: var(--status-task-icon-done);
+  --motion-primary-crown-pop: 598ms; /* --motion-duration-deliberate slowed by 15% */
+  --motion-primary-crown-pop-delay: var(--motion-duration-fast);
+  --primary-crown-bubble-size: 7px;
+  --primary-crown-bubble-travel: 30px;
+  --motion-ease-primary-crown-burst: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --skill-mention-icon-offset: -0.125em;
+  --skill-mention-foreground: var(--color-violet-700);
+  --skill-mention-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M2.97%2012.92A2%202%200%200%200%202%2014.63v3.24a2%202%200%200%200%20.97%201.71l3%201.8a2%202%200%200%200%202.06%200L12%2019v-5.5l-5-3-4.03%202.42Z%22%2F%3E%3Cpath%20d%3D%22m7%2016.5-4.74-2.85%22%2F%3E%3Cpath%20d%3D%22m7%2016.5%205-3%22%2F%3E%3Cpath%20d%3D%22M7%2016.5v5.17%22%2F%3E%3Cpath%20d%3D%22M12%2013.5V19l3.97%202.38a2%202%200%200%200%202.06%200l3-1.8a2%202%200%200%200%20.97-1.71v-3.24a2%202%200%200%200-.97-1.71L17%2010.5l-5%203Z%22%2F%3E%3Cpath%20d%3D%22m17%2016.5-5-3%22%2F%3E%3Cpath%20d%3D%22m17%2016.5%204.74-2.85%22%2F%3E%3Cpath%20d%3D%22M17%2016.5v5.17%22%2F%3E%3Cpath%20d%3D%22M7.97%204.42A2%202%200%200%200%207%206.13v4.37l5%203%205-3V6.13a2%202%200%200%200-.97-1.71l-3-1.8a2%202%200%200%200-2.06%200l-3%201.8Z%22%2F%3E%3Cpath%20d%3D%22M12%208%207.26%205.15%22%2F%3E%3Cpath%20d%3D%22m12%208%204.74-2.85%22%2F%3E%3Cpath%20d%3D%22M12%2013.5V8%22%2F%3E%3C%2Fsvg%3E");
 }
 
 .dark {
@@ -664,8 +718,11 @@
   --status-task-icon-todo: #fbbf24;
   --status-task-icon-in_progress: var(--color-blue-400); /* matches nav dots and live labels */
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
+  --patch-add-fg: #7ee787;
+  --patch-remove-fg: #ffa198;
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
+  --skill-mention-foreground: var(--color-violet-300);
 }
 
 .streamlined-task-detail-surface {
@@ -1728,7 +1785,13 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   );
 }
 
+/* Reasoning section prose is supporting text under its provider headline. */
+.paperclip-markdown.task-chat-reasoning-section-body {
+  color: inherit;
+}
+
 .task-chat-expanded-line-wrap,
+.task-chat-reasoning-headline,
 .paperclip-markdown.task-chat-reasoning-markdown,
 .paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
   overflow-wrap: anywhere;
@@ -2140,6 +2203,32 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;
+}
+
+.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="skill"] {
+  display: inline;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--skill-mention-foreground);
+  font-size: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
+  top: auto;
+}
+
+.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="skill"]::before {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-inline-end: var(--spacing);
+  vertical-align: var(--skill-mention-icon-offset);
+  background-color: currentColor;
+  -webkit-mask: var(--skill-mention-icon) center / contain no-repeat;
+  mask: var(--skill-mention-icon) center / contain no-repeat;
 }
 
 .paperclip-mdxeditor-content ul,
@@ -3303,18 +3392,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-yaml-editor .cm-editor {
   height: var(--sz-480px);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  background: var(--background);
+  font-size: var(--text-xs);
+  background: var(--agent-detail-tile);
   color: var(--foreground);
 }
 .agent-yaml-editor .cm-scroller { overflow: auto; }
 .agent-yaml-editor .cm-gutters {
-  background: var(--muted);
+  background: transparent;
   color: var(--muted-foreground);
   border-color: var(--border);
 }
 .agent-yaml-editor .cm-activeLine,
-.agent-yaml-editor .cm-activeLineGutter { background: var(--accent); }
+.agent-yaml-editor .cm-activeLineGutter { background: var(--agent-detail-tile-chip); }
 .agent-yaml-editor .cm-cursor { border-left-color: var(--foreground); }
 .agent-yaml-editor .cm-selectionBackground,
 .agent-yaml-editor .cm-focused .cm-selectionBackground { background: var(--accent); }
@@ -3326,7 +3415,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-settings-form [data-config-section] {
   @apply my-0;
 }
-.agent-settings-form [data-config-section] > .rounded-lg {
+.agent-settings-form [data-config-section] > .rounded-lg:not([data-agent-tile]) {
   @apply bg-card p-5;
 }
 .agent-settings-form [data-config-section] h3 {
@@ -3344,8 +3433,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   > :nth-child(n + 3) {
   @apply sm:col-span-2;
 }
-.agent-settings-overview section,
-.agent-settings-permissions .rounded-lg,
+.agent-settings-permissions .rounded-lg:not([data-agent-tile]),
 .agent-settings-api-keys .rounded-lg,
 .agent-settings-revisions .rounded-md {
   @apply bg-card;
@@ -3503,6 +3591,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-available-width: calc(100vw - var(--spacing) * 6);
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
+  /* Docked in the sidebar: the navigation keeps at least half the height. */
+  --announcement-sidebar-max-height: 50dvh;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
   --announcement-max-height: calc(100dvh - var(--spacing) * 6);
   --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
@@ -3510,6 +3600,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 
 .announcement-well {
   animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
+}
+/* Docked in the narrow sidebar column: keep the image band compact so the
+   sidebar navigation keeps most of its height. */
+.announcement-well[data-placement="sidebar"] {
+  --announcement-image-height: var(--announcement-image-mobile-height);
 }
 @keyframes announcement-enter {
   from { opacity: 0; }
@@ -3750,6 +3845,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   border-block: var(--task-row-rule-width) solid var(--task-row-rule-color);
 }
 .task-row-group + .task-row-group { border-top: 0; }
+.task-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--task-row-height-comfortable);
+}
+.task-row-deferred[data-density="compact"] {
+  contain-intrinsic-block-size: auto var(--task-row-height-compact);
+}
 
 .task-row-stable, .task-row-skeleton {
   height: var(--task-row-height-comfortable);
@@ -3781,6 +3883,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   white-space: nowrap;
 }
 .task-row-stable [data-slot="task-row-content"] { align-self: center; }
+/* Optional details must not reserve title space when they render no content. */
+.task-row-stable :is([data-slot="task-row-external"], [data-slot="task-row-metadata"]):empty { display: none; }
 @media (min-width: 640px) {
   .task-row-stable [data-slot="task-row-recovery"] { width: var(--task-row-recovery-width); }
 }
@@ -4620,6 +4724,7 @@ html:has(.design-proposal-theme) [data-slot="card-title"] { color: var(--foregro
    over the app background, matching the main-pane header and pane boundaries. */
 .design-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border); background: var(--design-sidebar-surface); background-clip: padding-box; }
 .design-sidebar-brand { display: flex; align-items: center; gap: var(--design-page-control-gap); flex-shrink: 0; height: var(--design-page-header-height); padding-inline: var(--design-sidebar-inset); font-size: var(--design-page-type-size); font-weight: var(--font-weight-semibold); }
+.coordinator-sidebar .design-sidebar-brand[data-collapsed] { height: auto; flex-direction: column; padding-block: var(--design-sidebar-item-inset); }
 .design-sidebar-search { flex-shrink: 0; color: var(--muted-foreground); }
 .design-sidebar-search svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-search:hover { background: var(--muted-highlight); color: var(--foreground); }
@@ -4650,7 +4755,22 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-sidebar-recents > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recents > div > :first-child { flex-shrink: 0; }
 .design-sidebar-recents > div > :last-child { flex: 1; min-height: 0; }
-.design-sidebar-recent-list { display: flex; flex-direction: column; gap: var(--design-sidebar-item-gap); min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.design-sidebar-recent-list {
+  --recent-fade-top: 0px;
+  --recent-fade-bottom: 0px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--design-sidebar-item-gap);
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(to bottom, transparent, var(--cell-marquee-mask-solid) var(--recent-fade-top), var(--cell-marquee-mask-solid) calc(100% - var(--recent-fade-bottom)), transparent);
+}
+.design-sidebar-recent-list[data-overflow-top="true"] { --recent-fade-top: var(--task-list-edge-fade-width); }
+.design-sidebar-recent-list[data-overflow-bottom="true"] { --recent-fade-bottom: var(--task-list-edge-fade-width); }
+.design-sidebar-recent-content { display: flex; flex-shrink: 0; flex-direction: column; gap: var(--design-sidebar-item-gap); }
 .design-sidebar-recent-list:focus-visible { outline: var(--design-page-focus-width) solid var(--ring); outline-offset: calc(-1 * var(--design-page-focus-width)); }
 .design-sidebar-recent-list .design-sidebar-item { flex-shrink: 0; }
 .design-sidebar-account { flex-shrink: 0; }
@@ -4737,7 +4857,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .task-filter-empty { padding: var(--task-filter-row-padding) var(--task-filter-row-padding-inline); color: var(--flyout-item-foreground); font-size: var(--flyout-type-size); line-height: var(--flyout-type-leading); }
 .task-list-group-heading { margin-block: var(--design-page-toolbar-gap) var(--design-page-control-gap); }
 
-/* Canonical collection toolbars: shared geometry, opt-in proposal styling.
+/* Canonical collection toolbars: shared Tasks geometry on every surface.
    Search uses ToolbarSearch; only Tasks puts its view/heading before search. */
 :root {
   --collection-toolbar-height: var(--design-page-control-height);
@@ -4746,7 +4866,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   --collection-toolbar-border: var(--design-page-control-border);
   --collection-toolbar-padding: var(--design-page-control-padding);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] {
+[data-canonical-toolbar] {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
@@ -4756,12 +4876,12 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] {
   row-gap: var(--design-page-toolbar-gap);
   min-width: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(.design-toolbar-controls, .design-toolbar-actions, [role="tablist"]:not([data-canonical-tabs])) {
+[data-canonical-toolbar] :is(.design-toolbar-controls, .design-toolbar-actions, [role="tablist"]:not([data-canonical-tabs])) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--collection-toolbar-gap);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), [data-toolbar-control]) {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]) {
   height: var(--collection-toolbar-height);
   border: var(--task-row-rule-width) solid var(--collection-toolbar-border);
   border-radius: var(--collection-toolbar-radius);
@@ -4773,51 +4893,51 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-t
   background: var(--design-page-control-surface);
   color: var(--muted-foreground);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-size="icon"], [data-size="icon-sm"], .design-toolbar-icon) {
+[data-canonical-toolbar] button:not([data-toolbar-clear]):is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
   width: var(--collection-toolbar-height);
   padding-inline: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
   color: var(--foreground);
   background: var(--muted-highlight);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
+[data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
   margin-inline-start: 0;
   background: var(--foreground);
   color: var(--background);
   font-weight: var(--font-weight-semibold);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task):hover {
+[data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task):hover {
   background: color-mix(in oklab, var(--foreground) 90%, var(--task-list-surface));
   color: var(--background);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] button > svg {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear]), a[data-slot="button"]) > svg {
   width: var(--design-page-icon-size);
   height: var(--design-page-icon-size);
   margin-inline: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle {
+[data-canonical-toolbar] .design-view-toggle {
   height: var(--collection-toolbar-height);
   overflow: visible;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button {
+[data-canonical-toolbar] .design-view-toggle button {
   height: calc(var(--collection-toolbar-height) - var(--task-row-rule-width) * 2);
   border: 0;
   border-radius: 0;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button:first-child {
+[data-canonical-toolbar] .design-view-toggle button:first-child {
   border-start-start-radius: var(--collection-toolbar-radius);
   border-end-start-radius: var(--collection-toolbar-radius);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .design-view-toggle button:last-child {
+[data-canonical-toolbar] .design-view-toggle button:last-child {
   border-start-end-radius: var(--collection-toolbar-radius);
   border-end-end-radius: var(--collection-toolbar-radius);
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] {
+[data-canonical-toolbar] [data-toolbar-search] {
   flex-shrink: 1;
   max-width: 100%;
 }
-html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] input {
+[data-canonical-toolbar] [data-toolbar-search] input {
   background: transparent;
 }
 
@@ -4888,7 +5008,7 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] [data-toolbar-search] 
   box-shadow: var(--focus-ring-shadow);
 }
 [data-canonical-tabs] .canonical-tab:disabled { opacity: var(--canonical-tab-disabled-opacity); pointer-events: none; }
-html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-tabs select {
+[data-canonical-toolbar] .collection-toolbar-tabs select {
   height: var(--collection-toolbar-height);
   border-radius: var(--collection-toolbar-radius);
   border-color: var(--collection-toolbar-border);
@@ -4933,16 +5053,16 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   transform: rotate(var(--artifact-base, 0deg));
 }
 @media (prefers-reduced-motion: no-preference) {
-  .artifact-tile :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
+  :is(.artifact-tile, .empty-state-artwork) :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
     transition: transform var(--artifact-hover-ease);
   }
-  .artifact-tile:hover [data-artifact-front] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-front] {
     transform: translateY(-6px);
   }
-  .artifact-tile:hover [data-artifact-spread="left"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="left"] {
     transform: rotate(calc(var(--artifact-base, 0deg) + 5deg));
   }
-  .artifact-tile:hover [data-artifact-spread="right"] {
+  :is(.artifact-tile:hover, .artifact-tile:focus-visible, .empty-state-artwork:has(button:hover, button:focus-visible), .empty-state-artwork:has(.empty-state-graphic:hover)) [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
 }
@@ -4957,6 +5077,8 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   --coordinator-card-shadow: 0 5px 22px #00000008;
   --coordinator-composer-shadow: 0 8px 30px #0000000a;
   --background: #fafafa;
+  --task-list-surface: var(--background);
+  --task-list-edge-fade-surface: var(--task-list-surface);
   --foreground: #262626;
   --card: #ffffff;
   --card-foreground: var(--foreground);
@@ -5011,17 +5133,15 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace [data-conversation-text="human"] { background: var(--bubble-human-bg); color: var(--bubble-human-fg); }
 .coordinator-workspace [data-question-answer] { background: var(--card); }
 .dark .coordinator-workspace [data-question-answer] { background: var(--muted); }
-/* Only the composer surface obscures history; its surrounding dock is clear. */
-.coordinator-workspace [data-testid="task-chat-composer-dock"] {
+.coordinator-workspace .task-chat-composer-dock {
   flex-shrink: 0;
-  background: transparent;
+  background: var(--background);
   backdrop-filter: none;
-  pointer-events: none;
+  pointer-events: auto;
 }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] > * { pointer-events: auto; }
 @media (min-width: 768px) {
   .coordinator-workspace [data-testid="task-chat-thread"] { position: relative; }
-  .coordinator-workspace [data-testid="task-chat-composer-dock"] { position: absolute; inset-inline: 0; bottom: 0; }
+  .coordinator-workspace .task-chat-composer-dock { position: absolute; inset-inline: 0; bottom: 0; }
   .coordinator-workspace [data-testid="task-chat-scroller"] > .paperclip-mobile-thread {
     padding-bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 4);
   }
@@ -5029,7 +5149,7 @@ html:not(.dark) .coordinator-sidebar {
     bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 3);
   }
 }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] > :last-child { border-radius: var(--coordinator-card-radius); }
+.coordinator-workspace .task-chat-composer-dock > :last-child { border-radius: var(--coordinator-card-radius); }
 .coordinator-workspace [cmdk-root] { height: auto; flex: none; }
 .coordinator-workspace [cmdk-list] { flex: none; }
 .coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--coordinator-card-radius, var(--radius-xl)); padding: var(--coordinator-card-inset, calc(var(--spacing) * 6)); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
@@ -5082,3 +5202,289 @@ html:not(.dark) .coordinator-sidebar {
   .coordinator-task-commitment > .coordinator-task-light { display: none; }
   .coordinator-created-task, .coordinator-decision-receipt { transition: none; }
 }
+
+/* Agent detail page (Refine-v2): inside a filled panel, controls step up from
+   the panel fill and an off switch keeps a visible track. */
+[data-agent-tile] {
+  --agent-detail-control-bg: var(--agent-detail-tile-input);
+}
+[data-agent-tile] [data-slot="toggle"][aria-checked="false"] {
+  background: var(--agent-detail-switch-off);
+}
+
+/* Agent detail header: the primary-agent crown fills with a short pop while three
+   bubbles burst out of its centre. After the replace-primary dialog it waits for
+   the dialog to close first. Each bubble gets its own angle, size and travel. */
+.primary-crown[data-pop] svg {
+  transform-origin: center;
+  animation: primary-crown-pop var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
+}
+.primary-crown-bubble {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--primary-crown-bubble-size) * var(--bubble-size));
+  aspect-ratio: 1;
+  pointer-events: none;
+  translate: -50% -50%;
+  rotate: calc(var(--bubble-angle) * 1deg);
+  animation: primary-crown-bubble-travel var(--motion-primary-crown-pop) var(--motion-ease-primary-crown-burst) both;
+}
+.primary-crown-bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: primary-crown-bubble-scale var(--motion-primary-crown-pop) both;
+}
+.primary-crown[data-pop="after-dialog"] svg,
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble,
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble::before {
+  animation-delay: var(--motion-primary-crown-pop-delay);
+}
+@keyframes primary-crown-pop {
+  0% { transform: scale(1); fill-opacity: 0; }
+  40% { transform: scale(1.3); fill-opacity: 1; }
+  70% { transform: scale(0.92); }
+  100% { transform: scale(1); fill-opacity: 1; }
+}
+@keyframes primary-crown-bubble-travel {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(var(--primary-crown-bubble-travel) * var(--bubble-travel))); }
+}
+@keyframes primary-crown-bubble-scale {
+  0% { transform: scale(0); animation-timing-function: var(--motion-ease-out-expo); }
+  25% { transform: scale(1); animation-timing-function: var(--motion-ease-standard); }
+  100% { transform: scale(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .primary-crown[data-pop] svg { animation: none; }
+  .primary-crown-bubble { display: none; }
+}
+
+/* Agent detail Harness / Secrets: AgentConfigForm's "panels" layout. */
+.agent-config-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--agent-detail-module-gap);
+}
+.agent-config-panels > [data-config-section] {
+  display: flex;
+  flex-direction: column;
+}
+.agent-config-panels > [data-config-section] > [data-agent-tile] {
+  flex: 1;
+}
+.agent-config-panels > section[aria-label="Runtime test"] {
+  order: 1;
+}
+.agent-config-panels > [data-config-section="environment-variables"] {
+  order: 2;
+  margin-top: calc(var(--agent-detail-band-gap) - var(--agent-detail-module-gap));
+}
+.agent-config-panels > :not([data-config-section]):not(section[aria-label="Runtime test"]) {
+  order: 3;
+}
+@media (min-width: 768px) {
+  .agent-config-panels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .agent-config-panels > * {
+    grid-column: 1 / -1;
+  }
+  .agent-config-panels > [data-config-section="adapter"] {
+    grid-column: 1;
+  }
+  .agent-config-panels:has(> [data-config-section="environment"]) > [data-config-section="adapter"] {
+    grid-row: span 2;
+  }
+  .agent-config-panels > [data-config-section="configuration"],
+  .agent-config-panels > [data-config-section="environment"] {
+    grid-column: 2;
+  }
+}
+.agent-config-panels h3,
+.agent-config-panels + h3 {
+  font-weight: 600;
+}
+
+/* Large collection empty states share the artifact fan, with 20px rhythm. */
+.empty-state-artwork > p { margin-block: 0; }
+.empty-state-graphic { display: flex; align-items: flex-end; justify-content: center; max-width: 100%; }
+[data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) {
+  height: var(--collection-toolbar-height);
+  border-radius: var(--collection-toolbar-radius);
+  font-size: var(--design-page-type-size);
+}
+[data-canonical-toolbar] .design-task-search input { height: 100%; }
+[data-canonical-toolbar] .design-view-toggle { align-items: center; }
+[data-canonical-toolbar] .design-view-toggle [role="tablist"] { height: 100%; padding: 0; gap: 0; background: transparent; }
+[data-canonical-toolbar="collection"] { display: block; }
+[data-canonical-toolbar="collection"] [data-slot="collection-toolbar-controls"],
+[data-canonical-toolbar="collection"] [data-slot="collection-toolbar-actions"] { gap: var(--collection-toolbar-gap); }
+@media (pointer: coarse) {
+  [data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) { font-size: var(--text-base); }
+}
+
+:root {
+  --selection-bar-bottom: calc(var(--spacing) * 12);
+  --selection-bar-travel: calc(var(--spacing) * 4);
+  --selection-bar-enter: var(--motion-duration-base);
+  --selection-bar-exit: var(--motion-duration-fast);
+  --selection-bar-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --selection-bar-ease-in: cubic-bezier(0.755, 0.05, 0.855, 0.06);
+  --selection-bar-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+}
+.agent-selection-bar {
+  position: fixed;
+  z-index: var(--z-40);
+  bottom: calc(var(--selection-bar-bottom) + env(safe-area-inset-bottom));
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - var(--spacing) * 8);
+  border-color: var(--border);
+  box-shadow: var(--selection-bar-shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, var(--selection-bar-travel));
+  transition: opacity var(--selection-bar-exit) var(--selection-bar-ease-in), transform var(--selection-bar-exit) var(--selection-bar-ease-in), visibility 0s var(--selection-bar-exit);
+}
+.agent-selection-bar[data-state="open"] {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition: opacity var(--selection-bar-enter) var(--selection-bar-ease-out), transform var(--selection-bar-enter) var(--selection-bar-ease-out), visibility 0s;
+}
+.agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
+/* Raised modules use the Skills chip surface to keep agent chips distinct from their tile. */
+[data-agent-tile] .agent-identity-chip { --agent-identity-chip-bg: var(--agent-detail-tile-chip); }
+:is(a, button).agent-identity-chip { transition: background-color var(--motion-duration-fast); }
+:is(a, button).agent-identity-chip:hover:not(:disabled) { background: var(--agent-identity-chip-hover); }
+:is(a, button).agent-identity-chip:focus-visible { outline: var(--sz-2px) solid var(--ring); outline-offset: var(--sz-2px); }
+.inline-editor-fit { display: inline-grid; min-width: 0; max-width: 100%; }
+.inline-editor-fit > * { grid-area: 1 / 1; min-width: 0; }
+.inline-editor-fit > textarea { width: 0; min-width: calc(100% + var(--spacing) * 2); }
+.agent-roster .agent-roster-identity { padding-inline: 0; background: transparent; border: 0; }
+.agent-roster [scope="col"] { vertical-align: middle; }
+[data-canonical-toolbar="agent-filters"], [data-canonical-toolbar="gateways"] { justify-content: space-between; }
+[data-canonical-toolbar="audit-activity"], [data-canonical-toolbar="audit-runs"] { align-items: flex-end; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
+}
+
+:root {
+  --tc-image-grid-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr));
+  --tc-image-grid-max-width: 40rem;
+}
+
+.tc-image-grid {
+  display: grid;
+  grid-template-columns: var(--tc-image-grid-columns);
+  gap: calc(var(--spacing) * 2);
+  width: 100%;
+  max-width: var(--tc-image-grid-max-width);
+}
+
+.paperclip-patch-line { min-width: 0; }
+span.paperclip-patch-line { display: block; }
+.paperclip-patch-line[data-patch-line="add"] { color: var(--patch-add-fg); background: var(--diff-add-bg); }
+.paperclip-patch-line[data-patch-line="remove"] { color: var(--patch-remove-fg); background: var(--diff-remove-bg); }
+.paperclip-patch-line[data-patch-line="hunk"] { color: var(--patch-meta-fg); background: var(--muted); }
+.paperclip-patch-line[data-patch-line="skip"] { color: var(--patch-meta-fg); }
+
+.paperclip-patch-preview .paperclip-patch-line { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+
+.paperclip-patch-line[data-line-selected] { background: var(--code-highlight-bg-resolved); }
+/* Agent Identity: equal panel gutters and a viewport-bound dirty footer. */
+:root {
+  --agent-identity-panel-gap: calc(var(--spacing) * 6);
+  --agent-identity-resizer-width: calc(var(--spacing) * 2);
+  --agent-identity-column-gap: calc((var(--agent-identity-panel-gap) - var(--agent-identity-resizer-width)) / 2);
+  --agent-save-bar-motion: var(--motion-duration-base);
+  --agent-save-bar-clearance: calc(var(--spacing) * 24);
+}
+.agent-instruction-panels { row-gap: var(--agent-identity-panel-gap); column-gap: var(--agent-identity-column-gap); }
+.agent-config-save-bar {
+  position: fixed;
+  bottom: 0;
+  z-index: 40;
+  padding: calc(var(--spacing) * 4) calc(var(--spacing) * 6);
+  padding-bottom: max(calc(var(--spacing) * 4), env(safe-area-inset-bottom));
+  background: var(--background);
+  border-top: var(--sz-1px) solid var(--border);
+  box-shadow: var(--shadow-flyout);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform var(--agent-save-bar-motion) var(--motion-ease-standard), visibility var(--agent-save-bar-motion);
+}
+.agent-config-save-bar[data-visible="true"] { transform: translateY(0); visibility: visible; transition-timing-function: var(--motion-ease-out-expo); }
+.agent-file-copy-notice { transition: opacity var(--motion-duration-fast); }
+@media (prefers-reduced-motion: reduce) {
+  .agent-config-save-bar, .agent-file-copy-notice { transition: none; }
+}
+
+.agent-settings-instructions { padding-bottom: var(--agent-save-bar-clearance); }
+
+/* Identity file chrome uses the same input surface and keeps filenames on one line. */
+:root {
+  --agent-identity-preview-title-size: 18px;
+  --agent-identity-preview-title-weight: 500;
+  --agent-save-status-motion: var(--motion-duration-base);
+  --agent-save-status-offset: calc(var(--spacing) * 2);
+  --agent-save-dot-unsaved: var(--color-amber-500);
+}
+.agent-markdown-name-field { background: var(--background-alt); }
+html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
+.agent-markdown-name-field [data-slot="input"] { background: transparent; }
+.agent-instruction-file-row { margin-block: var(--spacing); border-radius: var(--flyout-option-radius); background: transparent; }
+.agent-instruction-file-row:hover { background: var(--muted-highlight); color: var(--foreground); }
+.agent-instruction-file-row > span:has(> .truncate) { overflow: hidden; }
+[data-slot="collapsible-content"][data-agent-disclosure] { overflow: hidden; }
+[data-slot="collapsible-content"][data-agent-disclosure][data-state="open"] {
+  animation: decision-disclosure-open var(--motion-duration-swap) var(--motion-ease-out);
+}
+[data-slot="collapsible-content"][data-agent-disclosure][data-state="closed"] {
+  animation: decision-disclosure-close var(--motion-duration-swap) var(--motion-ease-out);
+}
+.agent-save-status { display: grid; overflow: hidden; }
+.agent-save-status > span { grid-area: 1 / 1; }
+.agent-save-status-out { animation: agent-save-status-out var(--agent-save-status-motion) var(--motion-ease-standard) both; }
+.agent-save-status-in { animation: agent-save-status-in var(--agent-save-status-motion) var(--motion-ease-out-expo) both; }
+@keyframes agent-save-status-out { to { transform: translateY(var(--agent-save-status-offset)); opacity: 0; } }
+@keyframes agent-save-status-in { from { transform: translateY(var(--agent-save-status-offset)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="collapsible-content"][data-agent-disclosure], .agent-save-status-out, .agent-save-status-in { animation: none; }
+}
+
+.agent-identity-preview-title { font-weight: var(--agent-identity-preview-title-weight); }
+
+/* Tighten the header’s surrounding vertical space by one spacing step per edge. */
+.agent-character-header {
+  margin-block-start: calc(var(--spacing) * -1);
+  margin-block-end: calc(var(--spacing) * 7);
+}
+
+:root { --agent-header-character-size: 102px; }
+.agent-header-character { width: var(--agent-header-character-size); height: var(--agent-header-character-size); }
+.agent-pin-row { --agent-pin-surface: var(--background); }
+.agent-contact-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 60%, var(--background)); }
+.agent-contact-pin-row[data-selected="true"] { --agent-pin-surface: var(--accent); }
+.agent-roster-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 50%, var(--background)); }
+.agent-chat-pin {
+  background: var(--agent-pin-surface, transparent);
+}
+.agent-pin-row:is(:hover, :focus-within) .agent-pin-text {
+  mask-image: linear-gradient(to right, var(--foreground) calc(100% - var(--spacing) * 10), transparent calc(100% - var(--spacing) * 2));
+}
+.agent-contact-create {
+  border-radius: var(--agent-contact-top-radius) var(--agent-contact-top-radius) var(--radius-sm) var(--radius-sm);
+}
+:root { --agent-contact-top-radius: 50%; }
+@media (pointer: coarse) {
+  .agent-pin-row .agent-pin-text {
+    mask-image: linear-gradient(to right, var(--foreground) calc(100% - var(--spacing) * 10), transparent calc(100% - var(--spacing) * 2));
+  }
+}
+.agent-contact-pin-row[data-has-unread="true"] .agent-pin-text { mask-image: none; }

@@ -43,7 +43,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
-    db = createDb(externalUrl ?? testDb.connectionString);
+    db = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 4 });
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-project-skills-home-'));
     process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Project skills', issuePrefix: 'PSK' });
@@ -576,7 +576,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       expect(await skills.getById(companyId, fork.skill.id)).not.toBeNull();
       let retainedVersionId = original.currentVersionId;
       if (choice === 'copy') {
-        expect(await skills.getById(companyId, original.id)).toMatchObject({ sourceType: 'local_path', accessSourceId: source.id });
+        expect(await skills.getById(companyId, original.id)).toMatchObject({ sourceType: 'managed', sourceLocator: null, accessSourceId: source.id });
         expect((await skills.readFile(companyId, original.id, '.paperclip-repository/private/SKILL.md'))?.content).toBe(md('retained private workflow'));
         expect((await skills.readFile(companyId, original.id, 'SKILL.md'))?.content).toContain('.paperclip-repository/private/SKILL.md');
         await skills.updateFile(companyId, original.id, 'SKILL.md', md('Private copy edits') + '\nConfidential original-project notes.\n');
@@ -605,7 +605,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       expect(restored.lastError).toBeNull();
       expect(restored.entries.filter(entry => entry.skillId)).toHaveLength(1);
       expect(restored.entries[0]!.skillId).not.toBe(original.id);
-      if (choice === 'copy') expect(await skills.getById(companyId, original.id)).toMatchObject({ key: original.key, sourceType: 'local_path', currentVersionId: retainedVersionId });
+      if (choice === 'copy') expect(await skills.getById(companyId, original.id)).toMatchObject({ key: original.key, sourceType: 'managed', currentVersionId: retainedVersionId });
       const readerId = randomUUID();
       await db.insert(authUsers).values({ id: readerId, name: 'Open project reader', email: `${readerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
       await db.insert(companyMemberships).values({ companyId, principalType: 'user', principalId: readerId, membershipRole: 'member', status: 'active' });
@@ -664,9 +664,10 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const sourceId = ready!.sourceId!;
     const service = skillSourceService(db);
     const original = await service.detail(companyId, sourceId);
-    const failure: SkillSourceContext = { ...context, read: () => (async () => {
+    const rateLimited = async () => {
       throw unprocessable('GitHub request limit reached.', { retryAfterMs: 7_200_000 });
-    }) as ReturnType<SkillSourceContext['read']> };
+    };
+    const failure: SkillSourceContext = { ...context, read: () => Object.assign(rateLimited, { openSnapshot: rateLimited }) };
     const failedAt = new Date();
     await db.update(companySkillSources).set({ nextSyncAt: failedAt }).where(eq(companySkillSources.id, sourceId));
     await skillSourceSyncService(db, { context: async () => failure }).tick(failedAt);

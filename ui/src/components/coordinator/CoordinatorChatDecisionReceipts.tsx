@@ -24,8 +24,7 @@ export function useCoordinatorChatDecisionReceipts(issueId: string | null, conve
       return api.get<DecisionHistoryPage>(path, { signal, cache: "no-store" });
     },
     getNextPageParam: page => page.nextCursor,
-    retry: false,
-  });
+    });
   const accessUnavailable = !!query.error && "status" in query.error && [401, 403, 404].includes(Number(query.error.status));
   const receipts = useMemo(() => {
     if (!enabled || !conversationMode || accessUnavailable) return [];
@@ -48,12 +47,12 @@ export function CoordinatorChatDecisionReceipt({ receipt }: { receipt: DecisionH
   </Link>;
 }
 
-export function CoordinatorChatReceiptStatus({ query }: { query: ReturnType<typeof useCoordinatorChatDecisionReceipts> }) {
+export function CoordinatorChatReceiptStatus({ query, scroll = false }: { scroll?: boolean; query: ReturnType<typeof useCoordinatorChatDecisionReceipts> }) {
   if (!query.enabled) return null;
   if (query.isError) return <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
     <span>Decision updates couldn’t load.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
   </div>;
-  if (query.hasNextPage) return <Button size="sm" variant="ghost" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
+  if (!scroll && query.hasNextPage) return <Button size="sm" variant="ghost" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
     {query.isFetchingNextPage ? "Loading earlier decisions…" : "Load earlier decisions"}
   </Button>;
   return null;

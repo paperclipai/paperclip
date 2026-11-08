@@ -289,6 +289,7 @@ interface VisibleRouteOptions {
 }
 
 interface VisibleIssueRouteContext {
+  conversation: boolean;
   routeIssueRef: string;
   issueRefs: Set<string>;
   assigneeAgentId: string | null;
@@ -332,6 +333,27 @@ function resolveIssueQueryRefs(
   return Array.from(refs);
 }
 
+function resolveIssueActivityQueryRefs(
+  queryClient: QueryClient,
+  companyId: string,
+  entityId: string,
+  details: Record<string, unknown> | null,
+  options?: { pathname?: string; isForegrounded?: boolean },
+): string[] {
+  const refs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
+  const visible = options?.pathname
+    ? resolveVisibleIssueRouteContext(queryClient, options.pathname, {
+        isForegrounded: options.isForegrounded,
+      })
+    : null;
+  if (visible && overlaps(visible.issueRefs, buildIssueRefsForPayload(entityId, details))
+    && !refs.includes(visible.routeIssueRef)) {
+    // Authenticated events can omit the identifier used by the visible route.
+    refs.push(visible.routeIssueRef);
+  }
+  return refs;
+}
+
 function resolveIssueToastContext(
   queryClient: QueryClient,
   companyId: string,
@@ -353,11 +375,11 @@ function resolveIssueToastContext(
       issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
     );
   const cachedIssue = detailIssue ?? listIssue ?? null;
-  const ref =
+  const identifier =
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??
-    cachedIssue?.identifier ??
-    `Task ${shortId(issueId)}`;
+    cachedIssue?.identifier;
+  const ref = identifier ?? "Task";
   const title =
     readString(details?.title) ??
     readString(details?.issueTitle) ??
@@ -367,7 +389,7 @@ function resolveIssueToastContext(
     ref,
     title,
     label: title ? `${ref} - ${truncate(title, 72)}` : ref,
-    href: `/issues/${cachedIssue?.identifier ?? issueId}`,
+    href: `/issues/${identifier ?? issueId}`,
   };
 }
 
@@ -473,6 +495,7 @@ function resolveVisibleIssueRouteContext(
     }
   }
   return {
+    conversation: segments[0] === "chats" || Boolean(issue?.conversationAgentId),
     routeIssueRef: issueRef,
     issueRefs,
     assigneeAgentId: issue?.assigneeAgentId ?? null,
@@ -909,6 +932,15 @@ async function hydrateVisibleIssueComment(
       context.routeIssueRef,
       commentId,
     );
+    if (context.conversation) {
+      for (const ref of context.issueRefs) {
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+          [...new Map([...(current ?? []), comment].map(row => [row.id, row])).values()],
+        );
+        void queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.comments(ref), "recent"] });
+      }
+      return true;
+    }
     queryClient.setQueryData<
       InfiniteData<IssueComment[], string | null> | undefined
     >(queryKeys.issues.comments(context.routeIssueRef), (current) => {
@@ -1032,7 +1064,10 @@ function buildActivityToast(
     queryClient,
     companyId,
     entityId,
-    details,
+    {
+      ...details,
+      identifier: readString(payload.issueIdentifier) ?? readString(details?.identifier),
+    },
   );
   const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
   const cachedAgent = actorType === "agent" && actorId
@@ -1327,6 +1362,7 @@ function invalidateHeartbeatQueries(
   // Note: liveRuns(companyId) is intentionally NOT invalidated here — it is
   // event-sourced via applyRunLifecycleToCompanyLiveRuns in the caller.
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
@@ -1341,6 +1377,10 @@ function invalidateHeartbeatQueries(
     });
     queryClient.invalidateQueries({
       queryKey: queryKeys.heartbeats(companyId, agentId),
+    });
+    // Provider rate limits reported during the run live in runtime state.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.runtimeState(agentId),
     });
   }
   const runId = readString(payload.runId);
@@ -1369,18 +1409,34 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({
-    queryKey: queryKeys.sidebarBadges(companyId),
-  });
-
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
   const action = readString(payload.action);
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+  if (entityType === "issue" && (action === "issue.read_marked" || action === "issue.read_unmarked")) {
+    // Audit views show read receipts, while unread state belongs to one person.
+    if (entityId) {
+      for (const ref of resolveIssueActivityQueryRefs(queryClient, companyId, entityId, details, options)) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
+      }
+    }
+    const readerId = readString(details?.userId) ?? (actorType === "user" ? actorId : null);
+    if (readerId && readerId === currentActor.userId) {
+      for (const queryKey of [
+        queryKeys.issues.listMineByMe(companyId),
+        queryKeys.issues.listTouchedByMe(companyId),
+        queryKeys.issues.listUnreadTouchedByMe(companyId),
+        queryKeys.sidebarBadges(companyId),
+        queryKeys.agentChats.list(companyId, readerId),
+      ]) queryClient.invalidateQueries({ queryKey });
+    }
+    return;
+  }
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
   const decisionProjectionChanged = entityType === "decision" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
     action?.startsWith("issue.thread_interaction_") ||
@@ -1433,8 +1489,10 @@ function invalidateActivityQueries(
   if (entityType === "issue") {
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
-    if (knownChat || action === "issue.conversation_opened" && ownActorActivity) {
+    const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
+    if (knownChat || ownChatDelivery || action === "issue.conversation_opened" && ownActorActivity) {
       queryClient.invalidateQueries({ queryKey: chatListKey });
+      queryClient.invalidateQueries({ queryKey: ["agent-chat", companyId, currentActor.userId] });
     }
     if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
       // An ancestor hold or reparenting changes descendants' effective pause.
@@ -1479,11 +1537,12 @@ function invalidateActivityQueries(
           payload,
           { isForegrounded: options.isForegrounded },
         );
-      const issueRefs = resolveIssueQueryRefs(
+      const issueRefs = resolveIssueActivityQueryRefs(
         queryClient,
         companyId,
         entityId,
         details,
+        options,
       );
       const taskDocumentsChanged = !!action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action);
       const caseWorkChanged = !!action && ISSUE_CASE_WORK_ACTIVITY_ACTIONS.has(action);
@@ -1506,20 +1565,6 @@ function invalidateActivityQueries(
             );
           },
         });
-      }
-      const visibleContext = options?.pathname
-        ? resolveVisibleIssueRouteContext(queryClient, options.pathname, {
-            isForegrounded: options.isForegrounded,
-          })
-        : null;
-      if (
-        visibleContext &&
-        overlaps(visibleContext.issueRefs, buildIssueRefsForPayload(entityId, details)) &&
-        !issueRefs.includes(visibleContext.routeIssueRef)
-      ) {
-        // Authenticated payloads omit the identifier. Include the visible
-        // route's cache key when its loaded task matches the event's UUID.
-        issueRefs.push(visibleContext.routeIssueRef);
       }
       for (const ref of issueRefs) {
         const invalidationOptions =
@@ -1544,6 +1589,7 @@ function invalidateActivityQueries(
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
           const documentKey = readString(details?.key);
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.documents(ref),
@@ -1947,6 +1993,13 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "agent.runtime_state.updated") {
+    // The server saved a new provider rate-limit snapshot for this agent.
+    const agentId = readString(payload.agentId);
+    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
+    return;
+  }
+
   if (event.type === "agent.status") {
     queryClient.invalidateQueries({
       queryKey: queryKeys.agents.list(expectedCompanyId),
@@ -2091,7 +2144,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ??

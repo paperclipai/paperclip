@@ -18,7 +18,7 @@ const support = await getEmbeddedPostgresTestSupport();
     db = createDb(database.connectionString, { maxConnections: 1 });
     client = db.$client;
     client.options.transform.value.from = (value, column) => {
-      if (recording && column.type === 3802 && value !== null) jsonBytes.push(Buffer.byteLength(JSON.stringify(value)));
+      if (recording && column?.type === 3802 && value !== null) jsonBytes.push(Buffer.byteLength(JSON.stringify(value)));
       return value;
     };
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);

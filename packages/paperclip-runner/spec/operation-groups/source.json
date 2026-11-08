@@ -19,7 +19,7 @@
     "attention": "Continuation and attention routing lifecycle.",
     "work": "Recorded work-assessment evidence.",
     "issue": "Issue-status decision proposal outcome and application evidence.",
-    "plan": "Complete provider-authored within-turn checklist snapshots, separate from durable Paperclip Plan documents.",
+    "plan": "Complete provider-authored within-turn checklist snapshots, and provider-proposed plan documents that Paperclip may synchronize into the durable Plan document for approval.",
     "tool": "Provider-neutral process, MCP, dynamic, and built-in execution activity.",
     "research": "Provider-reported search, page-open, and in-page research activity.",
     "delegation": "Child-agent delegation lifecycle and aggregate status.",
@@ -262,12 +262,13 @@
       "owner": "always tools",
       "operationIds": [
         "get_task_history",
-        "report_progress"
+        "report_progress",
+        "send_chat_message"
       ],
       "controlPlaneOperationIds": [
         "append_audit_record"
       ],
-      "realSurface": "issue comment list/get/create routes",
+      "realSurface": "issue comment list/get/create routes and own-agent chat messaging service",
       "mockStateDomains": [
         "task",
         "comments",
@@ -275,8 +276,8 @@
         "idempotency",
         "audit"
       ],
-      "prpEvidence": "bounded read result or idempotent comment-write receipt plus audit reference",
-      "gap": "Active-task binding is unbound; cross-task comment mutation is deliberately outside V1."
+      "prpEvidence": "bounded read result, idempotent progress receipt, or persisted proactive chat comment with source task/run provenance",
+      "gap": "Proactive chat delivery is bound to the running agent and responsible human; arbitrary chat destinations are unsupported. Other comment/history binding gaps remain recorded per operation."
     },
     {
       "id": "se",

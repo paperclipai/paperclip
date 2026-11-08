@@ -20,12 +20,13 @@ function fixture() {
 }
 
 describe("controller outage qualification", () => {
-  it("keeps original-execution fault evidence enabled for both dedicated continuity cells", async () => {
+  it("keeps original-execution fault evidence enabled for every dedicated continuity cell", async () => {
     const executions = selectRunnerExecutions(parseRunnerSelectors(["--suite", "daytona-restart-continuity"]));
-    expect(executions).toHaveLength(2);
+    // Only providers with production managed warm sessions belong in this lane (#18994).
+    expect(executions.map(execution => execution.profile.id)).toEqual(["runner-codex"]);
     for (const execution of executions) {
       const outage = controllerOutageForExecution(execution, {});
-      expect(outage).toEqual({ signal: "SIGKILL", holdMs: 125_000 });
+      expect(outage).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
       expect(controllerOutageForExecution(execution, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "300000" }))
         .toEqual({ signal: "SIGKILL", holdMs: 300_000 });
       expect(() => controllerOutageForExecution(execution, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" }))
@@ -87,10 +88,14 @@ describe("controller outage qualification", () => {
     expect(f.input.start).not.toHaveBeenCalled();
   });
 
-  it.each([-1, 300001, 0.5, NaN, Infinity, "300000", null])("rejects invalid duration %s before signaling", holdMs => {
+  it.each([-1, 600001, 0.5, NaN, Infinity, "300000", null])("rejects invalid duration %s before signaling", holdMs => {
     expect(() => parseControllerOutage({ signal: "SIGKILL", holdMs })).toThrow();
   });
-  it.each(["", "-1", "1e3", "NaN", " 1000", "300001"])("rejects invalid environment duration %s", value => {
+  it("accepts chaos holds up to ten minutes", () => {
+    expect(parseControllerOutage({ signal: "SIGKILL", holdMs: 360_000 })).toEqual({ signal: "SIGKILL", holdMs: 360_000 });
+    expect(parseControllerOutage({ signal: "SIGTERM", holdMs: 600_000 })).toEqual({ signal: "SIGTERM", holdMs: 600_000 });
+  });
+  it.each(["", "-1", "1e3", "NaN", " 1000", "600001"])("rejects invalid environment duration %s", value => {
     expect(() => configuredControllerOutage({ PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: value })).toThrow();
   });
   it("accepts the five-minute contract without extending the runner grace", () => {

@@ -633,7 +633,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         companyId: company.id, body: { name: "Provider error test", profileId: profile.id },
       });
       const token = await gateway.createNamedGatewayToken({
-        companyId: company.id, gatewayId: named.id, body: { name: "Test" },
+        companyId: company.id, gatewayId: named.id, body: { name: "Test", clientLabel: "Test", ownerNote: "" },
       });
       const response = await request(createGatewayRouteApp(db, gateway))
         .post(named.endpointPath)
@@ -665,6 +665,140 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it.each(["managed", "mcp-key"])("returns %s GitHub recovery guidance directly to MCP callers without a pending approval", async method => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const denied = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: {
+        content: [{ type: "text", text: denied }], isError: true,
+      },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: method },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false,
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const named = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "GitHub recovery", profileId: profile.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id,
+        body: { name: "Test", clientLabel: "Test", ownerNote: "" } });
+      const assertGuidance = (message: string) => {
+        expect(message).toContain(denied);
+        expect(message).toMatch(/Do not retry/);
+        if (method === "managed") {
+          expect(message).toMatch(/personal account/i);
+          expect(message).toMatch(/organization argument/i);
+          expect(message).toContain("Refresh access");
+          expect(message).not.toMatch(/replace.*token|Administration|classic token/i);
+        } else {
+          expect(message).toMatch(/token.*permissions/i);
+          expect(message).toMatch(/replace.*token/i);
+          expect(message).not.toMatch(/GitHub App|Refresh access/);
+        }
+      };
+      const unauthorized = await request(createGatewayRouteApp(db, gateway)).post(named.endpointPath)
+        .set("authorization", "Bearer invalid-token")
+        .send({ jsonrpc: "2.0", id: 0, method: "tools/call", params: { name: toolName, arguments: { name: "unauthorized" } } })
+        .expect(401);
+      expect(unauthorized.body.error).toBeDefined();
+      expect(unauthorized.body.result).toBeUndefined();
+      expect(remote.requests).toHaveLength(0);
+      const response = await request(createGatewayRouteApp(db, gateway)).post(named.endpointPath)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: { name: "mcp-example" } } })
+        .expect(200);
+      expect(response.body.result.isError).toBe(true);
+      assertGuidance(response.body.result.content[0].text);
+
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const failure = await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "agent-example" } }).catch(error => error);
+      expect(failure).toMatchObject({ reasonCode: "github_access_denied" });
+      assertGuidance(failure.message);
+
+      await createActiveMember(db, company.id, "test-user");
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: { name: "test-example" } });
+      expect(testCall).toMatchObject({ decision: "allowed", error: { reasonCode: "github_access_denied" } });
+      assertGuidance((testCall as { error: { message: string } }).error.message);
+      expect(remote.requests).toHaveLength(3);
+      expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id))).toEqual([]);
+      expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id)))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ status: "failed", errorCode: "github_access_denied" })]));
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))[0]?.healthStatus).toBe("ok");
+    } finally { await remote.close(); }
+  });
+
+  it.each(["config", "transport", "application", "legacy_application"])("records an actionable GitHub access error from %s metadata after one approved call and keeps the connection usable", async source => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const denied = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    let fail = true;
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: {
+        content: [{ type: "text", text: fail ? denied : "Repository read succeeded" }], isError: fail,
+      },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: source === "config" ? { sourceTemplateKey: "github" } : {},
+      });
+      if (source === "transport") await db.update(toolConnections).set({ transportConfig: { sourceTemplateKey: "github" } })
+        .where(eq(toolConnections.id, connection.id));
+      if (source === "application" || source === "legacy_application") await db.update(toolApplications)
+        .set({ metadata: source === "application" ? { sourceTemplateKey: "github" } : { source: "github" } })
+        .where(eq(toolApplications.id, application.id));
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", properties: { name: { type: "string" }, private: { type: "boolean" } },
+        required: ["name"], additionalProperties: false,
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({ companyId: company.id, name: "Review GitHub writes",
+        policyType: "require_approval", selectors: { connectionId: connection.id }, priority: 10 });
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const parameters = { name: "example-prototype", private: true };
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters }))
+        .rejects.toMatchObject({ reasonCode: "approval_required" });
+      expect(remote.requests).toHaveLength(0);
+      const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, action!.interactionId!));
+      await db.update(toolActionRequests).set({ status: "approved", resolvedAt: new Date() })
+        .where(eq(toolActionRequests.id, action!.id));
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters,
+        approvedActionRequestId: action!.id })).rejects.toMatchObject({ reasonCode: "github_access_denied" });
+      expect(remote.requests).toHaveLength(1);
+      expect(remote.requests[0]?.body).toMatchObject({ method: "tools/call",
+        params: { name: "create_repository", arguments: parameters } });
+      const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, action!.invocationId));
+      expect(invocation).toMatchObject({ status: "failed", errorCode: "github_access_denied",
+        errorMessage: expect.stringContaining(denied) });
+      const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, action!.interactionId!));
+      expect(card!.result).toMatchObject({ toolAction: { status: "failed", errorCode: "github_access_denied" } });
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))[0]?.healthStatus).toBe("ok");
+      fail = false;
+      await db.delete(toolPolicies).where(eq(toolPolicies.companyId, company.id));
+      const result = await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "permitted-prototype", private: true } });
+      expect(result.status).toBe("completed");
+      expect(remote.requests).toHaveLength(2);
+    } finally { await remote.close(); }
+  });
+
   it("returns a JSON-RPC reconciliation error instead of repeating an unverifiable legacy write", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(({ body }) => ({
@@ -684,7 +818,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const named = await gateway.createNamedGateway({ companyId: company.id,
         body: { name: "Legacy write test", profileId: profile.id } });
       const token = await gateway.createNamedGatewayToken({ companyId: company.id,
-        gatewayId: named.id, body: { name: "Test" } });
+        gatewayId: named.id, body: { name: "Test", clientLabel: "Test", ownerNote: "" } });
       const app = createGatewayRouteApp(db, gateway);
       const parameters = { key: "large-note", value: `${"x".repeat(500)}original` };
       await request(app).post(named.endpointPath).set("authorization", `Bearer ${token.token}`)
@@ -933,7 +1067,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const token = await gateway.createNamedGatewayToken({
       companyId: company.id,
       gatewayId: created.id,
-      body: { name: "Runtime token" },
+      body: { name: "Runtime token", clientLabel: "Runtime token", ownerNote: "" },
     });
     const app = createGatewayRouteApp(db, gateway);
 
@@ -1013,7 +1147,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const token = await gateway.createNamedGatewayToken({
         companyId: company.id,
         gatewayId: created.id,
-        body: { name: "Native runner" },
+        body: { name: "Native runner", clientLabel: "Native runner", ownerNote: "" },
       });
       const app = createGatewayRouteApp(db, gateway);
 
@@ -1310,12 +1444,12 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const tokenA = await gateway.createNamedGatewayToken({
         companyId: company.id,
         gatewayId: created.id,
-        body: { name: "Client A", clientLabel: "Client A" },
+        body: { name: "Client A", clientLabel: "Client A", ownerNote: "" },
       });
       const tokenB = await gateway.createNamedGatewayToken({
         companyId: company.id,
         gatewayId: created.id,
-        body: { name: "Client B", clientLabel: "Client B" },
+        body: { name: "Client B", clientLabel: "Client B", ownerNote: "" },
       });
       const app = createGatewayRouteApp(db, gateway);
       const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
@@ -2659,7 +2793,7 @@ rl.on("line", (line) => {
         }
         expect(JSON.stringify(await db.select().from(toolAccessAuditEvents))).not.toContain("fixture-canary");
         if (grantKind === "user" && secret) {
-          await expect(resolveConnectionGrantSecret(db, connection!, { ...grant!, subjectUserId: "bob" }, grant!.credentialSecretRefs[0]!, {}))
+          await expect(resolveConnectionGrantSecret(db, connection!, { ...grant!, subjectUserId: "bob" }, grant!.credentialSecretRefs[0]!, { consumerType: "tool_connection", consumerId: connection!.id }))
             .rejects.toMatchObject({ details: { code: "grant_credential_invalid" } });
           // Health must reject the exact legacy ownership mismatch that invocation rejects.
           await db.update(companySecrets).set({ scope: "company", ownerUserId: null, userSecretDefinitionId: null }).where(eq(companySecrets.id, secret.id));
@@ -2703,7 +2837,7 @@ rl.on("line", (line) => {
           expect(activeSecretId).not.toBe(secret.id);
           const [freshSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, activeSecretId));
           expect(freshSecret).toMatchObject({ scope: "user", ownerUserId: "alice" });
-          await expect(resolveConnectionGrantSecret(db, { ...connection!, companyId: otherCompany.id }, restoredGrant!, restoredGrant!.credentialSecretRefs[0]!, {}))
+          await expect(resolveConnectionGrantSecret(db, { ...connection!, companyId: otherCompany.id }, restoredGrant!, restoredGrant!.credentialSecretRefs[0]!, { consumerType: "tool_connection", consumerId: connection!.id }))
             .rejects.toMatchObject({ details: { code: "grant_credential_invalid" } });
           expect(await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connection!.id)))
             .toEqual([expect.objectContaining({ userSecretDefinitionId: freshSecret!.userSecretDefinitionId,
@@ -2744,7 +2878,6 @@ rl.on("line", (line) => {
     const { connection } = await createRemoteMcpTool(db, company.id, { url: "https://8.8.8.8/mcp", riskLevel: "write" });
     await allowAllToolsForAgent(db, company.id, agent.id);
     const gateway = createTestToolGatewayService(db, {
-      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
       remoteHttpRequest: async () => Response.json({ error: "insufficient_scope", message: "provider-secret-canary" }, {
         status: 403, headers: format === "header" ? { "www-authenticate": 'Bearer error="insufficient_scope"' } : {},
       }),
@@ -3218,8 +3351,14 @@ rl.on("line", (line) => {
       const access = toolAccessService(db);
       const connection = await access.createConnection(company.id, {
         name: "KV demo SDK fixture",
+        connectionPurpose: "tool",
         transport: "mcp_remote",
+        authKind: "none",
+        ownership: "customer",
+        connectionKind: "managed",
         config: { url: `http://127.0.0.1:${port}/mcp` },
+        transportConfig: { url: `http://127.0.0.1:${port}/mcp` },
+        credentialSecretRefs: [],
         enabled: true,
         status: "active",
       });
@@ -3541,7 +3680,7 @@ rl.on("line", (line) => {
       await db
         .update(toolInvocations)
         .set({
-          status: "completed",
+          status: "succeeded",
           resultSummary: winnerSummary,
           completedAt,
           updatedAt: completedAt,
@@ -3552,7 +3691,7 @@ rl.on("line", (line) => {
         .from(toolInvocations)
         .where(eq(toolInvocations.id, actionRequest.invocationId));
       expect(winnerInvocation).toMatchObject({
-        status: "completed",
+        status: "succeeded",
         approvalState: "approved",
         resultSummary: winnerSummary,
         errorCode: null,
@@ -5390,7 +5529,7 @@ rl.on("line", (line) => {
 
     await db
       .update(heartbeatRuns)
-      .set({ status: "succeeded", completedAt: new Date() })
+      .set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, run.id));
 
     await expect(gateway.listToolsForSession(session.token)).rejects.toMatchObject({
@@ -5521,7 +5660,7 @@ rl.on("line", (line) => {
 
     await db
       .update(heartbeatRuns)
-      .set({ status: "succeeded", completedAt: new Date() })
+      .set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, run.id));
 
     const replay = await request(app)
@@ -5776,7 +5915,7 @@ rl.on("line", (line) => {
         name: key, key: `${key}_${randomUUID().replace(/-/g, "")}`,
         provider: "local_encrypted", value,
       });
-      return { secretId: secret.id, versionSelector: "latest", configPath: `env.${key}`, required: true };
+      return { secretId: secret.id, versionSelector: "latest" as const, configPath: `env.${key}`, required: true };
     }));
     const local = await createLocalStdioMcpTool(db, company.id, {
       applicationKey: "cognee", toolName: "recall",

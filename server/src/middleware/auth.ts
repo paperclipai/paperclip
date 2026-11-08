@@ -1,3 +1,5 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -43,7 +45,7 @@ import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compa
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
+import { cloudTenantPrimaryCompanyId, isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -329,6 +331,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           runId: runIdHeader || undefined,
           source: "board_key",
         };
+        if (isCloudManagedInstance() && (access.isInstanceAdmin || access.companyIds.length)) {
+          _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+        }
         next();
         return;
       }
@@ -521,7 +526,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
-
+    if (isCloudManagedInstance() && req.actor.onBehalfOfMemberships?.length) {
+      _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+    }
     next();
   };
   return async (req, res, next) => {
@@ -666,6 +673,7 @@ async function resolveCloudTenantActorOnce(
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
         await notifyChatCompanyAuthorityChange(tx, { companyId });
+        await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
       }
       return tx
         .insert(companyMemberships)

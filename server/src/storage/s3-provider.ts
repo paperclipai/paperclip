@@ -4,10 +4,14 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  ListObjectsV2Command,
+  ListObjectVersionsCommand,
 } from "@aws-sdk/client-s3";
-import { putS3Multipart } from "./s3-multipart.js";
-import { withS3FailureDiagnostics } from "./s3-failure.js";
+import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile } from "./s3-multipart.js";
+import { createReadStream } from "node:fs";
+import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { addAbortSignal, Readable } from "node:stream";
+import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -77,12 +81,94 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
   });
+  retryS3RequestTimeouts(client);
+  // File sources carry Content-MD5 as their integrity check. Send plain bodies
+  // so the backend verifies that digest directly; the default client wraps
+  // bodies in aws-chunked framing with its own trailing checksum.
+  const fileClient = new S3Client({
+    region,
+    endpoint: config.endpoint,
+    forcePathStyle: Boolean(config.forcePathStyle),
+    requestChecksumCalculation: "WHEN_REQUIRED",
+  });
+  retryS3RequestTimeouts(fileClient);
+
+  async function listExactVersions(key: string, signal?: AbortSignal) {
+    const versions = new Set<string>(), cursors = new Set<string>();
+    let keyMarker: string | undefined, versionMarker: string | undefined;
+    while (true) {
+      signal?.throwIfAborted();
+      const output = await client.send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: key,
+        KeyMarker: keyMarker, VersionIdMarker: versionMarker, MaxKeys: 1000 }), { abortSignal: signal });
+      if (typeof output.IsTruncated !== "boolean") throw new Error("s3_version_listing_invalid");
+      for (const entry of [...(output.Versions ?? []), ...(output.DeleteMarkers ?? [])]) {
+        if (typeof entry.Key !== "string" || !entry.Key.startsWith(key) ||
+          typeof entry.VersionId !== "string" || !entry.VersionId) throw new Error("s3_version_listing_invalid");
+        // Prefix is the narrowest S3 listing filter, but neighboring keys are never ours to delete.
+        if (entry.Key === key) versions.add(entry.VersionId);
+      }
+      if (!output.IsTruncated) return versions;
+      const nextKey = output.NextKeyMarker, nextVersion = output.NextVersionIdMarker;
+      if (!nextKey || !nextKey.startsWith(key) || !nextVersion ||
+        (keyMarker && Buffer.compare(Buffer.from(nextKey), Buffer.from(keyMarker)) < 0)) {
+        throw new Error("s3_version_listing_cursor_invalid");
+      }
+      const cursor = JSON.stringify([nextKey, nextVersion]);
+      if (cursors.has(cursor)) throw new Error("s3_version_listing_cursor_invalid");
+      cursors.add(cursor); keyMarker = nextKey; versionMarker = nextVersion;
+    }
+  }
 
   return {
     id: "s3",
 
+    async putObjectConditional(input) {
+      const output = await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: buildKey(prefix, input.objectKey),
+        Body: input.body,
+        ContentType: input.contentType,
+        ContentLength: input.contentLength,
+        IfMatch: input.ifMatch,
+        IfNoneMatch: input.ifNoneMatch,
+      }), { abortSignal: input.signal });
+      if (!output.ETag) throw new Error("Object storage did not return a publication ETag");
+      return { etag: output.ETag };
+    },
+
+    async listObjects(input) {
+      const keyPrefix = buildKey(prefix, input.prefix);
+      const output = await client.send(new ListObjectsV2Command({
+        Bucket: bucket, Prefix: keyPrefix,
+        ContinuationToken: input.continuationToken, MaxKeys: 1000,
+      }), { abortSignal: input.signal });
+      const strip = prefix ? prefix.length + 1 : 0;
+      return {
+        keys: (output.Contents ?? []).flatMap(object => object.Key ? [object.Key.slice(strip)] : []),
+        continuationToken: output.IsTruncated ? output.NextContinuationToken : undefined,
+      };
+    },
+
     async putObject(input) {
       const key = buildKey(prefix, input.objectKey);
+      const sourceFile = input.sourceFile;
+      if (sourceFile && input.contentLength > 16 * 1024 * 1024) {
+        return putS3MultipartFile(fileClient, bucket, key, { ...input, sourceFile });
+      }
+      if (sourceFile) {
+        // Content-MD5 makes the backend reject any byte it did not receive intact.
+        if (input.body instanceof Readable) input.body.destroy();
+        await assertSourceFileSize(sourceFile, input.contentLength);
+        const contentMd5 = await fileRangeMd5(sourceFile, 0, input.contentLength - 1, input.signal);
+        const body = createReadStream(sourceFile);
+        try {
+          await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
+            Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
+            ContentLength: input.contentLength, ContentMD5: contentMd5,
+          }), { abortSignal: input.signal }));
+        } finally { body.destroy(); }
+        return { integrity: "server_verified_md5" } as const;
+      }
       if (input.contentLength > 16 * 1024 * 1024) {
         await putS3Multipart(client, bucket, key, input);
         return;
@@ -112,6 +198,12 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         ));
 
         const stream = await toReadableStream(output.Body);
+        // Observe, do not handle: a consumer without an error listener still
+        // sees the failure exactly as it would without this one.
+        stream.on("error", function recordBodyFailure(error) {
+          recordS3BodyFailure(error, output);
+          if (stream.listenerCount("error") === 1) throw error;
+        });
         if (input.signal) addAbortSignal(input.signal, stream);
         return {
           stream,
@@ -154,6 +246,19 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
     async deleteObject(input): Promise<void> {
       const key = buildKey(prefix, input.objectKey);
+      if (input.allVersions) {
+        await withS3FailureDiagnostics("delete_object", async () => {
+          // Finish listing before deleting: removing a cursor version must not skip later pages.
+          const versions = await listExactVersions(key, input.signal);
+          for (const versionId of versions) {
+            input.signal?.throwIfAborted();
+            await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key, VersionId: versionId }),
+              { abortSignal: input.signal });
+          }
+          if ((await listExactVersions(key, input.signal)).size) throw new Error("s3_object_versions_still_present");
+        });
+        return;
+      }
       await withS3FailureDiagnostics("delete_object", () => client.send(
         new DeleteObjectCommand({
           Bucket: bucket,

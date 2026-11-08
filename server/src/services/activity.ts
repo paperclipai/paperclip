@@ -91,11 +91,26 @@ export function activityService(db: Db) {
   `.as("usageJson");
   // A denied user needs the selected connection's name to repair their task.
   // Other readers need the connection's existing human sharing permission.
+  // A malformed present Stop receipt must stay unconfirmed, not disappear.
   const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'executionCancellation', case when ${heartbeatRuns.resultJson} ? 'executionCancellation'
+          then jsonb_build_object('state', case
+            when jsonb_typeof(${heartbeatRuns.resultJson} -> 'executionCancellation') = 'object'
+              and ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' in ('requested', 'acknowledged')
+            then ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' else 'unknown' end) end,
+        'nativeCancellation', case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'nativeCancellation') = 'object'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,schema}' = 'paperclip.native-cancellation.v1'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,runId}' = ${heartbeatRuns.id}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,companyId}' = ${heartbeatRuns.companyId}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}' in ('pending', 'acknowledged')
+          then jsonb_build_object('schema', 'paperclip.native-cancellation.v1',
+            'runId', ${heartbeatRuns.id}, 'companyId', ${heartbeatRuns.companyId},
+            'dispatchState', ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}') end,
         'configurationIncomplete', case
           when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
           then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
@@ -428,7 +443,8 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
@@ -479,6 +495,11 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (

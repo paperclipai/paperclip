@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, companies, companyMemberships, createDb, instanceSettings, pluginConfig, plugins, projects, toolApplications, toolConnections, toolConnectionInstalls, toolProfiles, toolMcpGateways, toolProfileBindings, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, companies, companyMemberships, applyPendingMigrations, closeFileStorageDb, createDb, instanceSettings, pluginConfig, plugins, projects, toolApplications, toolConnections, toolConnectionInstalls, toolProfiles, toolMcpGateways, toolProfileBindings, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
@@ -18,7 +18,18 @@ import { aiConnectionService } from "../services/ai-connections.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = process.env.PAPERCLIP_AGENT_RUNTIME_ASSIGNMENTS_TEST_DATABASE_URL;
+const expectedDatabase = process.env.PAPERCLIP_AGENT_RUNTIME_ASSIGNMENTS_EXPECTED_DATABASE;
+if (externalUrl || expectedDatabase) {
+  if (!externalUrl || !expectedDatabase || !/^sleep2_[a-z0-9_]+_test$/.test(expectedDatabase)) {
+    throw new Error("Explicit external fixture URL and expected database are required");
+  }
+  const target = new URL(externalUrl);
+  if (!["postgres:", "postgresql:"].includes(target.protocol) || target.hostname !== "127.0.0.1" || target.port !== "55448" || target.pathname !== `/${expectedDatabase}` || target.search) {
+    throw new Error("External fixture must match the exact owned database");
+  }
+}
+const support = externalUrl ? { supported: true as const } : await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
 
 describeDatabase("connection assignment synchronization", () => {
@@ -30,8 +41,18 @@ describeDatabase("connection assignment synchronization", () => {
   let pluginId: string;
   let applicationId: string;
   let connectionId: string;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-assignments-"); db = createDb(database.connectionString); }, 90_000);
-  afterAll(async () => { await database?.cleanup(); });
+  beforeAll(async () => {
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-assignments-");
+    db = createDb(externalUrl ?? database.connectionString, { maxConnections: 4 });
+  }, 90_000);
+  afterAll(async () => {
+    try { if (db) await closeFileStorageDb(db, 1); }
+    finally {
+      try { await db?.$client.end({ timeout: 1 }); }
+      finally { await database?.cleanup(); }
+    }
+  });
   afterEach(() => vi.unstubAllEnvs());
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); peerId = randomUUID(); pluginId = randomUUID();
@@ -98,14 +119,14 @@ describeDatabase("connection assignment synchronization", () => {
     const [project] = await db.insert(projects).values({ companyId, name: "Project binding fixture" }).returning();
     for (let round = 0; round < 2; round++) {
       let before = (await events()).length;
-      await service.bindProfile(profile.id, { targetType: "agent", targetId: agentId });
+      await service.bindProfile(profile.id, { targetType: "agent", targetId: agentId, priority: 100 });
       expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agentId]);
       before = (await events()).length;
       await service.unbindProfile(profile.id, { targetType: "agent", targetId: agentId });
       expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agentId]);
     }
     const beforeProject = await events();
-    await service.bindProfile(profile.id, { targetType: "project", targetId: project.id });
+    await service.bindProfile(profile.id, { targetType: "project", targetId: project.id, priority: 100 });
     await service.unbindProfile(profile.id, { targetType: "project", targetId: project.id });
     expect(await events()).toEqual(beforeProject);
     let before = (await events()).length;
@@ -121,7 +142,7 @@ describeDatabase("connection assignment synchronization", () => {
     await db.update(toolConnectionInstalls).set({ targetId: peerId }).where(eq(toolConnectionInstalls.id, install.id));
     expect((await events()).slice(before).map(event => event.resourceId).sort()).toEqual([agentId, peerId].sort());
     before = (await events()).length;
-    await service.bindProfile(profile.id, { targetType: "company", targetId: companyId });
+    await service.bindProfile(profile.id, { targetType: "company", targetId: companyId, priority: 100 });
     expect((await events()).slice(before).map(event => event.resourceId).sort()).toEqual([agentId, peerId].sort());
   });
   it("keeps connector changes and their events atomic and company-scoped", async () => {
@@ -173,7 +194,7 @@ describeDatabase("connection assignment synchronization", () => {
         await vi.waitFor(() => expect(snapshots).toEqual(Array(2).fill({ publicMcp: enabled, chatConnectors: enabled })), { timeout: 5000 });
         await vi.waitFor(async () => expect(await inbox.list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]), { timeout: 5000 });
         expect(await events()).toHaveLength(before + 2);
-      } finally { delivery.dispose(); await coordinator.stop(); }
+      } finally { await delivery.dispose(); await coordinator.stop(); }
     }
   });
 
@@ -214,12 +235,12 @@ describeDatabase("connection assignment synchronization", () => {
       { companyId, profileKey: "single-target", name: "Single target" },
     ]).returning();
     if (change !== "bind") await db.insert(toolProfileBindings).values({ companyId, profileId: source.id, targetType: "agent", targetId: agentId });
-    const single = createDb(database.connectionString, { maxConnections: 1 });
+    const single = createDb(externalUrl ?? database.connectionString, { maxConnections: 1 });
     const service = toolAccessService(single);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const work = change === "bind" ? service.bindProfile(source.id, { targetType: "agent", targetId: agentId })
+    const work = change === "bind" ? service.bindProfile(source.id, { targetType: "agent", targetId: agentId, priority: 100 })
       : change === "unbind" ? service.unbindProfile(source.id, { targetType: "agent", targetId: agentId })
-        : service.deleteProfile(source.id, change === "reassign" ? { reassignToProfileId: target.id } : { force: true });
+        : service.deleteProfile(source.id, change === "reassign" ? { force: false, reassignToProfileId: target.id } : { force: true });
     const settled = Promise.allSettled([work]);
     try {
       await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Profile operation waited for another pooled connection")), 3000); })]);
@@ -261,9 +282,9 @@ describeDatabase("connection assignment synchronization", () => {
       expect(activity.wait_event_type).toBe("Lock");
     }, { timeout: 5000 });
     const mutation = run(writer => change === "bind"
-      ? writer.bindProfile(profile.id, { targetType: "agent", targetId: targetAgent })
+      ? writer.bindProfile(profile.id, { targetType: "agent", targetId: targetAgent, priority: 100 })
       : change === "unbind" ? writer.unbindProfile(profile.id, { targetType: "agent", targetId: targetAgent })
-        : writer.deleteProfile(source!.id, { reassignToProfileId: profile.id }));
+        : writer.deleteProfile(source!.id, { force: false, reassignToProfileId: profile.id }));
     const mutationResult = Promise.allSettled([mutation]);
     let finishResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
     try {
@@ -324,7 +345,7 @@ describeDatabase("connection assignment synchronization", () => {
       const firstResult = Promise.allSettled([first]);
       try {
         await waitForLock(0);
-        second = Promise.allSettled([run(change === "connection settings" ? adopt : client => toolAccessService(client).bindProfile(bindingProfile!.id, { targetType: "agent", targetId: lower }, { actorType: "agent", actorId: higher }))]);
+        second = Promise.allSettled([run(change === "connection settings" ? adopt : client => toolAccessService(client).bindProfile(bindingProfile!.id, { targetType: "agent", targetId: lower, priority: 100 }, { actorType: "agent", actorId: higher }))]);
         await waitForLock(1);
       } finally { release(); await blocker; }
       for (const result of [...await firstResult, ...await second!]) if (result.status === "rejected") throw result.reason;
@@ -373,7 +394,7 @@ describeDatabase("connection assignment synchronization", () => {
       await waitForLock(0);
       replacement = Promise.allSettled([run(service => change === "installs"
         ? service.putConnectionInstalls(connection.id, { installs: [{ targetType: "agent", targetId: lower }] })
-        : change === "reassign" ? service.deleteProfile(source.id, { reassignToProfileId: target.id })
+        : change === "reassign" ? service.deleteProfile(source.id, { force: false, reassignToProfileId: target.id })
           : service.finishGalleryAppConnection(companyId, connection.id, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [change === "finish" ? lower : higher] } }))]);
       await waitForLock(1);
     } finally { release(); await blocker; }

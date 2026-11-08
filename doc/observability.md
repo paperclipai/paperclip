@@ -45,20 +45,28 @@ Keep credential values out of logs and diagnostic reports.
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
+`budget.admission.inspect`, `budget.admission.reconcile`,
 `budget.admission.evaluate`, `budget.admission.reserve`,
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
-Transaction spans include commit time. Lock-wait spans cover acquisition of the
-company accounting lock. Settlement spans cover the ledger and reservation
-transaction. Enforcement spans measure asynchronous delivery; cancellation
-delivery spans start after acquiring a concurrency slot and cover the external
-Stop attempt. Both remain separate from provider inference.
+Inspection and admission spans cover read-only eligibility. Paid reservations,
+receipts and all five settlement owners avoid the company accounting mutex.
+`budget.admission.reconcile` remains a historical span name; eligibility no longer
+publishes budget transitions. `budget.accounting.lock_wait` still describes the
+legacy low-frequency configuration/control wrapper, not paid settlement.
+Transaction spans include commit time. Settlement spans cover the atomic ledger,
+reservation and owner acknowledgement. Acquisition duration is not a pure
+PostgreSQL lock-wait measurement: it can include network and Node scheduling.
+Enforcement spans cover asynchronous evaluation/delivery; cancellation delivery
+covers the external Stop attempt, separate from provider inference.
 
-The closed attribute list is `budget.policy_count` (number of applicable
-policies) and `budget.enforcement.queue_delay_ms` (time since the pending policy's
-last intent or retry timestamp). These spans contain no tool content, usage
-receipt bodies, credentials, or provider error bodies. They do not change
+The closed attribute list is `budget.policy_count` (applicable policy count),
+`budget.enforcement.queue_delay_ms` (time since pending intent/retry), and
+`budget.accounting.owner` (`run`, `decision`, `classifier`, `fast_response`,
+`browser`). The owner tag identifies the shared settlement span's emitter.
+These spans contain no prompts, usage receipt bodies, credentials or provider
+error bodies. They remain gated by the operator OTLP endpoint and do not change
 Paperclip's separate first-party Telemetry contract.
 
 ## Slack receipt reactions
@@ -205,7 +213,8 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
@@ -222,6 +231,11 @@ configuration, session preparation, workspace preparation, GitHub environment
 and launcher preparation, run output initialization, workspace validation,
 runtime services, instruction files, and runtime selection. Database and HTTP
 instrumentation can attach child spans during each awaited operation.
+
+Early context preparation also records `agent_read`, `chat_completion`,
+`conversation`, `runtime_state`, `issue_context`, `run_identity`, `trust_preset`,
+and `task_context` beneath `heartbeat.prepare`. These time the existing awaited
+operations before environment selection; they do not add reads or record content.
 
 Execution configuration also records separate phases for mentioned skills,
 GitHub identity selection, secret resolution, managed AI runtime preparation,
@@ -248,6 +262,17 @@ Workspace restore phases nest under this root using the same hashed run ID.
 It does not extend an earlier execution attempt or include time waiting for
 the background worker to run. Retries have separate roots. A check that finds
 no eligible work can end without a restore child.
+
+`task.response_presentation` owns recovery of an already committed native reply.
+It starts a separate linked root because deferred presentation can run after the
+execution attempt and workspace finalization have ended. Worker discovery for
+a specific run and worker checks include candidate reads under
+`response.resolve`. Each discovery or check owns its root; direct recovery and
+its worker check share one root when nested. `response.transaction`
+includes the recovery transaction; `response.transaction.entry` measures entry
+into its callback, including connection acquisition. These spans retain only the
+same hashed run ID and never capture reply content. A successful task status is
+separate from the time the reply is saved.
 
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
@@ -312,6 +337,14 @@ once known, `paperclip.native_reconciliation.candidates` (a count). A failed
 pass marks the pass span and the phase that was running with an error status.
 Faster passes record nothing.
 
+Heartbeat configuration preparation overlaps independent reads. Skill preparation
+runs alongside connector assignments; standing connection instructions wait for
+assignment catalog repairs, but can overlap the skill branch. These spans can
+finish out of order. Do not add their durations as serial elapsed time. The
+historical `skills.prepare` span ends when the skill branch settles, rather than
+when its concurrent branches finish. Each preparation attempt settles its started
+branches before it returns an error or releases acquired credentials.
+
 ### Detailed execution phases
 
 The `paperclip.execution` tracer adds these content-free spans beneath the current
@@ -326,7 +359,7 @@ attempt or owning phase:
 | `authorization.base`, `.responsible_user`, `.authorizing_user`, `.task_privacy`, `.project_privacy` | The existing base decision, responsible/authorizing-user intersections, and applicable app-record privacy decisions beneath `workspace.access.task_authorization` or `workspace.access.authorization`. These details are scoped to workspace authorization. |
 | `workspace.notification`, `workspace.write` | Notification statements and record writes. |
 | `workspace.materialize.*`, `workspace.checkout.*` | Private source-directory setup and identity verification, existing checkout lookup, Git credential resolution, clone, optional pristine-object cache lookup/publication (`cache_lookup`, `cache_publish`), requested-ref checkout, and atomic publication. The enclosing `heartbeat.prepare.workspace_source_materialize` includes the complete source-materialization path. |
-| `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
+| `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, dynamic skill package staging (`skill_assets`), bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
 | `runtime_context.instructions`, `.skills`, `.mcp` | The three concurrent runtime-context branches. Their durations overlap. |
 | `runtime_context.asset_*` | Source reads, manifest hashing, cache lookup, cold materialization, and exact file verification on cold and warm paths. |
 | `skills.inventory`, `.wait`, `.bundled`, `.releases`, `.folders`, `.local_sources` | Company skill reconciliation, waiting for an existing company refresh, and its bundled imports, release verification, folder, and local-source work beneath runtime skill preparation. Inventory children overlap their parent. |
@@ -336,8 +369,9 @@ attempt or owning phase:
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
 | `workspace_sync.seed_generation`, `.seed_lookup`, `.seed_replay`, `.seed_persist`, `.seed_publish`, `.seed_verify`, `.seed_extract`, `.seed_snapshot`, `.seed_cleanup` | Seed identity, cache lookup, replay, durable copies, publication, extraction/re-snapshot verification and temporary cleanup. Cache hits omit cold clone and verification work. |
-| `workspace_sync.seed_cache_copy`, `.seed_cache_sync`, `.seed_cache_hash` | Archive linking/copying, filesystem durability, and checksum work inside cache publication. These are children of seed publication, not additional elapsed time to add to that parent. |
+| `workspace_sync.seed_cache_copy`, `.seed_cache_sync`, `.seed_cache_hash` | Archive linking/copying, disk flush, and checksum work inside cache publication. Recovery-backed archives retain their existing flush, including when a cache link shares the recovery inode. Only a separate cache-only Git seed omits the flush; its bytes are rebuilt on a cache miss. Every reader verifies checksums. These are children of seed publication, not additional elapsed time to add to that parent. |
 | `workspace_sync.seed_cache_capacity`, `.seed_cache_evict`, `.seed_cache_locked_publish` | Quota inventory, eviction planning/application, and the publication body after the company lock is acquired. Capacity may run before and inside the lock. A gap after seed verification and before locked publication can include lock acquisition; locked publication itself excludes that wait. Copy/sync/hash and the locked quota/eviction work are nested children. |
+| `workspace_sync.seed_read_copy`, `.seed_read_hash`, `.seed_read_touch` | Private cache materialization, verification of the exact reused bytes, and last-used bookkeeping including company-lock acquisition. All are nested in seed lookup. A long lookup alone does not identify copy, hashing, or lock contention as its cause. |
 | `workspace_sync.git_index_refresh` | Fully awaited stat-metadata refresh after restoring a fresh OpenCode sandbox checkout. It shares the inbound barrier and command timeout; dirty working-tree content stays unstaged. Recovery and retained sandboxes skip it. |
 | `workspace_sync.inbound_barrier`, `.stage_workspace`, `.transfer` | The inbound scheduler barrier, whole workspace task, and provider `syncIn` call (including provider guards, upload and post-upload extraction). Parallel tasks overlap; provider transfer/exec children give the finer transport split when available. |
 | `workspace_sync.progress` | Awaited progress/status reporting, including the existing lifecycle run-log writes. These are not file transfer work. |
@@ -605,6 +639,16 @@ They are children of the existing pack selection/upload path and also appear in
 the local run timing log. Their fixed names add no paths, credentials, or content
 attributes. The operator endpoint gate remains unchanged. Source installs without
 prebuilt archives retain the existing directory upload span.
+`provider_pack.directory.verify` measures expanded source verification when
+directory staging is required.
+
+Archive installation verifies the archive bytes and then the installed pack
+against the selected manifest. It does not hash the unused expanded controller
+tree. Directory installation still verifies that tree before upload, including
+when the remote cannot extract an available archive. The final installed-pack
+verification applies to both paths. A slow controller tree scan can block the
+server event loop and inflate overlapping asynchronous span durations; a copy
+span alone does not establish that the disk spent all that time copying.
 
 The native provider lifecycle emits one foldable OpenTelemetry trace, linked to
 the server attempt described above. This is
@@ -625,7 +669,8 @@ Without an OTLP endpoint, tracing remains silent and does not export data.
 
 The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
 `task.execution_attempt` for server preparation and settlement, and
-`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+`task.workspace_finalization` for deferred native copyback and `task.response_presentation`
+for committed native reply recovery. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the five root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 
@@ -701,10 +746,17 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
-dispatch. The interval includes queueing, Core preparation, workspace preparation,
+The span starts at the earliest accepted input. The accepted comment or attested
+question response is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run starts at run creation from the queue span and reports `run_created`. The
+durable wake request's acceptance time replaces the start when it is earlier
+(deferred, coalesced and retried wakes). The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
+wait before `turn.start` and never delays event delivery. Callers without
+preparation history start at native dispatch and report `run_created`. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
 using the Core clock rather than the provider event timestamp. Browser delivery
@@ -937,8 +989,8 @@ backend Sentry DSN and the audited SDK. Set `PAPERCLIP_SENTRY_RUN_FAILURES` to:
 | `all` | Every failed or timed-out run, including the known configuration, quota, and external connection failures. Unexpected started cancellations also report. |
 
 Missing, blank, or unrecognized values keep run reporting off. Expected operator
-stops, shutdown interruptions, successful runs, and queued work do not report in
-either enabled mode. A native run that is `failed` while it waits for a same-run
+stops, shutdown interruptions, successful runs, and queued work do not report
+terminal run failures in either enabled mode. A native run that is `failed` while it waits for a same-run
 retry (`nativePhase` `retryable_failure`) does not report either. It reports once
 if a later write ends the retry as a terminal failure. The mode does not change run status, retries, recovery,
 Telemetry, or OpenTelemetry export. It is process-wide, so an operator can enable
@@ -959,6 +1011,33 @@ that event's capture call.
 They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
+
+When a task read produces the system-owned failed state displayed as
+“Couldn’t finish this attempt. Your message is saved.”, either enabled mode also
+reports a `task_attempt_failed` error with `event_kind=run_failure` and
+`failure_source=task_interruption`. This catches saved-message failures without
+a new terminal run transition. The event keeps the actual observed run status,
+the adapter and the company, agent, task and run references. It uses fixed error
+text and includes no message bodies, prompts or raw run diagnostics. Working,
+scheduled-retry, resolved and user-action states do not produce this event.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)
@@ -1069,6 +1148,17 @@ or the server overloaded. It records `codex_transient_upstream` with the
 report must come after setup and carry no signal. Other `service` failures,
 untyped capacity text, and Codex CLI transient upstream failures remain reportable.
 The run keeps its failed state and its terminal diagnostic.
+
+A native Codex model capacity failure stays local only while its automatic
+retry owns recovery. The run must carry `native_provider_overloaded`. The proof
+of the retry is the `native_provider_overloaded` successor run for the same
+task, which only the committed capacity status decision creates, and only for
+the typed `codex`/`server_overloaded` diagnostic. The run's own `resultJson` is
+not required: the live heartbeat's failed-status write replaces it with the
+adapter's copy, which lacks the finalizer's diagnostic and finalization fields.
+Exhausted or held capacity failures, other retry lanes, setup failures, signals,
+and unreadable retry evidence remain reportable. A failed retry reports its own
+outcome.
 
 Expected pre-provider waits for a shared project workspace, a credential rotation
 lock, or an exhausted AI connection pool carry a server-owned expected
@@ -1240,7 +1330,9 @@ executor's identity redaction. These observations do not change close, quarantin
 or recovery behavior.
 
 Remote runner reattachment failures also record `remoteRunnerRecoveryStage`
-and `remoteRunnerRecoveryReason` from the saved run. When reattachment fails
+and `remoteRunnerRecoveryReason` from the saved run. A confirmed missing process
+also records the closed `remoteRunnerLifecycle` and boolean `remoteRunnerSettled`
+from the exited runner's saved state. When reattachment fails
 before the coordinator saves its result, the report reads the same labels from
 the caught recovery error instead. These fields contain
 closed labels for marker reads and process verification. They distinguish
@@ -1313,6 +1405,18 @@ different tools with different permission rules. Read them this way:
 - No finished peers (a count of zero): there is no comparison.
 
 Both fields hold only counts.
+
+A sandbox ACP run also records how its agent process session ended, when the
+host bridge saw it end before finalization. Startup failures (`create_runtime`,
+`ensure_session`, `configure_session`) carry the same fields, so an agent process
+that dies during the handshake is reported too. `acpProcessTerminalSource` is one of
+`remote_event`, `input_delivery`, `output_poll`, `output_stream`, or
+`proxy_close`, and `acpProcessTerminalOutcome` is `exit` or `error`.
+`acpProcessTerminalExitCode` (0–255) and `acpProcessTerminalSignal` (a closed
+POSIX signal name) are present only when known. These are the same values as the
+run log's `ACP process session terminal:` line. They separate a killed or exited
+agent process from a host proxy close after a generic ACP connection failure. The
+server drops all of them if the source is not a closed label.
 
 ACP and legacy OpenCode results retain the adapter's resolved wall-clock timeout as
 `adapterExecutionTimeout` in the instance run result. Finalization uses it for
@@ -1462,9 +1566,14 @@ without one, the report has no synthetic reporting stack.
 
 Credential patterns, the current user's home path, registered run-secret values,
 and known host/runtime environment credentials are removed before truncation.
-Declared environment secret bindings are included even when their key has no
-credential-like name. Runtime values are used only for redaction and are never
-copied into an event. Stack fields are limited to 8,192 characters,
+Environment values stay private unless their names and values identify an ordinary
+process setting. Flags and counts require both a setting-name match and a boolean
+or numeric value. Mode labels use a closed value list. Paths, regions, and key
+selectors such as `SORT_KEY` use explicit ordinary-setting names. Unknown opaque
+values remain private, including credentials under arbitrary names. Declared
+secret bindings and recognizable credential contents override ordinary-setting
+exemptions, including short values. Runtime values are used only for redaction
+and are never copied into an event. Stack fields are limited to 8,192 characters,
 exception messages to 2,048, provider titles to 4,096, and provider details to
 12,288. Other diagnostic strings are limited to 200 characters (adapter cause
 messages: 2,048). Truncation is marked in the text and in
@@ -1553,6 +1662,20 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
 
 Native runner identity and harness failures retain their existing error prefixes.
 Their terminal messages now include a bounded guard reason, such as
@@ -1842,6 +1965,49 @@ name to `sandbox.daytona.<name>`. The host maps any other value to
 daytona provider emits these spans today, so the segment is the literal
 `daytona`.
 
+### Daytona lease acquisition and resume
+
+The worker invocation carries nested, monotonic timing receipts for lease work.
+The host also admits the following fixed `lease.*` names and prefixes them with
+`sandbox.daytona.`. These use the existing opt-in endpoint and host-owned parent
+context; they do not create an exporter or first-party Telemetry events.
+
+```text
+execution.plugin_dispatch
+└── plugin.worker
+    ├── sandbox.daytona.lease.wait_for_teardown  (only when teardown blocks resume)
+    ├── sandbox.daytona.lease.lookup
+    ├── sandbox.daytona.lease.refresh            (missing-container confirmation)
+    ├── sandbox.daytona.lease.channel_cleanup    (before restart)
+    ├── sandbox.daytona.lease.start              (or lease.recover)
+    └── sandbox.daytona.lease.verify
+        ├── sandbox.daytona.lease.workspace
+        ├── sandbox.daytona.lease.sentinel
+        └── sandbox.daytona.lease.shell
+```
+
+`lease.lookup` includes cached-handle lookup and any required provider refresh.
+`lease.start` and `lease.recover` measure the actual SDK operation, including its
+internal readiness wait. They also cover starts triggered by execution or sync.
+They do not separate SDK-internal requests or provider-side queue time.
+Their `paperclip.sandbox.startup.state` attribute records the state before the
+call: `started`, `stopped`, `archived`, `error`, or `other`. Both the plugin and
+host restrict this value; no provider error text or resource identity is sent.
+
+Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
+`lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation
+helper, including qualification-only snapshot resolution and creation-failure
+cleanup. Setup-failure deletion is a separate `lease.cleanup` sibling, so it
+does not inherit a failed workspace or verification phase. Existing deadlines,
+ownership, cleanup and retry behavior are unchanged. Failed awaited steps close
+with error status; the receipt contains no exception message.
+
+Children nest beneath the current `plugin.worker` receipt and verification
+children nest beneath `lease.verify`. Never add parent and child durations.
+Receipt budgets and clock validation still apply. Older workers without
+`tracer.withSpan` keep the original behavior without these detail spans. Tracing
+failures preserve the operation's result or error and never repeat it.
+
 The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
 drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
@@ -1850,6 +2016,7 @@ the attributes that the producer sends for one span.
 | Attribute                                        | Type   | Optional | Meaning                                                                                                   |
 | ------------------------------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
 | `paperclip.sandbox.startup.provider`             | string | no       | The normalized provider family.                                                                           |
+| `paperclip.sandbox.startup.state`                | string | yes      | State before start/recovery: `started`, `stopped`, `archived`, `error`, or `other`.                            |
 | `paperclip.sandbox.startup.outcome`              | string | yes      | The step outcome (`ok`, `skipped`, or `failed`).                                                          |
 | `paperclip.sandbox.startup.pack.wall_ms`         | number | yes      | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span.                      |
 | `paperclip.sandbox.startup.transfer.wall_ms`     | number | yes      | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span.                         |
@@ -2070,7 +2237,7 @@ expired and cross-invocation context cannot select another call's parent.
 | --- | --- | --- | --- |
 | Dispatch / receipt / return | `execution.plugin_dispatch` → `plugin.worker` | Host invocation; worker monotonic durations anchored to its epoch start | Outer minus worker time is an unattributed dispatch/scheduling remainder. It is not network latency. |
 | Repeated host reads | `plugin.host.identity.read`, `config.read`, `progress.read`, `progress.write` | Worker invocation, one span per awaited call, bounded by receipt budget | Round trip and host service together. Span count is call count; overlapping reads are not additive. |
-| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. |
+| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare`, `workspace.failure` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. `plugin.failure_reason` on `workspace.failure` is a closed workspace operation failure reason or `unknown`. |
 | Completed remote lifecycle | `plugin.remote.lifecycle`, linked to the host-owned observer | Bounded prior monotonic durations, up to ten minutes old | Independent lifecycle trace; never a child of a later polling request. The worker cannot supply link IDs. |
 | Remote operation receipt | `plugin.remote.request` → `plugin.remote.operation` | Remote monotonic offsets, checked against local round trip and parent bounds | Closed operation classes cover mount refresh, guest setup, process execution, scripts and cleanup. No remote wall-clock subtraction. |
 | Retained/cold transport | `runner.transport.attach`, `resume`, `cold_start`, `prepare`, `registration`, `provider_identity` | Controller process, current active context on every operation | A retained transport must not capture the preceding run's trace. These parents overlap their children. |
@@ -2094,9 +2261,6 @@ rank optimizations, deploy a compatible source set and inspect actual collector
 exports for parentage, concurrent ownership, widths and closed failure spans.
 Unit tests do not establish ingestion or a latency improvement.
 
-The shared ACPX instrumentation advances Grok source profile 13 to 14 and
-Copilot 84 to 85. Historical identities remain unchanged and decodable. Provider
-packages, models and permission defaults are unchanged; Pi's bound declaration
-is unchanged. These are source attestations, not evidence of fresh live provider
-qualification. Re-run compatibility qualification for the new identities before
-rollout.
+The shared ACPX instrumentation does not change any provider profile identity:
+Copilot, Grok and Pi digests attest their upstream releases, not Runner source.
+Provider packages, models and permission defaults are unchanged.

@@ -12,6 +12,10 @@ import {
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
+  it("exposes qualified Kimi Code with an explicit runtime credential", () => {
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "kimi"))
+      .toMatchObject({ qualified: true, credentialEnvironment: ["KIMI_API_KEY"] });
+  });
   it("marks Pi and Copilot qualified with their provider credential bindings", () => {
     expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "pi"))
       .toMatchObject({ qualified: true, credentialEnvironment: expect.arrayContaining(["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) });
@@ -64,6 +68,7 @@ describe("Paperclip Runner permission defaults", () => {
   });
 
   it("recognizes only exact provider identifiers", () => {
+    expect(isPaperclipRunnerProvider("cursor_cloud")).toBe(true);
     expect(isPaperclipRunnerProvider("codex")).toBe(true);
     expect(isPaperclipRunnerProvider("opencode")).toBe(true);
     expect(isPaperclipRunnerProvider("claude_managed")).toBe(true);
@@ -74,10 +79,16 @@ describe("Paperclip Runner permission defaults", () => {
   });
 
   it("keeps managed provider permissions under the qualified profile", () => {
+    expect(resolvePaperclipRunnerPermissionMode("cursor_cloud", "never")).toBe("provider-managed");
     expect(resolvePaperclipRunnerPermissionMode("claude_managed", "never"))
       .toBe("provider-managed");
     expect(resolvePaperclipRunnerPermissionMode("aws_agentcore", "approve-all"))
       .toBe("provider-managed");
+  });
+
+  it("converts Cursor Cloud without substituting an implicit model or adding command permission controls", () => {
+    expect(paperclipRunnerTransitionConfig("cursor_cloud", "custom-model")).toEqual({ provider: "cursor_cloud", model: "custom-model", lifecycleMode: "per_turn" });
+    expect(paperclipRunnerTransitionConfig("cursor_cloud", undefined)).toEqual({ provider: "cursor_cloud", model: "", lifecycleMode: "per_turn" });
   });
 
   it("uses the Codex default for missing or blank models", () => {

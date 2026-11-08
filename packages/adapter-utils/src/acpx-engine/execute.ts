@@ -37,6 +37,7 @@ import {
   type AdapterExecutionTarget,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
+  type AdapterExecutionTargetProcessSessionTerminalEvidence,
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
@@ -3319,6 +3320,28 @@ function isPendingAcpTool(tool: { status?: string }): boolean {
 }
 
 /**
+ * How the sandbox agent process session ended, when the bridge saw it end.
+ * Separates a process that exited or was killed from a host proxy that closed
+ * by itself. Unknown exit codes and signals are left out.
+ */
+export function summarizeAcpProcessTerminal(
+  evidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null | undefined,
+): {
+  acpProcessTerminalSource?: AdapterExecutionTargetProcessSessionTerminalEvidence["source"];
+  acpProcessTerminalOutcome?: AdapterExecutionTargetProcessSessionTerminalEvidence["outcome"];
+  acpProcessTerminalExitCode?: number;
+  acpProcessTerminalSignal?: string;
+} {
+  if (!evidence) return {};
+  return {
+    acpProcessTerminalSource: evidence.source,
+    acpProcessTerminalOutcome: evidence.outcome,
+    ...(typeof evidence.exitCode === "number" ? { acpProcessTerminalExitCode: evidence.exitCode } : {}),
+    ...(evidence.signal !== "unknown" ? { acpProcessTerminalSignal: evidence.signal } : {}),
+  };
+}
+
+/**
  * Activity as of the moment the turn's stop fired, for a stopped turn only.
  * Separates a turn that went silent long before its deadline from one that
  * was still working. Reports only ages and closed ACP tool-kind labels.
@@ -3623,9 +3646,22 @@ async function emitAcpxFailure(input: {
   childStderrTail: string | null;
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
+  const requestError = parseObject(err);
+  const data = parseObject(requestError.data);
+  const detail = typeof requestError.data === "string"
+    ? requestError.data
+    : asString(data.details, asString(data.message, ""));
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const message = messageOverride ?? rawMessage;
+  const message = messageOverride ?? (detail
+    ? sanitizeTerminalSessionFailure({
+      category: "unknown",
+      title: rawMessage.includes(detail) ? rawMessage : `${rawMessage}\n${detail}`,
+    }, prepared.env, ctx.authToken, parseObject(ctx.config.env)).title ?? "ACP request failed."
+    : rawMessage);
   const classified = classifyError(err, phase);
+  if (typeof requestError.code === "number" && Number.isSafeInteger(requestError.code)) {
+    classified.errorMeta = { ...classified.errorMeta, rpcCode: requestError.code };
+  }
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
@@ -4770,7 +4806,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
             clearSession,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: message,
           };
           return settleFor("handshake", err);
@@ -4800,7 +4839,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...billingFields,
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: "ACPX did not return a runtime session handle.",
           };
           return settleFor(
@@ -4840,7 +4882,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession,
-          resultJson: { phase: "create_runtime" },
+          resultJson: {
+            phase: "create_runtime",
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+          },
           summary: message,
         };
         return settleFor("runtime_create", err);
@@ -4897,6 +4942,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
           },
           summary: message,
         };
@@ -5269,6 +5315,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           acpPendingToolCount: pendingTools.length,
           acpToolInventoryComplete: !incompleteToolInventory,
           ...summarizeAcpStopActivity(turnStopRequestedAt, lastRuntimeEventBeforeStopAt, pendingToolsAtStop ?? pendingTools),
+          ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
         };
         if (input.kind === "terminal") {
         const terminal = input.terminal;

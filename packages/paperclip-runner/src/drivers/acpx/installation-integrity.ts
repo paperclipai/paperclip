@@ -2,6 +2,7 @@ import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcp
 import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
+import { executableDigestCache, type ExecutableFileIdentity } from "../../executable-digest-cache.js";
 import {
   spawn as spawnChildProcess,
   type ChildProcess,
@@ -606,13 +607,7 @@ export async function awaitVerifiedAcpxProviderExit(
   await exitProof;
 }
 
-interface VerifiedAcpxCommandIdentity {
-  device: string;
-  inode: string;
-  size: string;
-  modifiedNanoseconds: string;
-  changedNanoseconds: string;
-}
+type VerifiedAcpxCommandIdentity = ExecutableFileIdentity;
 
 interface VerifiedAcpxRuntimeExecutable {
   path: string;
@@ -1204,7 +1199,7 @@ async function inspectCommand(
   }
 }
 
-async function openVerifiedRuntimeExecutable(
+export async function openVerifiedRuntimeExecutable(
   executablePath: string,
   expectedDigest: string,
   agent: string,
@@ -1246,23 +1241,31 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable must be a bounded executable file`,
       );
     }
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(1024 * 1024);
+    const cachedDigest = await executableDigestCache.read(fileIdentity(before));
+    let digest = cachedDigest;
     let position = 0;
-    try {
-      while (position < Number(before.size)) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, Number(before.size) - position),
-          position,
-        );
-        if (bytesRead === 0) break;
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
+    if (digest === null) {
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      try {
+        while (position < Number(before.size)) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, Number(before.size) - position),
+            position,
+          );
+          if (bytesRead === 0) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+      } finally {
+        buffer.fill(0);
       }
-    } finally {
-      buffer.fill(0);
+      digest = `sha256:${hash.digest("hex")}`;
+    }
+    if (cachedDigest === null && position === Number(before.size) && digest === expectedDigest) {
+      await executableDigestCache.write(fileIdentity(before), digest);
     }
     const after = await handle.stat({ bigint: true });
     const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
@@ -1271,7 +1274,7 @@ async function openVerifiedRuntimeExecutable(
     const beforeIdentity = fileIdentity(before);
     const afterIdentity = fileIdentity(after);
     if (
-      position !== Number(before.size) ||
+      (cachedDigest === null && position !== Number(before.size)) ||
       lexicalAfter === null ||
       lexicalAfter.isSymbolicLink() ||
       !lexicalAfter.isFile() ||
@@ -1283,7 +1286,6 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable changed while it was verified`,
       );
     }
-    const digest = `sha256:${hash.digest("hex")}`;
     if (digest !== expectedDigest) {
       throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
     }

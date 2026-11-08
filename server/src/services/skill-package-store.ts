@@ -14,7 +14,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound } from "../errors.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "./skill-snapshot.js";
 import { ensureSkillCacheDirectory, SkillCacheBusy, withSkillVersionCacheLock } from "./skill-version-cache.js";
-import { boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
+import { assertSkillPackageFileSize, boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
   skillPackageManifest, skillPackageManifestBytes, validateSkillPackageManifest, verifySkillPackageDirectory, relocateSkillPackageVerification, writeSkillPackageArchive,
   type SkillPackageManifest } from "./skill-package-files.js";
 
@@ -30,10 +30,15 @@ type Descriptor = Pick<typeof snapshots.$inferSelect, "id" | "companyId" | "cont
 export const skillVersionMetadataColumns = { ...getTableColumns(companySkillVersions),
   fileInventory: sql<CompanySkillVersionFileInventoryEntry[]>`'[]'::jsonb` };
 export type StoredSkillVersion = typeof companySkillVersions.$inferSelect;
-export function skillVersionFileMap(files: CompanySkillVersionFileInventoryEntry[], manifest: SkillPackageManifest): SkillPackageFileMapping[] | null {
-  const stored = new Map(manifest.files.map(file => [file.path, file]));
-  if (files.every(file => stored.get(file.path)?.kind === file.kind && stored.get(file.path)?.encoding === (file.encoding ?? "utf8"))) return null;
-  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" }));
+export function skillVersionFileMap(files: Array<Pick<CompanySkillVersionFileInventoryEntry, "path" | "kind" | "encoding">>): SkillPackageFileMapping[] {
+  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" as const }));
+}
+export function skillVersionUsesWholePackage(version: Pick<StoredSkillVersion, "packageFileMap">, manifest: SkillPackageManifest) {
+  if (!version.packageFileMap) return true;
+  const paths = new Set(version.packageFileMap.map(file => file.path));
+  return paths.size === manifest.files.length && version.packageFileMap.length === manifest.files.length
+    && version.packageFileMap.every(file => file.path === file.sourcePath)
+    && manifest.files.every(file => paths.has(file.path));
 }
 type ReadScope = { db: Db; descriptors: Map<string, Promise<Descriptor>>; durable: Map<string, Promise<boolean>>; versions: Map<string, StoredSkillVersion> };
 const readScope = new AsyncLocalStorage<ReadScope>();
@@ -197,6 +202,13 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     const [saved] = await database.select({ restore: snapshots.restore }).from(snapshots).where(scope(row.companyId, row.id));
     const recipe = saved?.restore;
     if (!recipe || recipe.version !== 1) throw notFound("This skill package has no exact-commit restore recipe");
+    const url = new URL(recipe.repositoryUrl);
+    if (!/^[a-f0-9]{40}$/i.test(recipe.commitSha) || !recipe.sourceId || !recipe.repositoryId
+      || url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password
+      || !/^\/[^/]+\/[^/]+$/.test(url.pathname) || url.search || url.hash) {
+      throw new Error("Invalid immutable skill package recipe");
+    }
+    if (recipe.skillPath) assertSkillSnapshotPath(recipe.skillPath);
     const manifest = validateSkillPackageManifest(recipe.manifest);
     if (manifest.contentHash !== row.contentHash || (row.storage && packageSha256(skillPackageManifestBytes(manifest)) !== row.storage.manifestSha256)) {
       throw new Error("Skill package restore recipe does not match its receipt");
@@ -630,15 +642,27 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     };
     return cancellation ? acquire() : flight(db, `version-read:${version.companyId}:${version.id}:${allowRecovery}`, acquire);
   }
-  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true) {
+  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true, maxBytes = Number.MAX_SAFE_INTEGER) {
     assertSkillSnapshotPath(relativePath);
-    if (!version.packageSnapshotId) return (await versionFiles(version, allowRecovery)).find(file => file.path === relativePath);
+    if (!version.packageSnapshotId) {
+      const [row] = await db.select({ ...skillVersionMetadataColumns,
+        file: sql<(CompanySkillVersionFileInventoryEntry & { tooLarge?: boolean }) | null>`(
+          select case when octet_length(f->>'content')::bigint > ${maxBytes}::bigint
+            then jsonb_build_object('tooLarge', true) else f end
+          from jsonb_array_elements(${companySkillVersions.fileInventory}) f
+          where f->>'path' = ${relativePath} limit 1)` })
+        .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, version.companyId), eq(companySkillVersions.id, version.id)));
+      if (row?.packageSnapshotId) return readVersionFile(row, relativePath, allowRecovery, maxBytes);
+      if (row?.file?.tooLarge) assertSkillPackageFileSize(maxBytes + 1, maxBytes);
+      return row?.file ?? undefined;
+    }
     const id = version.packageSnapshotId;
     const manifest = await manifestFor(await descriptor(version.companyId, id));
     const mapping = version.packageFileMap?.find(file => file.path === relativePath);
     if (version.packageFileMap && !mapping) return undefined;
     const entry = manifest.files.find(file => file.path === (mapping?.sourcePath ?? relativePath));
     if (!entry) return undefined;
+    assertSkillPackageFileSize(entry.size, maxBytes);
     const signal = AbortSignal.timeout(180_000);
     const read = async (root: string) => {
       const bytes = await readPackageFile(root, entry, signal);
@@ -670,5 +694,6 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     return row?.files ?? [];
   }
   return { descriptor, prepare, bindRestore, files, version, prefetch, versionFiles, versionInventory, readVersionFile, withPackage, withIsolatedPackage, verifyDurable,
+    recoveryRecipe: async (companyId: string, id: string) => restoreRecipe(await descriptor(companyId, id)),
     manifest: async (companyId: string, id: string, cancellation?: AbortSignal) => manifestFor(await descriptor(companyId, id), cancellation) };
 }

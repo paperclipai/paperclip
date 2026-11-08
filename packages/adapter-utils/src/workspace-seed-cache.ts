@@ -29,7 +29,9 @@ async function digest(file: string): Promise<string> {
 
 /** A privateCopyDirectory must be caller-owned staging; its caller owns cleanup. */
 export async function readWorkspaceSeedGeneration(root: string, generation: string,
-  options: { companyDirectory?: string; privateCopyDirectory?: string } = {}): Promise<WorkspaceDurableSeedPaths | null> {
+  options: { companyDirectory?: string; privateCopyDirectory?: string; runtimeSpan?: RuntimeSpanRunner } = {}): Promise<WorkspaceDurableSeedPaths | null> {
+  const measure = <T>(name: string, work: () => Promise<T>): Promise<T> =>
+    options.runtimeSpan ? options.runtimeSpan(name, work) : work();
   const directory = path.join(root, generation);
   let privateCopy: string | null = null;
   let accepted = false;
@@ -56,16 +58,16 @@ export async function readWorkspaceSeedGeneration(root: string, generation: stri
       if (!stat.isFile() || stat.isSymbolicLink()) return null;
       // Hash the exact private bytes staging will consume. This avoids a
       // second source hash and remains valid if the shared cache changes later.
-      if (privateCopy) await fs.copyFile(source, file, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
-      if (await digest(file) !== expected) return null;
+      if (privateCopy) await measure("workspace.seed_read_copy", () => fs.copyFile(source, file, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL));
+      if (await measure("workspace.seed_read_hash", () => digest(file)) !== expected) return null;
     }
-    const used = await withDirectoryMergeLock(path.resolve(options.companyDirectory ?? root), async () => {
+    const used = await measure("workspace.seed_read_touch", () => withDirectoryMergeLock(path.resolve(options.companyDirectory ?? root), async () => {
       const current = await fs.lstat(receipt).catch(() => null);
       if (!current || current.ino !== receiptStat.ino || current.dev !== receiptStat.dev) return false;
       const usedAt = new Date();
       await fs.utimes(receipt, usedAt, usedAt);
       return true;
-    });
+    }));
     if (!used) return null;
     accepted = true;
     return { workspaceArchivePath, workspaceArchiveSha256: metadata.workspaceSha256,
@@ -185,6 +187,7 @@ export async function publishWorkspaceSeedGeneration(
   root: string, generation: string, seed: WorkspaceDurableSeedPaths,
   options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits>; eviction?: Partial<SeedCacheEviction>;
     scope?: "workspace" | "company"; now?: () => number; verify?: () => Promise<boolean>;
+    cacheOnlyGitArchivePath?: string;
     runtimeSpan?: RuntimeSpanRunner } = {},
 ): Promise<boolean> {
   const measure = <T>(name: string, work: () => Promise<T>): Promise<T> =>
@@ -203,6 +206,18 @@ export async function publishWorkspaceSeedGeneration(
     await fs.mkdir(company, { recursive: true, mode: 0o700 });
     const companyStat = await fs.lstat(company);
     if (!companyStat.isDirectory() || companyStat.isSymbolicLink()) return false;
+    const cacheSeed = options.cacheOnlyGitArchivePath
+      ? { ...seed, gitArchivePath: options.cacheOnlyGitArchivePath } : seed;
+    if (options.cacheOnlyGitArchivePath) {
+      if (!seed.gitArchivePath) return false;
+      const [cached, recovery] = await Promise.all([
+        fs.lstat(options.cacheOnlyGitArchivePath), fs.lstat(seed.gitArchivePath),
+      ]);
+      // Only a separate, rebuildable archive may omit the existing flush.
+      // A pathname alone cannot distinguish it from a recovery hardlink.
+      if (!cached.isFile() || cached.isSymbolicLink() || !recovery.isFile() || recovery.isSymbolicLink()
+        || (cached.dev === recovery.dev && cached.ino === recovery.ino)) return false;
+    }
     const capacity = async (): Promise<"existing" | "available" | false> => {
       const currentCompany = await fs.lstat(company);
       if (!currentCompany.isDirectory() || currentCompany.isSymbolicLink()
@@ -224,7 +239,7 @@ export async function publishWorkspaceSeedGeneration(
       }
       if (workspaceExists && await fs.lstat(path.join(root, generation)).then(() => true, () => false)) return "existing";
       let incomingBytes = 4096;
-      for (const archive of [seed.workspaceArchivePath, seed.gitArchivePath]) {
+      for (const archive of [cacheSeed.workspaceArchivePath, cacheSeed.gitArchivePath]) {
         if (!archive) continue;
         const stat = await fs.lstat(archive);
         if (!stat.isFile() || stat.isSymbolicLink()) return false;
@@ -240,7 +255,7 @@ export async function publishWorkspaceSeedGeneration(
     const initialCapacity = await measure("workspace.seed_cache_capacity", capacity);
     if (initialCapacity === "existing") return true;
     let incomingBytes = 4096;
-    for (const archive of [seed.workspaceArchivePath, seed.gitArchivePath]) if (archive) incomingBytes += (await fs.lstat(archive)).size;
+    for (const archive of [cacheSeed.workspaceArchivePath, cacheSeed.gitArchivePath]) if (archive) incomingBytes += (await fs.lstat(archive)).size;
     if (incomingBytes > configuredLimits.workspaceBytes) return false;
     const plan = { generation, incomingBytes, limits, eviction, now: options.now?.() ?? Date.now() };
     if (initialCapacity === false && !await measure("workspace.seed_cache_evict", () => evictSeedGenerations(company, root, { ...plan, apply: false }))) return false;
@@ -256,17 +271,24 @@ export async function publishWorkspaceSeedGeneration(
       const temporary = path.join(root, `.pending-${randomUUID()}`);
       await fs.mkdir(temporary, { mode: 0o700 });
       try {
-        const copy = async (source: string, name: string) => {
+        const copy = async (source: string, name: string, flush = true) => {
           const target = path.join(temporary, name);
           await measure("workspace.seed_cache_copy", () => fs.link(source, target).catch(() => fs.copyFile(source, target)));
-          await measure("workspace.seed_cache_sync", async () => {
+          if (!flush && seed.gitArchivePath) {
+            const [cached, recovery] = await Promise.all([fs.lstat(target), fs.lstat(seed.gitArchivePath)]);
+            if (cached.dev === recovery.dev && cached.ino === recovery.ino) throw new Error("workspace_seed_cache_recovery_alias");
+          }
+          if (flush) await measure("workspace.seed_cache_sync", async () => {
             const file = await fs.open(target, "r");
             try { await file.sync(); } finally { await file.close(); }
           });
           return measure("workspace.seed_cache_hash", () => digest(target));
         };
         const workspaceSha256 = await copy(seed.workspaceArchivePath, "workspace.tar");
-        const gitSha256 = seed.gitArchivePath ? await copy(seed.gitArchivePath, "git.tar") : null;
+        // Shared Git seeds have no task branch and are not recovery archives.
+        // Missing or corrupt cache-only bytes are rejected by the reader.
+        const gitSha256 = cacheSeed.gitArchivePath
+          ? await copy(cacheSeed.gitArchivePath, "git.tar", !options.cacheOnlyGitArchivePath) : null;
         await fs.writeFile(path.join(temporary, "receipt.json"), JSON.stringify({ version: 1, generation, workspaceSha256, gitSha256 }));
         await fs.rename(temporary, path.join(root, generation));
         return true;

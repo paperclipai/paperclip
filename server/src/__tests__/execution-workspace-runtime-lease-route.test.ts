@@ -22,6 +22,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 }));
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn(async () => ({ allowed: true })) }));
 const mockRecordOperation = vi.hoisted(() => vi.fn());
+const mockPublishOperation = vi.hoisted(() => vi.fn());
 const mockReconcileStaleRuntimeControlOperations = vi.hoisted(() => vi.fn(async () => ({ reconciled: 0, operationIds: [] })));
 // The control path recovers stranded operations and then refuses only a genuinely live one
 // (PAP-17249). This suite is about the durable lease, so availability always resolves.
@@ -112,7 +113,8 @@ describeEmbeddedPostgres("execution workspace runtime control lease enforcement"
       runId: null,
       issueId: req.get("x-test-owner-issue") ?? null,
     }));
-    mockRecordOperation.mockImplementation(async (input: { run: () => Promise<unknown> }) => {
+    mockRecordOperation.mockImplementation(async (input: { run: () => Promise<unknown>; admit: (publish: () => Promise<void>) => Promise<void> }) => {
+      await input.admit(async () => { mockPublishOperation(); });
       await input.run();
       return { id: randomUUID(), status: "succeeded" };
     });
@@ -237,6 +239,7 @@ describeEmbeddedPostgres("execution workspace runtime control lease enforcement"
     expect(mockStartRuntimeServices).toHaveBeenCalledTimes(2);
 
     mockRecordOperation.mockClear();
+    mockPublishOperation.mockClear();
     mockStartRuntimeServices.mockClear();
     mockStopRuntimeServices.mockClear();
     mockReconcileStaleRuntimeControlOperations.mockClear();
@@ -255,7 +258,7 @@ describeEmbeddedPostgres("execution workspace runtime control lease enforcement"
     expect(typeof blocked.body.remediation).toBe("string");
 
     // No workspace operation, no runtime-service mutation, no reconciliation side effect.
-    expect(mockRecordOperation).not.toHaveBeenCalled();
+    expect(mockPublishOperation).not.toHaveBeenCalled();
     expect(mockStartRuntimeServices).not.toHaveBeenCalled();
     expect(mockStopRuntimeServices).not.toHaveBeenCalled();
     expect(mockReconcileStaleRuntimeControlOperations).not.toHaveBeenCalled();

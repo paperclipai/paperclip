@@ -17,6 +17,7 @@ const installedCodexCells = new Set([
   "everyday-workflows.runner-codex.local.build-revise",
   "agent-chat.runner-codex.local.continuity-restart",
   "everyday-workflows.runner-codex.daytona.recover-controller",
+  "daytona-restart-continuity.runner-codex.daytona.recover-controller",
 ]);
 const installedCopilotCells = new Set([
   "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
@@ -139,7 +140,7 @@ export async function probeInstalledCodexStartup(input: {
     const driver = new runtime.CodexAppServerDriver({
       taskEnvelope: { schema: "paperclip.skillless_task.v1", objective: "Credential-free installed startup proof.",
         completionContract: { revision: "installed-startup-v1", criteria: [] }, constraints: [], expectedResultSchema: "paperclip.run_result.v1" },
-      model: "gpt-5.6-sol", conversationMode: "direct", requestedCollaborationMode: "plan", approvalPolicy: "never",
+      model: "gpt-6.1-sol", conversationMode: "direct", requestedCollaborationMode: "plan", approvalPolicy: "never",
       includeCollaborationModeInstructions: false, dynamicTools: [], environment,
       transportFactory: () => bundle.transport, requireProviderSessionIdentity: true,
     });
@@ -147,7 +148,7 @@ export async function probeInstalledCodexStartup(input: {
     const event = await session.events()[Symbol.asyncIterator]().next();
     const identity = session.ids();
     const evidence = bundle.evidence();
-    if (event.value?.eventType !== "session.started" || event.value.payload?.context?.model !== "gpt-5.6-sol" ||
+    if (event.value?.eventType !== "session.started" || event.value.payload?.context?.model !== "gpt-6.1-sol" ||
       event.value.payload?.context?.sandbox?.permissionProfile?.id !== "paperclip-runner-workspace-read-only" ||
       !identity.driverSessionId || !identity.providerSessionId || evidence.providerDriver !== "codex_app_server" ||
       !(evidence.runnerPid > 0) || !(evidence.codexPid > 0)) throw new Error("Installed Codex startup returned no matching native identity or read-only model context");
@@ -156,7 +157,7 @@ export async function probeInstalledCodexStartup(input: {
     if (!bundle.evidence().runnerExited) throw new Error("Installed Codex startup cleanup is incomplete");
     cleanupConfirmed = true;
     return { schema: "paperclip.e2e.installed-codex-startup/v1", platform: `${process.platform}-${process.arch}`,
-      runnerSha256, codexSha256, codexVersion, providerDriver: "codex_app_server", model: "gpt-5.6-sol",
+      runnerSha256, codexSha256, codexVersion, providerDriver: "codex_app_server", model: "gpt-6.1-sol",
       nativeSessionStarted: true, cleanupConfirmed: true, providerTurns: 0, credentialsUsed: false,
       defaultRuntimeResolution: true, reasoningEffortExercised: false };
   } catch (error) {

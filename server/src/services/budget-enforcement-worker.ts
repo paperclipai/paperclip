@@ -1,14 +1,16 @@
 import type { Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
-import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import {
   deliverBudgetEnforcement,
   hasPendingBudgetEnforcement,
   nextBudgetReconciliationAt,
   reconcileDueBudgetPolicies,
+  flushBudgetEvaluationWorkPage,
   type BudgetServiceHooks,
 } from "./budgets.js";
+import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
 import { readCostAccountingWork } from "./run-cost-accounting.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
 
@@ -26,28 +28,35 @@ export function wakeCostAccountingWork(db: Db): void {
 export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, hooks: BudgetServiceHooks) {
   let startup = true;
   let reconciliationCursor: string | null = null;
+  let evaluationCursor: string | null = null;
   let reconciling = false;
+  let reconciliationFailed = false;
   let nextDeadline: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
+    coalesceMs: 1_000,
     runDuringDrain: true,
     async run(signal) {
       if (signal.aborted) return;
       if (startup || reconciling || (nextDeadline !== null && nextDeadline <= Date.now())) {
         const page = await reconcileDueBudgetPolicies(db, { startup, ...(reconciliationCursor ? { cursor: reconciliationCursor } : {}) });
         reconciliationCursor = page.nextCursor;
+        reconciliationFailed ||= Boolean(page.hadFailures);
         reconciling = reconciliationCursor !== null;
-        if (!reconciling) startup = false;
+        if (!reconciling) { startup = reconciliationFailed; reconciliationFailed = false; }
       }
+      if (signal.aborted) return;
+      const evaluation = await flushBudgetEvaluationWorkPage(db, { ...(evaluationCursor ? { cursor: evaluationCursor } : {}) });
+      evaluationCursor = evaluation.nextCursor;
       if (signal.aborted) return;
       await withBudgetSpan("budget.enforcement.deliver", () => deliverBudgetEnforcement(db, hooks));
     },
     async hasPending() {
-      const [pending, next] = await Promise.all([
-        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db),
+      const [pending, next, evaluation] = await Promise.all([
+        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db), hasPendingBudgetEvaluation(db),
       ]);
       nextDeadline = next?.getTime() ?? null;
-      return pending || reconciling;
+      return pending || evaluation || reconciling || startup || evaluationCursor !== null;
     },
     nextRunAt: () => nextDeadline,
   });
@@ -78,8 +87,13 @@ export function registerCostAccountingWork(db: Db, coordinator: Coordinator, rec
     if (event.type === "heartbeat.run.status" &&
         ["succeeded", "failed", "timed_out", "cancelled", "interrupted"].includes(String(event.payload.status))) worker.wake();
   });
+  // A released or stopped sandbox can close a terminal run's lost receipt.
+  // Those lease writers signal environment or retained-session cleanup.
+  const unsubscribeLeases = [DELIVERY_QUEUES.environmentCleanup, DELIVERY_QUEUES.retainedNativeSessionCleanup]
+    .map(queue => subscribeDeliveryWork(db, queue, worker.wake));
   const stop = () => {
     unsubscribe();
+    for (const unsubscribeLease of unsubscribeLeases) unsubscribeLease();
     if (accountingWakes.get(db) === worker.wake) accountingWakes.delete(db);
   };
   return { ...worker, stop };

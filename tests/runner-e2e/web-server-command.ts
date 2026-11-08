@@ -1,4 +1,16 @@
 import path from "node:path";
+import type { MatrixExecution, RunnerTaskFlow } from "./types.js";
+
+export function runnerE2EPlaywrightCaseTimeoutMs(flow: RunnerTaskFlow, deadlineMs: number) {
+  return (flow === "kimi_native_lifecycle" ? 2 * deadlineMs : deadlineMs) + 90_000;
+}
+
+export function runnerE2EPlaywrightWatchdogMs(executions: readonly MatrixExecution[]) {
+  // Playwright starts its web server before any case timeout begins.
+  return executions.reduce((total, execution) => total + runnerE2EPlaywrightCaseTimeoutMs(
+    execution.task.flow, execution.task.attemptTimeoutMs[execution.environment.id],
+  ), 0) + 5 * 60_000;
+}
 
 export const runnerE2EPlaywrightShutdownSignal = "SIGINT" as const;
 

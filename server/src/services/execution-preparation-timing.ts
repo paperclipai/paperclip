@@ -1,9 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
 
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
+  | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
+  | "run_identity" | "trust_preset" | "task_context"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
   | "configuration_mentions" | "configuration_github_identity" | "configuration_secrets"
@@ -72,7 +75,7 @@ export type ExecutionPhase =
   | "runtime_selection.resume" | "runtime_selection.recovery_profile" | "runtime_selection.profile" | "runtime_selection.interactions"
   | "runtime_selection.provider_discovery" | "runtime_selection.bootstrap" | "runtime_selection.run_write" | "runtime_selection.finalization_write"
   | "runtime_selection.transaction" | "runtime_selection.transaction.entry" | "runtime_selection.transaction.commit" | "runtime_selection.transaction.rollback"
-  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync"
+  | "runtime_selection.row_lock" | "runtime_selection.workspace_sync" | "runtime_selection.skill_assets"
   | "runtime_context.instructions" | "runtime_context.skills" | "runtime_context.mcp"
   | "runtime_context.asset_read" | "runtime_context.asset_manifest" | "runtime_context.asset_cache" | "runtime_context.asset_materialize" | "runtime_context.asset_verify"
   | "workspace_sync.snapshot_git" | "workspace_sync.snapshot_baseline" | "workspace_sync.pack" | "workspace_sync.seed_verify" | "workspace_sync.stage_workspace" | "workspace_sync.restore"
@@ -84,6 +87,7 @@ export type ExecutionPhase =
   | "workspace_sync.seed_generation" | "workspace_sync.seed_lookup" | "workspace_sync.seed_publish"
   | "workspace_sync.seed_cache_copy" | "workspace_sync.seed_cache_sync" | "workspace_sync.seed_cache_hash"
   | "workspace_sync.seed_cache_capacity" | "workspace_sync.seed_cache_evict" | "workspace_sync.seed_cache_locked_publish"
+  | "workspace_sync.seed_read_copy" | "workspace_sync.seed_read_hash" | "workspace_sync.seed_read_touch"
   | "workspace_sync.git_clone" | "workspace_sync.git_archive" | "workspace_sync.seed_replay" | "workspace_sync.seed_persist"
   | "workspace_sync.git_index_refresh"
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
@@ -153,7 +157,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),
     };
-    operation = Promise.resolve().then(() =>
+    operation = withDatabaseOperation(name, () => Promise.resolve().then(() =>
       ownership.run(owned, () => runWithRuntimeParent(owned.parent, work))).then(value => {
         try { span?.end(); } catch {}
         owned.ended = true;
@@ -163,10 +167,10 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
         try { span?.end(); } catch {}
         owned.ended = true;
         throw error;
-      });
+      }));
     return operation;
   };
-  if (!endpointEnabled()) return (async () => work())();
+  if (!endpointEnabled()) return withDatabaseOperation(name, async () => work());
   try {
     const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
@@ -196,15 +200,25 @@ export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () =>
   return measure(runId, "task.workspace_finalization", work, true);
 }
 
-export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
+export function withRunResponsePresentationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
   const owned = ownership.getStore();
-  if (!endpointEnabled() || !owned || owned.ended) return work();
-  const count = owned.details.get(phase) ?? 0;
-  if (count >= 16) return work();
-  owned.details.set(phase, count + 1);
-  // A startup step can be more specific than the owning run phase. Keep that
-  // causal parent while the child publishes its own context to plugin workers.
-  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+  if (owned?.runId === runId && owned.phase === "task.response_presentation" && !owned.ended) {
+    return withDatabaseOperation("task.response_presentation", async () => work());
+  }
+  return measure(runId, "task.response_presentation", work, true);
+}
+
+export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
+  return withDatabaseOperation(phase, async () => {
+    const owned = ownership.getStore();
+    if (!endpointEnabled() || !owned || owned.ended) return work();
+    const count = owned.details.get(phase) ?? 0;
+    if (count >= 16) return work();
+    owned.details.set(phase, count + 1);
+    // A startup step can be more specific than the owning run phase. Keep that
+    // causal parent while the child publishes its own context to plugin workers.
+    return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+  });
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {
@@ -251,6 +265,9 @@ const workspaceSyncDetailPhases = {
   "workspace.ignore_rules": "workspace_sync.ignore_rules",
   "workspace.seed_generation": "workspace_sync.seed_generation",
   "workspace.seed_lookup": "workspace_sync.seed_lookup",
+  "workspace.seed_read_copy": "workspace_sync.seed_read_copy",
+  "workspace.seed_read_hash": "workspace_sync.seed_read_hash",
+  "workspace.seed_read_touch": "workspace_sync.seed_read_touch",
   "workspace.seed_publish": "workspace_sync.seed_publish",
   "workspace.seed_cache_copy": "workspace_sync.seed_cache_copy",
   "workspace.seed_cache_sync": "workspace_sync.seed_cache_sync",

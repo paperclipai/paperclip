@@ -4,16 +4,15 @@ import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { activityService } from "../services/activity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 
-const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("chat project tool handoff", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -125,6 +124,23 @@ const support = await getEmbeddedPostgresTestSupport();
       const [task] = await server.db.select().from(issues).where(eq(issues.id, taskId));
       expect(task).toMatchObject({ assigneeAgentId: assignment.assigneeActorId ?? null, assigneeUserId: assignment.assigneeUserId ?? null });
     }
+  });
+
+  it.each(["native", "mcp"])("honors backlog status and parentTaskId through %s creation", async (transport) => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const create = async (args: Record<string, unknown>) => {
+      const result = transport === "native" ? await call(f, "create_task", args) as any : await callProjectTool({
+        name: "create_task", arguments: args, apiUrl: server.apiUrl,
+        token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!,
+        companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true,
+      });
+      const [task] = await server.db.select().from(issues).where(eq(issues.id, transport === "native" ? result.task.id : result.id));
+      return task;
+    };
+    const parent = await create({ title: `Backlog parent ${randomUUID()}`, projectId: f.projectId, idempotencyKey: randomUUID(), status: "backlog" });
+    expect(parent).toMatchObject({ status: "backlog", parentId: null });
+    const child = await create({ title: `Backlog child ${randomUUID()}`, projectId: f.projectId, idempotencyKey: randomUUID(), status: "backlog", parentTaskId: parent.id });
+    expect(child).toMatchObject({ status: "backlog", parentId: parent.id });
   });
 
   it("persists required output review supplied through MCP creation", async () => {
@@ -301,7 +317,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
       const before = await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
       const paths = [`/api/companies/${f.companyId}/issues`, `/api/issues/${f.issueId}/children`];
-      const selections = [{ projectWorkspaceId: f.projectWorkspaceId }, { executionWorkspaceId: executionWorkspace.id },
+      const selections: Array<Record<string, string>> = [{ projectWorkspaceId: f.projectWorkspaceId }, { executionWorkspaceId: executionWorkspace.id },
         { inheritExecutionWorkspaceFromIssueId: f.blockerId }];
       const create = async (path: string, selection: Record<string, string>) => {
         const response = await fetch(`${server.apiUrl}${path}`, {
@@ -321,7 +337,13 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toEqual(before);
 
       await server.db.update(issues).set({ executionWorkspaceId: executionWorkspace.id }).where(eq(issues.id, f.issueId));
-      await expect(call(f, "create_task", { title: "Inherited source cannot escape", idempotencyKey: "inherited-source-denied", status: "backlog" })).rejects.toThrow(/outside.*boundary/i);
+      // A child never inherits its parent's workspace, so the parent's
+      // out-of-boundary files cannot leak into the child either.
+      await call(f, "create_task", { title: "Inherited source cannot escape", idempotencyKey: "inherited-source-denied", status: "backlog" });
+      const [inheritedChild] = await server.db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+        .where(and(eq(issues.companyId, f.companyId), eq(issues.title, "Inherited source cannot escape")));
+      expect(inheritedChild?.executionWorkspaceId).toBeNull();
+      await server.db.delete(issues).where(and(eq(issues.companyId, f.companyId), eq(issues.title, "Inherited source cannot escape")));
       await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
         trustBoundary: { ...boundary, projectIds: [f.projectId] },
       } } }).where(eq(agents.id, f.agentId));

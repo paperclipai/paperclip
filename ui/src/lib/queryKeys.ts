@@ -45,6 +45,8 @@ export const queryKeys = {
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+    connectionReviewCounts: (companyId: string, connectionId: string) =>
+      ["apps", companyId, "attention", "connection", connectionId, "review-counts"] as const,
   },
   chatEndpoints: {
     list: (companyId: string) => ["chat-endpoints", companyId] as const,
@@ -88,6 +90,8 @@ export const queryKeys = {
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    connectionProfileConfiguration: (companyId: string, connectionId: string) =>
+      ["tools", companyId, "profiles", "connection-configuration", connectionId] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     profileNewTools: (profileId: string) =>
       ["tools", "profiles", profileId, "new-tools"] as const,
@@ -306,7 +310,10 @@ export const queryKeys = {
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,
+    allRecoveryActions: (id: string) => ["issues", id, "recovery-actions"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
+    onboardingFirstTask: (companyId: string) =>
+      ["issues", companyId, "onboarding-first-task"] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
     search: (
@@ -374,6 +381,8 @@ export const queryKeys = {
       ["issues", companyId, "summaries", userId ?? "__local_board__", sortedIds] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
+    acknowledgedComments: (issueId: string) => ["issues", "comments", issueId, "acknowledged"] as const,
+    earlierComments: (issueId: string) => ["issues", "comments", issueId, "earlier"] as const,
     commentsList: (issueId: string) =>
       ["issues", "comments", issueId, "list"] as const,
     queuedComments: (issueId: string) =>
@@ -407,6 +416,8 @@ export const queryKeys = {
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
+    contextUsage: (issueId: string, assigneeAgentId: string | null) =>
+      ["issues", "context-usage", issueId, assigneeAgentId] as const,
     runnerGoal: (issueId: string, agentId?: string | null) =>
       ["issues", "runner-goal", issueId, agentId ?? "__effective__"] as const,
     workProducts: (issueId: string) =>

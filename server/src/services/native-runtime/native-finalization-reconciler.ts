@@ -1,3 +1,5 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
@@ -11,12 +13,18 @@ import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "../delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import {
+  createOwnershipReportState,
+  ownershipReportFingerprint,
+  runOwnershipReconciliationPass,
+  type OwnershipReport,
+} from "../recovery/ownership-invariant-report.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  agents,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
@@ -55,12 +63,9 @@ import {
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
 
-import { getNativeReviewAssignment } from "./native-review-participant.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { isAutomaticRecoverySuppressedByPauseHold } from "../recovery/pause-hold-guard.js";
-import { readRunCancellation } from "../run-cancellation.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -68,7 +73,8 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
+/** `attempt` is the coordinator attempt the claim saw; the executor bumps it when it takes provider ownership. */
+export type NativeSessionResumeClaim = { runId: string; leaseOwner: string; attempt: number };
 
 export { reconcileRetainedNativeSessionCleanups } from "./retained-native-session-cleanup.js";
 
@@ -79,6 +85,8 @@ export async function dispatchNativeSessionResumptions(input: {
   now?: Date;
   limit?: number;
   dispatch: (claim: NativeSessionResumeClaim) => void;
+  deferIneligible?: boolean;
+  onError?: (error: unknown) => void;
 }) {
   const claims = await claimNativeSessionResumptions(input);
   for (const claim of claims) input.dispatch(claim);
@@ -97,6 +105,8 @@ export async function claimNativeSessionResumptions(input: {
   runIds?: string[];
   now?: Date;
   limit?: number;
+  deferIneligible?: boolean;
+  onError?: (error: unknown) => void;
 }): Promise<NativeSessionResumeClaim[]> {
   const now = input.now ?? new Date();
   const candidates = await input.db
@@ -109,6 +119,7 @@ export async function claimNativeSessionResumptions(input: {
     .where(
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
+        legacyWorkspaceRecoveryNotMigrated(),
         nativeRunnerOwnershipNotHeldCondition(),
         isNull(heartbeatRuns.processPid),
         isNull(heartbeatRuns.processGroupId),
@@ -135,6 +146,8 @@ export async function claimNativeSessionResumptions(input: {
   for (const candidate of candidates) {
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
     let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
+    let claimFailed = false;
+    let claimedAttempt = 0;
     const claimed = await input.db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
       const [issue] = await tx.select().from(issues).where(and(
@@ -149,11 +162,11 @@ export async function claimNativeSessionResumptions(input: {
         eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, candidate.runId),
         eq(heartbeatRuns.nativeIssueId, issue.id),
       )).for("update").limit(1);
-      if (!run || !coordinator) return false;
+      if (!run || !coordinator || run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null) return false;
       if (await retireSupersededNativeRetry(tx as unknown as Db, {
         run, coordinator, issueExecutionRunId: issue.executionRunId, now,
       })) return false;
-      if (!["todo", "in_progress", "in_review"].includes(issue.status)) return false;
+      if (!(NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES as readonly string[]).includes(issue.status)) return false;
       const row = { run, coordinator };
       if (
         row.run.runtimeMode !== "native" ||
@@ -171,37 +184,13 @@ export async function claimNativeSessionResumptions(input: {
       )
         return false;
 
-      if ((issue.executionRunId && issue.executionRunId !== run.id) ||
-          (issue.checkoutRunId && issue.checkoutRunId !== run.id)) return false;
-      const [agent] = await tx.select().from(agents).where(and(
-        eq(agents.companyId, candidate.companyId), eq(agents.id, run.agentId),
-      )).limit(1);
-      if (!agent || !(await evaluateAgentInvokabilityFromDb(tx as unknown as Db, agent)).invokable) return false;
-      if (issue.assigneeAgentId !== run.agentId && !await getNativeReviewAssignment(tx as unknown as Db, {
-        companyId: run.companyId, issueId: issue.id, agentId: run.agentId,
-        contextSnapshot: run.contextSnapshot,
-      })) return false;
-      if (await isAutomaticRecoverySuppressedByPauseHold(tx as unknown as Db, run.companyId, issue.id)) return false;
-      if (!(await issueService(tx as unknown as Db).getDependencyReadiness(issue.id, tx)).isDependencyReady) return false;
-      const [competing] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, run.companyId), ne(heartbeatRuns.id, run.id),
-        inArray(heartbeatRuns.status, issue.executionRunId === run.id
-          ? ["running", "scheduled_retry"] : ["queued", "running", "scheduled_retry"]),
-        or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
-          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
-      )).limit(1);
-      if (competing) return false;
+      const agent = await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run, coordinator });
+      if (!agent) return false;
 
       const profile = row.run.runnerProfileJson ?? {};
       const persistedInput = profile.nativeExecutionInput;
       const checkpoint = profile.sessionCheckpoint;
       const failureDetail = record(row.coordinator.failureDetail);
-      const cancellation = readRunCancellation(run.resultJson);
-      const nativeCancellation = record(record(run.resultJson).nativeCancellation);
-      if ((cancellation?.source === "operator" && cancellation.expected) ||
-          (["run", "issue"].includes(String(nativeCancellation.scope)) &&
-            ["pending", "acknowledged"].includes(String(nativeCancellation.dispatchState))) ||
-          typeof failureDetail.successorRunId === "string") return false;
       const originalFailureCode =
         typeof failureDetail.originalFailureCode === "string"
           ? failureDetail.originalFailureCode
@@ -244,6 +233,7 @@ export async function claimNativeSessionResumptions(input: {
       ) {
         const failureCode = originalFailureCode;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -312,6 +302,7 @@ export async function claimNativeSessionResumptions(input: {
       }
 
       const leaseExpiresAt = new Date(now.getTime() + 20 * 60_000);
+      await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const updated = await tx.update(nativeRunFinalizations).set({
         phase: "observed",
         leaseOwner,
@@ -325,6 +316,7 @@ export async function claimNativeSessionResumptions(input: {
         eq(nativeRunFinalizations.phase, row.coordinator.phase),
       )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);
       if (!updated) return false;
+      claimedAttempt = row.coordinator.attempt;
       await tx.update(heartbeatRuns).set({
         status: "running",
         finishedAt: null,
@@ -334,20 +326,11 @@ export async function claimNativeSessionResumptions(input: {
         nativePhaseUpdatedAt: now,
         updatedAt: now,
       }).where(eq(heartbeatRuns.id, row.run.id));
-      await tx.update(issues).set({
-        executionRunId: run.id,
-        executionAgentNameKey: agent.name.trim().toLowerCase() || null,
-        executionLockedAt: now,
-        updatedAt: now,
-      }).where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
-      if (issue.executionRunId !== run.id) await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: run.companyId, runId: run.id, agentId: run.agentId,
-        eventType: "native.recovery.execution_reclaimed", stream: "system", level: "info",
-        message: "Reclaimed the original task execution for native session recovery.",
-        payload: { issueId: issue.id },
-      });
+      await restoreNativeSessionExecution(tx as unknown as Db, { issue, run, agentName: agent.name, now });
       return true;
     }).catch((error: unknown) => {
+      claimFailed = true;
+      input.onError?.(error);
       terminalRunToEmit = null;
       logger.warn({ err: error, companyId: candidate.companyId, runId: candidate.runId },
         "failed to claim native session recovery candidate");
@@ -359,9 +342,10 @@ export async function claimNativeSessionResumptions(input: {
       void emitAgentTaskRun(input.db, terminalRunToEmit);
       void reportRunFailure(input.db, terminalRunToEmit);
     }
-    if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
-    else await input.db.transaction(async tx => {
+    if (claimed) claims.push({ runId: candidate.runId, leaseOwner, attempt: claimedAttempt });
+    else if (claimFailed || input.deferIneligible !== false) await input.db.transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
+      await notifyLiveRunRecovery(tx, { companyId: candidate.companyId, runId: candidate.runId });
       await tx.update(nativeRunFinalizations).set({
         nextAttemptAt: new Date(now.getTime() + 30_000),
         updatedAt: now,
@@ -375,6 +359,7 @@ export async function claimNativeSessionResumptions(input: {
         or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
       ));
     }).catch((error: unknown) => {
+      input.onError?.(error);
       logger.warn({ err: error, companyId: candidate.companyId, runId: candidate.runId },
         "failed to defer native session recovery candidate");
     });
@@ -789,4 +774,126 @@ async function reconcileNativeFinalizationsPass(
     }
   }
   return results;
+}
+
+/** Existing settled-work topics whose producers write registered kinds:
+ * run lifecycle and controller renewal, environment leases, settled native
+ * processes, legacy shutdown fences, native process sessions, deferred
+ * receipts, stale issue locks, queued dispatch and accounting. */
+const OWNERSHIP_REPORT_WAKE_QUEUES = [
+  DELIVERY_QUEUES.activeExecutionRecovery,
+  DELIVERY_QUEUES.orphanActiveLeases,
+  DELIVERY_QUEUES.settledNativeProcesses,
+  DELIVERY_QUEUES.legacyShutdownSettlement,
+  DELIVERY_QUEUES.nativeProcessSessions,
+  DELIVERY_QUEUES.deferredExecutionReceipts,
+  DELIVERY_QUEUES.staleIssueLocks,
+  DELIVERY_QUEUES.queuedRunDispatch,
+  DELIVERY_QUEUES.accounting,
+] as const;
+
+/** Interval between report passes while in-progress records keep changing. */
+export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * The ownership reconciliation pass of this reconciler (plan section C,
+ * Phase 1). It is report-only: it classifies the owner of every registered
+ * in-progress record and records invariant violations, and never settles.
+ *
+ * Trigger and quiet condition (rules/sleep-aware-background-work.mdc):
+ * - one pass when the worker registers at startup, from durable truth;
+ * - a pass after any settled `active-execution-recovery` signal, which run
+ *   lifecycle, controller renewal and process-evidence writes already emit,
+ *   coalesced to at most one pass per 30 s;
+ * - a 30 s follow-up only while the last pass saw in-progress records whose
+ *   set changed, or owners proven gone for the first time (rule I2 needs a
+ *   second pass);
+ * - the end of rule I7's grace window for an issue that is still inside it.
+ * A pass that finds nothing in progress, or the same stuck set twice, sets no
+ * deadline: an idle instance runs no SQL here. The pass runs in the shared
+ * scheduler only, never on the path before `turn.start`.
+ */
+export function registerOwnershipReconciliationWork(
+  db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  canRun: () => boolean,
+  options: {
+    onReport?: (report: OwnershipReport) => void;
+    /** False while heartbeat scheduling is suppressed for this instance. */
+    enabled?: () => Promise<boolean>;
+  } = {},
+) {
+  const state = createOwnershipReportState();
+  let nextRunAt: number | null = null;
+  let lastFingerprint: string | null = null;
+  let lastReport: OwnershipReport | null = null;
+  // A wake is consumed only by a pass that actually ran, so a wake that lands
+  // during idle drain survives until dispatch reopens.
+  let pendingWake = true;
+  // While scheduling is suppressed the worker parks with no deadline and runs
+  // no SQL; the next producer signal re-checks suppression.
+  let parked = false;
+  let lastPassAt: number | null = null;
+  const unsubscribers: Array<() => void> = [];
+  const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
+    retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
+    // A wake is handled at once, so a suppressed instance parks immediately;
+    // full passes are throttled below without SQL.
+    coalesceMs: 0,
+    pausePassiveMaintenance: true,
+    run: async () => {
+      if (!canRun()) return;
+      if (options.enabled && !(await options.enabled())) {
+        parked = true;
+        nextRunAt = null;
+        return;
+      }
+      parked = false;
+      // At most one full pass per interval; a wake inside it waits for the
+      // interval's end (in memory, no SQL).
+      if (lastPassAt !== null && Date.now() - lastPassAt < OWNERSHIP_REPORT_INTERVAL_MS) {
+        nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
+        return;
+      }
+      lastPassAt = Date.now();
+      pendingWake = false;
+      const report = await runOwnershipReconciliationPass(db, { state });
+      const fingerprint = ownershipReportFingerprint(report);
+      const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
+      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded
+        ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      // A record inside a grace window (rule I7) is a real future obligation.
+      const graceDue = report.nextDueAt?.getTime() ?? null;
+      nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
+      if (fingerprint !== lastFingerprint) {
+        // One line per change of the in-progress set: the verdict counts per
+        // kind are the Phase 1 data (server log only, never Telemetry).
+        logger.info({
+          inProgress: report.inProgress,
+          violations: report.violations.length,
+          kinds: Object.fromEntries(report.kinds.filter(kind => kind.inProgress > 0 || kind.error)
+            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.truncated ? { truncated: true } : {}),
+              ...(kind.error ? { error: kind.error } : {}) }])),
+        }, "ownership reconciliation pass");
+      }
+      lastFingerprint = fingerprint;
+      lastReport = report;
+      options.onReport?.(report);
+    },
+    hasPending: async () => pendingWake && !parked,
+    nextRunAt: () => nextRunAt,
+    onStop: () => { for (const unsubscribe of unsubscribers.splice(0)) unsubscribe(); },
+  });
+  // Producers of the registered kinds that already publish settled work
+  // signals. Kinds whose writers publish none are read on any of these
+  // wakes and at startup (named in the report's coverage gaps).
+  for (const queue of OWNERSHIP_REPORT_WAKE_QUEUES) {
+    unsubscribers.push(subscribeDeliveryWork(db, queue, () => { pendingWake = true; parked = false; worker.wake(); }));
+  }
+  return {
+    ready: worker.ready,
+    wake: worker.wake,
+    lastReport: () => lastReport,
+    stop: worker.stop,
+  };
 }

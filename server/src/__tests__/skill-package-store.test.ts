@@ -8,10 +8,10 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
+import { agents, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
   skillPackageDeletions, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import * as dbModule from "@paperclipai/db";
-import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
+import type { CompanySkill, CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -25,6 +25,11 @@ import { skillFileBytes, skillSnapshotHash } from "../services/skill-snapshot.js
 import { readCustomerSuccessResource } from "../services/customer-success-inspection.js";
 import { repositorySkillProjection } from "../services/skill-repository-package.js";
 import { hasRestorableSnapshot } from "../services/skill-version-cache.js";
+
+function toSkill(row: typeof companySkills.$inferSelect): CompanySkill {
+  return { ...row, sourceType: row.sourceType as CompanySkill["sourceType"], trustLevel: row.trustLevel as CompanySkill["trustLevel"],
+    compatibility: row.compatibility as CompanySkill["compatibility"], fileInventory: row.fileInventory.map(entry => ({ path: String(entry.path), kind: entry.kind as CompanySkill["fileInventory"][number]["kind"] })) };
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("external skill packages", () => {
@@ -67,7 +72,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const recipe = recoverable ? { version: 1 as const, sourceId: randomUUID(), repositoryId: "123", repositoryUrl: "https://github.com/acme/skills",
       commitSha: "a".repeat(40), skillPath: null, manifest: skillPackageManifest(files) } : undefined;
     const id = await store.prepare(companyId, files, false, undefined, recipe);
-    const skills = [];
+    const skills: { skill: CompanySkill; version: typeof companySkillVersions.$inferSelect }[] = [];
     for (const name of ["one", "two"]) {
       const [skill] = await db.insert(companySkills).values({ companyId, key: `company/${companyId}/${name}`, slug: name,
         name, markdown: files.find(file => file.path === `skills/${name}/SKILL.md`)!.content, sourceType: "github",
@@ -76,12 +81,32 @@ describe.skipIf(!support.supported)("external skill packages", () => {
         repositorySnapshotId: id, repositorySkillPath: `skills/${name}/SKILL.md`, packageSnapshotId: id, migrationAt: null,
         packageFileMap: [{ path: "SKILL.md", kind: "skill", sourcePath: `skills/${name}/SKILL.md` }] }).returning();
       await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skill!.id));
-      skills.push({ skill: skill!, version: version! });
+      skills.push({ skill: toSkill(skill!), version: version! });
     }
     const service = companySkillService(db);
     const resolve = () => service.listRuntimeSkillEntries(companyId, { onlyKeys: new Set(skills.map(({ skill }) => skill.key)), snapshotLatest: true });
     return { companyId, id, store, skills, service, resolve };
   }
+
+  it("keeps unchanged linked-local execution on the verified manifest path with complete metadata indexes", async () => {
+    const companyId = await company();
+    vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
+    const directory = path.join(home, `linked-${companyId}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Linked");
+    await fs.writeFile(path.join(directory, "support.txt"), "unchanged support");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "linked", slug: "linked", name: "Linked",
+      markdown: "# Linked", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }] }).returning();
+    const service = companySkillService(db);
+    const version = await service.createVersion(companyId, skill!.id);
+    const resolve = () => service.listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill!.key]), snapshotLatest: true });
+    await resolve();
+    const read = vi.spyOn(fs, "readFile");
+    const [runtime] = await resolve();
+    expect(runtime?.versionId).toBe(version.id);
+    expect(read.mock.calls.filter(([file]) => String(file).endsWith("support.txt"))).toHaveLength(0);
+  });
 
   it("orders skill and package locks consistently with an edit's dedicated upload connection", async () => {
     const f = await fixture();
@@ -121,15 +146,41 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(await skillPackageStore(db, storage).versionInventory(stale!)).toEqual(files.map(({ path, kind }) => ({ path, kind })));
   });
 
-  it("forks a packaged repository inside an outer transaction with a one-connection pool", async () => {
+  it("prepares a repository fork before its publication transaction with a one-connection pool", async () => {
     const f = await fixture();
-    const fork = await db.transaction(tx => companySkillService(tx as unknown as typeof db, { packageDb: db })
-      .createLocalSkill(f.companyId, { name: "Idempotent fork", slug: "idempotent-fork", forkedFromSkillId: f.skills[0]!.skill.id }));
+    let publishing = false;
+    const read = storage.getObject.bind(storage);
+    vi.spyOn(storage, "getObject").mockImplementation((...args) => {
+      expect(publishing, "Package acquisition must finish before publication takes database locks").toBe(false);
+      return read(...args);
+    });
+    const fork = await f.service.createLocalSkill(f.companyId,
+      { name: "Idempotent fork", slug: "idempotent-fork", forkedFromSkillId: f.skills[0]!.skill.id }, null, {
+        beforeLock: async () => { publishing = true; },
+        afterPublish: async (tx, skill, version) => {
+          expect((await tx.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0])
+            .toMatchObject({ companySkillId: skill.id });
+        },
+      });
+    publishing = false;
     const saved = await f.service.getVersion(f.companyId, fork.id, fork.currentVersionId!);
     expect(saved!.fileInventory).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: ".paperclip-repository/shared/run.sh", content: files[2]!.content }),
     ]));
   }, 15_000);
+
+  it("publishes a fork and agent reassignment atomically with a one-connection pool", async () => {
+    const f = await fixture();
+    const original = f.skills[0]!.skill;
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Fork user", adapterType: "codex_local",
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [{ key: original.key }] } } }).returning();
+    await expect(f.service.forkSkill(f.companyId, original.id, { slug: "atomic-fork", reassignAgentIds: [agent!.id] }, null,
+      { afterPublish: async () => { throw new Error("audit rollback"); } })).rejects.toThrow("audit rollback");
+    expect(await f.service.getByKey(f.companyId, `company/${f.companyId}/atomic-fork`)).toBeNull();
+    expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]!.adapterConfig).toEqual(agent!.adapterConfig);
+    const fork = await f.service.forkSkill(f.companyId, original.id, { slug: "atomic-fork", reassignAgentIds: [agent!.id] });
+    expect(fork.reassignments).toEqual([{ agentId: agent!.id, previousSkillKey: original.key, nextSkillKey: fork.skill.key }]);
+  });
 
   it("lists version metadata without reading archives, while inspection reads the requested historical bytes", async () => {
     const f = await fixture();
@@ -247,7 +298,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(await skillPackageStore(db, storage).versionFiles(converted!)).toEqual([{ ...files[0]!, path: "SKILL.md" }]);
   });
 
-  it.each(["file", "folder"] as const)("restores a deleted %s when the replacement package upload fails", async target => {
+  it.each(["file", "folder"] as const)("keeps committed %s contents when the replacement package upload fails", async target => {
     const companyId = await company();
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     const service = companySkillService(db);
@@ -256,11 +307,6 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     await service.updateFile(companyId, skill.id, "bundle/probe.sh", "#!/bin/sh\nprintf kept\n", null, { executable: true });
     await service.updateFile(companyId, skill.id, "bundle/nested/data.bin", binary.toString("base64"), null, { encoding: "base64" });
     await service.updateFile(companyId, skill.id, "keep.txt", "Unrelated file\n");
-    const root = skill.sourceLocator!;
-    await fs.chmod(path.join(root, "bundle/probe.sh"), 0o751);
-    await fs.mkdir(path.join(root, "bundle/empty"));
-    await fs.mkdir(path.join(root, "bundle/.git"));
-    await fs.writeFile(path.join(root, "bundle/.git/local-state"), "Unlisted bytes\n");
     const [before] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
     const versionsBefore = await db.select({ id: companySkillVersions.id }).from(companySkillVersions)
       .where(eq(companySkillVersions.companySkillId, skill.id));
@@ -270,11 +316,10 @@ describe.skipIf(!support.supported)("external skill packages", () => {
       await expect(service.deleteFile(companyId, skill.id, input)).rejects.toThrow("Object storage unavailable");
       expect(upload).toHaveBeenCalled();
     } finally { upload.mockRestore(); }
-    expect(await fs.readFile(path.join(root, "bundle/probe.sh"), "utf8")).toBe("#!/bin/sh\nprintf kept\n");
-    expect((await fs.stat(path.join(root, "bundle/probe.sh"))).mode & 0o777).toBe(0o751);
-    expect(await fs.readFile(path.join(root, "bundle/nested/data.bin"))).toEqual(binary);
-    expect((await fs.stat(path.join(root, "bundle/empty"))).isDirectory()).toBe(true);
-    expect(await fs.readFile(path.join(root, "bundle/.git/local-state"), "utf8")).toBe("Unlisted bytes\n");
+    expect(await service.readFile(companyId, skill.id, "bundle/probe.sh"))
+      .toMatchObject({ content: "#!/bin/sh\nprintf kept\n", executable: true });
+    expect(await service.readFile(companyId, skill.id, "bundle/nested/data.bin"))
+      .toMatchObject({ content: binary.toString("base64"), encoding: "base64" });
     const [after] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
     expect(after).toEqual(before);
     expect(await db.select({ id: companySkillVersions.id }).from(companySkillVersions)
@@ -285,8 +330,9 @@ describe.skipIf(!support.supported)("external skill packages", () => {
       .where(and(eq(snapshots.companyId, companyId), sql`${snapshots.upload} is not null`));
     const deleted = await service.deleteFile(companyId, skill.id, input);
     expect(deleted.deletedPaths).toContain("bundle/probe.sh");
-    await expect(fs.stat(path.join(root, input.path))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await fs.readFile(path.join(root, "keep.txt"), "utf8")).toBe("Unrelated file\n");
+    await expect(service.readFile(companyId, skill.id, "bundle/probe.sh")).rejects.toMatchObject({ status: 404 });
+    if (target === "folder") await expect(service.readFile(companyId, skill.id, "bundle/nested/data.bin")).rejects.toMatchObject({ status: 404 });
+    expect(await service.readFile(companyId, skill.id, "keep.txt")).toMatchObject({ content: "Unrelated file\n" });
     expect((await service.getVersion(companyId, skill.id, before!.currentVersionId!))!.fileInventory)
       .toEqual(expect.arrayContaining([expect.objectContaining({ path: "bundle/probe.sh", executable: true })]));
   });
@@ -300,52 +346,45 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     await service.updateFile(companyId, skill.id, "keep.txt", "Keep\n");
     const before = (await service.getById(companyId, skill.id))!;
     let deletionFinished = false;
-    let backupDirectory: string | undefined;
-    const mkdtemp = fs.mkdtemp.bind(fs);
-    vi.spyOn(fs, "mkdtemp").mockImplementation(async (...args) => {
-      const directory = await mkdtemp(...args);
-      if (String(args[0]).includes("paperclip-skill-delete-")) backupDirectory = directory as string;
-      return directory;
-    });
     const ambiguousDb = new Proxy(db, {
       get(target, property, receiver) {
         if (property === "transaction") return async (callback: (tx: any) => Promise<any>, ...options: any[]) => {
           if (deletionFinished && outcome === "unavailable") throw new Error("Database unavailable");
           const result = await target.transaction(async tx => {
             const value = await callback(tx);
-            if (value?.deletedPaths) {
+            if (value?.skill?.id === skill.id && value?.version) {
               deletionFinished = true;
               if (outcome === "rolled_back") throw new Error("Lost commit reply");
             }
             return value;
           }, ...options);
-          if (!result?.deletedPaths) return result;
+          if (result?.skill?.id !== skill.id || !result?.version) return result;
           if (outcome === "newer_edit") await service.updateFile(companyId, skill.id, "notes.txt", "Newer edit\n");
           throw new Error("Lost commit reply");
         };
         return Reflect.get(target, property, receiver);
       },
     });
-    try {
-      await expect(companySkillService(ambiguousDb, { packageDb: db }).deleteFile(companyId, skill.id,
-        { path: "notes.txt", target: "file" })).rejects.toThrow("Lost commit reply");
-      expect(deletionFinished).toBe(true);
-      const [saved] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
-      if (outcome === "rolled_back") {
-        expect(saved!.currentVersionId).toBe(before.currentVersionId);
-        expect(await fs.readFile(path.join(skill.sourceLocator!, "notes.txt"), "utf8")).toBe("Original notes\n");
-      } else if (outcome === "newer_edit") {
-        expect(await fs.readFile(path.join(skill.sourceLocator!, "notes.txt"), "utf8")).toBe("Newer edit\n");
-      } else {
-        expect(saved!.currentVersionId).not.toBe(before.currentVersionId);
-        await expect(fs.stat(path.join(skill.sourceLocator!, "notes.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-      }
-      if (outcome === "unavailable" || outcome === "newer_edit") {
-        expect(await fs.readFile(path.join(backupDirectory!, "source"), "utf8")).toBe("Original notes\n");
-      } else await expect(fs.stat(backupDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      if (backupDirectory) await fs.rm(backupDirectory, { recursive: true, force: true });
+    await expect(companySkillService(ambiguousDb, { packageDb: db }).deleteFile(companyId, skill.id,
+      { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId })).rejects.toThrow("Lost commit reply");
+    expect(deletionFinished).toBe(true);
+    const [saved] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    if (outcome === "rolled_back") {
+      expect(saved!.currentVersionId).toBe(before.currentVersionId);
+      expect(await service.readFile(companyId, skill.id, "notes.txt")).toMatchObject({ content: "Original notes\n" });
+      await expect(service.deleteFile(companyId, skill.id, { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId }))
+        .resolves.toMatchObject({ deletedPaths: ["notes.txt"] });
+    } else {
+      expect(saved!.currentVersionId).not.toBe(before.currentVersionId);
+      if (outcome === "newer_edit") expect(await service.readFile(companyId, skill.id, "notes.txt"))
+        .toMatchObject({ content: "Newer edit\n" });
+      else await expect(service.readFile(companyId, skill.id, "notes.txt")).rejects.toMatchObject({ status: 404 });
+      await expect(service.deleteFile(companyId, skill.id, { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId }))
+        .rejects.toMatchObject({ status: 409 });
     }
+    expect((await service.getVersion(companyId, skill.id, before.currentVersionId!))!.fileInventory)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ path: "notes.txt", content: "Original notes\n" })]));
+
   });
 
   it("expires an unused Git package and reacquires its exact bytes without a migration command", async () => {
@@ -456,7 +495,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     const [skill] = await db.insert(companySkills).values({ companyId, key: "metadata", slug: "metadata", name: "Metadata", markdown: original[0]!.content }).returning();
     const service = companySkillService(db);
-    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: skill!, skipInventoryRefresh: true, fileInventory: changed });
+    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: toSkill(skill!), skipInventoryRefresh: true, fileInventory: changed });
     expect((await service.getVersion(companyId, skill!.id, saved.id))!.fileInventory).toEqual(changed);
     const [legacy] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 2, fileInventory: changed }).returning();
     await skillPackageMaintenance(db, storage).migrateVersions({ id: legacy!.id, apply: true, clearLegacy: true });
@@ -471,14 +510,25 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const upload = { token: randomUUID(), provider: "local_disk" as const, archiveKey: `${companyId}/old/archive`, manifestKey: `${companyId}/old/manifest`, expiresAt: new Date(0).toISOString() };
     const [row] = await db.insert(snapshots).values({ companyId, contentHash: skillSnapshotHash(files), createdAt: new Date(0), upload }).returning();
     const renewed = { ...upload, token: randomUUID(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
-    const racingDb = new Proxy(db, { get(target, key) {
-      if (key !== "delete") return Reflect.get(target, key);
-      return (table: typeof snapshots) => ({ where: (predicate: Parameters<ReturnType<typeof db.delete>["where"]>[0]) => ({ returning: async () => {
-        await db.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
-        return db.delete(table).where(predicate).returning({ id: snapshots.id });
-      } }) });
-    } });
-    expect((await skillPackageMaintenance(racingDb, storage).collectOrphans({ companyId, apply: true })).removed).toBe(0);
+    let unlock!: () => void, locked!: () => void, waiting!: () => void;
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const deleting = new Promise<void>(resolve => { waiting = resolve; });
+    const renewal = withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+      await tx.select().from(snapshots).where(eq(snapshots.id, row!.id)).for("update");
+      await tx.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
+      locked(); await release;
+    }));
+    await acquired;
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => {
+      if (query.includes('from "company_skill_repository_snapshots"') && query.includes("for update")) waiting();
+    };
+    try {
+      const collection = skillPackageMaintenance(db, storage).collectOrphans({ companyId, apply: true });
+      await deleting; unlock(); await renewal;
+      expect((await collection).removed).toBe(0);
+    } finally { unlock(); db.$client.options.debug = debug; }
     const [saved] = await db.select().from(snapshots).where(eq(snapshots.id, row!.id));
     expect(saved!.upload).toEqual(renewed);
   });
@@ -926,6 +976,21 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const [saved] = await db.select().from(companySkillVersions).where(and(eq(companySkillVersions.id, version!.id), eq(companySkillVersions.companyId, companyId)));
     expect(saved).toMatchObject({ id: version!.id, revisionNumber: 7, fileInventory: [], repositorySnapshotId: snapshot!.id, packageSnapshotId: snapshot!.id });
     expect(await skillPackageStore(db, storage).versionFiles(saved!)).toEqual([original]);
+  });
+
+  it("backfills a cleared version's metadata index without changing its identity or bytes", async () => {
+    const f = await fixture();
+    const [version] = await db.insert(companySkillVersions).values({ companyId: f.companyId,
+      companySkillId: f.skills[0]!.skill.id, revisionNumber: 2, packageSnapshotId: f.id,
+      packageFileMap: null, fileInventory: [], migrationAt: null }).returning();
+    expect((await skillPackageMaintenance(db, storage).migrateVersions({ id: version!.id, apply: true })).migrated).toBe(1);
+    const [saved] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version!.id));
+    expect(saved).toMatchObject({ id: version!.id, revisionNumber: 2, packageSnapshotId: f.id, fileInventory: [] });
+    expect(await f.store.versionFiles(saved!)).toEqual(expect.arrayContaining(files));
+    const read = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("Metadata must not fetch objects"));
+    expect(await f.store.versionInventory(saved!)).toEqual(expect.arrayContaining(files.map(({ path, kind }) => ({ path, kind }))));
+    expect(read).not.toHaveBeenCalled();
+    expect((await skillPackageMaintenance(db, storage).migrateVersions({ id: version!.id, apply: true })).inspected).toBe(0);
   });
 
   it.each([false, true])("restores across legacy payload clearing with a cached manifest: %s", async cachedManifest => {

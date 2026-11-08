@@ -88,13 +88,18 @@ Policy: Instance setup is operator work; company creation is board; agent creati
 creation retain their individual permissions.
 
 The wizard selects the Codex harness and lets the server resolve an automatic
-new-agent runner; explicit Legacy remains available. Supported-platform and
+new-agent runner without a runner dropdown. Explicit runner requests remain
+available through the agent creation API. Supported-platform and
 immutable sandbox evidence follow [environment probe policy](./execution-environments.md#probe).
 Creation/discovery do not provision a target to determine this default. Adapter
 setup validation requires `agents:create`, plus saved-agent update access when
 testing an existing agent; interactive account login additionally requires a
 board user and owner-bound session. An agent's right to hire is not login or
 instance-environment administration authority.
+
+First-agent onboarding limits the provider picker to Claude and Codex. Other
+providers remain available through normal agent creation; this UI choice does
+not change adapter APIs or hiring permissions.
 
 A name-only, held setup has no provider selection yet, so the wizard omits its
 runner choice until the provider is chosen. The existing board-only setup and
@@ -245,8 +250,11 @@ Scoped source review: 2026-10-13, the first-task asset correction against
 send file-producing work through the child's own execution and existing
 dependency/block controls. Native `register_deliverable` retains its current-task
 binding; this adds no cross-task file-registration authority or permission.
-Document-only work may use the existing child-document API inline, and plan-only
-approval does not authorize implementation. The existing asset tests check
+Document-only work may use the existing child-document API inline. Acceptance
+of an execution proposal authorizes its selected tasks and proposed team within
+existing hiring, budget, and connection controls. An explicitly plan-only
+approval does not authorize implementation; requested separate approvals remain
+in force. The existing asset tests check
 wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 

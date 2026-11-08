@@ -68,7 +68,7 @@ const mockApprovalService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
-  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean }> => ({ enableNativeRunner: false })),
+  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean; enableManagedSandboxOnly?: boolean }> => ({ enableNativeRunner: false })),
 }));
 
 const mockManagedAgentProfileService = vi.hoisted(() => ({
@@ -268,6 +268,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockManagedAgentProfileService.requireQualified.mockResolvedValue({
       id: "managed-primary",
@@ -959,6 +960,46 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("selects the native Cursor API controller from the ordinary held Cloud setup card without a Computer", async () => {
+    const settings = { defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    mockInstanceSettingsService.get.mockResolvedValue(settings);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue(settings.experimental);
+    const environments = await import("../services/environments.js");
+    const findManaged = vi.fn(async () => null);
+    const getEnvironment = vi.fn(async () => null);
+    vi.spyOn(environments, "environmentService").mockReturnValue({ findManagedSandboxEnvironment: findManaged,
+      getById: getEnvironment, listBoundCompanyIds: vi.fn(async () => []) } as never);
+    const existing = { ...(await mockAgentService.getById()), adapterType: "process", adapterConfig: {},
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      name: "Cursor setup", adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, metadata: { setupAdapterPending: false },
+    }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterType: "paperclip_runner", defaultEnvironmentId: null,
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", lifecycleMode: "per_turn" }),
+    }), expect.anything());
+    expect(findManaged).not.toHaveBeenCalled();
+    expect(getEnvironment).not.toHaveBeenCalled();
+    mockAgentService.update.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...existing, status: "idle", lifecycleState: "ready", pauseReason: null, lifecycleHolds: [] });
+    const active = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, setupOnly: true,
+    }));
+    expect(active.status).toBe(422);
+    expect(active.body.details?.code).toBe("managed_sandbox_unavailable");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    const incompleteActive = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "cursor_cloud" }, setupOnly: true,
+    }));
+    expect(incompleteActive.status).toBe(422);
+    expect(incompleteActive.body.details?.code).toBe("paperclip_runner_cursor_cloud_model_required");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it.each(["auto", "legacy"] as const)("creates Pi through the public route with %s selection and the experimental flag off", async runner => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
@@ -1000,6 +1041,52 @@ describe("agent routes adapter validation", () => {
       .send({ adapterType: "pi_local", runner: "auto", adapterConfig: {} }));
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "" } });
+  });
+
+  it("keeps Kimi draft models unset through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const originalCreate = mockAgentService.create.getMockImplementation()!;
+    mockAgentService.create.mockImplementation(async (...args) => ({ ...await originalCreate(...args), lifecycleHolds: ["setup"] }));
+    const app = await createApp();
+    const input = { name: "Kimi draft", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } };
+    const draft = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ ...input, setupId: "00000000-0000-4000-8000-000000000092" }));
+    expect(draft.status, JSON.stringify(draft.body)).toBe(201);
+    const saved = mockAgentService.create.mock.calls.at(-1)?.[1];
+    expect(saved).toMatchObject(input);
+    expect(saved.adapterConfig.model).toBeUndefined();
+    expect(mockAgentService.create.mock.calls.at(-1)?.[2]).toMatchObject({ setupOnly: true, runnerResolved: true });
+    mockAgentService.create.mockClear();
+    const active = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(active.status).toBe(422);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["process", undefined, ""],
+    ["kimi_local", "kimi-for-coding", "kimi-for-coding"],
+    ["pi_local", "openrouter/anthropic/claude-sonnet-4.6", ""],
+  ] as const)("preserves Kimi model selection only from the same harness: %s", async (previousAdapterType, previousModel, expectedModel) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: previousAdapterType,
+      adapterConfig: previousModel === undefined ? {} : { model: previousModel },
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: expectedModel } });
+  });
+
+  it("persists an explicit Kimi model through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const input = { name: "Kimi", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "kimi-for-coding" } };
+    const response = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject(input);
   });
 
   it.each([{ thinking: "high", status: 200 }, { thinking: "medium", status: 422 }, { command: "custom-pi", status: 422 }])("validates saved Pi settings during direct adapter conversion: %j", async ({ status, ...settings }) => {
@@ -1046,9 +1133,9 @@ describe("agent routes adapter validation", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           provider: "codex",
-          model: "gpt-5.6-sol",
+          model: "gpt-6.1-sol",
           codexPermissionMode: "never",
-          lifecycleMode: "per_turn",
+          // No stored lifecycle: the product default applies.
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
       }),
@@ -1059,6 +1146,34 @@ describe("agent routes adapter validation", () => {
       expect.any(Object),
       expect.objectContaining({ entryFile: "AGENTS.md", replaceExisting: false }),
     );
+  });
+
+  it("saves and reopens native Cursor API setup under managed-only policy without a Computer", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableManagedSandboxOnly: true });
+    let existing = { ...(await mockAgentService.getById()), adapterType: "cursor_cloud", adapterConfig: {}, defaultEnvironmentId: "33333333-3333-4333-8333-333333333333",
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockImplementation(async () => existing);
+    mockAgentService.update.mockImplementation(async (_id, patch) => { existing = { ...existing, ...patch }; return existing; });
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature",
+      env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } } };
+    const app = await createApp();
+    const saved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "cursor_cloud", runner: "paperclip", adapterConfig: config }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: {
+      provider: "cursor_cloud", model: config.model, repoUrl: config.repoUrl, repoRef: "feature", env: config.env, lifecycleMode: "per_turn",
+    } });
+    expect(saved.body.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    expect(saved.body.defaultEnvironmentId).toBeNull();
+    const reopened = await requestApp(app, baseUrl => request(baseUrl).get(`/api/agents/${existing.id}/configuration`));
+    expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
+    expect(reopened.body.adapterConfig).toEqual(saved.body.adapterConfig);
+    const resaved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: reopened.body.adapterConfig }));
+    expect(resaved.status, JSON.stringify(resaved.body)).toBe(200);
+    const { resolvePaperclipRunnerNativeProviderInput } = await import("../services/native-runtime/provider-profile.js");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "cursor_cloud_api", adapterConfig: resaved.body.adapterConfig }))
+      .toMatchObject({ provider: "cursor_cloud", model: config.model, cursorCloud: { repos: [{ url: config.repoUrl, startingRef: "feature" }] } });
   });
 
   it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode"])("refuses an agent granting itself the operator-owned setting %s", async key => {
@@ -1285,7 +1400,7 @@ describe("agent routes adapter validation", () => {
           provider: "codex",
           model: "gpt-5.5",
           codexPermissionMode: "never",
-          lifecycleMode: "per_turn",
+          // No stored lifecycle: the product default applies.
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
       }),
@@ -1311,7 +1426,7 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
-        adapterConfig: expect.objectContaining({ model: "gpt-5.6-sol" }),
+        adapterConfig: expect.objectContaining({ model: "gpt-6.1-sol" }),
       }),
       expect.any(Object),
     );

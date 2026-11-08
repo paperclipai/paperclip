@@ -26,7 +26,7 @@ import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } fr
 import { projectCompanyHolds } from "../adapters/company-policy.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
-import type { LifecycleAgent } from "../application/ports.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 
@@ -40,7 +40,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
   beforeAll(async () => {
-    if (external) { await applyPendingMigrations(external); db = createDb(external); }
+    if (external) { await applyPendingMigrations(external); db = createDb(external, { maxConnections: 6 }); }
     else { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }
   }, 90_000);
   afterAll(async () => {
@@ -53,7 +53,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle test", issuePrefix: `L${companyId.slice(0, 7)}` });
   });
-  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete") {
     const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
     workers.push(value); return value;
   }
@@ -130,7 +130,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.updated")))).toHaveLength(1);
     await request(board).patch(`/api/agents/${agent.id}`).send({ name: "Stale", expectedConfigurationRevision: response.body.configurationRevision }).expect(409);
     const foreign = app({ type: "board", source: "session", userId: "outsider", companyIds: [], memberships: [] });
-    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(403);
+    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(404);
     await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 
@@ -410,6 +410,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("releases an expired native owner whose renewed lease expiry has microsecond precision", async () => {
+    const agent = await hire();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Renewed native run" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, nativeIssueId: issue.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date(), processPid: 2_000_000_000 }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id,
+      phase: "executing", leaseOwner: "stopped-server", leaseExpiresAt: new Date(0) });
+    await db.update(nativeRunFinalizations)
+      .set({ leaseExpiresAt: sql`'2020-01-01T00:00:00.123456Z'::timestamptz` })
+      .where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
   });

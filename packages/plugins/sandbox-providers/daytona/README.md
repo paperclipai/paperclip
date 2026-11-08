@@ -36,7 +36,15 @@ Notes:
 - A session log socket can close while its command still runs. The driver requires a recorded command exit before returning a completed execution. It reconnects the log stream once, then polls status and log snapshots at most once per second. Replayed output is removed by byte offset, new output continues to reach the host, and the command is never dispatched again. A socket that delivers no output for 15 seconds switches directly to polling, even if the socket stays open or its initial connection never completes. Late callbacks from that socket are ignored. This recovers pending permission requests and cancellation results from saved output without replaying the command. Healthy initial and reconnected streams retain their existing lifetime under the caller’s RPC/run guard. After a clean close or an idle socket, each status or snapshot read gets a fresh operation timeout; successful recovery polling does not impose a new command lifetime. When both stream attempts fail without a clean close, fallback retains its original timeout budget starting after the stream attempts.
 - The SDK returns full log snapshots, so fallback bandwidth grows with retained output; it has no paged snapshot or stream cancellation API. A recovery-read timeout keeps partial output and explicitly reports whether command exit remains unconfirmed; it does not prove the remote command stopped. Provider/session teardown remains responsible for closing an outstanding socket. A final snapshot reconciles bytes missed by the stream before returning a recorded exit.
 - A sandbox record can survive the loss of its underlying container. Resume treats it as expired only when a fresh provider read confirms the exact missing-container error for that sandbox and marks it unrecoverable. Unknown errors and failed confirmation reads preserve the lease. The host still requires a verified native-runner backup before replacement.
-- Directory export normally builds a sandbox archive and downloads it. If archive creation exhausts disk space, quota, or the file-size limit, export streams the archive through a raw terminal instead. Each bounded chunk waits for a host write acknowledgement. Import still requires successful tar completion and the existing archive/path validation. The total archive cannot exceed the provider-reported sandbox disk allocation, and each host write must leave a 1 GiB free-space reserve. This fallback writes no sandbox archive or command log, preserves source files, and retains the configured transfer timeout. Terminal cleanup has a separate five-second limit and cannot hold the host archive open. It requires Bash and GNU `tar`, `dd`, and `base64` in the sandbox. It does not repair a provider session that already failed to save its state or increase the sandbox's disk allocation.
+- Daytona rejects Stop for a sandbox in its `error` state, for example after the sandbox disk fills. The stop-only hook confirms the retention policy first. If Daytona marks the error recoverable, the hook calls Recover once and waits at most 20 seconds for the sandbox to start. Then it stops the sandbox normally. The hook never calls Recover a second time in the same call. An unrecoverable error, a sandbox that is back in `error` after recovery, or an unfinished recovery returns a typed `PluginEnvironmentStopError` instead of the generic stop error. The sandbox is never deleted.
+- Directory export normally builds a sandbox archive and downloads it. If archive creation exhausts disk space, quota, or the file-size limit, export streams the archive through a raw terminal instead. The sender can send up to sixteen 40 KiB chunks before it waits for their host write acknowledgements. The host writes them in order and rejects a sender that exceeds the pending-frame limit. This bounds queued payloads to 640 KiB while avoiding one network round trip per chunk. Import still requires successful tar completion and the existing archive/path validation. The total archive cannot exceed the provider-reported sandbox disk allocation, and each host write must leave a 1 GiB free-space reserve. This fallback writes no sandbox archive or command log, preserves source files, and retains the configured transfer timeout. Terminal cleanup has a separate five-second limit and cannot hold the host archive open. It requires Bash and GNU `tar`, `dd`, and `base64` in the sandbox. It does not repair a provider session that already failed to save its state or increase the sandbox's disk allocation.
+- Single-file export normally downloads a guarded sandbox copy. If that copy exhausts disk space, quota, or the file-size limit, the provider removes partial copies and streams the source through the same bounded sandbox-user channel. The stream rechecks canonical confinement and regular-file identity, refuses a symlink at open, and publishes host files only after a successful transfer receipt. It never hands a mutable source to the privileged download API. Permission, confinement, and transport failures still fail; a failed stream leaves prior host files intact. This removes the second archive-sized copy needed to download an already captured workspace archive. Creating the workspace archive itself still needs sandbox space.
+
+Native file transfers accept an optional `minimumTimeoutMs` from the host. The
+minimum must be a positive whole number no greater than 30 minutes. File sync
+uses the larger of this minimum and the configured timeout. Sandbox start and
+command timeouts keep their configured limits. Without the field, behavior is
+unchanged.
 
 ## Local development
 
@@ -45,21 +53,47 @@ cd packages/plugins/sandbox-providers/daytona
 pnpm install --ignore-workspace --no-lockfile
 pnpm build
 pnpm test
+pnpm exec vitest run --config vitest.sdk-ingress.config.ts
 pnpm typecheck
 ```
 
 These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
 
+The dedicated `vitest.sdk-ingress.config.ts` requires this package's installed, pinned Daytona SDK. It sends
+local HTTP faults through the real SDK and worker RPC without a provider account
+or sandbox. The root workspace does not install standalone provider dependencies;
+its normal Daytona tests use mocked SDK boundaries. This target fails if the SDK
+is missing and runs all ingress acceptance cases without a conditional skip.
+
 The capacity regression uses Python 3 for a real local PTY, Bash, and GNU core
 utilities (`gtar`, `gdd`, and `gbase64` on macOS). It skips when those prerequisites
 are unavailable or their version checks do not match. With `DAYTONA_API_KEY` set, run
 `pnpm test src/file-sync-capacity.live.test.ts` to exercise an actual stopped and
-resumed Daytona sandbox, a tar write to `/dev/full`, validated export, and a
-second export after reconnect. The test creates and deletes one disposable
-1 GiB Ubuntu sandbox; it does not fill a disk or modify existing sandboxes.
+resumed Daytona sandbox, tar and file-copy writes to `/dev/full`, validated
+exports, and second exports after reconnect. Each case creates and deletes one
+disposable 1 GiB Ubuntu sandbox; it does not fill a disk or modify existing sandboxes.
 
 ## Package layout
 
 - `src/manifest.ts` declares the sandbox-provider driver metadata
 - `src/plugin.ts` implements the environment lifecycle hooks
 - `paperclipPlugin.manifest` and `paperclipPlugin.worker` point the host at the built plugin entrypoints in `dist/`
+
+
+### Interrupted run-lease creation
+
+The host commits a company-scoped creation operation before acquiring a new run
+lease. The operation UUID becomes `paperclip-create-<uuid>` and the
+`paperclip-create-attempt` label. The existing inspection hook can resolve that
+name and validate company, environment and run labels without starting a sandbox.
+Recovery persists the observed provider ID before the existing cleanup worker
+deletes it. A missing creation name is an uncertain outcome, not proof of removal.
+The host retains that operation for manual reconciliation and never repeats the
+creation request blindly. Credential identity must still match admission.
+
+This capability is declared as `creationOperationVersion: 1` in manifest version
+0.1.10. It covers normal run/ad-hoc lease acquisition and plugin task replacement.
+Legacy provider `environmentProbe` and custom-image interactive setup have separate
+lifecycles and are outside this lease-orphan fallback replacement. The normal Test
+path which acquires a runtime lease is covered. Unit fixtures exercise lookup and
+deletion; live provider qualification requires an explicit disposable test account.

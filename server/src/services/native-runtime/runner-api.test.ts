@@ -143,6 +143,9 @@ describe("runner API catalog", () => {
     expect(JSON.stringify(catalog)).not.toContain('"$ref"');
     expect(runnerApiOperation("GET /api/companies/{companyId}/decisions").authorization.actor).toBe("board");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").authorization.actor).toBe("board");
+    // Agents read their own commentary (or all with commentary:view), so the catalog must not say board-only.
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary").authorization.actor).toBe("board_or_agent");
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary/{id}").authorization.actor).toBe("board_or_agent");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").dedicatedTools).toEqual([]);
     expect(runnerApiOperation(createProject).requestBody?.content["application/json"].schema.required).toContain("name");
     expect(runnerApiOperation(createProject).dedicatedTools).toEqual(["create_project"]);
@@ -175,6 +178,22 @@ describe("runner API catalog", () => {
         .results[0].dedicatedTools,
     ).toContain("search_tasks");
     expect(searchRunnerApi({ query: "nothing-zzzzzzzzzz" }).total).toBe(0);
+  });
+  it("finds the actual instance-restart operation and explains its authority boundary", () => {
+    const operation = searchRunnerApi({ query: "restart instance", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("POST /api/health/dev-server/restart");
+    expect(operation.authorization.actor).toBe("board");
+    expect(operation.description).toMatch(/authenticated.*board/i);
+    expect(operation.description).toMatch(/agent credential/i);
+    expect(operation.description).toMatch(/supervisor/i);
+  });
+  it("discovers where to save project defaults without rewriting existing tasks", () => {
+    const operation = searchRunnerApi({ query: "save project defaults", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("PATCH /api/projects/{id}");
+    expect(operation.description).toContain("goalIds");
+    expect(operation.description).toContain("description");
+    expect(operation.description).toMatch(/existing tasks/i);
+    expect(operation.requestBody?.content["application/json"].schema.properties).toHaveProperty("goalIds");
   });
   it("paginates without duplicates and rejects stale or mismatched cursors", () => {
     const first = searchRunnerApi({ query: "project", limit: 1 });

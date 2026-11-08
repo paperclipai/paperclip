@@ -40,7 +40,7 @@ export async function antigravityConnectionModels(db: Db, input: {
         // Keep this selected credential home until that owner proves retirement.
         retained = true;
         if (runtime.retainedCleanupScope) retainGoogleCredentialCleanup({
-          scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup, retired: error.retired,
+          scope: runtime.retainedCleanupScope, home, cleanup: runtime.cleanup, retired: error.retired,
         });
       }
       throw unprocessable("Could not load models for this Google account. Check the account's Antigravity access, then refresh models.");
@@ -53,7 +53,9 @@ export async function antigravityConnectionModels(db: Db, input: {
           // Storage failures still retain the private home and block sleep.
           // No provider or repeated database work is started by this hold.
           if (runtime.retainedCleanupScope) retainGoogleCredentialCleanup({
-            scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup,
+            scope: runtime.retainedCleanupScope,
+            home: typeof runtime.config.env.GEMINI_HOME === "string" ? runtime.config.env.GEMINI_HOME : undefined,
+            cleanup: runtime.cleanup,
           });
         }
         logger.warn({ companyId: input.companyId, code: "ANTIGRAVITY_CATALOG_CREDENTIAL_CLEANUP_PENDING" },

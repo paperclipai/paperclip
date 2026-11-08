@@ -8,6 +8,7 @@ import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
@@ -23,6 +24,7 @@ const apiPrefixes: Record<string, string> = {
   "agents.ts": "/api",
   "agent-project-access.ts": "/api",
   "agent-commentary.ts": "/api",
+  "agent-chat-messages.ts": "/api",
   "agent-avatars.ts": "/api",
   "agent-profile-avatar.ts": "/api",
   "announcements.ts": "/api",
@@ -47,6 +49,8 @@ const apiPrefixes: Record<string, string> = {
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
+  "connection-event-wake.ts": "/",
+  "ephemeral-enrollment.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
@@ -63,6 +67,7 @@ const apiPrefixes: Record<string, string> = {
   "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "ready.ts": "/api/ready",
   "liveness.ts": "/api/liveness",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
@@ -113,6 +118,9 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
+  "POST /api/instance/connector-events/wake",
+  "POST /api/instance/ephemeral-enrollment/prepare",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -126,6 +134,9 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
   "GET /api/mcp/setup.md",
+  "GET /.well-known/oauth-protected-resource",
+  "GET /.well-known/oauth-protected-resource/mcp/paperclip",
+  "GET /.well-known/oauth-protected-resource/mcp/runner",
   "GET /.well-known/oauth-authorization-server",
   "POST /mcp/oauth/register",
   "POST /mcp/oauth/device_authorization",
@@ -180,6 +191,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "connection-event-wake.ts") return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -197,7 +209,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   ) {
     return routePath;
   }
-  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts" || file === "ready.ts") && routePath === "/") {
     return prefix;
   }
   if (file === "companies.ts" || file === "health.ts") {
@@ -248,9 +260,13 @@ function loadActualRoutes() {
 
     if (file === "public-mcp.ts") {
       // The shared gateway mounts these protocol paths for each OAuth resource.
-      if (source.includes("router.get(metadataPath,")) {
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server");
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server/mcp/runner/oauth");
+      if (source.includes("mcpDiscoveryDocuments({") && source.includes("router.get(entry.path,")) {
+        for (const entry of mcpDiscoveryDocuments({ origin: "https://example.test",
+          authorizationOrigin: "https://example.test", profiles: ["personal-mcp", "dot-mcp"] })) {
+          const operation = `GET ${entry.path}`;
+          if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
+          else routes.add(operation);
+        }
       }
       for (const match of source.matchAll(/router\.(get|post)\(oauthPath \+ "([^"]+)"/g)) {
         for (const oauthPath of ["/mcp/oauth", "/mcp/runner/oauth"]) {
@@ -315,6 +331,32 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
+    const spec = buildOpenApiSpec();
+    const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Source-Run-Token", required: false }),
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Idempotency-Scope", required: false }),
+    ]));
+    for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
+    expect(operation.requestBody.content).toHaveProperty("application/json");
+    expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
+  });
+  it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
+    const response = operation.responses["200"].content["application/json"].schema;
+    expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
+    expect(response.properties.generatedAt).toMatchObject({ format: "date-time" });
+    expect(response.properties.items).toBeUndefined();
+    expect(response.properties.nextCursor).toBeUndefined();
+    if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
+    for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+  });
+
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/pending-questions"].get;
@@ -436,13 +478,13 @@ describe("openapi routes", () => {
     expect(operation.responses["404"]).toBeDefined();
   });
 
-  it("documents strict run-attributed feedback and board-only commentary reads", () => {
+  it("documents strict run-attributed feedback and board-or-agent commentary reads", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
     expect(Object.keys(path)).toEqual(["get", "post"]);
     const detail = spec.paths["/api/companies/{companyId}/agent-commentary/{id}"].get;
     for (const read of [path.get, detail]) {
-      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentBearerAuth: [] }]);
       expect(read.responses["403"]).toBeDefined();
       expect(read.responses["404"]).toBeDefined();
     }
@@ -513,6 +555,14 @@ describe("openapi routes", () => {
       required: ["companyId"], additionalProperties: false,
     });
     expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
+  it("tells agents that archiving keeps a status card and where a person restores it", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const patch = res.body.paths["/api/status-cards/{id}"].patch;
+    expect(patch.description).toContain("it is not deleted");
+    expect(patch.description).toContain("give them the returned href as a Markdown link");
+    expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
@@ -1395,4 +1445,22 @@ describe("heartbeat run ID OpenAPI contract", () => {
     }
     expect(checked).toBe(12);
   });
+});
+
+
+it("documents explicit owner removals in the timeline response event enum", () => {
+  const spec = buildOpenApiSpec() as any;
+  const schema = spec.paths["/api/companies/{companyId}/timeline"].get.responses["200"].content["application/json"].schema;
+  expect(schema.properties.events.items.properties.kind.enum).toEqual([
+    "created", "commented", "approved", "delegated", "assigned", "unassigned",
+  ]);
+});
+
+it("documents canonical saved-resource links in catalog team install responses", () => {
+  const operation = buildOpenApiSpec().paths["/api/companies/{companyId}/teams/catalog/{catalogId}/install"].post;
+  expect(operation.description).toContain("resourceLinks");
+  const schema = operation.responses[201].content["application/json"].schema;
+  expect(schema.required).toContain("resourceLinks");
+  expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
+  expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
 });

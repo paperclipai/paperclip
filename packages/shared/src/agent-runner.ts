@@ -6,13 +6,27 @@ export interface AgentRunnerAvailability {
   defaultRunner: AgentRunner;
 }
 
-export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" } | { provider: "acpx"; acpxAgent: "claude" | "pi" | "grok" } | undefined {
+export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" | "cursor_cloud" } | { provider: "acpx"; acpxAgent: "claude" | "pi" | "grok" } | undefined {
   if (harness === "codex_local") return { provider: "codex" };
   if (harness === "claude_local") return { provider: "acpx", acpxAgent: "claude" };
   if (harness === "pi_local") return { provider: "acpx", acpxAgent: "pi" };
   if (harness === "grok_local") return { provider: "acpx", acpxAgent: "grok" };
   if (harness === "opencode_local") return { provider: "opencode" };
+  if (harness === "cursor_cloud") return { provider: "cursor_cloud" };
   return undefined;
+}
+
+/**
+ * The lifecycle a new native agent stores. Codex, OpenCode and Claude store
+ * none, so the server applies the product default (warm on a local target for
+ * Codex and OpenCode). Other harnesses keep an explicit per_turn.
+ */
+export function paperclipRunnerCreationLifecycle(
+  profile: NonNullable<ReturnType<typeof paperclipRunnerProfileForHarness>>,
+): { lifecycleMode?: "per_turn" } {
+  return profile.provider === "codex" || profile.provider === "opencode"
+    || (profile.provider === "acpx" && profile.acpxAgent === "claude")
+    ? {} : { lifecycleMode: "per_turn" };
 }
 
 export const PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION = "2.39";
@@ -42,7 +56,7 @@ export function agentHarnessType(adapterType: string, config: Record<string, unk
   if (config.provider === "opencode") return "opencode_local";
   if (config.provider === "acpx") {
     const agent = config.acpxAgent ?? "claude";
-    return ({ codex: "codex_local", claude: "claude_local", grok: "grok_local", cursor: "cursor", pi: "pi_local", antigravity: "antigravity_runtime" } as Record<string, string>)[String(agent)] ?? `acpx:${String(agent)}`;
+    return ({ codex: "codex_local", claude: "claude_local", grok: "grok_local", cursor: "cursor", pi: "pi_local", kimi: "kimi_local", antigravity: "antigravity_runtime" } as Record<string, string>)[String(agent)] ?? `acpx:${String(agent)}`;
   }
   return String(config.provider);
 }

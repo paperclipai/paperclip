@@ -16,6 +16,7 @@ async function resolveTarget(event: string, cadence: string, branch = "master") 
     const output = path.join(directory, "output");
     const result = spawnSync("bash", ["-c", `gh() { printf '%s\\n' "$MOCK_BRANCH_SHA"; }\n${script}`], {
       encoding: "utf8", env: { ...process.env, EVENT_NAME: event, EVAL_CADENCE: cadence,
+        IMAGE_ONLY: "false", TESTOPS_REQUESTED: "false",
         TARGET_BRANCH: branch, DEFAULT_BRANCH: "master", GITHUB_SHA: queuedSha,
         MOCK_BRANCH_SHA: advancedSha, GITHUB_OUTPUT: output, REPOSITORY: "paperclipai/paperclip" },
     });
@@ -63,5 +64,19 @@ describe("qualification image dependency correction", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(await access(marker).then(() => true, () => false)).toBe(sameSource);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe("release image capacity prerequisite", () => {
+  it.each([34, 35])("checks the unchanged disk threshold for every image route: %s GiB", async available => {
+    const workflow = await readFile(new URL("../../.github/workflows/docker-runner-check.yml", import.meta.url), "utf8");
+    const step = workflow.split("      - name: Prepare hosted image build capacity\n")[1]!.split("\n      - ")[0]!;
+    expect(step).toContain("if: inputs.build_eval_image || inputs.publish_eval_image\n");
+    expect(step).not.toContain("release_run_id");
+    const script = step.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
+    const result = spawnSync("bash", ["-c", `sudo() { test "$*" = "rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc"; }; df() { printf 'Avail\\n%sG\\n' "$AVAILABLE"; }; ${script}`], {
+      encoding: "utf8", env: { PATH: process.env.PATH, AVAILABLE: String(available) },
+    });
+    expect(result.status, result.stderr).toBe(available >= 35 ? 0 : 1);
   });
 });

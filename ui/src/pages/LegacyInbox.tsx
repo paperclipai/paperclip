@@ -1,10 +1,12 @@
 import { describeError } from "../api/errors";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { useQueryView } from "../components/QueryView";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
@@ -182,6 +184,7 @@ import {
   reconcileInboxOrderPin,
   type InboxOrderPin,
 } from "../lib/inboxOrderPin";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -703,7 +706,6 @@ export function Inbox() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
@@ -791,20 +793,18 @@ export function Inbox() {
     }
   }, [selectedCompanyId]);
 
-  const {
-    data: approvals,
-    isLoading: isApprovalsLoading,
-    error: approvalsError,
-  } = useQuery({
+  const approvalsQuery = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-
   const {
-    data: joinRequests = [],
-    isLoading: isJoinRequestsLoading,
-  } = useQuery({
+    data: approvals,
+    isLoading: isApprovalsLoading,
+  } = approvalsQuery;
+  const approvalsView = useQueryView(approvalsQuery);
+
+  const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
       try {
@@ -817,8 +817,12 @@ export function Inbox() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
   });
+  const {
+    data: joinRequests = [],
+    isLoading: isJoinRequestsLoading,
+  } = joinRequestsQuery;
+  const joinRequestsView = useQueryView(joinRequestsQuery);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -827,11 +831,13 @@ export function Inbox() {
     queryKey: dashboardQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
+  const dashboardView = useQueryView(dashboardQuery);
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
   const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
@@ -841,7 +847,7 @@ export function Inbox() {
     queryKey: inboxIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = useQuery({
+  const inboxIssuesQuery = useQuery({
     queryKey: inboxIssuesQueryKey,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -853,12 +859,10 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = inboxIssuesQuery;
+  const inboxIssuesView = useQueryView(inboxIssuesQuery);
   usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
-  const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-    dataUpdatedAt: mineIssuesUpdatedAt,
-  } = useQuery({
+  const mineIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -873,6 +877,12 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: mineIssuesRaw = [],
+    isLoading: isMineIssuesLoading,
+    dataUpdatedAt: mineIssuesUpdatedAt,
+  } = mineIssuesQuery;
+  const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedMineIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -881,11 +891,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
-  const {
-    data: touchedIssuesRaw = [],
-    isLoading: isTouchedIssuesLoading,
-    dataUpdatedAt: touchedIssuesUpdatedAt,
-  } = useQuery({
+  const touchedIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -899,6 +905,12 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: touchedIssuesRaw = [],
+    isLoading: isTouchedIssuesLoading,
+    dataUpdatedAt: touchedIssuesUpdatedAt,
+  } = touchedIssuesQuery;
+  const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -908,13 +920,15 @@ export function Inbox() {
   });
   usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
+  const heartbeatRunsQuery = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: heartbeatRuns, isLoading: isRunsLoading } = heartbeatRunsQuery;
+  const heartbeatRunsView = useQueryView(heartbeatRunsQuery);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -1651,7 +1665,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err, { action: "approve the join request" }).body);
     },
   });
 
@@ -1664,7 +1678,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err, { action: "reject the join request" }).body);
     },
   });
 
@@ -1692,7 +1706,7 @@ export function Inbox() {
     onError: (error) => {
       pushToast({
         title: "Run retry failed",
-        body: error instanceof Error ? error.message : "Unable to retry run",
+        body: describeError(error, { action: "retry the run" }).body,
         tone: "error",
       });
     },
@@ -1765,7 +1779,7 @@ export function Inbox() {
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err, { action: "archive the task" }).body);
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -1806,7 +1820,7 @@ export function Inbox() {
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(describeError(err, { action: "undo the inbox archive" }).body);
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2209,6 +2223,18 @@ export function Inbox() {
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
+  const anySectionReconnecting = [joinRequestsView, approvalsView, dashboardView, inboxIssuesView, mineIssuesView, touchedIssuesView, heartbeatRunsView].some((view) => view.kind === "reconnecting");
+  const allLoaded =
+    !anySectionReconnecting &&
+    !isJoinRequestsLoading &&
+    !isApprovalsLoading &&
+    !isDashboardLoading &&
+    !isIssuesLoading &&
+    !isMineIssuesLoading &&
+    !isTouchedIssuesLoading &&
+    !isRunsLoading;
+  useWarmTaskDetailCode(Boolean(selectedCompanyId) && allLoaded && tab !== "blocked" && totalVisibleWorkItems > 0);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
   }
@@ -2242,15 +2268,6 @@ export function Inbox() {
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
-
-  const allLoaded =
-    !isJoinRequestsLoading &&
-    !isApprovalsLoading &&
-    !isDashboardLoading &&
-    !isIssuesLoading &&
-    !isMineIssuesLoading &&
-    !isTouchedIssuesLoading &&
-    !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2580,8 +2597,10 @@ export function Inbox() {
         </div>
       )}
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsView.kind === "error" ? (
+        <p role="alert" className="text-sm text-destructive">{describeError(approvalsView.error, { action: "load approvals" }).body}</p>
+      ) : null}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
         <BlockedInboxView
@@ -2680,7 +2699,7 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2750,10 +2769,11 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}

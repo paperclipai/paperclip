@@ -1,3 +1,4 @@
+import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport, materializePrivateFrameworkAttachments } from "./private-framework-report.js";
 import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,12 +11,19 @@ import { isStandardEvidenceFile } from "./evidence.js";
 import { BoundedHistoryPublisher } from "./history-budget.js";
 import { privateArtifactKey, retainPrivateTransfer, transferPrivateArtifact, verifyPrivateHistory, type PrivateEvidenceCompleteness } from "./private-history.js";
 import { authorizeManualPrivateEvidence, MANUAL_PRIVATE_PROTOCOL, manualCellKind, manualPrivateSessionPolicy } from "./manual-private-retention.js";
+import { shippedChatEvidenceAuthority } from "./testops-chat-admission.js";
+import { manualDispatchEvidenceAuthority } from "./manual-dispatch-authority.js";
+import { privateRefusalCode } from "./private-refusal-code.js";
 
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 function request(env: NodeJS.ProcessEnv) {
   const ids = JSON.parse(env.MANUAL_PRIVATE_IDS ?? "null") as string[];
-  const approval = authorizeManualPrivateEvidence({ workflowSha: env.GITHUB_SHA ?? "", targetSha: env.TARGET_SHA ?? "",
-    runId: env.GITHUB_RUN_ID ?? "", attempt: env.GITHUB_RUN_ATTEMPT ?? "", executionIds: ids }, env.MANUAL_PRIVATE_APPROVALS_JSON ?? "");
+  const approval: { workflowSha: string; targetSha: string; runId: string; attempt: string; executionIds: readonly string[]; approvalSha256: string;
+    launchSha256?: string; launchBinding?: "dispatcher" } =
+    env.PAPERCLIP_TESTOPS_CHAT_MAIN_ADMISSION !== undefined ? shippedChatEvidenceAuthority(env)
+      : env.PAPERCLIP_MANUAL_DISPATCH_AUTHORITY !== undefined ? manualDispatchEvidenceAuthority(env)
+        : authorizeManualPrivateEvidence({ workflowSha: env.GITHUB_SHA ?? "", targetSha: env.TARGET_SHA ?? "",
+          runId: env.GITHUB_RUN_ID ?? "", attempt: env.GITHUB_RUN_ATTEMPT ?? "", executionIds: ids }, env.MANUAL_PRIVATE_APPROVALS_JSON ?? "");
   return { ids, approval, bucket: env.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET ?? "" };
 }
 async function output(name: string, value: string) {
@@ -28,13 +36,15 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const target = await realpath(env.TARGET_ROOT ?? ""), trusted = path.resolve(import.meta.dirname, "../..");
   if (target === trusted) throw new Error("Trusted transfer code must be separate from target checkout");
   const launch = await readFile(path.join(target, "tests/runner-e2e/launch.ts"));
-  if (hash(launch) !== approval.launchSha256) throw new Error("Target evidence launcher differs from protected approval");
+  const targetLaunchSha256 = hash(launch);
+  if (approval.launchBinding !== "dispatcher" && targetLaunchSha256 !== approval.launchSha256)
+    throw new Error("Target evidence launcher differs from protected approval");
   for (const file of ["manual-private-handoff.ts", "manual-private-retention.ts", "manual-private-report-assets.ts"]) {
     if (!(await readFile(path.join(target, "tests/runner-e2e", file))).equals(await readFile(path.join(trusted, "tests/runner-e2e", file))))
       throw new Error("Target private evidence protocol differs from trusted implementation");
   }
   const temporary = await realpath(env.RUNNER_TEMP ?? ""), root = await mkdtemp(path.join(temporary, "manual-private-evidence-"));
-  await writeFile(path.join(root, "identity.json"), JSON.stringify({ ...approval, executionIds: [id], root, status: "pending" }), { mode: 0o600, flag: "wx" });
+  await writeFile(path.join(root, "identity.json"), JSON.stringify({ ...approval, launchSha256: targetLaunchSha256, executionIds: [id], root, status: "pending" }), { mode: 0o600, flag: "wx" });
   await output("root", root); await output("session_policy", JSON.stringify(manualPrivateSessionPolicy({ bucket, runId: approval.runId, executionIds: [id], mode: "cell-write" })));
 }
 function requireSession(env: NodeJS.ProcessEnv) {
@@ -94,6 +104,18 @@ export async function validateSealedInventory(directory: string, inventory: stri
   }
   await visit("");
   if (actual.size !== expected.size) throw new Error("Sealed evidence is incomplete");
+  if (treeKind === "standard") for (const row of receipt.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(directory, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      if (id !== undefined) await validatePrivateFrameworkReport(cell);
+      else {
+        const metadata = JSON.parse(await readFile(path.join(directory, row.path), "utf8"));
+        const owner = metadata.canonicalExecutionId;
+        if (!context || typeof owner !== "string" || !context.executionIds.includes(owner)) throw new Error("Unbound canonical framework evidence");
+        await validatePrivateFrameworkReport(cell, path.join(context.root, "originals", manualCellKind(owner)), owner);
+      }
+    }
+  }
   return receipt;
 }
 export async function validateSealedOriginals(root: string, id: string, context?: ManualPrivateHandoff) {
@@ -157,9 +179,20 @@ async function downloadCell(env: NodeJS.ProcessEnv) {
     const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory }), summary = cellCompleteness(id, originals);
     if (hash(JSON.stringify(identity.evidenceCompleteness)) !== hash(JSON.stringify(summary))
       || hash(JSON.stringify(receipt.evidenceCompleteness)) !== hash(JSON.stringify(summary))) throw new Error("Private evidence completeness receipt differs from archive");
-    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
-    await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
+    await stageSealedPrivateCell(directory, selected, id, { ...identity, root: directory });
     await writeFile(path.join(root, `manual-cell-completeness-${index}.json`), JSON.stringify(summary), { mode: 0o600, flag: "wx" });
+  }
+}
+export async function stageSealedPrivateCell(directory: string, selected: string, id: string, context: ManualPrivateHandoff) {
+  await validateSealedOriginals(directory, id, context);
+  const inventory = await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
+  const destination = path.join(selected, manualCellKind(id));
+  await cp(path.join(directory, "sealed-results", "html-report"), destination, { recursive: true, errorOnExist: true, force: false });
+  for (const row of inventory.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(destination, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      await materializePrivateFrameworkAttachments(cell, path.join(directory, "originals", manualCellKind(id)), id);
+    }
   }
 }
 async function verifyDownloads(env: NodeJS.ProcessEnv) {
@@ -201,5 +234,6 @@ async function main() {
   else throw new Error("Invalid private evidence command");
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch(() => { process.stderr.write("Restricted manual evidence operation failed; no public fallback\n"); process.exitCode = 1; });
+  // Name only a closed refusal code (never message text) so a refused attempt is diagnosable.
+  main().catch(error => { process.stderr.write(`Restricted manual evidence operation failed (refusal: ${privateRefusalCode(error)}); no public fallback\n`); process.exitCode = 1; });
 }

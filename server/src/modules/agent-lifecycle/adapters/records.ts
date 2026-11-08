@@ -4,7 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../../errors.js";
 import { agentRecordQueries, type CreateAgentOptions, type CreateAgentData } from "../../../lib/agent-records.js";
-import { isAgentSetupDraft } from "../domain/policy.js";
+import { isAgentSetupDraft, canConfigureAgentConnection } from "../domain/policy.js";
 
 export function agentRecords(db: Db, effects: LifecycleEffects) {
   const { getById } = agentRecordQueries(db);
@@ -36,10 +36,11 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, companyId));
         const companyHolds = company?.status === "paused" ? ["company_paused"] : company?.status === "archived" ? ["company_archived"] : [];
         const holds = [...(status === "paused" ? [pauseReason ?? "manual"] : []), ...companyHolds];
-        const prepareSetup = options?.setupOnly && !companyHolds.length && await effects.setupRequiresPreparation(txDb, companyId, prepared.defaultEnvironmentId);
+        const prepareSetup = options?.setupOnly && !companyHolds.length && await effects.setupRequiresPreparation(txDb, companyId, prepared.defaultEnvironmentId, prepared);
         const lifecycleState = status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated"
           : prepareSetup ? "preparing" : status === "paused" ? "paused" : companyHolds.length ? "pausing" : "preparing";
         if (lifecycleState === "preparing" || lifecycleState === "pausing") await effects.notifyWork(tx);
+        const createdStatus=status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused";
         const values: typeof agents.$inferInsert = {
           ...prepared,
           createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
@@ -49,9 +50,10 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           pauseReason: holds[0] ?? null,
           pausedAt: holds.length ? new Date() : null,
           lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, resumeState: "preparing" as const, responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
-          status: status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused",
+          status: createdStatus,
           companyId,
         };
+        if(setup&&!canConfigureAgentConnection(setup)&&canConfigureAgentConnection({lifecycleState,status:createdStatus}))await effects.beforeConnectionEligibilityRestore?.(txDb,companyId,setup.id);
         const created = await (options?.setupAgentId
           ? tx.update(agents).set({ ...values, updatedAt: new Date() }).where(eq(agents.id, options.setupAgentId))
           : tx.insert(agents).values(values))
@@ -80,22 +82,20 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         throw conflict("Only agents in error status can have their error cleared");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await effects.transaction(db, existing.companyId, async tx => {
+        const [current] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState })
+          .from(agents).where(and(eq(agents.id, id), eq(agents.companyId, existing.companyId))).for("no key update");
+        if (current?.status !== "error" || current.lifecycleState !== "ready") {
+          throw conflict("Only agents in error status can have their error cleared");
+        }
+        await effects.beforeStatusChange(tx, existing.companyId, id, "error", "idle");
+        const [saved] = await tx.update(agents).set({
+          status: "idle", pauseReason: null, pausedAt: null, errorReason: null, updatedAt: new Date(),
+        }).where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready"))).returning();
+        if (!saved) throw conflict("Only agents in error status can have their error cleared");
+        return saved;
+      });
 
-      if (!updated) {
-        throw conflict("Only agents in error status can have their error cleared");
-      }
       return getById(updated.id);
     },
 
@@ -125,6 +125,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const holds = existing.lifecycleHolds.filter(hold => hold !== "company_paused" && hold !== "company_archived");
         if (company?.status === "paused") holds.push("company_paused");
         if (company?.status === "archived") holds.push("company_archived");
+        if(!holds.length)await effects.beforeConnectionEligibilityRestore?.(txDb,existing.companyId,existing.id);
         await effects.notifyWork(txDb);
         const updated = await tx
           .update(agents)

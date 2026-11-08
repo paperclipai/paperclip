@@ -1,10 +1,24 @@
+import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { isContextCompactionRun } from "../context-compaction.js";
+import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
+import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
+import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
-import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspaceGitScanCode } from "./retries.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
+import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
+import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailableError } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
+import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
+import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -12,6 +26,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -32,7 +47,7 @@ import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publi
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -353,7 +368,8 @@ export async function recordRunPresentationDecision(db: Db, input: {
   await db.transaction(async tx => {
     await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.runId, issueId: input.issueId });
     await tx.update(heartbeatRuns).set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb`,
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb
+        || ${typeof input.decision.commentId === "string" ? settledResponsePublicationSql() : sql`'{}'::jsonb`}`,
       updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, input.runId));
   });
@@ -488,6 +504,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         normalizedUsage,
       );
       if (!taskKey) return;
+      if (nativeTaskSessionPublicationHandled(finalizedRun.runnerProfileJson, {
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: agent.id,
+        taskKey,
+        adapterType: agent.adapterType,
+      })) return;
       if (
         adapterResult.clearSession ||
         (!nextSessionState.params && !nextSessionState.displayId)
@@ -686,7 +709,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
             ),
 
-            usageJson: { ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) },
+            usageJson: preserveAcceptedRunUsageProjectionSql({ ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) }),
             finishedAt:
               persistedRunWrite.run.finishedAt ?? finalRunPatch.finishedAt,
             updatedAt: new Date(),
@@ -968,6 +991,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       });
@@ -1062,10 +1086,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // A process adapter may throw while its owned Stop is joining the
     // child. Let the cancellation write settle before attempting failure.
     await processRunCancellationSettlements.get(run.id)?.settled;
-    const message = redactCurrentUserText(
-      identityRedactor.redact(err instanceof Error ? err.message : "Unknown adapter failure"),
-      await getCurrentUserRedactionOptions(),
-    );
+    const providerFailure = providerFailureFromError(err);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const redactFailureText = (text: string) =>
+      redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
+    const thrownMessage = redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure");
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err
       : null;
@@ -1082,23 +1107,39 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // durable coordinator is also the stronger authority here: legacy
     // runs simply have no row, while native result-less exhaustion keeps
     // its named failure instead of being flattened to `adapter_failed`.
-    const nativeTerminalFailureCode = await db
+    const nativeCoordinator = await db
       .select({
         phase: nativeRunFinalizations.phase,
         resultId: nativeRunFinalizations.resultId,
         failureCode: nativeRunFinalizations.failureCode,
+        attempt: nativeRunFinalizations.attempt,
+        recoveryHistory: nativeRunFinalizations.recoveryHistory,
       })
       .from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, run.id))
       .limit(1)
-      .then((rows) => {
-        const coordinator = rows[0];
-        return coordinator?.phase === "terminal_failure" &&
-          coordinator.resultId === null
-          ? coordinator.failureCode
-          : null;
-      })
+      .then((rows) => rows[0] ?? null)
       .catch(() => null);
+    const nativeTerminalFailureCode =
+      nativeCoordinator?.phase === "terminal_failure" &&
+      nativeCoordinator.resultId === null
+        ? nativeCoordinator.failureCode
+        : null;
+    // A same-run exact-checkpoint retry can fail closed before the executor
+    // claims a provider attempt, for example when the interrupted attempt left
+    // its checkpoint unresumable. The refusal alone hides why the run retried,
+    // so the reported failure names the interrupted attempt first. Failure
+    // classification reads only the thrown error (here and, through
+    // `nativeExactResumeRefusal.refusal`, in the retry and recovery
+    // classifiers). Both texts are masked whole before any length budget cuts
+    // them, so a cut cannot leave an unmasked username prefix.
+    const exactResumeCause = interruptedExactResumeCause(nativeCoordinator);
+    const interruptedExactResume = exactResumeCause
+      ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
+      : null;
+    const message = interruptedExactResume
+      ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      : thrownMessage;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1143,9 +1184,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       finishedAt: new Date(),
       resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
         errorCode: failureErrorCode,
-        errorMessage: message,
+        errorMessage: thrownMessage,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
+          ...(providerFailure ? { providerFailure: { ...providerFailure,
+            message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
+          ...(interruptedExactResume ? { nativeExactResumeRefusal: {
+            originalFailureCode: interruptedExactResume.originalFailureCode,
+            originalMessage: boundOriginalMessage(interruptedExactResume.originalMessage),
+            interruptedAttempt: interruptedExactResume.interruptedAttempt,
+            refusal: thrownMessage,
+          } } : {}),
           ...requiredWorkspaceRestoreEvidence,
           ...(workspaceValidationFailure?.resultJson ??
             configurationIncompleteFailure?.resultJson ??
@@ -1189,7 +1238,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       keepIdleOnFailure:
         Boolean(nonRetryablePreflightFailureCode(err)) ||
-        isWorkspaceSyncConflictFailure(message),
+        isWorkspaceSyncConflictFailure(thrownMessage),
     });
     await setWakeupStatus(run.wakeupRequestId, "failed", {
       finishedAt: new Date(),
@@ -1287,6 +1336,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     await settleAgent();
+    if (failureOutcome === "failed" && failedRun?.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1299,11 +1354,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       signal.reason instanceof LegacyControllerLeaseLostError;
     // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
     // The inner catch did not fire, so we must record the failure here.
+    const providerFailure = providerFailureFromError(outerErr);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const message = redactCurrentUserText(
       identityRedactor.redact(outerErr instanceof Error
         ? outerErr.message
         : "Unknown setup failure"),
-      await getCurrentUserRedactionOptions(),
+      currentUserRedactionOptions,
     );
     // A missing secret/env binding is a known pre-dispatch configuration gap,
     // not an opaque setup crash. Surface it with its own errorCode so the
@@ -1334,8 +1391,48 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const nonRetryablePreflightCode =
       nonRetryablePreflightFailureCode(outerErr);
     const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
+    const remoteWorkspacePreparationTimeout = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof RemoteWorkspacePreparationTimeoutError
+      ? outerErr : null;
+    // A preserved sandbox that could not be resumed before provider dispatch
+    // is retried with the same bounded bootstrap budget. The retry resumes the
+    // same recorded lease; it never creates a replacement or a second executor.
+    const reusableSandboxResumeFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findReusableSandboxResumeError(outerErr) : null;
+    // A saved workspace that could not be restored before provider dispatch
+    // keeps its saved version. Retry it within the bootstrap budget only when
+    // the owner proved the same clean writer and saved version; otherwise, and
+    // on exhaustion, the board gets a named recovery action.
+    const remoteWorkspaceRestoreFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRemoteWorkspaceRestoreError(outerErr) : null;
+    // A plugin worker that was not running refused the call before sending it,
+    // so no provider work or plugin side effect started. Retry within the
+    // bootstrap budget; the worker is restarted or replaced meanwhile.
+    const pluginWorkerUnavailableFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findPluginWorkerUnavailableError(outerErr) : null;
+    // The environment provider refused lease acquisition with a transient
+    // status (HTTP 5xx/429/timeout) before dispatch. Each retry is a new,
+    // separately owned creation attempt; an unconfirmed provisional allocation
+    // stays with its creation record and the cleanup reconciler.
+    const environmentProviderUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
+    const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
+    const reviewedChatBindingNotReady = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof ReviewedChatBindingNotReadyError
+      ? outerErr : null;
+    const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
+      reusableSandboxResumeFailure?.code ??
+      remoteWorkspaceRestoreFailure?.code ??
+      pluginWorkerUnavailableFailure?.code ??
+      environmentProviderUnavailable?.code ??
+      repositoryCatalogUnavailable?.code ??
+      reviewedChatBindingNotReady?.code ??
+      (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1346,8 +1443,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
       "setup_failed";
+    // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
+    const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
+    // A wrapped query error hides its driver cause (for example
+    // CONNECTION_CLOSED or SQLSTATE 53300). Log the bounded code only.
+    const causeCode = outerErr instanceof Error ? (outerErr.cause as { code?: unknown } | undefined)?.code : undefined;
+    const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
     logger.error(
-      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId },
+      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
+        errorCode: setupFailureErrorCode, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
     const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
@@ -1361,7 +1466,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         workspaceGitScan: {
           code: workspaceGitScanFailure.code,
           phase: "workspace_setup",
-          retryable: isTransientWorkspaceGitScanCode(workspaceGitScanFailure.code),
+          retryable: isTransientWorkspacePreparationCode(workspaceGitScanFailure.code),
         },
       } : null) ??
       workspaceValidationSetupFailure?.resultJson ??
@@ -1381,12 +1486,23 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
+        ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
+      } : {}),
+      ...(providerFailure ? { providerFailure: { ...providerFailure,
+        message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
       ...controllerLeaseLossResultJson(signal),
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      ...reviewedChatBindingDenialResultJson(outerErr),
+      ...(remoteWorkspaceRestoreFailure ? { remoteWorkspaceRestore: {
+        step: remoteWorkspaceRestoreFailure.step, retryable: remoteWorkspaceRestoreFailure.retryable } } : {}),
+      ...(!providerDispatchStarted
+        ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+        : {}),
     };
     const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
       error: message,
@@ -1407,7 +1523,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : setupFailureResultJson
           ? { resultJson: setupFailureResultJson }
           : {}),
-    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }).catch(() => ({ run: null, updated: false as const }));
+    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
     if (!setupFailureWrite.updated) {
       logger.info(
         {
@@ -1473,12 +1589,30 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             () => undefined,
           );
         }
-        // No provider work began. Retry temporary host scan failures with
-        // the existing durable failure budget, before releasing execution.
-        // Generic recovery must not grant a second budget on exhaustion.
-        if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
-          await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
-            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+        if (livenessRun.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE) {
+          const retry = remoteWorkspaceRestoreFailure?.retryable
+            ? await scheduleBoundedRetryForRun(livenessRun, failedAgent).catch((retryError) => {
+              logger.warn({ err: retryError, runId: livenessRun.id }, "failed to schedule a retry after a remote workspace restore failure");
+              return null;
+            })
+            : null;
+          if (retry?.outcome !== "scheduled") {
+            await escalateRemoteWorkspaceRestoreFailure(db, livenessRun).catch((escalationError) => {
+              logger.error({ err: escalationError, runId: livenessRun.id }, "failed to record a recovery action for a remote workspace restore failure");
+            });
+          }
+        } else if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
+          // An accepted interaction keeps its own continuation retry, which
+          // carries the interaction and escalates on exhaustion.
+          const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
+            && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
+          await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
+            ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
+              ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
+              : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {
             logger.warn(
@@ -1493,6 +1627,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       }).catch((releaseError) => {

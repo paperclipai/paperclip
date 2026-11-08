@@ -3,6 +3,7 @@ import type { ServingArtifact } from "./upgrade-artifacts.js";
 import type { ControllerRecoveryReceipt } from "./controller-recovery-observer.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MatrixExecution } from "./types.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 
 export interface ControllerOutage {
   signal: "SIGTERM" | "SIGKILL";
@@ -25,11 +26,21 @@ export interface ControllerOutageReceipt extends ControllerOutage {
   recoveryProgress?: Partial<ControllerRecoveryReceipt>;
 }
 
+/**
+ * Longest controller outage a harness may inject. Ten minutes lets chaos
+ * holds pass Daytona's sandbox auto-stop and the 7-minute runner reconnect
+ * grace. The recover-controller receipt check below still requires readiness
+ * inside that grace, so this does not loosen the qualification contract.
+ */
+export const MAX_CONTROLLER_OUTAGE_MS = 600_000;
+
 export function parseControllerOutage(value: unknown): ControllerOutage {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid controller outage");
   const { signal, holdMs } = value as Record<string, unknown>;
   if ((signal !== "SIGTERM" && signal !== "SIGKILL") || !Number.isSafeInteger(holdMs)
-    || Number(holdMs) < 0 || Number(holdMs) > 300_000) throw new Error("Controller outage requires SIGTERM/SIGKILL and 0..300000 integer milliseconds");
+    || Number(holdMs) < 0 || Number(holdMs) > MAX_CONTROLLER_OUTAGE_MS) {
+    throw new Error(`Controller outage requires SIGTERM/SIGKILL and 0..${MAX_CONTROLLER_OUTAGE_MS} integer milliseconds`);
+  }
   return { signal, holdMs: Number(holdMs) };
 }
 
@@ -40,13 +51,14 @@ export function configuredControllerOutage(env: NodeJS.ProcessEnv, defaultHoldMs
 }
 
 export function controllerOutageForExecution(execution: MatrixExecution, env: NodeJS.ProcessEnv): ControllerOutage | undefined {
+  if (isRollingWebDeployment(execution)) return undefined;
   if (execution.task.flow !== "everyday_workflow" || execution.task.id !== "recover-controller"
     || execution.environment.id !== "daytona" || execution.profile.generation !== "native"
     || (execution.profile.provider !== "codex" && execution.profile.provider !== "acpx")) return undefined;
   const declaredHoldMs = execution.suite.definitionMetadata?.controllerDowntimeMs;
   if (typeof declaredHoldMs !== "number") throw new Error("Controller recovery suite must declare its outage duration");
   const outage = configuredControllerOutage(env, declaredHoldMs);
-  if (execution.suite.id === "daytona-restart-continuity" && outage.holdMs < declaredHoldMs) {
+  if (["daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) && outage.holdMs < declaredHoldMs) {
     throw new Error("Controller outage is shorter than the dedicated continuity contract");
   }
   return outage;

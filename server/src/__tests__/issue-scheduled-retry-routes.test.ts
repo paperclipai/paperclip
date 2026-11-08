@@ -579,17 +579,39 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       const states = () => db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status }).from(heartbeatRuns)
         .where(inArray(heartbeatRuns.id, work.map(row => row.id)));
       clock();
-      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let completeFirstPass!: (result: { error: unknown } | undefined) => void;
+      const firstPassCompleted = new Promise<{ error: unknown } | undefined>(resolve => { completeFirstPass = resolve; });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => { completeFirstPass({ error }); throw error; } });
+      const register = coordinator.register.bind(coordinator);
+      let initial: Awaited<ReturnType<typeof states>> | undefined;
+      let releaseFirstPass!: () => void;
+      const firstPassHeld = new Promise<void>(resolve => { releaseFirstPass = resolve; });
+      vi.spyOn(coordinator, "register").mockImplementation((queue, task) => register(queue, {
+        ...task,
+        run: async signal => {
+          const result = await task.run(signal);
+          if (initial) return result;
+          const cancelled = (await states()).filter(row => row.status === "cancelled");
+          if (cancelled.length === 0) return result;
+          initial = cancelled;
+          completeFirstPass(undefined);
+          await firstPassHeld;
+          return result;
+        },
+      }));
       try {
         await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
         expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(0);
         const earlierId = "00000000-0000-4000-8000-000000000000";
-        await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
         work.push({ id: earlierId });
+        await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
         await vi.advanceTimersByTimeAsync(1000);
-        await expect.poll(async () => (await states()).filter(row => row.status === "cancelled").length).toBe(20);
-        const initial = (await states()).filter(row => row.status === "cancelled");
-        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        const firstPass = await firstPassCompleted;
+        if (firstPass) throw firstPass.error;
+        expect(initial).toHaveLength(20);
+        expect(new Set(initial!.map(row => row.companyId)).size).toBe(2);
+        releaseFirstPass();
         await vi.waitFor(async () => {
           await vi.advanceTimersByTimeAsync(1000);
           expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(29);
@@ -600,7 +622,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         const reads = vi.spyOn(db, "select");
         await vi.advanceTimersByTimeAsync(180_000);
         expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
-      } finally { await coordinator.stop(); }
+      } finally { releaseFirstPass(); await coordinator.stop(); }
     });
   });
 
@@ -667,6 +689,12 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: "Verified source recovery; continue the original work." });
 
       expect(res.status, JSON.stringify(res.body)).toBe(method === "post" ? 201 : 200);
+      const [comment] = await db.select({ id: issueComments.id }).from(issueComments)
+        .where(eq(issueComments.issueId, f.issueId));
+      expect(comment).toBeDefined();
+      await expect.poll(async () => db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, f.companyId),
+          sql`${agentWakeupRequests.payload}->>'commentId' = ${comment!.id}`))).toHaveLength(1);
       await heartbeat.drainActiveRunExecutions();
       const progress = once(child, "message", { signal: AbortSignal.timeout(5_000) });
       child.send("continue-work");

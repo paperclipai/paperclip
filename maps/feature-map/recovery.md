@@ -39,27 +39,10 @@ Agent access: [companion](../agent-access-map/recovery.md).
   workspace link when the destination is disabled. Local PostgreSQL and real
   filesystem regressions cover native and legacy recovery and one-time delivery;
   hosted provider recovery remains separate acceptance.
-  Daytona directory export can stream its archive when the sandbox cannot store
-  a temporary tar. The transfer remains bounded and validates archive completion
-  and paths before import. The [capacity regression](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.test.ts)
-  exercises a real local PTY and file-size limit. The credential-gated
-  [provider test](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.live.test.ts)
-  covers stop/start, an ENOSPC archive sink, safe-link filtering, and a second
-  export. Neither test proves the original task's continuation or repairs lost
-  provider session state.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
-  A blocked native restart records that preservation obligation atomically with
-  its failure. PostgreSQL regressions cover exact source binding, live ownership,
-  rollback, and no replacement run or wake from file preservation.
   Retry reconstructs missing preservation for historical failures only from an
   exact prepared source without a live finalization owner.
-  New messages and orphan cleanup can register missing preservation automatically
-  and wake the existing worker. Saved input still waits for verified stop and file
-  persistence, then enters ordinary admission once.
-  A completed explicit Retry also retires its failed, unowned sandbox predecessor's
-  stale retry and registers preservation atomically. Current task state and live or
-  mismatched owners remain protected; workspace switching still waits for cleanup.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once
@@ -71,44 +54,13 @@ Agent access: [companion](../agent-access-map/recovery.md).
   the agent itself restarted or that a failed run succeeded.
 
 ## How to get to it (user POV)
+For `recovery/reconnect`, interrupt a write response after the server accepts it.
+Verify that task, document, and decision drafts survive reload and that retrying
+the saved request does not create a duplicate. After the bounded retry budget
+ends, use **Resend now** to continue. Check that drafts remain private to their
+original account and task. See [durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx)
+and the [disconnect recovery journey](../../tests/e2e/disconnect-write-recovery.spec.ts).
 
-For `recovery/reconnect`, also interrupt a write response after the server accepts
-it. Keep a title draft bound to its original task while navigating. Restore a
-new-task draft with its files selected in another order and require the same
-creation key and one task. Verify lost document-create and decision responses,
-including an interrupted verification read. Once the bounded retry budget ends,
-require a visible **Resend now** action. Use
-[durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx) and
-[task creation tests](../../ui/src/components/NewIssueDialog.test.tsx) for the
-controlled source cases; repeat the real browser journey for acceptance.
-Switch accounts while an inline edit is open or a channel send waits to retry:
-the next account must see neither private text nor a retry from the first account.
-Returning to the original account restores its retained channel request with the
-same key for explicit retry. Unowned legacy receipts stay held for Activity
-inspection until a person explicitly discards their browser record; discard does
-not replay the text or cancel an accepted update. Typing before the first session
-lookup survives that initial lookup and is backed up under the resolved owner. Component evidence lives in the
-[inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
-[connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
-these controlled session changes do not establish hosted authentication acceptance.
-Also switch accounts during a restored task create and while its files are
-uploading: later uploads stop, the next account sees a fresh form, and the
-original request key remains owned by the first account. Reselect colliding
-text-document filenames in reverse order and verify their original keys and
-contents. Switch between cached document subjects without copying either draft.
-A receipt arriving before an in-flight resend must preserve the next message.
-The startup browser journey in
-[disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
-first session response while a title save waits, simulates an offline event with
-API failures while keeping static assets reachable, then verifies the real saved
-server title after account resolution and reload. The accepted-comment journey
-then completes and assigns a task before repeating its saved comment request;
-the original receipt must return once, its activity must appear once, and the task must stay Done. Reusing that
-key with different text must return a conflict without changing the task. This
-uses a disposable process agent and makes no provider call. A separate healthy-API
-startup journey fails the session endpoint with JSON 500 responses, then restores
-it while an edit waits; the same edit must save and survive reload without a
-network reconnect or another user action.
 
 ### `source-task`
 
@@ -139,10 +91,7 @@ Open the agent's run (`/agents/:agentId/runs/:runId`) from activity or the task'
 run link. The run page hosts workspace repair controls only for a failed run
 with error code `workspace_validation_failed` and a linked source task that still
 has a live `workspace_validation` recovery action. Use the source task for other
-stopped-run recovery checks. Native workspace export failures also offer the
-read-only **Inspect recovery** control described in the
-[run diagnostic recipe](activity.md#activity-audit-1). It observes one selected
-source's recorded identity and does not retry, repair, or authorize execution.
+stopped-run recovery checks.
 
 ### `operator-retry`
 
@@ -350,7 +299,9 @@ tests this host; it is component coverage, not an end-to-end repair.
 
 Manual: prepare a failed run with error code `workspace_validation_failed`, a
 linked source task, and a live `workspace_validation` recovery action on that
-task. Open that exact run and compare its recovery diagnosis to the source task.
+task. For retained-file export recovery, use a matching active source action and
+terminal run; compare Recover saved files on the task and run inspector.
+Open that exact run and compare its recovery diagnosis to the source task.
 Use an eligible action from the run surface, return to the task,
 and verify the same action state, persisted outcome, and restored execution.
 Repeat with an actor who lacks authority. Verify that the run-page controls are
@@ -360,7 +311,7 @@ gap.
 
 ### `operator-retry`
 
-The [workspace recovery regression](../../server/src/services/workspace-recovery.test.ts)
+The [workspace recovery regression](../../server/src/services/workspace-recovery-warm-handoff.test.ts)
 uses the real Retry producer and a quiet delivery coordinator. It checks that a
 committed request starts one physical source preservation, duplicate Retry keeps
 the active owner's receipt valid, and startup reconstructs a resolved files-only
@@ -399,18 +350,7 @@ For a source with a retained-file protection marker, exercise recovery through
 the assembled environment runtime. Its exact preservation owner may reopen the
 stopped allocation to read saved files; ordinary resume stays blocked. Reject a
 changed claim, missing stop intent, wrong lease or wrong environment before a
-provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
-the exact accepted result and completion contract; reject a rejected or unselected
-result, another allocation owner, and an active host writer. Verify no provider
-turn or wake is created, then finalize the original result once. Reject malformed
-or oversized Git metadata through native finalization: the run must fail and
-retain its file-recovery barrier, rather than successfully omitting the export.
-Exercise both an oversized sender file and an oversized transfer report. Verify
-one rejected export, no payload read after rejection, and unchanged host files.
-Reload a large-result run and its activity: the failure code and task recovery
-notice remain visible, and metadata repair offers no new provider turn. These database
-and filesystem controls do not qualify a deployed provider.
-Verify saved and newer local files, one preservation receipt, and
+provider call. Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
 

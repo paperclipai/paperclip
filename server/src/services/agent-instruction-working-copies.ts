@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyInstructionCollection, type InstructionCollectionScope } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup, type DirectoryCleanupScope } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit, type InstructionCommitScope } from "./instruction-commit-notifications.js";
@@ -39,6 +40,8 @@ const MAX_COLLECTION_ATTEMPTS = 3;
 const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
 const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
+
+export { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 
 function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
   const scope = databaseWorkScopeKey(db);
@@ -101,21 +104,22 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry({ ...row, ...values }) !== null;
     const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
     const write = async (tx: Db) => {
+      await notifyStrandedAgentStatus(tx, { companyId: row.companyId, agentId: row.agentId });
       if (signalsCommit)
         await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
       if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
       if (signalsCollection) await notifyInstructionCollection(tx, { companyId: row.companyId, runId: row.runId });
       const [updated] = await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(and(
-        scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash),
+        scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash), eq(copies.localRoot, row.localRoot),
         sql`${copies.receipt}->>'retainedByRunId' IS NOT DISTINCT FROM ${typeof row.receipt?.retainedByRunId === "string" ? row.receipt.retainedByRunId : null}`,
         requireDue ? or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())) : undefined, condition,
       )).returning();
       return updated;
     };
-    return signalsCommit || signalsCleanup || signalsCollection ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
+    return db.transaction(tx => write(tx as unknown as Db));
   }
-  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
-    const updated = await tryPatch(row, values);
+  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) {
+    const updated = await tryPatch(row, values, false, condition);
     // A late cleanup must not overwrite an explicit resolution or a newer
     // baseline. Canonical content has its own independent head CAS.
     return updated ?? (await get(row.companyId, row.runId))!;
@@ -193,7 +197,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         })
       : await revisions.readCurrent({ companyId: input.companyId, agentId: input.agentId }, bound);
     if (!baseline) return null;
-    const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+    const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
     const entryFile = instructionPath(baseline?.revision.entryFile ?? exported.entryFile);
     const content = instructionBytes(baseline?.content ?? exported.files[entryFile] ?? "");
     const localRoot = existing?.localRoot ?? expectedLocalRoot;
@@ -204,6 +208,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     if (!existing) {
       await db.transaction(async tx => {
         await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
+        await notifyStrandedAgentStatus(tx, { companyId: input.companyId, agentId: input.agentId });
       await tx.insert(copies).values({
         runId: input.runId, companyId: input.companyId, agentId: input.agentId,
         responsibleUserId: bound.onBehalfOfUserId!, entryFile,
@@ -483,8 +488,8 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   function directoryCleanupEntry(row: Copy | null): DirectoryCleanupEntry | null {
     return row && ["saved", "unchanged", "resolved", "unavailable"].includes(row.state)
       && row.processStoppedAt && isAgentDirectoryCopy(row) && !row.receipt?.retainedByRunId
-      && row.receipt?.cleanupPending !== false
-      && (Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
+      && (row.receipt?.cleanupPending === false ? row.nextAttemptAt !== null
+        : Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
       ? { id: row.runId, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 } : null;
   }
   function directoryCleanupPredicate() {
@@ -492,8 +497,9 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       AND ${copies.processStoppedAt} IS NOT NULL
       AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
       AND coalesce(${copies.receipt}->>'retainedByRunId', '') = ''
-      AND ${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
-      AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')`;
+      AND ((${copies.receipt}->>'cleanupPending' = 'false' AND ${copies.nextAttemptAt} IS NOT NULL)
+        OR (${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
+          AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')))`;
   }
   async function loadDirectoryCleanup(scope: DirectoryCleanupScope | undefined, admitted: () => boolean) {
     const entries: DirectoryCleanupEntry[] = [];

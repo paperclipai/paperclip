@@ -62,6 +62,8 @@ import { buildNativeExecutionInput } from "./native-execution-input.js";
 import {
   buildNativeExecutionWithCheckpoint,
   findNativeSessionResumeRun,
+  NATIVE_PROVIDER_SIDE_EFFECT_PENDING,
+  NATIVE_PROVIDER_STATE_INCOMPATIBLE,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
   nativeToolContractFingerprintForTarget,
@@ -275,6 +277,36 @@ describe("capability-gated connection tool refresh", () => {
     expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
     expect(result.execution.task.prompt).toContain("complete handoff");
     expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
+describe("a source stopped with a pending side-effecting call", () => {
+  it("does not rebind the saved session that still refuses attachment", () => {
+    const current = execution(currentRunId);
+    const source = { ...previousRun(), errorCode: NATIVE_PROVIDER_SIDE_EFFECT_PENDING };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+  });
+});
+
+describe("a source whose saved provider session the runner proved incompatible", () => {
+  it("continues the task in a fresh provider session with the same workspace", () => {
+    const current = execution(currentRunId);
+    expect(rebindNativeSessionCheckpoint({ previousRun: { ...previousRun(), errorCode: "native_session_interrupted" },
+      currentExecution: current })).not.toBeNull();
+    const source = { ...previousRun(), errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = execution(currentRunId);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.binding.executionWorkspaceId).toBe(current.binding.executionWorkspaceId);
+    expect(result.execution.workspace).toEqual(current.workspace);
   });
 });
 
@@ -1216,6 +1248,41 @@ const recoveryFakeCodex = resolve(
         expect(
           rebindNativeSessionCheckpoint({
             previousRun: incompatible!,
+            currentExecution: execution(currentRunId),
+          }),
+        ).toBeNull();
+        // A run whose saved provider session the runner proved unrestorable
+        // stays the barrier, and its checkpoint is not resumed.
+        const unrestorableId = randomUUID();
+        const sourceCheckpoint = source.runnerProfileJson.sessionCheckpoint;
+        await db.insert(heartbeatRuns).values({
+          ...unused,
+          id: unrestorableId,
+          createdAt: at(8),
+          errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+          runnerProfileJson: {
+            ...source.runnerProfileJson,
+            nativeExecutionInput: execution(unrestorableId),
+            sessionCheckpoint: {
+              ...sourceCheckpoint,
+              identity: { ...sourceCheckpoint.identity, runId: unrestorableId },
+            },
+          },
+        });
+        const unrestorable = await findNativeSessionResumeRun(db, selection);
+        expect(unrestorable).toMatchObject({
+          id: unrestorableId,
+          errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+        });
+        expect(
+          rebindNativeSessionCheckpoint({
+            previousRun: { ...unrestorable!, errorCode: null },
+            currentExecution: execution(currentRunId),
+          }),
+        ).not.toBeNull();
+        expect(
+          rebindNativeSessionCheckpoint({
+            previousRun: unrestorable!,
             currentExecution: execution(currentRunId),
           }),
         ).toBeNull();

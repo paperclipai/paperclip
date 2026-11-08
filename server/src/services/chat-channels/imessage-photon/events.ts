@@ -1,11 +1,10 @@
+import { stagePhotonResponseNotice } from "./response-notices.js";
 import { notifyChatReceiver } from "../runtime/receiver-work-notifications.js";
 import type { EndpointRow, DbTransaction, RuntimeContext, LifecycleRuntimeFence } from "../../chat-channels/runtime-types.js";
 
-import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
 
 import { nativeSha256 } from "../../native-runtime/canonical.js";
 
-import { projectSafeChatPublicationText } from "../../chat-publication-projection.js";
 import { PhotonAnswerValidationError, nativePhotonInteraction, photonResponseCommand, parsePhotonQuestionAnswer, type PhotonPromptReceipt, type PhotonInteractionBinding, type PhotonDraft } from "../../photon/interactions.js";
 import { validateNativeQuestionResponseInput } from "../../native-runtime/native-question-bridge.js";
 import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@paperclipai/shared";
@@ -368,41 +367,9 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
     }
     const enqueueResponse = async (key: string, text: string) => {
       await assertCurrent();
-      await db.transaction(async (tx) => {
-        await tx
-          .insert(chatActions)
-          .values({
-            companyId: endpoint.companyId,
-            endpointId: endpoint.id,
-            conversationId: conversation.id,
-            kind: "photon_response_notice",
-            providerActionId: `photon-notice:${key}`,
-            payload: {
-              reference,
-              questionIndex,
-              publicationId: binding.publicationId,
-            },
-            status: "processed",
-          })
-          .onConflictDoNothing();
-        await notifyChatPublicationWork(tx);
-        await tx
-          .insert(chatPublications)
-          .values({
-            companyId: endpoint.companyId,
-            endpointId: endpoint.id,
-            conversationId: conversation.id,
-            issueId: conversation.issueId,
-            idempotencyKey: key,
-            payload: {
-              ...publication.payload,
-              card: undefined,
-              text: projectSafeChatPublicationText(text),
-            },
-            state: "pending",
-          })
-          .onConflictDoNothing();
-      });
+      await db.transaction(tx => stagePhotonResponseNotice(tx, {
+        publication, reference, questionIndex, key, text,
+      }));
       scheduleMessageProcessing(() =>
         processPendingPublications().then(() => undefined),
       );

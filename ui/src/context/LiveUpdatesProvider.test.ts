@@ -16,6 +16,20 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("discovers first proactive deliveries without invalidating another human's chat list", () => {
+    const client = new QueryClient();
+    const mine = queryKeys.agentChats.list("company-1", "user-1");
+    const theirs = queryKeys.agentChats.list("company-1", "user-2");
+    client.setQueryData(mine, []);
+    client.setQueryData(theirs, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "new-chat", action: "issue.comment_added",
+      details: { conversationUserId: "user-1", conversationAgentId: "kodi", commentId: "digest" },
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(mine)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
+    client.clear();
+  });
   it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
@@ -564,6 +578,11 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.documents("issue-1"),
       refetchType: "inactive",
     });
+    for (const ref of ["issue-1", "PAP-9403"]) {
+      expect(invalidations).toContainEqual({
+        queryKey: queryKeys.issues.interactions(ref),
+      });
+    }
   });
 
   it("refreshes all issue document caches when document activity omits a document key", () => {
@@ -1446,6 +1465,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 });
 
 describe("LiveUpdatesProvider visible issue comment hydration", () => {
+  it("keeps a live chat reply separate from fetched pages and the observed cursor", async () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    client.setQueryData(queryKeys.issues.detail("PAP-759"), {
+      id: "issue-1", identifier: "PAP-759", conversationAgentId: "agent-1",
+    });
+    const recentKey = [...queryKeys.issues.comments("PAP-759"), "recent"];
+    client.setQueryData(recentKey, { comments: [], latestCommentId: "observed", hasMore: true });
+    const comment = { id: "new-reply", issueId: "issue-1", body: "A saved live reply" };
+    getCommentMock.mockResolvedValueOnce(comment);
+    await __liveUpdatesTestUtils.hydrateVisibleIssueComment(client, "/PAP/issues/PAP-759", {
+      entityType: "issue", entityId: "issue-1", action: "issue.comment_added", details: { commentId: comment.id },
+    }, { isForegrounded: true });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(client.getQueryData(queryKeys.issues.acknowledgedComments(ref))).toEqual([comment]);
+      expect(client.getQueryData(queryKeys.issues.comments(ref))).toBeUndefined();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [...queryKeys.issues.comments(ref), "recent"] });
+    }
+    expect(client.getQueryData(recentKey)).toMatchObject({ latestCommentId: "observed", hasMore: true });
+    client.clear();
+  });
+
   it("hydrates the visible issue comments cache with only the new comment", async () => {
     getCommentMock.mockResolvedValueOnce({
       id: "comment-2",
@@ -2049,7 +2090,31 @@ describe("task subtree notification context", () => {
 
 describe("activity toast attribution", () => {
   const build = __liveUpdatesTestUtils.buildActivityToast;
-  const payload = { action: "issue.created", entityType: "issue", entityId: "task-1", actorType: "user", actorId: "user-1", actorName: "Alex Example", actorImage: "/alex.png" };
+  const payload = { action: "issue.created", entityType: "issue", entityId: "task-1", issueIdentifier: "PAP-1234", actorType: "user", actorId: "user-1", actorName: "Alex Example", actorImage: "/alex.png" };
+  it.each([
+    ["issue.created", "Alex Example created PAP-1234"],
+    ["issue.updated", "Alex Example updated PAP-1234"],
+    ["issue.comment_added", "Alex Example commented on PAP-1234"],
+  ])("uses the server task identifier for %s with an empty cache and no activity details", (action, title) => {
+    const toast = build(new QueryClient(), "company", { ...payload, action }, { userId: "other-user", agentId: null });
+    expect(toast?.title).toBe(title);
+    expect(toast?.action).toEqual({ label: "View PAP-1234", href: "/issues/PAP-1234" });
+    if (action === "issue.updated") expect(toast?.body).toBe("PAP-1234");
+    expect(JSON.stringify(toast)).not.toContain("Task task-1");
+  });
+  it("uses a generic task label when the identifier is unavailable", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.updated", issueIdentifier: undefined }, { userId: "other-user", agentId: null });
+    expect(toast?.title).toBe("Alex Example updated Task");
+    expect(toast?.body).toBe("Task");
+    expect(toast?.action).toEqual({ label: "View Task", href: "/issues/task-1" });
+  });
+  it("resolves cached task titles by the server identifier", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(queryKeys.issues.detail("PAP-1234"), { id: "task-1", identifier: "PAP-1234", title: "Fix task toasts" });
+    const toast = build(queryClient, "company", { ...payload, action: "issue.updated" }, { userId: "other-user", agentId: null });
+    expect(toast?.title).toBe("Alex Example updated PAP-1234");
+    expect(toast?.body).toBe("Fix task toasts");
+  });
   it.each(["issue.created", "issue.updated", "issue.comment_added"])("hides the viewer's own %s", (action) => {
     expect(build(new QueryClient(), "company", { ...payload, action }, { userId: "user-1", agentId: null })).toBeNull();
   });
@@ -2058,18 +2123,18 @@ describe("activity toast attribution", () => {
   });
   it("uses the real name and photo with an empty directory cache", () => {
     const toast = build(new QueryClient(), "company", payload, { userId: "other-user", agentId: null });
-    expect(toast?.title).toBe("Alex Example created Task task-1");
+    expect(toast?.title).toBe("Alex Example created PAP-1234");
     expect(toast?.actor).toMatchObject({ type: "user", name: "Alex Example", image: "/alex.png" });
   });
   it("uses the agent's custom avatar with an empty agent cache", () => {
     const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky", customAvatarAssetId: "11111111-1111-4111-8111-111111111111" };
     const toast = build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1", actorName: "Coder", actorAppearance: appearance }, { userId: "user-1", agentId: null });
-    expect(toast?.title).toBe("Coder created Task task-1");
+    expect(toast?.title).toBe("Coder created PAP-1234");
     expect(toast?.actor?.appearance).toEqual(appearance);
   });
   it("keeps system activity distinct from people", () => {
     const toast = build(new QueryClient(), "company", { ...payload, actorType: "system", actorName: undefined }, { userId: "user-1", agentId: null });
-    expect(toast?.title).toBe("System created Task task-1");
+    expect(toast?.title).toBe("System created PAP-1234");
     expect(toast?.actor).toBeUndefined();
   });
 });

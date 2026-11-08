@@ -78,7 +78,8 @@ function registerClient(key: string, client: RegisteredPostgresClient): void {
  * its teardown cannot close another fixture's clients on that host.
  */
 export async function closeRegisteredClients(url: string, options?: { scope: "database" }): Promise<void> {
-  const key = hostPortKey(url);
+  const key = hostPortKeyOrNull(url);
+  if (key === null) return;
   const database = options?.scope === "database" ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined;
   if (database === "") throw new Error("Database-scoped teardown requires an explicit database name");
   const refs = clientsByHostPort.get(key);
@@ -259,6 +260,22 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
 const dedicatedDbFactories = new WeakMap<object, () => Db>();
+const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+export interface OwnedDatabaseListener {
+  listen: Db["$client"]["listen"];
+  close(): Promise<void>;
+}
+
+export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
+  const factory = ownedDatabaseListenerFactories.get(db);
+  if (!factory) throw new Error("owned_listener_requires_create_db");
+  const owned = factory();
+  return {
+    listen: owned.$client.listen.bind(owned.$client),
+    close: () => owned.$client.end({ timeout: 1 }),
+  };
+}
 
 export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
   const factory = dedicatedDbFactories.get(db);
@@ -295,9 +312,10 @@ export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<v
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
-// during an aligned burst. Share at most two lazy connections per owner.
+// during an aligned burst. Share at most three lazy connections per owner.
 const checkpointDbFactories = new WeakMap<object, () => Db>();
 const checkpointDbs = new WeakMap<object, Db>();
+const CHECKPOINT_POOL_MAX_CONNECTIONS = 3;
 const closedCheckpointOwners = new WeakSet<object>();
 
 /** The bounded controller checkpoint pool; transactions and test doubles keep
@@ -319,6 +337,27 @@ export async function closeCheckpointDb(db: Db, timeoutSeconds: number): Promise
   await checkpointDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
+// Managed file publication holds an agent lock while transferring bytes. A
+// stalled object store must not consume request or controller-renewal capacity.
+const fileStorageDbFactories = new WeakMap<object, () => Db>();
+const fileStorageDbs = new WeakMap<object, Db>();
+const closedFileStorageOwners = new WeakSet<object>();
+export function fileStorageDb(db: Db): Db {
+  const existing = fileStorageDbs.get(db);
+  if (existing) return existing;
+  const factory = fileStorageDbFactories.get(db);
+  if (!factory) return db; // Preserve the caller's transaction/savepoint.
+  if (closedFileStorageOwners.has(db)) throw new Error("file_storage_pool_closed");
+  const created = factory();
+  fileStorageDbs.set(db, created);
+  fileStorageDbs.set(created, created);
+  return created;
+}
+export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promise<void> {
+  closedFileStorageOwners.add(db);
+  await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -338,11 +377,17 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }, db));
+  ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 1,
+  }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 2, applicationName: "paperclip-runner-checkpoint",
+    ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
+  }, db));
+  fileStorageDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
   }, db));
   return db;
 }
@@ -564,6 +609,10 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0412_tearful_squadron_supreme.sql",
   "0413_tired_kronos.sql",
   "0414_closed_edwin_jarvis.sql",
+  "0419_slippery_impossible_man.sql",
+  "0432_strong_mole_man.sql",
+  "0435_premium_puff_adder.sql",
+  "0436_legal_reavers.sql",
 
 
   "0384_funny_adam_warlock.sql",
