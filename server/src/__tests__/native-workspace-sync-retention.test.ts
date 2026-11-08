@@ -301,7 +301,6 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
   });
 
   it("keeps a run whose process was recorded in another PID space, even if that pid is dead here", async () => {
-    // A dead pid here says nothing about a process on another host.
     await expectKept({ processPid: 1234, processStartedAt: processStart, processHostHash: "another-host-pid-space",
       leaseProvider: "local" }, "process_live");
   });
@@ -314,7 +313,6 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
   });
 
   it("keeps a run whose live pid's start time matches within the 1 s start-time precision", async () => {
-    // `ps lstart` has whole-second precision; a sub-second difference is the same process.
     livePids.set(1234, new Date(processStart.getTime() + 400).toISOString());
     await expectKept({ processPid: 1234, processStartedAt: processStart, leaseProvider: "local" }, "process_live");
   });

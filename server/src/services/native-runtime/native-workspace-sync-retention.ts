@@ -231,13 +231,6 @@ const defaultProcessProbe: ProcessProbe = {
   startedAt: (pid) => readProcessStartedAt(pid).catch(() => null),
 };
 
-/**
- * Whether the run's adapter child may still write the synced folder. Judged by
- * the shared run-process prover (the same verdict the lost-process reapers
- * reach): the PID only in the PID space that recorded it, a reused PID by a
- * definitely later start, EPERM as alive. Anything but a proof the process is
- * gone keeps the folder.
- */
 async function runProcessMayBeLive(
   _tx: Tx,
   input: { runId: string; run: RunRow; processProbe: ProcessProbe },
@@ -256,7 +249,6 @@ async function runProcessMayBeLive(
   return proof?.verdict !== "gone";
 }
 
-/** The injectable retention probe as the shared prover's probe. */
 function sharedProbe(probe: ProcessProbe): OwnerProcessProbe | undefined {
   if (probe === defaultProcessProbe) return undefined;
   const base = currentProcessProbe();
