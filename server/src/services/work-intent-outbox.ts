@@ -85,6 +85,17 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
+/** SQL: the latest recorded `done` transition of the task was not made by a
+ * person. A task a person closed (or with no recorded close) is never
+ * reopened for an earlier message. */
+export function taskClosedByAgentSql(companyId: unknown, issueId: unknown) {
+  return sql`coalesce((select closed.actor_type from activity_log closed
+    where closed.company_id = ${companyId} and closed.entity_type = 'issue' and closed.entity_id = ${issueId}::text
+      and closed.action = 'issue.updated'
+      and (closed.details->>'toStatus' = 'done' or closed.details->>'status' = 'done')
+    order by closed.created_at desc limit 1), 'user') <> 'user'`;
+}
+
 /**
  * Record the missing outbox entry for user messages whose wake was lost or
  * ended without delivering them: one deferred receipt of the user that
@@ -110,9 +121,15 @@ export async function saveUndeliveredUserComments(db: Db, input: {
     // its own inbound authorization path.
     if (!issue || issue.assigneeAgentId !== input.agentId || issue.conversationAgentId ||
         !input.allowedStatuses.includes(issue.status)) return null;
+    if (issue.status === "done") {
+      const [closed] = await tx.execute<{ byAgent: boolean }>(sql`select ${taskClosedByAgentSql(input.companyId, input.issueId)} as "byAgent"`);
+      if (closed?.byAgent !== true) return null;
+    }
     const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId }).from(issueComments).where(and(
       eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
-      inArray(issueComments.id, input.commentIds), isNotNull(issueComments.authorUserId), isNull(issueComments.deletedAt)));
+      inArray(issueComments.id, input.commentIds), isNotNull(issueComments.authorUserId), isNull(issueComments.deletedAt),
+      // A direct human comment: no agent author and no creating run.
+      isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId)));
     const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: input.companyId,
       issueId: input.issueId, agentId: input.agentId, commentIds: live.map(row => row.id) });
     const remaining = input.commentIds.filter(id => live.some(row => row.id === id) && !delivered.has(id));

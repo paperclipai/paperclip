@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
+import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
   issueComments, issues } from "@paperclipai/db";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -117,6 +117,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.pendingRunId)))[0].costAccountingPending).toBe(false);
     return woken;
   }
+
+  /** The agent's run closed the task, as a native status decision records it. */
+  const closeByAgent = (f: { companyId: string; issueId: string; agentId: string }, actorType = "agent") =>
+    db.insert(activityLog).values({ companyId: f.companyId, actorType, actorId: actorType === "agent" ? f.agentId : "person",
+      action: "issue.updated", entityType: "issue", entityId: f.issueId,
+      details: { source: "native_status_decision", fromStatus: "in_progress", toStatus: "done" } });
 
   async function settle(f: { companyId: string }) {
     await heartbeat.resumeQueuedRuns();
@@ -445,6 +451,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     // The first run, which started before the message, completed the task after it.
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
     await settle(f); await settle(f);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale.id)))[0]).toMatchObject({
       status: "cancelled", errorCode: "continuation_task_ownership_changed" });
@@ -467,6 +474,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
       error: "continuation_task_ownership_changed" }).where(eq(agentWakeupRequests.id, f.wakeId));
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 1_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    // A person closed it: that decision stands.
+    await closeByAgent(f, "user");
+    const byPerson = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(byPerson.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")).toEqual([]);
+    // The agent's run closed it later without reading the message.
+    await closeByAgent(f);
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation")
       .map(row => row.recordId)).toEqual([f.commentId]);

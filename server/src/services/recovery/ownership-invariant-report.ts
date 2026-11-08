@@ -6,7 +6,7 @@ import {
   issues,
   type Db,
 } from "@paperclipai/db";
-import { TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
+import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
 import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
@@ -385,8 +385,10 @@ async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Prom
   const rows = await db.execute<{ id: string; company_id: string; issue_id: string }>(sql`
     select c.id, c.company_id, c.issue_id from issue_comments c
     join issues i on i.id = c.issue_id and i.company_id = c.company_id
-    where c.author_user_id is not null and c.deleted_at is null and c.created_at >= ${since}::timestamptz
+    where c.author_user_id is not null and c.deleted_at is null
+      and c.author_agent_id is null and c.created_by_run_id is null and c.created_at >= ${since}::timestamptz
       and i.status = 'done' and i.assignee_agent_id is not null and i.conversation_agent_id is null
+      and ${taskClosedByAgentSql(sql`c.company_id`, sql`c.issue_id`)}
       and exists (select 1 from agent_wakeup_requests stale where stale.company_id = c.company_id
         and stale.payload->>'issueId' = c.issue_id::text and stale.status = 'cancelled'
         and stale.error = 'continuation_task_ownership_changed'
@@ -422,6 +424,7 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
     select c.id, c.company_id, c.issue_id, c.created_at::text as created_at from issue_comments c
     join issues i on i.id = c.issue_id and i.company_id = c.company_id
     where c.author_user_id is not null and c.deleted_at is null
+      and c.author_agent_id is null and c.created_by_run_id is null
       and c.created_at >= ${since}::timestamptz
       and i.assignee_agent_id is not null and i.conversation_agent_id is null
       and i.status in ('todo', 'in_progress') and i.execution_run_id is null

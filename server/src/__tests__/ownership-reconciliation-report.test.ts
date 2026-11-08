@@ -420,6 +420,9 @@ describe("report-only ownership reconciliation", () => {
       { companyId, issueId, authorUserId: "user-1", body: "carried", createdAt: minutesAgo(2) },
       { companyId, issueId, authorUserId: "user-1", body: "young", createdAt: new Date(Date.now() - 5_000) },
     ]).returning();
+    // An agent's own comment written under its user (local CLI) is not user intent.
+    await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1", authorAgentId: agentId,
+      body: "self", createdAt: minutesAgo(2) });
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "queued",
       payload: { issueId, commentId: carried.id } });
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
