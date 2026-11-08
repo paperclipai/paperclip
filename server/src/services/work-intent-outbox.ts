@@ -111,9 +111,11 @@ export async function saveUndeliveredUserComments(db: Db, input: {
   source?: string | null; triggerDetail?: string | null;
   /** Names why the receipt waits and what promotes it. */
   executionWait?: Record<string, unknown>;
+  reopenAgentClosedDone?: boolean;
 }): Promise<string | null> {
   if (input.commentIds.length === 0) return null;
-  return db.transaction(async tx => {
+  let reopened: { companyId: string; issueId: string; agentId: string } | null = null;
+  const savedId = await db.transaction(async tx => {
     const [issue] = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
       conversationAgentId: issues.conversationAgentId }).from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -147,6 +149,21 @@ export async function saveUndeliveredUserComments(db: Db, input: {
         [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
           source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest } }, remaining),
     }).returning({ id: agentWakeupRequests.id });
+    if (saved && issue.status === "done" && input.reopenAgentClosedDone) {
+      const { issueService } = await import("./issues.js");
+      const updated = await issueService(tx as unknown as Db).updateForCompany(input.issueId, input.companyId,
+        { status: "todo", executionState: null }, tx);
+      if (!updated) throw new Error("undelivered_comment_task_changed");
+      reopened = { companyId: input.companyId, issueId: input.issueId, agentId: input.agentId };
+    }
     return saved?.id ?? null;
   });
+  if (reopened) {
+    const { logActivity } = await import("./activity-log.js");
+    const scope: { companyId: string; issueId: string; agentId: string } = reopened;
+    await logActivity(db, { companyId: scope.companyId, actorType: "system", actorId: "ownership-reconciler",
+      agentId: scope.agentId, action: "issue.updated", entityType: "issue", entityId: scope.issueId,
+      details: { status: "todo", reopened: true, reopenedFrom: "done", source: "undelivered_comment_backstop" } });
+  }
+  return savedId;
 }
