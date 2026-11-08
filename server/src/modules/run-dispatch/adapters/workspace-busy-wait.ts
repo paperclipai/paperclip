@@ -50,9 +50,6 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   // sandbox release settle (a run stopped by reassignment, for example).
   // Reservation defers on that hold, so the wait stays parked through it too.
   const settlingSince = holder && holder.status !== "running" ? await settlingWriterActivityAt(tx, run, wait) : null;
-  // A running holder whose controller still renews its lease is live by
-  // fence, however long its output is silent: re-check at the parked cadence.
-  // Once the fence lapses, the silence cutoff applies as before.
   const holderStaleAt = holder?.status === "running"
     ? Math.max(new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
       holder.ownerFenceHeld === true ? now.getTime() + WORKSPACE_BUSY_PARKED_RECHECK_MS : 0)

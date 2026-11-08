@@ -1055,8 +1055,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           recoverySourceRunIds: [remoteFresh.sourceRunId],
         } : {}),
       }).catch(error => {
-        // A writer whose controller still renews its lease is live by fence:
-        // output silence alone never ends the wait behind it.
         if (!(error instanceof RemoteWorkspaceWriterActiveError)
           || (!error.writer.ownerFenceHeld
             && error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS)) throw error;

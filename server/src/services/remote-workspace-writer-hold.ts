@@ -12,17 +12,9 @@ export type RemoteWorkspaceWriter = {
   runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
   /** The writer run ended; its workspace save or sandbox release has not settled. */
   ended?: boolean;
-  /** A running writer whose controller still renews its lease (the legacy
-   * controller lease or the native coordinator lease). Its owner is live by
-   * fence, so output silence alone never ends a wait behind it. */
   ownerFenceHeld?: boolean;
 };
 
-/**
- * Whether a run's controller still holds its lease: the legacy controller
- * lease on the run, or the native coordinator lease. Database-only (no process
- * probe), so it is safe on the workspace-preparation path before a turn starts.
- */
 export function runOwnerFenceHeldSql() {
   return sql<boolean>`(coalesce(${heartbeatRuns.controllerLeaseExpiresAt} > now(), false) or exists (
     select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}

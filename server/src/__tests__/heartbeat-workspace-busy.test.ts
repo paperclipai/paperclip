@@ -1307,7 +1307,6 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const fixture = await seedWorkspaceFixture({
       holderActivityAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 60_000),
     });
-    // Silence is not proof the holder stopped: its controller is live by fence.
     await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 10 * 60_000) })
       .where(eq(heartbeatRuns.id, fixture.holderRunId));
     const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system");
