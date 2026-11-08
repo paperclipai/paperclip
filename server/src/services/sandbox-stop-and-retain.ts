@@ -184,6 +184,10 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
   const receipt = remoteTerminationReceipt(lease, options.receipt), stopped = receipt?.state === "stopped";
   const now = new Date();
   const removeIntent: SQL = stopped ? sql`- 'sandboxStopAndRetain'` : sql``;
+  const recordedIntent = lease.metadata?.[SANDBOX_STOP_AND_RETAIN_KEY] as Record<string, unknown> | undefined;
+  const legacyOrphan = stopped && recordedIntent?.recoveredOrphanedRunLease === true && !lease.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]
+    ? { [ORPHANED_SANDBOX_RECOVERY_KEY]: { recoveredOrphanedRunLease: true, ownerProof: recordedIntent.ownerProof ?? null,
+      runId: lease.heartbeatRunId, recoveredAt: now.toISOString(), fromStopIntent: true } } : {};
   const [updated] = await writeEnvironmentCleanup(db, async tx => {
     if (stopped) await notifyRetainedNativeSessionCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
     return tx.update(environmentLeases).set({
@@ -199,6 +203,7 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
             : { builtinProvider: lease.provider, method: "builtin.stopLease" }),
           confirmedAt: receipt.confirmedAt,
         } } : {}),
+        ...legacyOrphan,
         pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       })}::jsonb`,
     }).where(stopOnlyAttempt(lease, options.attemptId)).returning();

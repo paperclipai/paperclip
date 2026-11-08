@@ -21,7 +21,7 @@ import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/
 import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-termination.js";
 import { taskChatRetryExecutionStopped } from "../services/chat-channels/task-retry-authority.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
-import { ORPHANED_SANDBOX_RECOVERY_KEY } from "../services/sandbox-stop-and-retain.js";
+import { ORPHANED_SANDBOX_RECOVERY_KEY, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -109,6 +109,37 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     await pass();
     expect((await row(id)).metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]).toMatchObject({
       recoveredOrphanedRunLease: true, ownerProof: "pid_dead", runId });
+  });
+
+  it("keeps the orphan marker for a stop intent saved before the top-level marker existed", async () => {
+    const runId = await run("failed");
+    const id = randomUUID(), providerLeaseId = `sandbox://fake/${id}`, attemptId = randomUUID();
+    const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId: attemptId, companyId, runId, leaseId: id,
+      provider: "fake", providerLeaseId, builtinProvider: "fake", recoveredOrphanedRunLease: true, ownerProof: "pid_dead" };
+    await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
+      status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", leasePolicy: "ephemeral",
+      provider: "fake", providerLeaseId, metadata: { sandboxStopAndRetain: intent, pendingCleanupAttemptId: attemptId,
+        pendingCleanupInFlight: true } });
+    const settled = await settleStopOnlyCleanup(db, await row(id), { attemptId, receipt: { providerLeaseId, state: "stopped" } });
+    expect(settled).toMatchObject({ status: "released", cleanupStatus: "success" });
+    expect(settled?.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]).toMatchObject({ recoveredOrphanedRunLease: true,
+      ownerProof: "pid_dead", runId, fromStopIntent: true });
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 1 });
+    expect((await row(id))).toMatchObject({ status: "pending_cleanup", failureReason: "retained_orphan_sandbox_released" });
+  });
+
+  it("does not mark an ordinary stop-and-retain as an orphan", async () => {
+    const runId = await run("failed");
+    const id = randomUUID(), providerLeaseId = `sandbox://fake/${id}`, attemptId = randomUUID();
+    const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId: attemptId, companyId, runId, leaseId: id,
+      provider: "fake", providerLeaseId, builtinProvider: "fake" };
+    await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
+      status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral", provider: "fake", providerLeaseId,
+      metadata: { sandboxStopAndRetain: intent, pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true } });
+    const settled = await settleStopOnlyCleanup(db, await row(id), { attemptId, receipt: { providerLeaseId, state: "stopped" } });
+    expect(settled?.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]).toBeUndefined();
+    expect((await pass()).kind).toMatchObject({ settled: 0 });
   });
 
   it("destroys a retained orphan that nothing references, through the cleanup sweep", async () => {
