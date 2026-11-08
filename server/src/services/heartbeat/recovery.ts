@@ -32,6 +32,7 @@ import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
   legacyControllerBootId,
+  legacyControllerProvenGone,
   liveLegacyControllerExpiresAt,
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
@@ -2590,8 +2591,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
         continue;
       }
+      // The shared prover (Phase 2): a controller of another boot whose
+      // recorded process is proven gone holds no lease and needs no age guard.
+      const legacyControllerGone = run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId
+        && await legacyControllerProvenGone(run);
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
-      if (legacyLease) { scope.onDeferredDeadline?.(legacyLease.getTime()); continue; }
+      if (legacyLease && !(legacyControllerGone
+        && (await settleOwnableKind(db, "legacy_controller_lease", { runIds: [run.id] })).length > 0)) {
+        scope.onDeferredDeadline?.(legacyLease.getTime()); continue;
+      }
 
       // A legacy controller proves it is alive only by renewing its lease, and
       // the check above found no live lease (a missing expiry also lands here;
@@ -2609,7 +2617,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         !run.processPid &&
         !run.processGroupId;
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0 && !priorBootSetupExpired) {
+      if (staleThresholdMs > 0 && !priorBootSetupExpired && !legacyControllerGone) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         if (now.getTime() - refTime < staleThresholdMs) {
           scope.onDeferredDeadline?.(refTime + staleThresholdMs);
@@ -2680,10 +2688,19 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
+      // The scan snapshot can predate a child the old controller saved just
+      // before it died. The child checks above used that snapshot, so a proven
+      // gone controller is never enough here: when revocation reports a child
+      // the snapshot did not, re-check on the next pass from the fresh row.
+      if (legacyControllerGone && ((revokedState.processPid ?? null) !== (run.processPid ?? null)
+        || (revokedState.processGroupId ?? null) !== (run.processGroupId ?? null))) {
+        scope.onDeferredDeadline?.(Date.now() + 1_000);
+        continue;
+      }
       // The earlier snapshot may predate a final renewal that admitted the
       // adapter. Revocation leaves a fresh foreign lease, so a later pass
       // applies the age guard to that dispatched run.
-      if (priorBootSetupExpired && staleThresholdMs > 0 && (revokedState.executionStage !== "preparing"
+      if (priorBootSetupExpired && !legacyControllerGone && staleThresholdMs > 0 && (revokedState.executionStage !== "preparing"
         || revokedState.processPid || revokedState.processGroupId)) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         scope.onDeferredDeadline?.(Math.max(refTime + staleThresholdMs, Date.now() + 60_000));
