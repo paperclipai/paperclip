@@ -47,6 +47,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
+import { deliverBlockedOwnerNotification } from "../services/routable-blocked.js";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -1050,7 +1051,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     }
   });
 
-  it("sends one owner wake request when overlapping edits reach an unnotified blocked issue", async () => {
+  async function seedUnnotifiedBlockedIssue() {
     const companyId = await seedAssignableAgentCompany();
     const agentId = randomUUID();
     await db.insert(agents).values({
@@ -1076,18 +1077,85 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     app.use("/api", issueRoutes(db, {} as never));
     app.use(errorHandler);
     const edit = (title: string) => request(app).patch(`/api/issues/${issue!.id}`).send({ title, unblockDescriptor: descriptor });
+    const unblockWakes = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))
+      .filter(wake => wake.idempotencyKey?.startsWith(`issue-unblock:${issue!.id}:`));
+    return { companyId, agentId, issue: issue!, edit, unblockWakes };
+  }
+
+  it("sends one owner wake request when overlapping edits reach an unnotified blocked issue", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
 
     const responses = await Promise.all(["First overlapping edit", "Second overlapping edit", "Third overlapping edit"].map(edit));
     for (const response of responses) expect(response.status, JSON.stringify(response.body)).toBe(200);
     await heartbeatService(db).drainActiveRunExecutions();
 
-    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
-    const unblockWakes = wakes.filter(wake => wake.idempotencyKey?.startsWith(`issue-unblock:${issue!.id}:`));
-    expect(unblockWakes.map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
-    const [updated] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
   });
 
+  it("leaves the owner unnotified when the server stops after a failed owner wake request", async () => {
+    const { issue, edit, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    await db.execute(sql.raw(`
+      create function test_fail_unblock_wake() returns trigger language plpgsql as $$
+      begin
+        if new.idempotency_key like 'issue-unblock:%' then raise exception 'injected owner wake insert failure'; end if;
+        return new;
+      end $$;
+      create trigger test_fail_unblock_wake before insert on agent_wakeup_requests
+        for each row execute function test_fail_unblock_wake();
+      create function test_stop_before_owner_release() returns trigger language plpgsql as $$
+      begin
+        if old.blocked_owner_notified_at is not null and new.blocked_owner_notified_at is null then
+          raise exception 'injected server stop before the owner notification release';
+        end if;
+        return new;
+      end $$;
+      create trigger test_stop_before_owner_release before update on issues
+        for each row execute function test_stop_before_owner_release();
+    `));
+    try {
+      await edit("Edit while the owner wake cannot be saved");
+    } finally {
+      await db.execute(sql.raw(`
+        drop trigger test_fail_unblock_wake on agent_wakeup_requests;
+        drop function test_fail_unblock_wake();
+        drop trigger test_stop_before_owner_release on issues;
+        drop function test_stop_before_owner_release();
+      `));
+    }
+    const [afterStop] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(afterStop!.blockedOwnerNotifiedAt).toBeNull();
+
+    const response = await edit("Edit after the restart");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+
+    expect((await unblockWakes()).map(wake => wake.reason)).toEqual(["issue_unblock_requested"]);
+  });
+
+  it("wakes the owner of the current unblock request when an older update delivers after a newer one", async () => {
+    const { companyId, agentId, issue, unblockWakes } = await seedUnnotifiedBlockedIssue();
+    const newerOwnerId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: newerOwnerId, name: "NewerOwner" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: newerOwnerId, status: "running", startedAt: new Date() });
+    const newerDescriptor = { owner: { agentId: newerOwnerId }, action: "Approve the registry token" };
+    const [newer] = await db.update(issues).set({ unblockDescriptor: newerDescriptor })
+      .where(eq(issues.id, issue.id)).returning();
+    const heartbeat = heartbeatService(db);
+
+    await deliverBlockedOwnerNotification(db, { issue, wakeup: heartbeat.wakeup });
+    await deliverBlockedOwnerNotification(db, { issue: newer!, wakeup: heartbeat.wakeup });
+    await heartbeat.drainActiveRunExecutions();
+
+    const wakes = await unblockWakes();
+    expect(issue.unblockDescriptor).toEqual({ owner: { agentId }, action: "Restore registry access" });
+    expect(wakes.map(wake => ({ agentId: wake.agentId, action: wake.payload?.action })))
+      .toEqual([{ agentId: newerOwnerId, action: "Approve the registry token" }]);
+  });
   it.each(["done", "todo"] as const)("wakes the owner when a checked-out block moves to %s and the same request blocks it again", async (leaveStatus) => {
     const companyId = await seedAssignableAgentCompany();
     const agentId = randomUUID();

@@ -381,7 +381,7 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import { deliverBlockedOwnerNotification } from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -15479,35 +15479,11 @@ export function issueRoutes(
 
       if (issue.status === "blocked") {
         const blockedIssue = issue;
-        const episode = and(
-          eq(issueRows.id, blockedIssue.id),
-          eq(issueRows.companyId, blockedIssue.companyId),
-          eq(issueRows.status, "blocked"),
-          blockedIssue.blockedTransitionAt
-            ? eq(issueRows.blockedTransitionAt, blockedIssue.blockedTransitionAt)
-            : isNull(issueRows.blockedTransitionAt),
-        );
-        let ownerNotifiedAt: Date | null = null;
-        const delivered = await deliverAgentUnblockNotification({
+        const ownerNotifiedAt = await deliverBlockedOwnerNotification(db, {
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
-          claimNotification: async (notifiedAt) => {
-            const claimed = await db
-              .update(issueRows)
-              .set({ blockedOwnerNotifiedAt: notifiedAt })
-              .where(and(episode, isNull(issueRows.blockedOwnerNotifiedAt)))
-              .returning({ id: issueRows.id });
-            if (claimed.length > 0) ownerNotifiedAt = notifiedAt;
-            return claimed.length > 0;
-          },
-          releaseNotification: async (notifiedAt) => {
-            await db
-              .update(issueRows)
-              .set({ blockedOwnerNotifiedAt: null })
-              .where(and(episode, eq(issueRows.blockedOwnerNotifiedAt, notifiedAt)));
-          },
         });
-        if (delivered && ownerNotifiedAt) {
+        if (ownerNotifiedAt) {
           issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
         }
       }
