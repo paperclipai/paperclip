@@ -107,6 +107,21 @@ describe("ProfileSettings", () => {
     await act(async () => root.unmount());
   });
 
+  it("stacks the avatar card text below the photo on small screens", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+    const heading = Array.from(container.querySelectorAll("h2")).find((el) => el.textContent === "Jane Example");
+    expect(heading).toBeTruthy();
+    const textColumn = heading!.closest("div.min-w-0");
+    expect(textColumn?.className).toContain("w-full");
+    expect(textColumn?.className).toContain("sm:flex-1");
+    await act(async () => root.unmount());
+  });
+
   it("uploads a clicked avatar into Paperclip storage and persists the returned asset path", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
