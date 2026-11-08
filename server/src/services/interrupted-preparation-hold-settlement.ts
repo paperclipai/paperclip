@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
 import { LEGACY_RECOVERY_CAUSE, settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js";
+import { logger } from "../middleware/logger.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
@@ -36,6 +37,17 @@ export function heldInterruptedPreparationWhere() {
       and (lease.released_at is null or lease.status = 'pending_cleanup' or lease.cleanup_status = 'failed'))`);
 }
 
+/** Continues a settled preparation through the ordinary resume path
+ * (`resumeRemoteStopComments`): it schedules the uncharged
+ * `interrupted_preparation` successor and records the continuation. The
+ * heartbeat service registers it; it owns the scheduling dependencies. */
+type HeldPreparationResumer = (input: { companyId: string; runId: string }) => Promise<void>;
+let heldPreparationResumer: HeldPreparationResumer | null = null;
+
+export function registerHeldPreparationResumer(resumer: HeldPreparationResumer): void {
+  heldPreparationResumer = resumer;
+}
+
 /**
  * Settle of the kind. The shared reconciler calls it only after
  * `proveOwnerGone` proved the run's recorded controller gone; a run without a
@@ -57,6 +69,16 @@ export async function settleHeldInterruptedPreparation(db: Db, record: InProgres
   let resolved = 0;
   await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false, proof: context.proof.reason,
     onHoldsResolved: count => { resolved = count; } });
-  return resolved > 0 ? { settled: true, reason: context.proof.reason }
-    : { settled: false, reason: "hold_changed_since_proof" };
+  if (resolved === 0) return { settled: false, reason: "hold_changed_since_proof" };
+  // Only the call that resolved the hold starts the replay, so it starts once.
+  // Without a registered resumer (no heartbeat service in this process), the
+  // pending continuation stays recorded for the next resume of this run.
+  if (heldPreparationResumer) {
+    await heldPreparationResumer({ companyId: record.companyId, runId: run.id }).catch(error => {
+      // The hold is settled either way; its pending continuation stays recorded
+      // for the next resume of this run (a wake, a cleanup completion).
+      logger.warn({ err: error, runId: run.id }, "settled interrupted preparation could not schedule its replay");
+    });
+  }
+  return { settled: true, reason: context.proof.reason };
 }

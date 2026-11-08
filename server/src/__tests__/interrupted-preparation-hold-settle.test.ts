@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  authUsers,
+  companyMemberships,
   companies,
   createDb,
   environmentLeases,
@@ -16,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { settleHeldInterruptedPreparation } from "../services/interrupted-preparation-hold-settlement.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
@@ -55,6 +58,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
       adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
     await db.insert(environments).values({ id: environmentId, name: "Sandbox", driver: "sandbox", status: "active",
       config: { provider: "fake" } });
+    await db.insert(authUsers).values({ id: "local-board", name: "Local operator", email: "local-board@example.invalid",
+      createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "local-board", membershipRole: "owner" });
   }, 30_000);
 
   afterEach(async () => {
@@ -80,9 +86,12 @@ suite("held interrupted preparations on the shared ownership path", () => {
     const issueId = randomUUID(), runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${leaseId}`;
     const finishedAt = new Date(Date.now() - 10_000);
     const controller = options.controller ?? await deadController();
-    await db.insert(issues).values({ id: issueId, companyId, title: "Warm follow-up", status: "in_progress",
-      assigneeAgentId: agentId });
+    // Terminalization projected the task to blocked and kept a receipt so the
+    // settle can restore exactly that projection.
+    await db.insert(issues).values({ id: issueId, companyId, title: "Warm follow-up", status: "blocked",
+      assigneeAgentId: agentId, statusVersion: 2 });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation",
+      responsibleUserId: "local-board", issueId,
       status: "interrupted", errorCode: "server_shutdown_interrupted", runtimeMode: "legacy", executionStage: "preparing",
       startedAt: new Date(finishedAt.getTime() - 2_000), finishedAt, nextEventSeq: 1,
       controllerBootId: controller.bootId, controllerProcess: controller.process,
@@ -103,7 +112,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
       fingerprint: `legacy-execution:${runId}`, status: "resolved", outcome: "blocked", ownerType: "board",
       nextAction: "Inspect the stopped provider and recorded actions.", resolvedAt: finishedAt,
       evidence: { runId, automaticRecovery: { policy: "preserve_without_replay_v1", runId, replay: "blocked",
-        actionOutcome: "unknown", recordedAt: finishedAt.toISOString() }, ...options.holdEvidence } }).returning();
+        actionOutcome: "unknown", recordedAt: finishedAt.toISOString() },
+        nativeBootstrapFailureBlock: { runId, previousStatus: "in_progress", statusVersion: 2 },
+        ...options.holdEvidence } }).returning();
     return { issueId, runId, holdId: hold!.id };
   }
 
@@ -112,12 +123,19 @@ suite("held interrupted preparations on the shared ownership path", () => {
     .kinds.find(entry => entry.kind === KIND);
 
   it("replays a preparation a restart interrupted once its controller is proven gone", async () => {
+    // The heartbeat service registers the resume path that schedules the replay.
+    heartbeatService(db);
     const f = await interruptedPreparation();
     expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    // The task is unblocked and an uncharged interrupted-preparation successor exists.
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ scheduledRetryReason: "interrupted_preparation" });
     const settled = await hold(f.holdId);
     expect(settled).toMatchObject({ status: "resolved", outcome: "false_positive" });
     expect(settled.evidence).toMatchObject({ automaticRecovery: { replay: "allowed" },
-      bootstrapPreparationContinuation: "pending", bootstrapPreparationSettledAt: expect.any(String) });
+      bootstrapPreparationContinuation: "delivered", bootstrapPreparationSettledAt: expect.any(String) });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.resultJson)
       .toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
     const [audit] = await db.select().from(activityLog).where(and(eq(activityLog.runId, f.runId),
