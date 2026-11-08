@@ -5532,6 +5532,13 @@ cleanup or warm transition, the retry launches a Runner from that state instead
 of adopting one. This matches a settled staged source. Any other exit stays
 fail-closed for reconciliation, and the provider attempt budget still bounds the
 retries.
+A Runner that dies abruptly between turns never writes `suspended`. Its saved
+state stays `ready` at the idle cut that the last release read. That state is
+treated like a settled suspension only when it is a durable v1 journal with an
+empty outbox, every produced event acknowledged, every processed command settled
+(not `pending` or `indeterminate`) and no pending terminal delivery, provider
+cleanup or warm transition. Plugin Runners apply the same rule when Core reads a
+stopped source checkpoint.
 The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on
