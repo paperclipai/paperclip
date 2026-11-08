@@ -6142,8 +6142,13 @@ export function recoveryService(
   // Historical orphan terminalizations committed the run and cleared the issue
   // lock without finishing the wake. Those issues no longer appear in the lock
   // scan, so a later assignment still sees status=claimed and finishedAt=null.
-  async function finishOpenWakesForTerminalOrphanedRuns() {
-    if (orphanedWakeHistoricalRepairQuiet) return;
+  // Call this from startup: the stale-lock worker only visits issues that still
+  // hold checkout/execution locks, so a fleet with zero locked issues would
+  // otherwise never reach this repair after upgrade.
+  async function repairOrphanedTerminalWakes() {
+    if (orphanedWakeHistoricalRepairQuiet) {
+      return { repairedRunIds: [] as string[] };
+    }
 
     const stuckRuns = await db
       .select({
@@ -6196,9 +6201,10 @@ export function recoveryService(
 
     if (stuckRuns.length === 0) {
       orphanedWakeHistoricalRepairQuiet = true;
-      return;
+      return { repairedRunIds: [] as string[] };
     }
 
+    const repairedRunIds: string[] = [];
     const seen = new Set<string>();
     for (const run of stuckRuns) {
       if (seen.has(run.id)) continue;
@@ -6207,7 +6213,9 @@ export function recoveryService(
       await db.transaction(async (tx) => {
         await finishOpenWakesForTerminalRun(tx, run, now);
       });
+      repairedRunIds.push(run.id);
     }
+    return { repairedRunIds };
   }
 
   // Backstop reconciler: terminalizes a "running" run that can no longer reach a
@@ -6520,7 +6528,9 @@ export function recoveryService(
       terminalizedRunIds: [] as string[],
     };
 
-    await finishOpenWakesForTerminalOrphanedRuns();
+    // Best-effort while any locked issue still wakes this sweep. Startup also
+    // runs repairOrphanedTerminalWakes so fleets with zero locks still heal.
+    await repairOrphanedTerminalWakes();
 
     const candidates = await db
       .select({
@@ -6757,6 +6767,7 @@ export function recoveryService(
     reconcileLegacyContinuation,
     legacyRepairDispatchBlock,
     sweepStaleIssueLocks,
+    repairOrphanedTerminalWakes,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,
   };

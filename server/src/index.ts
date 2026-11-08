@@ -1722,6 +1722,25 @@ async function startServerWithDatabaseTeardown(
             "startup session-goal recovery resumed durable agent goals",
           );
         }
+        // Historical orphan terminalizations can leave claimed wakes with no
+        // issue lock left. The stale-lock worker never visits those rows, so
+        // heal them once at startup without requiring a locked issue.
+        const orphanedWakeRepair = await timeStartupRecovery(
+          "orphaned_terminal_wakes",
+          () => heartbeat.repairOrphanedTerminalWakes(),
+        ).catch(err => {
+          logger.error({ err }, "startup orphaned-terminal wake repair failed");
+          return { repairedRunIds: [] as string[] };
+        });
+        if (orphanedWakeRepair.repairedRunIds.length > 0) {
+          logger.warn(
+            {
+              repaired: orphanedWakeRepair.repairedRunIds.length,
+              runIds: orphanedWakeRepair.repairedRunIds,
+            },
+            "startup repaired claimed wakes left on terminal orphaned runs",
+          );
+        }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;

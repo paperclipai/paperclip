@@ -585,6 +585,51 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(settled?.status).toBe("failed");
   });
 
+  it("repairs a claimed wake at startup without requiring any locked issue", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const wakeId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      reason: "issue_assigned",
+      status: "claimed",
+      claimedAt: new Date(),
+      finishedAt: null,
+      runId: runningRunId,
+      payload: { issueId },
+    });
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      errorCode: "orphaned_running_run",
+      error: "run terminalized by recovery backstop: process and sandbox gone while heartbeat_runs.status stayed live",
+      finishedAt: new Date(),
+      wakeupRequestId: wakeId,
+      contextSnapshot: { issueId },
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    // No issue row with checkout/execution locks — the stale-lock worker would
+    // never visit this company. Startup must still finish the wake.
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.repairOrphanedTerminalWakes();
+    expect(result.repairedRunIds).toEqual([runningRunId]);
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("failed");
+    expect(wake?.finishedAt).toBeInstanceOf(Date);
+
+    const again = await heartbeat.repairOrphanedTerminalWakes();
+    expect(again.repairedRunIds).toEqual([]);
+  });
+
   it("finishes a claimed wake on a historical issue-terminal orphan that left errorCode null", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const wakeId = randomUUID();
@@ -898,10 +943,10 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]);
-    // The issue is "done", so the terminal run status is "succeeded". A
-    // succeeded run carries no error code.
+    // The issue is "done", so the terminal run status is "succeeded". Persist
+    // the issue-terminal orphan authority so historical wake repair can find it.
     expect(run?.status).toBe("succeeded");
-    expect(run?.errorCode).toBeNull();
+    expect(run?.errorCode).toBe("orphaned_running_run_issue_terminal");
 
     const lock = await db
       .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })

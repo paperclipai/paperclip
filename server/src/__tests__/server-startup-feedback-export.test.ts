@@ -197,6 +197,7 @@ const {
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
+    repairOrphanedTerminalWakes: vi.fn(async () => ({ repairedRunIds: [] })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
     tickAgentTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
     nextAgentTimerAt: vi.fn(async () => null),
@@ -1939,6 +1940,7 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.registerResidualRecoveryWork).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.registerActiveRunSilenceWork).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.repairOrphanedTerminalWakes).toHaveBeenCalledTimes(1);
     expect(fakeServer.close).not.toHaveBeenCalled();
   });
 
