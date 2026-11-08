@@ -235,7 +235,10 @@ Phase 3 is not started. It needs a separate go-ahead.
 
 - **Daytona** is covered by one wave only (see "Daytona wave"). The first apparent content-ID mismatch was a misreading: CI run 42422571919 built target commit `a37a2e4`, not master. Local content IDs reproduce CI's for the same commit.
 - The remote, workspace-operation, sandbox and accounting kinds (see "Per-kind data").
-- **Follow-up: `environment.stop_retain.after_claim_before_stop` has no live coverage.** No chaos workload creates a stop-and-retain intent (a native workspace export resume on a sandbox), so the crash point is never reached. A workload that forces an export resume on Daytona would cover it. `environment.lease_release.after_provider_before_lease` is also unreached by native runs, which release through teardown.
+- `environment.stop_retain.after_claim_before_stop` is covered since #20049 (`--daytona-reuse-lease`; passed in `cp-20261108T133351`).
+- **Known gap: `environment.lease_release.after_provider_before_lease` is unreached on Daytona.** Native runs release their sandbox through teardown, not this path. Recorded, not pursued.
+- **Known gap: orphans confirmed stopped while `canary/v2026.1108.0-canary.6` or `canary.7` ran.** #19964 shipped without #19976 for about three hours, and those orphans kept no durable marker, so they cannot be told apart from an intentional stop-and-retain. The provider's auto-delete bounds them. A stop still pending at upgrade is covered by #20043. Recorded, not pursued.
+- A replaced container's stamp (Docker, Kubernetes, Fly, a rebooted host) is now provable through the controller instance lease (see `doc/execution-semantics.md`). Boots from before the lease remain unprovable.
 - Crash points that sit between two durable writes. Random waves hit 20 ms–1 s windows only by luck. The crash-point suite (Phase 5) is the tool for those.
 
 ## Reproduce

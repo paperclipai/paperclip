@@ -119,10 +119,23 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
+const stampListeners = new Set<() => void>();
+/** Called (synchronously, without I/O) whenever this process stamps ownership of a record. */
+export function onControllerStamp(listener: () => void): () => void {
+  stampListeners.add(listener);
+  return () => { stampListeners.delete(listener); };
+}
+function notifyStamp() {
+  for (const listener of stampListeners) {
+    try { listener(); } catch { /* a listener never blocks a stamp */ }
+  }
+}
+
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
   const iso = startedAt === null ? null : new Date(startedAt).toISOString();
   resolvedProcessStartedAt = iso;
+  notifyStamp();
   return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField() };
 }
 
@@ -133,6 +146,7 @@ export async function currentControllerProcess(): Promise<ControllerProcess> {
  * a live PID then stays ambiguous, which fails closed.
  */
 export function currentControllerProcessStamp(): ControllerProcess {
+  notifyStamp();
   return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField() };
 }
 
