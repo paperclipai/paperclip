@@ -327,22 +327,10 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
-/**
- * Returns the verified runnerd and provider pack of `image`, extracting them
- * once per image digest into `cacheRoot/<digest>/`.
- */
-/** One image cache for every wave and crash-point run, so a run never re-downloads an image another run already extracted. */
 export function defaultDaytonaImageCacheRoot(): string {
   return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
 }
 
-/**
- * `skopeo copy` into an empty `dir:` destination. skopeo's own `--retry-times`
- * covers request failures, but a blob read that times out mid-copy fails the
- * whole copy, and skopeo then refuses the half-written directory ("not a
- * containers image directory, don't want to overwrite"). So each attempt starts
- * from a fresh, empty directory.
- */
 export async function copyImageToDir(input: { skopeo: string; image: string; blobs: string; attempts?: number;
   log?: (line: string) => void }): Promise<void> {
   const attempts = input.attempts ?? 3;
@@ -362,6 +350,10 @@ export async function copyImageToDir(input: { skopeo: string; image: string; blo
   }
 }
 
+/**
+ * Returns the verified runnerd and provider pack of `image`, extracting them
+ * once per image digest into `cacheRoot/<digest>/`.
+ */
 export async function prepareDaytonaImageArtifacts(input: { image: string; cacheRoot: string; skopeo?: string; log?: (line: string) => void }): Promise<DaytonaImageArtifacts> {
   const match = IMMUTABLE_IMAGE.exec(input.image);
   if (!match) throw new Error(`Daytona image must be an immutable registry/repository@sha256:<digest> reference, got "${input.image}"`);
@@ -419,7 +411,15 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
     });
     const receipt = { ...receiptFor(finalDir), runnerdSha256: await fileSha256(runnerd) };
     await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-    await rename(staging, finalDir);
+    try {
+      await rename(staging, finalDir);
+    } catch (error) {
+      const concurrent = await readReceipt(finalDir);
+      if (!concurrent) throw error;
+      await rm(staging, { recursive: true, force: true });
+      log(`Daytona image artifacts extracted concurrently at ${finalDir}`);
+      return concurrent;
+    }
     log(`Daytona image artifacts ready at ${finalDir}`);
     return receipt;
   } catch (error) {

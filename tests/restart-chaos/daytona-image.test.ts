@@ -193,8 +193,6 @@ describe("assertControllerMatchesImage", () => {
 });
 
 describe("copyImageToDir", () => {
-  // A fake skopeo that, like the real one, refuses a non-empty destination and
-  // leaves a half-written directory behind when a blob read times out.
   async function fakeSkopeo(root: string, failures: number): Promise<string> {
     const script = path.join(root, "skopeo");
     await writeFile(script, `#!/bin/sh
