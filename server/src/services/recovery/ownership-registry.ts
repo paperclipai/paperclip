@@ -34,6 +34,7 @@ import {
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
+import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
@@ -892,7 +893,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     [2]),
   {
     id: "issue_execution_lock", title: "Issue execution lock", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [2, 3, 7],
+    settle: settleIssueLock, invariantChecks: [2, 3, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.executionRunId,
         updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.executionRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
@@ -905,7 +906,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "issue_checkout_lock", title: "Issue checkout lock", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [2, 7],
+    settle: settleIssueLock, invariantChecks: [2, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.checkoutRunId,
         updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.checkoutRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
