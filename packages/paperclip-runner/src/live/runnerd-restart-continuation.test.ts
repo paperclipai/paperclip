@@ -368,7 +368,8 @@ it.each(["unread", "read"] as const)("delivers a steered message the restart los
     const durableEvents: PrpEvent[] = [];
     const initialEvents = session.events()[Symbol.asyncIterator]();
     const kinds = () => durableEvents.map(event => (event.payload as { kind?: unknown }).kind);
-    while (!kinds().includes("steering_acknowledgement") || (state === "read" && !kinds().includes("userMessage"))) {
+    // "read": the turn's input and the steered message are both userMessage items.
+    while (!kinds().includes("steering_acknowledgement") || (state === "read" && durableEvents.filter(event => event.eventType === "item.started" && (event.payload as { kind?: unknown }).kind === "userMessage").length < 2)) {
       const event = await initialEvents.next();
       if (event.done) throw new Error("initial event history ended early");
       durableEvents.push(event.value);

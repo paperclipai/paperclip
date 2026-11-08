@@ -18,7 +18,14 @@ describe("unreadSteeredMessageIds", () => {
   });
 
   it("drops a steer once its userMessage item starts, oldest first", () => {
-    expect(unreadSteeredMessageIds([ack("t1", "c1"), ack("t1", "c2"), userMessage("t1")])).toEqual(["c2"]);
+    expect(unreadSteeredMessageIds([userMessage("t1"), ack("t1", "c1"), ack("t1", "c2"), userMessage("t1")])).toEqual(["c2"]);
+  });
+
+  it("counts a steered userMessage reported before its acknowledgement as read", () => {
+    expect(unreadSteeredMessageIds([userMessage("t1"), userMessage("t1"), ack("t1", "c1"), ack("t1", "c2")])).toEqual(["c2"]);
+    // An early read belongs to its own turn only.
+    expect(unreadSteeredMessageIds([userMessage("t1"), userMessage("t1"), { eventType: "turn.failed", turnId: "t1" },
+      userMessage("t2"), ack("t2", "c3")])).toEqual(["c3"]);
   });
 
   it("counts every earlier steer as read when a later turn's input starts", () => {
@@ -32,7 +39,7 @@ describe("unreadSteeredMessageIds", () => {
 
   it("delivers a message once even if its acknowledgement repeats", () => {
     expect(unreadSteeredMessageIds([ack("t1", "c1"), ack("t1", "c1")])).toEqual(["c1"]);
-    expect(unreadSteeredMessageIds([ack("t1", "c1"), userMessage("t1"), ack("t1", "c1")])).toEqual([]);
+    expect(unreadSteeredMessageIds([userMessage("t1"), ack("t1", "c1"), userMessage("t1"), ack("t1", "c1")])).toEqual([]);
   });
 
   it("ignores acknowledgements without a message id", () => {
