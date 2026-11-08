@@ -223,7 +223,10 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
       if (initialChecklist) await ctx.input.evidence("chat-card-initial-required-checklist.json", initialChecklist);
       let otherCard: StatusCard | undefined; const sourceTasks = [t];
       if (id === "status-cards.archive-card") {
-        const research = await project(ctx, "Research"); sourceTasks.push(await task(ctx, "Research follow-up", research.id));
+        // The Research card asks for blockers, so give it one, as Launch has. With only a backlog task the
+        // summarizer searched for blockers that did not exist and its generation ran 171-182s against the 180s limit.
+        const research = await project(ctx, "Research");
+        sourceTasks.push(await task(ctx, "Lab access blocks research", research.id, { status: "blocked", description: "Research is blocked until the synthetic lab access request is approved." }));
         otherCard = await seedCard(ctx, ctx.input.fixtures.agent.id, worker.id, research.id, "Research");
         await pollUntil({ label: "independent Research card generation completion", deadlineAt: Date.now() + 45_000, load: () => ctx.allRuns(), accept: rows => rows.length === 2 && rows.every(row => row.status === "succeeded") });
       }
