@@ -140,7 +140,7 @@ const INTENT_LOOKBACK_MS = 60 * 60_000;
  * PostgreSQL case-insensitive regular expression. */
 const TEMPORARY_REFUSAL_PATTERN = "budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout";
 
-type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true };
+type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true; localExecutionsKnown?: true };
 
 async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<Map<string, Classification>> {
   const runIds = [...new Set(records.flatMap(record => record.owner.kind === "run" ? [record.owner.runId] : []))];
@@ -198,6 +198,11 @@ export type SettledRecord = { kind: string; recordId: string; runId: string | nu
  */
 export async function settleOwnableKind(db: Db, kindId: string, options: {
   now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
+  /** The caller's `skipRunIds` names every run this process is executing. A
+   * run record this process owns whose run is not among them has no holder
+   * here, so its owner is gone (`current_process_idle`). The periodic pass
+   * cannot know this process's executions and never concludes it. */
+  currentProcessIdle?: boolean;
 } = {}): Promise<SettledRecord[]> {
   return (await settleKind(db, kindId, options)).settled;
 }
@@ -221,6 +226,7 @@ export async function recheckSettlingKinds(db: Db, options: { now?: Date; probe?
 
 async function settleKind(db: Db, kindId: string, options: {
   now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
+  currentProcessIdle?: boolean;
 }, explicitKind?: OwnableKind): Promise<{ settled: SettledRecord[]; watched: number }> {
   const kind = explicitKind ?? OWNABLE_KINDS.find(candidate => candidate.id === kindId);
   if (!kind?.listInProgress || !kind.settle) throw new Error(`ownership kind ${kindId} has no settle path`);
@@ -246,7 +252,11 @@ async function settleKind(db: Db, kindId: string, options: {
   const settled: SettledRecord[] = [];
   let watched = 0;
   for (const record of unique) {
-    const proof = await classify(record.owner, runProofs, options.probe, now);
+    let proof = await classify(record.owner, runProofs, options.probe, now);
+    if (options.currentProcessIdle && record.runId && proof.verdict === "alive" && proof.reason === "current_process") {
+      proof = { verdict: "gone", reason: "current_process_idle" };
+    }
+    if (options.currentProcessIdle) proof = { ...proof, localExecutionsKnown: true };
     const outcome = await settleOrSurface(db, kind, record, proof, now);
     if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });

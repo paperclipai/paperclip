@@ -38,6 +38,9 @@ import {
   settleNativeTokenLease,
   type NativeTokenLeaseKind,
 } from "../native-runtime/native-token-lease-settlement.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
+import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
+import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -262,6 +265,56 @@ function leaseKind(id: string, title: string, obligation: Obligation, where: SQL
         recordId: row.id, companyId: row.companyId, runId: row.heartbeatRunId, issueId: row.issueId,
         owner: owner(row), updatedAt: row.updatedAt,
       })) };
+    },
+  };
+}
+
+const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+
+type RunLeaseRow = LeaseRow & { runStatus: string | null };
+
+/**
+ * Owner of an active run lease. While the run is active, the run owns it.
+ * Once the run is terminal, the release is owed by the process that holds the
+ * lease (`metadata.leaseController`, stamped when the lease became active).
+ * A lease saved before that stamp existed keeps, for one release, the run
+ * fact alone on a single-host server (the settle still refuses a run this
+ * boot owns); an ephemeral server cannot tell which host holds it, so it
+ * names no owner and stays visible as an I1 gap.
+ */
+function runLeaseOwner(row: RunLeaseRow): RecordOwner {
+  if (row.runStatus !== null && !TERMINAL_RUN_STATUSES.includes(row.runStatus)) return runOwner(row.heartbeatRunId);
+  const holder = controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_run_lease_active");
+  if (holder.kind !== "none") return holder;
+  return ephemeralServerEnabled() ? { kind: "none" } : runOwner(row.heartbeatRunId);
+}
+
+/** Shared path since Phase 2: replaces the "run terminal plus five minutes"
+ * orphaned active lease sweep. */
+function runLeaseKind(): OwnableKind {
+  const where = and(eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId));
+  const select = (db: Db) => db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+    heartbeatRunId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
+    metadata: environmentLeases.metadata, updatedAt: environmentLeases.updatedAt, runStatus: heartbeatRuns.status })
+    .from(environmentLeases).leftJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId));
+  const record = (row: RunLeaseRow): InProgressRecord => ({ recordId: row.id, companyId: row.companyId,
+    runId: row.heartbeatRunId, issueId: row.issueId, owner: runLeaseOwner(row), updatedAt: row.updatedAt });
+  return {
+    id: "environment_run_lease_active", title: "Run lease (active)", obligation: "ownership", storage: "database",
+    invariantChecks: [1, 2], settle: settleEnvironmentRunLease,
+    listInProgress: async (db, limit, offset) => {
+      const rows = await select(db).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
+      const result = page(rows, limit);
+      return { truncated: result.truncated, records: result.rows.map(record) };
+    },
+    listForRuns: async (db, runIds) => {
+      const records: InProgressRecord[] = [];
+      for (let index = 0; index < runIds.length; index += 500) {
+        const rows = await select(db).where(and(where,
+          inArray(environmentLeases.heartbeatRunId, [...runIds.slice(index, index + 500)])));
+        records.push(...rows.map(record));
+      }
+      return records;
     },
   };
 }
@@ -498,9 +551,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       })) };
     },
   },
-  leaseKind("environment_run_lease_active", "Run lease (active)", "ownership",
-    and(eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId)),
-    row => runOwner(row.heartbeatRunId)),
+  runLeaseKind(),
   leaseKind("environment_teardown_claim", "Teardown claim (in-flight cleanup)", "ownership",
     and(eq(environmentLeases.status, "pending_cleanup"), sql`(${environmentLeases.metadata}->>'pendingCleanupInFlight')::boolean is true`),
     row => controllerStamp(json(row.metadata).pendingCleanupController, "environment_teardown_claim")),

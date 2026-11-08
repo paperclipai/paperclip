@@ -6,6 +6,7 @@ import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notific
 import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
+import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -1568,7 +1569,8 @@ export function environmentService(db: Db) {
         releasedAt: null,
         failureReason: null,
         cleanupStatus: null,
-        metadata: withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata)),
+        // The holder stamp is written with the row that makes the lease active.
+        metadata: withEnvironmentLeaseController(withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata))),
         createdAt: now,
         updatedAt: now,
       };
@@ -1660,7 +1662,8 @@ export function environmentService(db: Db) {
                     expiresAt: input.expiresAt ?? null,
                     failureReason: null,
                     cleanupStatus: null,
-                    metadata: preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata)),
+                    metadata: withEnvironmentLeaseController(
+                      preserveReusableLeaseHandoff(previous?.metadata ?? null, withoutCleanupVerification(input.metadata))),
                     updatedAt: now,
                   })
                   .where(
