@@ -1046,12 +1046,28 @@ impl AcpxCommandExecutor {
             profile.candidate_admission.is_none()
                 && state.descriptor.sidecar_command == profile.command
                 && state.descriptor.sidecar_args == profile.args
-        }) && state.lifecycle == "suspended"
-            && state.identity.is_some()
-            && state.active_turn_id.is_none()
+        }) && state.identity.is_some()
             && !state.provider_exit_unconfirmed
-            && state.pending_events.is_empty()
             && state.pending_runtime_requests.is_empty()
+            && ((state.lifecycle == "suspended"
+                && state.active_turn_id.is_none()
+                && state.pending_events.is_empty())
+                || self.rebinds_interrupted_turn(state))
+    }
+
+    // A deploy that restarts the runner mid-turn resumes the SAME heartbeat
+    // run with a saved active turn. A same-build restart recovers that turn
+    // through `restore_conversation_after_lost_turn`; an upgraded build must
+    // take the same path instead of refusing the digest. Re-bind only when
+    // that recovery's own preconditions hold, so its provider-lifetime fence
+    // check still decides whether the conversation is restored or the turn is
+    // closed. A different run's active turn stays strict.
+    fn rebinds_interrupted_turn(&self, state: &AcpxDurableState) -> bool {
+        state.descriptor.run_id == self.context.run_id
+            && matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+            && state.active_turn_id.is_some()
+            && state.semantic_result.is_none()
+            && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
     }
 
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
@@ -6148,6 +6164,98 @@ mod tests {
             prior.descriptor.command_digest
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// The same heartbeat run resumes after a deploy restarted its runner
+    /// mid-turn (K14 upgrade mid-run). The old build saved an interrupted turn
+    /// under its launch profile digest.
+    fn interrupted_turn_after_runner_upgrade(
+        label: &str,
+    ) -> (PathBuf, DurableRunnerConfig, PathBuf) {
+        let (directory, mut config, _, saved) = settled_session_after_runner_upgrade(label);
+        config.run_id = "run-1".to_owned();
+        config.turn_id = "turn-1".to_owned();
+        config.item_id = "item-1".to_owned();
+        config.validate().unwrap();
+        let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
+        state.lifecycle = "turn_active".into();
+        state.active_turn_id = Some("turn-1".into());
+        let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        (directory, config, state_path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_turn_of_the_same_run_rebinds_to_the_upgraded_runner_launch_profile() {
+        let (directory, config, state_path) =
+            interrupted_turn_after_runner_upgrade("upgrade-lost-turn");
+        let prior: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        let current_digest = config
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .canonical_digest()
+            .unwrap();
+        assert_ne!(prior.launch_profile_digest, current_digest);
+
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered
+            .restore()
+            .expect("an interrupted turn saved by the previous build takes the same lost-turn recovery as a same-build restart");
+        let restored: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(restored.launch_profile_digest, current_digest);
+        assert_eq!(restored.identity, prior.identity);
+        assert_eq!(
+            restored.descriptor.command_digest,
+            prior.descriptor.command_digest
+        );
+        // The fixture's provider cannot start, so recovery takes the ordinary
+        // close path of a lost turn instead of failing the restore.
+        assert!(restored.active_turn_id.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_turn_after_upgrade_stays_strict_when_lost_turn_recovery_is_unsafe() {
+        let guards: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("provider_exit_unconfirmed", |state| {
+                state.provider_exit_unconfirmed = true
+            }),
+            ("accepted_semantic_result", |state| {
+                state.semantic_result = Some(json!({"reportedWorkDisposition": "done"}))
+            }),
+            ("unanswered_runtime_request", |state| {
+                state
+                    .pending_runtime_requests
+                    .insert("input-1".to_owned(), pending_input_request("input-1"));
+            }),
+            ("active_goal", |state| {
+                state.goal_projection = json!({"goal": {"status": "active"}})
+            }),
+        ];
+        for (label, seed) in guards {
+            let (directory, config, state_path) =
+                interrupted_turn_after_runner_upgrade("upgrade-lost-turn-strict");
+            let mut state: AcpxDurableState =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            seed(&mut state);
+            fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let error = recovered.restore().unwrap_err();
+            assert_eq!(
+                error.classification(),
+                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+                "{label}: {error}"
+            );
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[cfg(unix)]

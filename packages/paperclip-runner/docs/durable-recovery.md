@@ -110,8 +110,16 @@ digest, so restore cannot tell which part changed.
 Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
-- The session is suspended. It has no active turn, pending runtime request,
-  undelivered provider event, or unconfirmed provider exit.
+- The session is in one of these two states:
+  - **Suspended.** It has no active turn, pending runtime request, undelivered
+    provider event, or unconfirmed provider exit.
+  - **An interrupted turn of the same heartbeat run.** The deploy restarted the
+    runner mid-turn and the same run resumes. The turn has no accepted semantic
+    result, no pending runtime request, no unconfirmed provider exit, and no
+    active goal. These are the preconditions of the same-build lost-turn
+    recovery, which then runs unchanged: it restores the conversation once the
+    original provider lifetime loses its fence quorum, and otherwise closes the
+    lost turn. An active turn saved by a different run stays strict.
 - The startup has no candidate admission.
 - The saved descriptor names this startup's sidecar command and arguments.
 
