@@ -167,9 +167,10 @@ describe("legacy quota prestart retry", () => {
     try {
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId,f.source.id));
       await db.update(issues).set({responsibleUserId:f.userId,createdByUserId:f.userId}).where(eq(issues.id,f.issue.id));
-      await db.update(heartbeatRuns).set({errorCode:"refresh_token_expired",resultJson:{...f.source.resultJson,errorFamily:"refresh_token_expired"},contextSnapshot:{...f.source.contextSnapshot,aiConnection:{...runtime!.attribution,identity:runtime!.identity}}}).where(eq(heartbeatRuns.id,f.source.id));
-      expect(await connectionIntentService(db).requestForRunAuthFailure(f.source.id)).toBeNull();
+      await db.update(heartbeatRuns).set({startedAt:new Date(),finishedAt:new Date(),errorCode:"refresh_token_expired",resultJson:{...f.source.resultJson,errorFamily:"refresh_token_expired"},contextSnapshot:{...f.source.contextSnapshot,aiConnection:{...runtime!.attribution,identity:runtime!.identity}}}).where(eq(heartbeatRuns.id,f.source.id));
+      const repair = await connectionIntentService(db).requestForRunAuthFailure(f.source.id);
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id,f.members[0].binding.grantId)))[0].status).toBe("active");
+      expect(repair).toBeNull();
     } finally { await runtime?.cleanup(); }
   }, 30_000);
   it("does not attribute model-visible runner panic text without a host crash signal", async () => {
