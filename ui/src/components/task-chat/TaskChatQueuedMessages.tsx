@@ -31,6 +31,11 @@ import type {
 import { cn } from "@/lib/utils";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import {
+  queuedMessageAutoSteerDeadline,
+  queuedMessageAutoSteerEligible,
+  queuedMessageAutoSteerKey,
+} from "./queued-message-auto-steer";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -83,6 +88,10 @@ export interface TaskChatQueuedMessagesProps {
   onSteer: (commentId: string, revision: string) => Promise<void>;
   onInterrupt?: () => Promise<IssueQueuedCommentQueue | void>;
   onDiscard: (commentId: string, revision: string) => Promise<void>;
+  /** The queued message open in the editor; its automatic send waits for the save. */
+  editingCommentId?: string | null;
+  /** Steer eligible queued messages automatically after this delay; null keeps every message queued. */
+  autoSteerDelayMs?: number | null;
 }
 
 function SortableQueuedMessage({
@@ -91,20 +100,25 @@ function SortableQueuedMessage({
   busy,
   queueMutationDisabled,
   action,
+  autoSteerSecondsLeft,
   onEdit,
   onSteer,
   onInterrupt,
   onDiscard,
+  onCancelAutoSteer,
 }: {
   entry: IssueQueuedCommentEntry;
   queue: IssueQueuedCommentQueue;
   busy: boolean;
   queueMutationDisabled: boolean;
   action: QueueAction;
+  /** Seconds until this message is steered automatically, or null when it waits in the queue. */
+  autoSteerSecondsLeft: number | null;
   onEdit: () => void;
   onSteer: () => void;
   onInterrupt?: () => void;
   onDiscard: () => void;
+  onCancelAutoSteer: () => void;
 }) {
   const immutableResponse = entry.source?.kind === "interaction";
   const label = queuedMessageLabel(entry);
@@ -156,7 +170,32 @@ function SortableQueuedMessage({
         {label}
       </span>
 
-      {(queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || queue.protocol === "legacy" || entry.source?.requiresFreshSession ||
+      {autoSteerSecondsLeft !== null ? (
+        <span className="flex shrink-0 items-center gap-1" data-testid={`task-chat-queued-auto-steer-${entry.comment.id}`}>
+          <span className="px-1 text-xs text-muted-foreground tabular-nums">
+            Sending in {autoSteerSecondsLeft}s
+          </span>
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={!entry.canEdit}
+            title="Edit before it is sent"
+            className="flex h-7 shrink-0 items-center rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+            data-testid={`task-chat-queued-auto-steer-edit-${entry.comment.id}`}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={onCancelAutoSteer}
+            title="Keep this message in the queue"
+            className="flex h-7 shrink-0 items-center rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            data-testid={`task-chat-queued-auto-steer-cancel-${entry.comment.id}`}
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || queue.protocol === "legacy" || entry.source?.requiresFreshSession ||
         (queue.steeringDisposition !== "available" && onInterrupt) ? (
         <button
           type="button"
@@ -212,7 +251,7 @@ function SortableQueuedMessage({
         )}
       </button>
 
-      <DropdownMenu>
+      {autoSteerSecondsLeft === null ? <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
@@ -230,7 +269,7 @@ function SortableQueuedMessage({
             Edit message
           </DropdownMenuItem>
         </DropdownMenuContent>
-      </DropdownMenu>
+      </DropdownMenu> : null}
     </div>
   );
 }
@@ -243,8 +282,18 @@ export function TaskChatQueuedMessages({
   onSteer,
   onInterrupt,
   onDiscard,
+  editingCommentId = null,
+  autoSteerDelayMs = null,
 }: TaskChatQueuedMessagesProps) {
   const [entries, setEntries] = useState(queue.entries);
+  // Automatic steering: Cancel keeps a message queued for this view; each
+  // message revision gets at most one automatic attempt, so a failure falls
+  // back to the ordinary queue instead of retrying in a loop.
+  const [cancelledAutoSteer, setCancelledAutoSteer] = useState<ReadonlySet<string>>(() => new Set());
+  const attemptedAutoSteer = useRef(new Set<string>());
+  // First time this view offered each message revision for automatic steering.
+  const firstEligibleAt = useRef(new Map<string, number>());
+  const [now, setNow] = useState(() => Date.now());
   const latestQueue = useRef(queue);
   latestQueue.current = queue;
   const optimisticDeliveryIds = useRef(new Set<string>());
@@ -283,6 +332,48 @@ export function TaskChatQueuedMessages({
     () => entries.map((entry) => entry.comment.id),
     [entries],
   );
+
+  const autoSteerDeadlines = useMemo(() => {
+    const deadlines = new Map<string, number>();
+    if (autoSteerDelayMs === null) return deadlines;
+    for (const entry of entries) {
+      if (queuedMessageAutoSteerEligible({ queue, entry, cancelledIds: cancelledAutoSteer,
+        attemptedKeys: attemptedAutoSteer.current, editingCommentId })) {
+        const key = queuedMessageAutoSteerKey(entry);
+        if (!firstEligibleAt.current.has(key)) firstEligibleAt.current.set(key, Date.now());
+        deadlines.set(entry.comment.id, queuedMessageAutoSteerDeadline(entry, firstEligibleAt.current.get(key)!, autoSteerDelayMs));
+      }
+    }
+    return deadlines;
+  }, [entries, queue, cancelledAutoSteer, editingCommentId, autoSteerDelayMs]);
+
+  // Announce a new countdown once; the ticking text itself is not a live region.
+  const announcedCountdowns = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = [...autoSteerDeadlines.keys()].filter(id => !announcedCountdowns.current.has(id));
+    for (const id of fresh) announcedCountdowns.current.add(id);
+    if (fresh.length) setAnnouncement("Queued message will be sent into the active turn in a few seconds. Edit or Cancel to keep it.");
+  }, [autoSteerDeadlines]);
+
+  // Tick only while a countdown is visible.
+  useEffect(() => {
+    if (autoSteerDeadlines.size === 0) return;
+    // A countdown that restarts after an edit must not read a clock that stopped while it paused.
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, [autoSteerDeadlines.size]);
+
+  useEffect(() => {
+    if (pending || reordering) return;
+    const due = entries.find(entry => {
+      const deadline = autoSteerDeadlines.get(entry.comment.id);
+      return deadline !== undefined && deadline <= now;
+    });
+    if (!due) return;
+    attemptedAutoSteer.current.add(queuedMessageAutoSteerKey(due));
+    void runRowAction(due.comment.id, "steer");
+  });
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -441,6 +532,11 @@ export function TaskChatQueuedMessages({
                 busy={busy}
                 queueMutationDisabled={queueMutationDisabled}
                 action={action}
+                autoSteerSecondsLeft={(() => {
+                  const deadline = autoSteerDeadlines.get(entry.comment.id);
+                  return deadline === undefined ? null : Math.max(0, Math.ceil((deadline - now) / 1000));
+                })()}
+                onCancelAutoSteer={() => setCancelledAutoSteer(current => new Set(current).add(entry.comment.id))}
                 onEdit={() => onEdit(entry.comment.id)}
                 onSteer={() => void runRowAction(entry.comment.id, "steer")}
                 onInterrupt={
