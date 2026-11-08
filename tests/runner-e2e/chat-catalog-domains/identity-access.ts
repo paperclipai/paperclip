@@ -37,17 +37,20 @@ export function gradeForeignCompany(value: unknown) {
     "The response links the task in its own company, where the person can open it, instead of treating an identifier as access.");
   return c.result();
 }
-function foreignTaskLinked(o: IdentityObservation, foreign: Entity): boolean {
-  const prefix = o.state.foreignPrefix; const links = o.state.foreignTaskLinks;
-  if (typeof prefix !== "string" || !prefix || !Array.isArray(links)) return false;
-  return (links as RenderedConversationLink[]).some(link => {
+/** Rendered reply links to the foreign task. The UI renders a task link under the current company prefix and
+ * redirects it to the task's own company, so either prefix is a real route; verifyResult follows it to prove that. */
+function foreignTaskLinks(o: IdentityObservation, foreign: Entity): RenderedConversationLink[] {
+  const prefixes = [o.state.foreignPrefix, (o.company as Entity & { issuePrefix?: string }).issuePrefix].filter((value): value is string => typeof value === "string" && !!value);
+  const rendered = [...(o.renderedLinkEvidence ?? []), ...(Array.isArray(o.state.foreignTaskLinks) ? o.state.foreignTaskLinks as RenderedConversationLink[] : [])];
+  return rendered.filter(link => {
     try {
       const url = new URL(link.href, o.origin); const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-      return link.source === "reply" && url.origin === new URL(o.origin).origin && parts.length === 3 && parts[0] === prefix
+      return link.source === "reply" && url.origin === new URL(o.origin).origin && parts.length === 3 && prefixes.includes(parts[0]!)
         && parts[1] === "issues" && [foreign.identifier, foreign.id].includes(parts[2]);
     } catch { return false; }
   });
 }
+function foreignTaskLinked(o: IdentityObservation, foreign: Entity): boolean { return foreignTaskLinks(o, foreign).length > 0; }
 export const accessIdentityCases = [
 identityDefinition("access.other-company", async ctx => {
   const health = await ctx.input.api.get<{ deploymentMode: string }>("/api/health");
@@ -83,10 +86,12 @@ identityDefinition("access.other-company", async ctx => {
   },
   async verifyResult(ctx, state, value) {
     const source = ctx.input.page.url(); const other = entity(state, "otherCompany"); const foreign = entity(state, "foreignTask");
-    const o = identityObservation(value); const link = o && (state.foreignTaskLinks as RenderedConversationLink[] | undefined)?.find(row => foreignTaskLinked({ ...o, state: { ...o.state, foreignTaskLinks: [row] } }, foreign));
-    if (!link) throw new Error("No rendered reply link to the task in its own company");
+    const o = identityObservation(value); const link = o ? foreignTaskLinks(o, foreign)[0] : undefined;
+    if (!link) throw new Error("No rendered reply link to the foreign task");
     // Follow the agent's actual rendered link as the authenticated person; it must open the task in its own company.
+    const company = await ctx.input.api.get<{ issuePrefix: string }>(`/api/companies/${other.id}`);
     await conversationLinkLocator(ctx.input.page, link).first().click();
+    await ctx.input.page.waitForURL(url => url.pathname.split("/").filter(Boolean).map(decodeURIComponent).join("/") === `${company.issuePrefix}/issues/${foreign.identifier}`);
     await expect(ctx.input.page.getByRole("heading", { name: "Birch launch brief", exact: true }).first()).toBeVisible();
     await expect(ctx.input.page.getByText(String(state.foreignMarker), { exact: false }).first()).toBeVisible();
     await ctx.input.evidence("identity-human-foreign-visibility.json", { companyId: other.id, taskId: foreign.id, identifier: foreign.identifier, href: link.href, url: ctx.input.page.url(), authenticatedHumanVisible: true });
