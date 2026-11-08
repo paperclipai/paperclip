@@ -17,7 +17,9 @@ export function gradePortability(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-portability-evidence", !!o, "Actual package files, public provenance, permitted actor and independently saved resources are required."); if (!o) return c.result();
   if (o.scenarioId === "companies.export-company") {
     const preview = o.state.actualPackagePreview as CompanyPortabilityPreviewResult | undefined; const attachment = o.state.exportAttachment as IssueAttachment | undefined;
-    c.add("actual-supported-company-package", !!preview && preview.errors.length === 0 && preview.manifest.source?.companyId === o.companyId
+    const company = o.company as Entity & { name?: string };
+    // An inline import preview never fills manifest.source, so provenance is the package's own COMPANY.md entry naming the source company.
+    c.add("actual-supported-company-package", !!preview && preview.errors.length === 0 && !!company.name && preview.manifest.company?.name === company.name
       && preview.manifest.agents.some(agent => agent.name === o.state.originalAgentName) && preview.manifest.projects.some(row => row.name === "Launch")
       && preview.manifest.skills.some(skill => skill.slug === "launch-checklist") && typeof preview.files["COMPANY.md"] === "string"
       && Object.keys(preview.files).some(file => file.endsWith("AGENTS.md")) && Object.keys(preview.files).some(file => file.endsWith("SKILL.md")),
@@ -27,8 +29,10 @@ export function gradePortability(value: unknown) {
       && attachment.sha256 === o.state.downloadSha256 && o.state.actualDownloadStatus === 200 && o.state.fileVisible === true && o.state.agentExportPermissionStatus === 200,
       "A real CEO-generated package attachment is visible and its authorized exact download matches immutable upload hash/run identity; a prose promise or export page link alone is insufficient.");
     c.add("nonportable-credentials-explicit", o.state.packageContainsPrivateValue === false && o.state.noForeignScope === true
-      && !!preview?.envInputs.some(input => input.kind === "secret" && input.requirement === "required") && /credential|secret|sign.in|authentication/i.test(o.reply)
-      && /runtime|environment|configur|reconnect|prerequisite|not.*(?:authenticat|ready)/i.test(o.reply), "Actual secret values and foreign scope are absent while the package and reply retain omitted credentials/runtime prerequisites, without claiming an authenticated clone.");
+      // The product exports every secret_ref as a valueless input (requirement "optional" by design); the reply must name the setup-chosen omitted credential so the person knows what to supply.
+      && !!preview?.envInputs.some(input => input.key === o.state.secretKey && input.kind === "secret" && !input.defaultValue)
+      && [o.state.secretKey, o.state.secretName].some(name => typeof name === "string" && o.reply.toLowerCase().includes(name.toLowerCase())),
+      "Actual secret values and out-of-company resources are absent while the package keeps the omitted credential as a valueless input and the reply names that credential for the person to supply.");
   } else if (o.scenarioId === "companies.import-preview") {
     const preview = o.state.preview as CompanyPortabilityPreviewResult | undefined; const conflict = entity(o.state, "existing");
     c.add("actual-conflict-before-mutation", !!preview && preview.errors.length === 0 && preview.targetCompanyId === o.companyId
@@ -54,14 +58,15 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
   identityDefinition("companies.export-company", async ctx => {
     const source = await openStandingChat(ctx); const p = await project(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
     const secret = `synthetic-export-key-${randomBytes(24).toString("hex")}`; secretValues.set(ctx, secret); ctx.input.privateSecrets!.push(secret);
-    const stored = await ctx.input.api.postSensitive<{ id: string }>(`${root}/secrets`, { name: "Export prerequisite API key", key: "EXPORT_FIXTURE_KEY", provider: "local_encrypted", value: secret });
+    const secretName = "Export prerequisite API key"; const secretKey = "EXPORT_FIXTURE_KEY";
+    const stored = await ctx.input.api.postSensitive<{ id: string }>(`${root}/secrets`, { name: secretName, key: secretKey, provider: "local_encrypted", value: secret });
     const config = await ctx.input.api.get<AgentConfiguration>(`/api/agents/${ctx.input.fixtures.agent.id}/configuration`);
     await ctx.input.api.patch(`/api/agents/${ctx.input.fixtures.agent.id}`, { adapterConfig: { ...config.adapterConfig,
-      env: { ...(config.adapterConfig.env as Record<string, unknown>), EXPORT_FIXTURE_KEY: { type: "secret_ref", secretId: stored.id, version: "latest" } } } });
+      env: { ...(config.adapterConfig.env as Record<string, unknown>), [secretKey]: { type: "secret_ref", secretId: stored.id, version: "latest" } } } });
     const skill = await ctx.input.api.post<Entity>(`${root}/skills`, { name: "Launch checklist", slug: "launch-checklist", description: "A portable accessible launch review checklist.", markdown: "---\nname: launch-checklist\ndescription: Review a website launch.\n---\n\n# Launch checklist\nCheck headings, keyboard navigation and business contact details.\n", sharingScope: "company" });
-    return { sourceId: source.id, project: p, skill, originalAgentName: ctx.input.fixtures.agent.name, syntheticPrivateValueCreated: true };
+    return { sourceId: source.id, project: p, skill, originalAgentName: ctx.input.fixtures.agent.name, secretKey, secretName, syntheticPrivateValueCreated: true };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.export-company.v2",
     async act(ctx, state) {
       await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); state.agentExportPermissionStatus = await probeAgentPermission(ctx, `/api/companies/${ctx.input.fixtures.company.id}/exports/preview`, "POST", { include: { company: true, agents: true, projects: true, skills: true, issues: false } });
       const attachments = await ctx.input.api.get<IssueAttachment[]>(`/api/issues/${ctx.issue()!.id}/attachments`);
@@ -75,7 +80,11 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
       state.packageContainsPrivateValue = Object.values(files).some(file => text(file).includes(secretValues.get(ctx)!));
       const preview = await ctx.input.api.post<CompanyPortabilityPreviewResult>(`/api/companies/${ctx.input.fixtures.company.id}/imports/preview`, { source: { type: "inline", rootPath, files, expectedFileCount: Object.keys(files).length },
         target: { mode: "existing_company", companyId: ctx.input.fixtures.company.id }, collisionStrategy: "rename", include: { company: false, agents: true, projects: true, skills: true, issues: false } });
-      state.actualPackagePreview = preview; state.noForeignScope = preview.manifest.source?.companyId === ctx.input.fixtures.company.id;
+      const [company, agents, projects] = await Promise.all([ctx.input.api.get<Entity & { name: string }>(`/api/companies/${ctx.input.fixtures.company.id}`),
+        ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`), ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/projects`)]);
+      const names = (rows: Entity[]) => new Set(rows.map(row => row.name)); const agentNames = names(agents); const projectNames = names(projects);
+      state.actualPackagePreview = preview; state.noForeignScope = preview.manifest.company?.name === company.name
+        && preview.manifest.agents.every(agent => agentNames.has(agent.name)) && preview.manifest.projects.every(row => projectNames.has(row.name));
       await ctx.input.evidence("identity-real-company-package-download.json", { attachmentId: attachment.id, originatingRunId: attachment.originatingRunId, sha256: state.downloadSha256,
         fileInventory: Object.keys(files), manifest: preview.manifest, envInputs: preview.envInputs, packageContainsPrivateValue: state.packageContainsPrivateValue, actualDownloadStatus: 200 });
     },
