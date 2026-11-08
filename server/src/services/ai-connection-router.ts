@@ -82,7 +82,7 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
 }
 export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
-  constructor(readonly retryAt: string, readonly poolId: string) { super("All eligible pool accounts are over their usage limit. Waiting for usage to reset."); }
+  constructor(readonly retryAt: string, readonly poolId: string) { super("All eligible pool members are temporarily unavailable. Waiting for the earliest retry or an account update."); }
 }
 
 export const LOCAL_POOL_ADAPTERS = ["claude_local", "codex_local", "grok_local", "opencode_local"];
