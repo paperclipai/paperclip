@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeMultipleHandoffs } from "./runtime-multiple-handoffs.js";
+import { gradeMultipleHandoffs, promptCarriesComment } from "./runtime-multiple-handoffs.js";
 function valid() {
   const logo = { id: "logo", identifier: "RUN-1", title: "Logo", companyId: "company", status: "done", assigneeAgentId: "riley" };
   const artifact = { contentVerified: true, attachmentId: "logo-file", sha256: "same", content: "<svg><text>Acorn real-marker</text></svg>" };
@@ -38,3 +38,12 @@ it("rejects erasing an earlier Logo revision", () => { const o = valid(); o.stat
 it("rejects a reply written after the active worker stopped holding the saved instruction", () => { const o = valid(); o.state.workerRunningAtReply = false; expect(gradeMultipleHandoffs(o).passed).toBe(false); });
 it("rejects redirection to a different worker", () => { const o = valid(); o.tasks[1]!.assigneeAgentId = "riley"; expect(gradeMultipleHandoffs(o).passed).toBe(false); });
 it("rejects losing the original Website work", () => { const o = valid(); o.state.originalWebsiteRevisionRetained = false; expect(gradeMultipleHandoffs(o).passed).toBe(false); });
+it("finds a delivered comment in a native continuation that embeds it as JSON", () => {
+  const comment = { id: "b9e3ab32-934e-4d07-a5cf-e06fc28d574a", body: 'The headline must be **"Launch sooner"** — nothing else.\nKeep the logo.' };
+  const prompt = `## Paperclip Wake Payload\n${JSON.stringify({ messages: [{ id: comment.id, authorType: "agent", body: comment.body }] })}`;
+  expect(promptCarriesComment(prompt, comment)).toBe(true);
+  expect(promptCarriesComment(`plain ${comment.id}\n${comment.body}`, comment)).toBe(true);
+  expect(promptCarriesComment(prompt.replace(comment.id, "other"), comment)).toBe(false);
+  expect(promptCarriesComment(prompt.replace("Launch sooner", "Launch later"), comment)).toBe(false);
+  expect(promptCarriesComment(undefined, comment)).toBe(false);
+});
