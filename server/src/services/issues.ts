@@ -11362,8 +11362,40 @@ export function issueService(db: Db) {
           }
           Object.assign(patch, transition.patch);
         }
-        if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
-            issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
+        // A project move may give an unbound task its first configured source.
+        // Keep existing workspace bindings and explicit selections intact: the
+        // organizational project does not relocate files already in use.
+        if (isolatedWorkspacesEnabled && issueData.projectId &&
+            issueData.projectId !== receiptExisting.projectId &&
+            !receiptExisting.projectWorkspaceId && !receiptExisting.executionWorkspaceId &&
+            !receiptExisting.workspaceSelection && !receiptExisting.workspacePendingSelection &&
+            issueData.projectWorkspaceId === undefined && issueData.executionWorkspaceId === undefined &&
+            issueData.executionWorkspacePreference === undefined && issueData.executionWorkspaceSettings === undefined) {
+          const [oldProject] = receiptExisting.projectId
+            ? await tx.select({ executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects)
+                .where(and(eq(projects.id, receiptExisting.projectId), eq(projects.companyId, receiptExisting.companyId)))
+            : [];
+          const previousDefault = defaultIssueExecutionWorkspaceSettingsForProject(
+            gateProjectExecutionWorkspacePolicy(
+              parseProjectExecutionWorkspacePolicy(oldProject?.executionWorkspacePolicy),
+              isolatedWorkspacesEnabled,
+            ),
+          );
+          if (isDeepStrictEqual(receiptExisting.executionWorkspaceSettings, previousDefault)) {
+            const [newProject] = await tx.select({ executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, receiptExisting.companyId)));
+            const newPolicy = parseProjectExecutionWorkspacePolicy(newProject?.executionWorkspacePolicy);
+            patch.projectWorkspaceId = await resolveProjectDefaultWorkspaceId(tx, {
+              companyId: receiptExisting.companyId, projectId: issueData.projectId, policy: newPolicy,
+            });
+            const nextDefault = defaultIssueExecutionWorkspaceSettingsForProject(
+              gateProjectExecutionWorkspacePolicy(newPolicy, isolatedWorkspacesEnabled),
+            );
+            patch.executionWorkspaceSettings = nextDefault ? { ...nextDefault } : null;
+          }
+        }
+        if (patch.executionWorkspaceId !== undefined || patch.projectWorkspaceId !== undefined ||
+            patch.executionWorkspacePreference !== undefined || patch.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
             companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,
           }, tx));
