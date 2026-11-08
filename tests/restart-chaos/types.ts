@@ -34,6 +34,10 @@ export interface WaveOptions {
   daytonaImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
+  /** `--daytona-warm`: the reusable warm Daytona environment fixture. */
+  daytonaWarm?: boolean;
+  /** `--daytona-inherit`: a Daytona environment that inherits the lifecycle and leaves lease reuse unset. */
+  daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
   /**
