@@ -75,6 +75,8 @@ describe("secret provider registry", () => {
     expect(vault?.label).toMatch(/Vault|OpenBao/);
     expect(vault?.supportsManagedValues).toBe(true);
     expect(vault?.supportsExternalReferences).toBe(true);
+  });
+
   it("does not warn about POSIX permission bits on Windows", async () => {
     const dir = path.join(os.tmpdir(), `paperclip-secret-provider-${randomBytes(6).toString("hex")}`);
     tmpDirs.push(dir);

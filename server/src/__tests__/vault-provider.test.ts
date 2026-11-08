@@ -899,12 +899,12 @@ describe("parseExternalRef", () => {
 describe("VaultTokenManager", () => {
   function fakeGateway() {
     return {
-      loginKubernetes: vi.fn(async () => ({
+      loginKubernetes: vi.fn(async (_input: { role: string; jwt: string }) => ({
         clientToken: "hvs.kube.1",
         leaseDurationSec: 100,
         renewable: true,
       })),
-      loginApprole: vi.fn(async () => ({
+      loginApprole: vi.fn(async (_input: { roleId: string; secretId: string }) => ({
         clientToken: "hvs.approle.1",
         leaseDurationSec: 100,
         renewable: true,
@@ -1673,8 +1673,6 @@ describe("createVersion", () => {
       value: "v3",
       context: {
         companyId: "co",
-        deploymentId: "d",
-        secretId: "s",
         secretKey: "K",
         secretName: "K",
         version: 3,
@@ -1716,8 +1714,6 @@ describe("createVersion", () => {
       value: "v2",
       context: {
         companyId: "co",
-        deploymentId: "d",
-        secretId: "s",
         secretKey: "K",
         secretName: "K",
         version: 2,
@@ -1760,8 +1756,6 @@ describe("createVersion", () => {
         value: "v3-stale",
         context: {
           companyId: "co",
-          deploymentId: "d",
-          secretId: "s",
           secretKey: "K",
           secretName: "K",
           version: 3,
@@ -1800,7 +1794,6 @@ describe("createVersion", () => {
         {
           companyId: "co",
           deploymentId: "d",
-          secretId: "s",
           secretKey: "K",
           secretName: "K",
           version: 1,
