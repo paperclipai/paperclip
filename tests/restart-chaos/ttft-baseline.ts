@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
-import { seedChaosLab, type ChaosLab } from "./seed.js";
+import { chaosLifecycleOverrides, seedChaosLab, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
@@ -49,6 +49,43 @@ const restartTask = (nonce: string) => [
   `Then reply with a one-line comment that says \`DONE ${nonce}\` and mark this task done.`,
   "Do not create files, documents or other tasks.",
 ].join("\n");
+
+const MIDTURN_SLEEP_SECONDS = 40;
+const midturnTask = (nonce: string) => [
+  `Baseline mid-turn ${nonce}. First run the shell command \`python3 -c "import time; time.sleep(${MIDTURN_SLEEP_SECONDS})"\` and wait for it to finish.`,
+  `Then reply with a one-line comment that says \`DONE ${nonce}\` and mark this task done.`,
+  "Do not create files, documents or other tasks.",
+].join("\n");
+const midturnFollowUp = (nonce: string) =>
+  `Mid-turn follow-up ${nonce}: also reply with a one-line comment that says \`HELLO ${nonce}\`.`;
+
+/** The agent's replies naming `marker`, oldest first. A failed read throws: it is not a lost reply. */
+async function agentReplies(api: ChaosApi, issueId: string, marker: string): Promise<Json[]> {
+  const comments = await api.get<Json[]>(`/api/issues/${issueId}/comments`, 10_000);
+  return comments.filter(comment => Boolean(comment.authorAgentId) && String(comment.body ?? "").includes(marker))
+    .sort((a, b) => Date.parse(String(a.createdAt)) - Date.parse(String(b.createdAt)));
+}
+
+/**
+ * Steer a queued comment into the live turn once the runner reports steering
+ * available. Returns the acknowledgement time, or the disposition that blocked it.
+ */
+async function steerQueuedComment(api: ChaosApi, issueId: string, commentId: string): Promise<{ acknowledgedAt: string | null; disposition: string }> {
+  const deadline = Date.now() + 60_000;
+  let disposition = "none";
+  while (Date.now() < deadline) {
+    const queue = await api.get<Json>(`/api/issues/${issueId}/queued-comments`, 10_000).catch(() => null);
+    disposition = String(queue?.steeringDisposition ?? "none");
+    if (queue && disposition === "available" && queue.queueId && queue.targetRunId) {
+      await api.post(`/api/issues/${issueId}/queued-comments/${commentId}/steer`,
+        { queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId });
+      return { acknowledgedAt: new Date().toISOString(), disposition };
+    }
+    if (disposition === "unsupported") break;
+    await delay(500);
+  }
+  return { acknowledgedAt: null, disposition };
+}
 
 async function createTask(api: ChaosApi, lab: ChaosLab, adapter: AdapterId, title: string, description: string) {
   const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
@@ -105,21 +142,21 @@ async function allEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
  * command text (OpenCode's `bash`) counts as inside an open shell call, and the
  * sample is marked `commandUnverified`.
  */
-async function runInShellCall(api: ChaosApi, issueId: string): Promise<{ runId: string; commandUnverified: boolean } | null> {
+async function runInShellCall(api: ChaosApi, issueId: string, marker = RESTART_SLEEP_MARKER): Promise<{ runId: string; commandUnverified: boolean } | null> {
   const active = (await runsFor(api, issueId)).find(run => String(run.status) === "running");
   if (!active) return null;
   const events = await allEvents(api, runIdOf(active)).catch(() => []);
-  const open = openShellExecutions(events, RESTART_SLEEP_MARKER);
+  const open = openShellExecutions(events, marker);
   if (open.some(call => call.matched)) return { runId: runIdOf(active), commandUnverified: false };
   if (open.length && open.every(call => call.unlabelled)) return { runId: runIdOf(active), commandUnverified: true };
   return null;
 }
 
 /** Wait until the run is inside its shell tool call (started, not ended). */
-async function waitForShellCall(api: ChaosApi, issueId: string): Promise<{ runId: string; commandUnverified: boolean } | null> {
+async function waitForShellCall(api: ChaosApi, issueId: string, marker = RESTART_SLEEP_MARKER): Promise<{ runId: string; commandUnverified: boolean } | null> {
   const deadline = Date.now() + 4 * 60_000;
   while (Date.now() < deadline) {
-    const inside = await runInShellCall(api, issueId);
+    const inside = await runInShellCall(api, issueId, marker);
     if (inside) return inside;
     await delay(1_500);
   }
@@ -152,9 +189,9 @@ async function readyAdapters(api: ChaosApi, lab: ChaosLab, adapters: AdapterId[]
 
 function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   const ms = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(2)} s`;
-  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|"];
+  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|"];
   for (const row of baselineRows(runs)) {
-    lines.push(`| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`);
+    lines.push(`| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`);
   }
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
@@ -181,6 +218,15 @@ async function main() {
     phases: { type: "string", default: "coldwarm,restart" },
     out: { type: "string" },
     report: { type: "string" },
+    // Runner lifecycle for every seeded agent: per_turn, warm, or default (no stored
+    // lifecycle, so the server resolves the product default). Absent keeps the
+    // catalog profile's setting.
+    lifecycle: { type: "string" },
+    // Mid-turn follow-up delivery: queue (default, wait for the turn) or steer (into the live turn).
+    "midturn-mode": { type: "string", default: "queue" },
+    // Fault the control plane right after a steered comment is acknowledged (K1, K2 or K6).
+    "midturn-fault": { type: "string" },
+    "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
     const data = JSON.parse(await readFile(values.report, "utf8")) as { runs: BaselineRun[]; faults: BaselineFault[] };
@@ -193,6 +239,20 @@ async function main() {
   const restarts = Math.max(0, Number(values.restarts));
   const missing = requested.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]).filter(key => !process.env[key]);
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}; run: set -a; source ~/.secrets; set +a`);
+  const midturnMode = values["midturn-mode"];
+  if (midturnMode !== "queue" && midturnMode !== "steer") throw new Error("--midturn-mode must be queue or steer");
+  const midturnFault = values["midturn-fault"] as FaultKind | undefined;
+  if (midturnFault !== undefined && !["K1", "K2", "K6"].includes(midturnFault)) throw new Error("--midturn-fault must be K1, K2 or K6");
+  if (midturnFault && midturnMode !== "steer") throw new Error("--midturn-fault applies to --midturn-mode steer");
+  const lifecycle = values.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
+    throw new Error("--lifecycle must be per_turn, warm or default");
+  }
+  // default removes the catalog's pinned per_turn so the server resolves the
+  // product default; absent keeps the catalog setting.
+  const adapterConfigOverrides = lifecycle === "warm"
+    ? { lifecycleMode: "warm", idleTimeoutMs: Math.max(1, Number(values["idle-ms"])) }
+    : chaosLifecycleOverrides(lifecycle);
   const waveId = `ttft-${new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15)}`;
   const outDir = path.resolve(values.out ?? path.join(import.meta.dirname, "results", waveId));
   await mkdir(outDir, { recursive: true, mode: 0o700 });
@@ -201,6 +261,8 @@ async function main() {
   const tasks: Array<{ issueId: string; adapter: AdapterId; phase: BaselineRun["phase"] }> = [];
   const faults: BaselineFault[] = [];
   const runPhase = new Map<string, BaselineRun["phase"]>();
+  const agentLifecycles: Record<string, string> = {};
+  const midturn: Json[] = [];
   const timedOutIssues = new Set<string>();
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
@@ -218,9 +280,17 @@ async function main() {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: "local", adapters: requested, concurrency: requested.length, budgetCents: 3000,
-      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline });
+      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides });
     const adapters = await readyAdapters(api, lab, requested, timeline);
     if (!adapters.length) throw new Error("No agent passed lifecycle verification");
+    // Record what each agent actually stores: "unset" means the server resolves
+    // the product default, so a label alone cannot misdescribe the wave.
+    for (const adapter of adapters) {
+      const agent = await api.get<Json>(`/api/agents/${lab.agents[adapter].id}`, 10_000);
+      const stored = (agent.adapterConfig as Json | undefined)?.lifecycleMode;
+      agentLifecycles[adapter] = typeof stored === "string" ? stored : "unset";
+    }
+    timeline.add("baseline_agent_lifecycles", agentLifecycles);
 
     // Cold then warm, one task per adapter at a time, adapters in parallel.
     if (phases.has("coldwarm")) await Promise.all(adapters.map(async adapter => {
@@ -248,6 +318,51 @@ async function main() {
         timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
       }
     }));
+
+    // Mid-turn follow-up: a comment posted while the agent is inside a long
+    // tool call. Records when the comment landed and every run of the task,
+    // so the wait splits into "rest of the turn" and "hand-off".
+    const runMidturn = async (adapter: (typeof adapters)[number]) => {
+      for (let index = 0; index < samples; index += 1) {
+        const nonce = `${adapter}-m${index}-${Date.now().toString(36)}`;
+        const issueId = await createTask(api, lab, adapter, `TTFT mid-turn ${nonce}`, midturnTask(nonce));
+        tasks.push({ issueId, adapter, phase: "midturn" });
+        const inside = await waitForShellCall(api, issueId, `time.sleep(${MIDTURN_SLEEP_SECONDS})`);
+        if (!inside) {
+          timeline.add("baseline_midturn_sample_skipped", { adapter, issueId });
+          continue;
+        }
+        const comment = await api.post<Json>(`/api/issues/${issueId}/comments`, { body: midturnFollowUp(nonce) });
+        const steer = midturnMode === "steer" ? await steerQueuedComment(api, issueId, String(comment.id)) : null;
+        // Restart right after the steered comment was acknowledged: it must be answered exactly once.
+        const fault = midturnFault && steer?.acknowledgedAt
+          ? await supervisor.fault(midturnFault, 0, `midturn-${index}`) : null;
+        if (fault) faults.push({ kind: midturnFault!, readyAt: fault.readyAt ?? Date.now(), runIds: [inside.runId] });
+        // A steered comment is answered inside the same run; a queued one needs a second run.
+        const settled = await waitForRest(api, supervisor, issueId, steer?.acknowledgedAt ? 1 : 2);
+        if (settled.timedOut) {
+          timedOutIssues.add(issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "midturn" });
+          continue;
+        }
+        // Read the replies once; a failed read is recorded, not counted as a lost reply.
+        const replies = await agentReplies(api, issueId, `HELLO ${nonce}`)
+          .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
+        midturn.push({ adapter, issueId, mode: midturnMode, interruptedRunId: inside.runId, commentId: String(comment.id),
+          commentCreatedAt: String(comment.createdAt), steer, fault: fault ? midturnFault : null,
+          replyCount: Array.isArray(replies) ? replies.length : null,
+          replyReadError: Array.isArray(replies) ? null : replies.error,
+          replyCreatedAt: Array.isArray(replies) && replies[0] ? String(replies[0].createdAt) : null,
+          runs: settled.runs });
+        timeline.add("baseline_midturn_done", { adapter, issueId, runs: settled.runs.length });
+      }
+    };
+    // Every fault restarts the one shared server, so faulted samples run one
+    // at a time: a restart must never land in another sample's comment or steer.
+    if (phases.has("midturn")) {
+      if (midturnFault) for (const adapter of adapters) await runMidturn(adapter);
+      else await Promise.all(adapters.map(runMidturn));
+    }
 
     // Restart recovery: one in-flight tool call per adapter, then one fault crosses all of them.
     const kinds: FaultKind[] = ["K1", "K2"];
@@ -297,12 +412,19 @@ async function main() {
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
       }
     }
-    const data = { waveId, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
-      timedOutTasks: timedOutIssues.size, samples, restarts, gitSha: process.env.GIT_SHA ?? null, runs, faults };
+    const data = { waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+      timedOutTasks: timedOutIssues.size, samples, restarts, midturn, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
     process.stdout.write(report(runs, faults));
     if (timedOutIssues.size) process.stdout.write(`\n${timedOutIssues.size} sample(s) timed out and were left out.\n`);
+    // Every answered mid-turn comment must be answered exactly once.
+    const wrongReplies = midturn.filter(sample => sample.replyCount !== 1);
+    for (const sample of wrongReplies) {
+      process.stdout.write(`\nMid-turn sample ${String(sample.adapter)} ${String(sample.issueId)}: ${sample.replyReadError
+        ? `reply read failed (${String(sample.replyReadError)})` : `${String(sample.replyCount)} replies, expected 1`}\n`);
+    }
+    if (wrongReplies.length) process.exitCode = 1;
     process.stdout.write(`\nWrote ${outDir}\n`);
   } finally {
     // Always stop the wrapper-owned embedded Postgres (SysV shared memory is scarce).

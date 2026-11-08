@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { setTimeout as wait } from "node:timers/promises";
 import { Readable } from "node:stream";
 import { appendFileSync, readdirSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,11 +12,23 @@ import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+
+// Pass-through, so one test can report a changed archive between the two
+// identity reads that bracket encryption.
+const lstatOverride = vi.hoisted(() => ({ current: null as null | ((file: string, real: (file: string) => Promise<import("node:fs").Stats>) => Promise<import("node:fs").Stats>) }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const lstat = ((file: Parameters<typeof actual.lstat>[0], ...rest: unknown[]) => lstatOverride.current
+    ? lstatOverride.current(String(file), target => actual.lstat(target))
+    : (actual.lstat as (...args: unknown[]) => unknown)(file, ...rest)) as typeof actual.lstat;
+  return { ...actual, lstat, default: { ...actual, lstat } };
+});
 
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalDatabaseUrl && !/^remote_workspace_[a-z_]*test$/.test(new URL(externalDatabaseUrl).pathname.slice(1))) {
@@ -36,10 +51,10 @@ suite("remote workspace snapshot storage", () => {
     storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
   });
   afterEach(async () => { vi.unstubAllEnvs(); await db.delete(executionWorkspaceSnapshots); await fs.rm(root, { recursive: true, force: true }); });
-  async function fixture() {
+  async function fixture(content: string | Buffer = "acknowledged workspace content\n") {
     const companyId = randomUUID(), workspaceId = randomUUID(), operationId = randomUUID();
     const cwd = path.join(root, "source"), archivePath = path.join(root, "archive.pcws"); await fs.mkdir(cwd);
-    await fs.writeFile(path.join(cwd, "saved.txt"), "acknowledged workspace content\n");
+    await fs.writeFile(path.join(cwd, "saved.txt"), content);
     const captured = await captureRemoteWorkspaceDirectory({ cwd, archivePath });
     const row = await beginWorkspaceSnapshot(db, { companyId, workspaceId, operationId, generation: 1, epoch: 3 });
     const upload = { db, storage, snapshotId: row.id, companyId, workspaceId, archivePath, manifestDigest: captured.manifestDigest };
@@ -58,6 +73,18 @@ suite("remote workspace snapshot storage", () => {
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("acknowledged workspace content\n");
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
+  });
+  it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
+    const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
+    const verifiedArchivePath = path.join(root, "verified-large.pcws");
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath });
+    expect((await fs.readFile(verifiedArchivePath)).equals(await fs.readFile(f.archivePath))).toBe(true);
+    await fs.rm(f.cwd, { recursive: true }); await fs.rm(f.archivePath);
+    const restoredArchive = path.join(root, "cold-large.pcws"), targetDir = path.join(root, "cold-large");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restoredArchive });
+    expect((await fs.readFile(restoredArchive)).equals(await fs.readFile(verifiedArchivePath))).toBe(true);
+    await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir, expectedManifestDigest: ref.manifestDigest });
+    expect((await fs.readFile(path.join(targetDir, "saved.txt"))).equals(content)).toBe(true);
   });
   it.each(["fresh", "uploaded", "lost-reply"])("reuses one authenticated %s readback for a complete cold restore", async state => {
     const f = await fixture(), put = storage.putFile.bind(storage);
@@ -119,6 +146,51 @@ suite("remote workspace snapshot storage", () => {
     await expect(uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath })).rejects.toThrow();
     expect(await fs.lstat(verifiedArchivePath).catch(() => null)).toBeNull();
     expect((await fs.readdir(root)).some(name => name.startsWith(".workspace-upload-readback-"))).toBe(false);
+  });
+  it("confirms only the stored size when the backend verified every uploaded part", async () => {
+    const f = await fixture(randomBytes(2 * 1024 * 1024 + 91)); const put = storage.putFile.bind(storage);
+    let sourceFile: string | undefined;
+    storage.putFile = async input => {
+      sourceFile = "sourceFile" in input ? input.sourceFile : undefined;
+      return { ...await put(input), integrity: "server_verified_md5" };
+    };
+    const get = vi.spyOn(storage, "getObject"), head = vi.spyOn(storage, "headObject");
+    const ref = await uploadWorkspaceSnapshot(f.upload);
+    expect(sourceFile).toMatch(/archive\.encrypted$/);
+    expect(get).not.toHaveBeenCalled();
+    expect(head).toHaveBeenCalledWith(f.companyId, ref.objectKey, expect.anything());
+    const restoredArchive = path.join(root, "restored-verified.pcws");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restoredArchive });
+    expect((await fs.readFile(restoredArchive)).equals(await fs.readFile(f.archivePath))).toBe(true);
+  });
+  it("still reads back a server-verified upload when the caller keeps the read-back file", async () => {
+    const f = await fixture(); const put = storage.putFile.bind(storage);
+    storage.putFile = async input => ({ ...await put(input), integrity: "server_verified_md5" });
+    const get = vi.spyOn(storage, "getObject"), verifiedArchivePath = path.join(root, "kept.pcws");
+    await uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath });
+    expect(get).toHaveBeenCalled();
+    expect((await fs.readFile(verifiedArchivePath)).equals(await fs.readFile(f.archivePath))).toBe(true);
+  });
+  it("rejects a server-verified upload whose stored size differs", async () => {
+    const f = await fixture(); const put = storage.putFile.bind(storage), head = storage.headObject.bind(storage);
+    storage.putFile = async input => ({ ...await put(input), integrity: "server_verified_md5" });
+    storage.headObject = async (...args) => { const result = await head(...args); return { ...result, contentLength: (result.contentLength ?? 0) + 1 }; };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("object_size_mismatch");
+    const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(row?.status).toBe("pending");
+  });
+  it("rejects an archive that changes while it is encrypted, before any upload", async () => {
+    const f = await fixture(); const put = vi.spyOn(storage, "putFile");
+    let reads = 0;
+    lstatOverride.current = async (file, real) => {
+      const stats = await real(file);
+      if (file !== f.archivePath || ++reads < 2) return stats;
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: stats.mtimeMs + 1 });
+    };
+    try { await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("archive_changed"); }
+    finally { lstatOverride.current = null; }
+    expect(reads).toBe(2);
+    expect(put).not.toHaveBeenCalled();
   });
   it("reconciles an upload whose reply was lost after object persistence, without the old scratch file", async () => {
     const f = await fixture(); const put = storage.putFile.bind(storage); let loseReply = true;
@@ -328,20 +400,22 @@ suite("remote workspace snapshot storage", () => {
     await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("cancels an active object body and removes private decryption scratch before rejecting", async () => {
-    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const f = await fixture(randomBytes(3 * 1024 * 1024 + 137)), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));
     const controller = new AbortController();
-    let produced = 0, closed = false;
+    let produced = 0, reads = 0, closed = false;
     const body = new Readable({
       highWaterMark: 1,
       read() {
-        if (produced === 2) { controller.abort(new Error("client disconnected")); return; }
-        this.push(ciphertext.subarray(produced, ++produced));
+        if (reads++ === 2) { controller.abort(new Error("client disconnected")); return; }
+        const start = produced; produced += 1024 * 1024 + 17;
+        this.push(ciphertext.subarray(start, produced));
       },
       destroy(error, callback) { closed = true; callback(error); },
     });
     storage.getObject = vi.fn(async (_companyId, _objectKey, options) => {
-      expect(options?.signal).toBe(controller.signal);
+      expect(options?.signal).toBeInstanceOf(AbortSignal);
+      expect(options?.signal?.aborted).toBe(false);
       return { stream: body, contentLength: ciphertext.length };
     });
     const scratchRoot = path.join(root, "private-scratch"); await fs.mkdir(scratchRoot);
@@ -356,5 +430,99 @@ suite("remote workspace snapshot storage", () => {
       expect(await fs.readdir(scratchRoot)).toEqual([]);
       await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { temp.mockRestore(); }
+  });
+  it.each(["headers", "body"])("closes a stalled S3 %s request before returning a retryable download failure", async phase => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));
+    let ready!: () => void, closed!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const disconnected = new Promise<void>(resolve => { closed = resolve; });
+    const server = createServer((req, res) => {
+      req.socket.once("close", closed);
+      if (phase === "headers") { ready(); return; }
+      res.writeHead(200, { "content-length": String(ciphertext.length) });
+      res.write(ciphertext.subarray(0, 1));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "fixture-access-key");
+    vi.stubEnv("AWS_SECRET_ACCESS_KEY", "fixture-secret-key");
+    vi.stubEnv("AWS_SESSION_TOKEN", "");
+    const remote = createStorageService(createS3StorageProvider({ bucket: "bucket", region: "us-east-1", forcePathStyle: true,
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }));
+    const get = remote.getObject.bind(remote);
+    remote.getObject = async (...args) => {
+      const object = await get(...args);
+      object.stream.once("data", ready);
+      return object;
+    };
+    const controller = new AbortController(), targetPath = path.join(root, "stalled.pcws");
+    const scratch = path.join(root, "download-scratch"); await fs.mkdir(scratch);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: remote, reference: ref, targetPath,
+      signal: controller.signal, temporaryParent: scratch }).then(() => ({ succeeded: true }), error => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(300_001);
+      const outcome = await Promise.race([result, wait(100).then(() => ({ pending: true }))]);
+      expect(outcome).toMatchObject({ name: "TimeoutError", message: "remote_workspace_snapshot_download_stalled" });
+      await Promise.race([disconnected, wait(1_000).then(() => { throw new Error("S3 request still connected after timeout"); })]);
+      expect(controller.signal.aborted).toBe(false);
+      expect(await fs.readdir(scratch)).toEqual([]);
+      await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: ref.id })).toEqual(ref);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath });
+      expect(await fs.readFile(targetPath)).toEqual(await fs.readFile(f.archivePath));
+    } finally {
+      controller.abort(); await result;
+      vi.useRealTimers(); server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+  it("lets an S3 download exceed five minutes while bytes keep arriving", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));
+    let response!: ServerResponse, consumed = 0;
+    const observed = Array.from({ length: 4 }, () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>(ready => { resolve = ready; });
+      return { promise, resolve };
+    });
+    const width = Math.ceil(ciphertext.length / 4);
+    const server = createServer((_req, res) => {
+      response = res; res.writeHead(200, { "content-length": String(ciphertext.length) });
+      res.write(ciphertext.subarray(0, width));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "fixture-access-key");
+    vi.stubEnv("AWS_SECRET_ACCESS_KEY", "fixture-secret-key");
+    vi.stubEnv("AWS_SESSION_TOKEN", "");
+    const remote = createStorageService(createS3StorageProvider({ bucket: "bucket", region: "us-east-1", forcePathStyle: true,
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }));
+    const get = remote.getObject.bind(remote);
+    remote.getObject = async (...args) => {
+      const object = await get(...args);
+      object.stream.on("data", () => observed[consumed++]?.resolve());
+      return object;
+    };
+    const controller = new AbortController(), targetPath = path.join(root, "progressing.pcws");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: remote, reference: ref, targetPath, signal: controller.signal });
+    const settled = result.catch(error => error);
+    try {
+      await observed[0]!.promise;
+      for (let index = 1; index < 4; index += 1) {
+        await vi.advanceTimersByTimeAsync(240_000);
+        response.write(ciphertext.subarray(index * width, (index + 1) * width));
+        await observed[index]!.promise;
+      }
+      response.end(); await result;
+      expect(await fs.readFile(targetPath)).toEqual(await fs.readFile(f.archivePath));
+      await vi.advanceTimersByTimeAsync(300_001);
+      expect(controller.signal.aborted).toBe(false);
+    } finally {
+      controller.abort(); await settled;
+      vi.useRealTimers(); server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });

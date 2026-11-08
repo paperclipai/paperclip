@@ -45,13 +45,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const baseInput = scenario === "omitted_policy" ? { ...f.input, executionPolicy: undefined } : f.input;
     // Descendant trust is the subject here, so keep the deeper placement (board-style nesting).
     const input = scenario === "descendant" ? { ...baseInput, parentDepthPolicy: "allow_nested" as const } : baseInput;
+    // The selection passes trust checks, but the workspace belongs to an
+    // ancestor, so the child still gets its own workspace instead of sharing it.
     await expect(issueService(db).create(f.companyId, input)).resolves.toMatchObject({
-      parentId: f.input.parentId, executionWorkspaceId: f.workspace.id,
+      parentId: f.input.parentId, executionWorkspaceId: null,
     });
   });
   it("allows a parent run to patch an authorized child's existing workspace settings", async () => {
     const f = await fixture();
     const child = await issueService(db).create(f.companyId, { ...f.input, status: "backlog", responsibleUserId: f.userId });
+    // Bind the child as an older release did, so the patch path still sees a bound workspace.
+    await db.update(issues).set({ executionWorkspaceId: f.workspace.id, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, child.id));
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

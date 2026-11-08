@@ -34,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
   RUNNER_PRP_PROTOCOL_MIN,

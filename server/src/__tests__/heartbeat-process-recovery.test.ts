@@ -7557,11 +7557,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, runId))
       .then((rows) => rows[0] ?? null);
+    // The interrupted preparation spent no provider work: it starts its own
+    // lane and keeps the one transient failure already spent (section F).
     expect(successor).toMatchObject({
       agentId,
       status: "scheduled_retry",
-      scheduledRetryAttempt: 2,
+      scheduledRetryAttempt: 1,
       scheduledRetryReason: "interrupted_preparation",
+      contextSnapshot: expect.objectContaining({
+        executionRetryAccounting: expect.objectContaining({ failureRetries: 1 }),
+      }),
     });
     const sourceIssue = await db
       .select({ status: issues.status })

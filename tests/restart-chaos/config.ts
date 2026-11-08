@@ -86,13 +86,16 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
+      lifecycle: { type: "string" },
+      "k4-hold-max-seconds": { type: "string" },
+      "crash-point": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -113,11 +116,23 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   // K13 restart storm: faults come from the storm clock, and `--tasks` is the
   // pool that keeps `--concurrency` tasks in flight until the storm ends.
   const stormMinutes = values["storm-minutes"] === undefined ? undefined : integer(values["storm-minutes"], "storm-minutes", 60, 1, 240);
+  const lifecycle = values.lifecycle;
+  const crashPoint = values["crash-point"]?.trim();
+  if (crashPoint !== undefined) {
+    if (!/^[a-z0-9_.]+(?::[1-9][0-9]*)?(?:,[a-z0-9_.]+(?::[1-9][0-9]*)?)*$/.test(crashPoint)) {
+      throw new Error("--crash-point expects <name>[:<nth>][,<name>[:<nth>]...]");
+    }
+    for (const key of ["faults", "triggers", "storm-minutes"] as const) {
+      if (values[key] !== undefined) throw new Error(`--crash-point replaces scheduled faults; do not combine it with --${key}`);
+    }
+  }
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices),
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? FAULT_KINDS : ["K1", "K2", "K4"]),
+    // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
+    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? FAULT_KINDS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -127,6 +142,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
+    ...(lifecycle ? { lifecycle } : {}),
+    // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
+    ...(values["k4-hold-max-seconds"] !== undefined
+      ? { k4HoldMaxMs: integer(values["k4-hold-max-seconds"], "k4-hold-max-seconds", 300, 120, 600) * 1000 } : {}),
+    ...(crashPoint ? { crashPoint } : {}),
   };
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {

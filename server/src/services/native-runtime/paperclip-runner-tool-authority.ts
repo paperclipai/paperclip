@@ -291,11 +291,11 @@ const TASK_API_PATHS: Readonly<Record<string, readonly [string, string]>> = {
   write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"],
 };
 
-function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
+export function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
   const [method, path] = TASK_API_PATHS[tool]!;
   const operation = runnerApiCatalog().find(operation => operation.method === method && operation.path === path);
   if (!operation) throw new Error("runner_task_api_operation_unavailable");
-  const body = tool === "comment_on_task" ? { body: input.body } : tool === "write_task_document"
+  const body = tool === "comment_on_task" ? { body: input.body, ...(input.resume === true ? { resume: true } : {}) } : tool === "write_task_document"
     ? { title: input.title, format: "markdown", body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
   return { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) };
 }

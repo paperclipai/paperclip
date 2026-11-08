@@ -17,6 +17,7 @@ import { getExecutionBlocker } from "./execution-blocker.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -185,7 +186,10 @@ describe("task Retry after inherited native cleanup quarantine", () => {
         }));
       }
       if (mode === "worker_alive") {
-        await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid })
+        // This test process, with its real start time: the shared prover then
+        // sees the same live worker, not a reused PID.
+        const startedAt = new Date((await currentProcessStartedAtMs())!);
+        await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid, processStartedAt: startedAt })
           .where(eq(heartbeatRuns.companyId, f.companyId));
         const [owner] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.ownerId));
         await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.ownerId, agentId: f.agentId,

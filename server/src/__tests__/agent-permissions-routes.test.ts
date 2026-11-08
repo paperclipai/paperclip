@@ -49,6 +49,7 @@ const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
   update: vi.fn(),
+  updateAndTransition: vi.fn(),
   rollbackConfigRevision: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
@@ -244,6 +245,7 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
             Promise.resolve(resolve([{
               id: companyId,
               name: "Paperclip",
+              issuePrefix: "PAP",
               requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
             }])),
           ),
@@ -1708,6 +1710,50 @@ describe("agent permission routes", () => {
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["PATCH status", (base: string) => request(base).patch(`/api/agents/${agentId}`).send({ status: "terminated" })],
+    ["POST terminate", (base: string) => request(base).post(`/api/agents/${agentId}/terminate`).send({})],
+  ])("keeps agent termination board-only through %s, even for an agent allowed to configure the target", async (_route, send) => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, send);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("only a board user can terminate an agent");
+    expect(res.body.error).toContain(`[the agent's profile](/PAP/agents/${agentId})`);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelInvocationsForAgents).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("still lets a board user terminate through PATCH status", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    mockAgentService.updateAndTransition.mockResolvedValue({ ...baseAgent, status: "terminated" });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ status: "terminated" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("terminated");
+    expect(mockAgentService.updateAndTransition).toHaveBeenCalledWith(agentId, "terminate", expect.anything(), expect.anything());
+  });
+
   it("terminates directly when no open hire approval is linked", async () => {
     const idleAgent = { ...baseAgent, status: "idle" };
     const terminatedAgent = { ...baseAgent, status: "terminated" };
@@ -2400,5 +2446,6 @@ vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
     requestHire: (...args: unknown[]) => mockAgentService.create(...args),
     approveHire: (...args: unknown[]) => mockAgentService.activatePendingApproval(...args),
     terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
+    updateAndTransition: (...args: unknown[]) => mockAgentService.updateAndTransition(...args),
   }) };
 });

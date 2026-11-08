@@ -92,6 +92,11 @@ export const heartbeatRuns = pgTable(
     // Legacy controller lease. A PID alone is not an identity across containers.
     controllerBootId: uuid("controller_boot_id"),
     controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
+    // Server process that claimed the legacy controller lease ({bootId, pid,
+    // hostHash, processStartedAt}). It names the controller only while its
+    // bootId equals controller_boot_id; revocation swaps the boot id, so a
+    // revoked lease never keeps it. Null on rows saved before it existed.
+    controllerProcess: jsonb("controller_process").$type<Record<string, unknown>>(),
     executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
@@ -151,6 +156,11 @@ export const heartbeatRuns = pgTable(
     treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
       .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
       .where(sql`${table.status} = 'cancelled' and ${table.resultJson} ? 'treeHoldSuppression'`),
+    // The `legacy_controller_lease` ownership kind (reconciler listing and
+    // settle watch): outstanding legacy controller leases of running runs.
+    legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
+      .on(table.controllerLeaseExpiresAt)
+      .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

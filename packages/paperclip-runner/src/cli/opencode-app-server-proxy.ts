@@ -11,7 +11,11 @@ import type {
 } from "../contracts/harness-driver.js";
 import { OpenCodeServerDriver } from "../drivers/opencode/opencode-server-driver.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
-import { openCodeProxyCompletionContract, openCodeProxyTaskEnvelope } from "./opencode-proxy-task-envelope.js";
+import {
+  openCodeProxyCompletionContract,
+  openCodeProxyTaskEnvelope,
+  sameOpenCodeProxyCompletionContract,
+} from "./opencode-proxy-task-envelope.js";
 import {
   openCodeProxyItemNotification,
   openCodeProxyToolNotification,
@@ -50,6 +54,11 @@ let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
 let activeRunId = process.env.PAPERCLIP_RUN_ID ?? "runnerd-run";
+// The contract the open session checks finish claims against. The launch
+// environment and the launch parameters can belong to different runs: runnerd
+// restores a saved session with its saved contract while its environment
+// already names the run being attached.
+let activeCompletionContract: ReturnType<typeof openCodeProxyCompletionContract> = undefined;
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
@@ -166,6 +175,7 @@ async function open(
       workingDirectory: cwd,
     });
   }
+  activeCompletionContract = openCodeProxyCompletionContract(params.completionContract);
   eventPump = pumpEvents(session);
   void eventPump.catch((error) => failProxy(error));
   return threadResponse(
@@ -354,13 +364,16 @@ async function handle(message: RpcMessage): Promise<void> {
         const runId = params.paperclipRunId;
         if (typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId))
           throw new Error("Invalid Paperclip run identity");
-        if (runId !== activeRunId) {
+        // Runnerd sends the attached run's contract with its run identity;
+        // the launch parameters may still name an earlier run's contract,
+        // even when the launch environment already names this run.
+        const contract = openCodeProxyCompletionContract(params.paperclipCompletionContract);
+        if (runId !== activeRunId
+          || (contract !== undefined && !sameOpenCodeProxyCompletionContract(contract, activeCompletionContract))) {
           if (!session.attachRun) throw new Error("OpenCode run attachment unavailable");
-          // Runnerd sends the attached run's contract with its run identity;
-          // the launch parameters still name the first run's contract.
-          const contract = openCodeProxyCompletionContract(params.paperclipCompletionContract);
           await session.attachRun({ runId, ...(contract ? { completionContract: contract } : {}) });
           activeRunId = runId;
+          if (contract !== undefined) activeCompletionContract = contract;
         }
       }
       const inputItems = Array.isArray(params.input)

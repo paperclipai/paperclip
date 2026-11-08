@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { agents, environments, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginHasAgentEnvironments, pluginServesAgentEnvironment } from "./plugin-environment-driver.js";
@@ -14,6 +15,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
   return {
     async onReady(agent) {
+      await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: agent.companyId, trigger: "pause_lifted" }));
       await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
     },
     async requiredPluginIds(agent) {
@@ -60,7 +62,8 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
           ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
-        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) return "pending";
+        if (!await heartbeat.stopInvocationsForAgents(ids, reason,
+          { preservePauseDeferred: agent.lifecycleState === "pausing" })) return "pending";
       }
       return "complete";
     },
