@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   CODEX_UPDATE_PLAN_TOOL_CONFIG,
@@ -30,11 +30,12 @@ describe("Codex security configuration", () => {
     }
   });
 
+  beforeAll(() => { if (process.platform === "win32") resolvePinnedCodexCommand(); }, 120_000);
   it("uses the same actual pinned executable for native defaults and direct evals without a global Codex PATH", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
     expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
-      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe(process.platform === "win32" ? "codex-cli 0.166.0" : "codex-cli 0.160.0");
   });
 
   it.skipIf(process.platform === "win32")("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {
@@ -293,7 +294,7 @@ describe("Codex security configuration", () => {
 
   it("makes the installed npm Codex native sandbox executable readable without exposing its parent workspace", () => {
     const command = evalProviderTransportOptions("codex").codexCommand!;
-    const manifest = createRequire(command).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);
+    const manifest = process.platform === "win32" ? command : createRequire(command).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);
     const vendor = resolve(dirname(manifest), "vendor");
     const roots = codexExecutableReadOnlyRoots({ HOME: "/private-provider-home", PATH: "/usr/bin" }, command);
     expect(roots).toContain(process.platform === "win32" ? command : vendor);

@@ -50,6 +50,7 @@
     "@1password/sdk": "0.5.0",
     "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
+    "@openai/codex-native": "npm:@openai/codex@0.166.0",
     "@ai-sdk/amazon-bedrock": "5.0.113",
     "@ai-sdk/anthropic": "4.0.78",
     "@ai-sdk/google": "4.0.93",
@@ -121,6 +122,7 @@
     "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [
+    "@openai/codex-native",
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
     "@chat-adapter/discord",

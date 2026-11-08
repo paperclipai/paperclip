@@ -130,6 +130,36 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+On native Windows, use the Node installation that includes npm. Packaging scripts
+run `npm-cli.js` through Node, so an installation path with spaces is supported.
+The local POSIX sandbox tests require Git for Windows in its standard
+`Program Files/Git` location. These fixtures use Git Bash and POSIX sandbox paths;
+host file transfers retain Windows drive paths. Full workspace typechecking also
+requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
+validate Windows ACLs.
+
+Native Codex uses the executable from its matching Windows platform package.
+The native Windows runtime uses the separate `@openai/codex-native` dependency
+(Codex 0.166.0) and the MXC sandbox. The ACP bridge retains its independently
+qualified Codex dependency. MXC requires a supported Windows 11 build; an
+unavailable sandbox fails closed. Filesystem read restrictions remain enabled.
+When the installed executable is outside the system volume, only its executable
+resources are copied to a hash-verified cache under
+`~/.paperclip/runtime-cache/native-codex`. Credentials and sessions are never
+copied there. A cold cache hashes and copies the runtime once; subsequent lookups
+reuse the generation while its file identities and timestamps remain unchanged.
+The optional live confinement regression is:
+`PAPERCLIP_LIVE_WINDOWS_MXC=1 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/drivers/codex/windows-mxc.test.ts`.
+Keep that optional dependency installed with the main Codex package. A missing
+or mismatched platform package fails setup instead of using another executable.
+Managed account probes use the account home prepared by the server. Windows
+credential reads check regular files and path identity without Unix uid/mode
+bits. Unbound credential links remain refused. The native observer detects
+credential refreshes without putting credential content in its durable events.
+Assigned skill snapshots use Windows write-deny ACLs, applied with the built-in
+System32 whoami and icacls tools. A failed ACL operation refuses publication;
+cleanup removes the snapshot's deny rules before deleting the owned tree.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns every managed pnpm lockfile:

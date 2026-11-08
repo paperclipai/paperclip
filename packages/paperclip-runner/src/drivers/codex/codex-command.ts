@@ -1,6 +1,7 @@
 import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { materializeWindowsCodexRuntime } from "./windows-codex-runtime.js";
 
 /** Prefer the installed dependency; compatibility is established by the CLI protocol. */
 export function resolveCodexCommand(
@@ -10,18 +11,27 @@ export function resolveCodexCommand(
 ): string {
   try {
     const runnerRequire = createRequire(issuer);
-    let manifestPath: string;
+    let manifestPath: string | undefined;
     try {
-      let bridgeManifest: string;
-      try {
-        bridgeManifest = runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
-        // pnpm can retain the bridge inside its declared adapter dependency.
-        const adapter = runnerRequire.resolve("@paperclipai/adapter-codex-local/server");
-        bridgeManifest = createRequire(adapter).resolve("@agentclientprotocol/codex-acp/package.json");
+      if (process.platform === "win32") {
+        try {
+          manifestPath = runnerRequire.resolve("@openai/codex-native/package.json");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+        }
       }
-      manifestPath = createRequire(bridgeManifest).resolve("@openai/codex/package.json");
+      if (!manifestPath) {
+        let bridgeManifest: string;
+        try {
+          bridgeManifest = runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+          // pnpm can retain the bridge inside its declared adapter dependency.
+          const adapter = runnerRequire.resolve("@paperclipai/adapter-codex-local/server");
+          bridgeManifest = createRequire(adapter).resolve("@agentclientprotocol/codex-acp/package.json");
+        }
+        manifestPath = createRequire(bridgeManifest).resolve("@openai/codex/package.json");
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
       try {
@@ -84,7 +94,8 @@ export function resolveCodexCommand(
           }
           if (!statSync(binary).isFile()) throw new Error("Installed Codex Windows executable is not a regular file");
           accessSync(binary, constants.X_OK);
-          return binary;
+          return resolve(binary).slice(0, 3).toLowerCase() === `${process.env.SystemDrive ?? "C:"}\\`.toLowerCase()
+            ? binary : materializeWindowsCodexRuntime(binary);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }

@@ -46,6 +46,7 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
   });
   if (!executable) return [...roots];
   add(executable);
+  if (process.platform === "win32") add(resolve(dirname(executable), "codex-code-mode-host.exe"));
   try {
     const canonical = realpathSync(executable);
     const manifestPath = resolve(dirname(canonical), "../package.json");
@@ -204,11 +205,15 @@ export function codexCommandEnvironment(
     "PATH",
     "PATHEXT",
     "SystemRoot",
+    "SystemDrive",
     "WINDIR",
     "LANG",
     "LC_ALL",
   ] as const) {
-    const value = source[key];
+    const sourceKey = process.platform === "win32"
+      ? Object.keys(source).find(candidate => candidate.toLowerCase() === key.toLowerCase()) ?? key
+      : key;
+    const value = source[sourceKey];
     if (value !== undefined) environment[key] = value;
   }
   if (usesPreconfiguredHome(source) && source.HOME) {
@@ -377,6 +382,8 @@ export function createIsolatedCodexAppServerArgs(
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
     ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
+    ...(process.platform === "win32" && !externalRunnerSandbox
+      ? ["-c", 'windows.sandbox="mxc"'] : []),
     "app-server",
   ];
 }
