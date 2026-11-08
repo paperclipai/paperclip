@@ -36,6 +36,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  responsibleOwnerAccess: vi.fn().mockResolvedValue({ canTransfer: false }),
   list: vi.fn(),
   getContextUsage: vi.fn(),
   getDocument: vi.fn(),
@@ -1115,7 +1116,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows assignee and originating without responsible wording", async () => {
+  it("shows responsible ownership separately from assignee and origin", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -1134,8 +1135,8 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Riley Board");
-      expect(container.textContent).not.toContain("Morgan Product");
-      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).toContain("Responsible owner");
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Created by");
       expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
@@ -1187,7 +1188,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Assignee");
       expect(container.textContent).toContain("Unassigned");
-      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).toContain("Responsible owner");
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
     });
@@ -1213,7 +1214,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).toContain("via CodexCoder");
-      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).toContain("Responsible owner");
       expect(container.textContent).not.toContain("Kicked off by");
     });
 
