@@ -1,11 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  HARNESS_PRIVATE_TEMPORARY_CHILDREN,
   agentFilesystemSandboxConfig,
+  agentTemporaryParent,
+  defaultPlaywrightCacheDirectory,
+  playwrightCacheDirectory,
   isRunnerdLaunch,
   parseAgentFilesystemSandboxConfig,
   probeAgentFilesystemSandbox,
@@ -46,6 +50,26 @@ describe("agent filesystem sandbox selection", () => {
       ],
       required: true,
     });
+  });
+
+  it("hides the attempt's private children and Playwright cache when its root is outside the shared temporary directory", () => {
+    const root = "/var/tmp/paperclip-runner-e2e-abc";
+    const config = agentFilesystemSandboxConfig({ ...base, temporaryRoot: root, sharedTemporary: "/tmp" });
+    expect(config?.hidden).toEqual(expect.arrayContaining([
+      `${root}/artifacts-private`,
+      `${root}/control`,
+      `${root}/selected-private-inputs`,
+      playwrightCacheDirectory(root),
+    ]));
+    expect(config?.hidden).not.toContain(root);
+    expect(HARNESS_PRIVATE_TEMPORARY_CHILDREN).toContain("playwright-transform-cache");
+    expect(defaultPlaywrightCacheDirectory("/tmp")).toMatch(/^\/tmp\/playwright-transform-cache-/);
+  });
+
+  it("keeps a sandboxed attempt's root out of the shared temporary directory", () => {
+    const parent = agentTemporaryParent(true);
+    if (process.platform === "linux") expect(parent).toBe(realpathSync("/var/tmp"));
+    expect(agentTemporaryParent(false)).toBe(realpathSync(os.tmpdir()));
   });
 
   it("never hides the agent's own state, the checkout root or the shared temporary directory", () => {
@@ -125,15 +149,24 @@ describe.skipIf(!landlock)("Landlock agent sandbox on this host", () => {
     await writeFile(path.join(repository, "tests", "runner-e2e", "agent-filesystem-sandbox.ts"), "grader");
     await writeFile(path.join(repository, "tests", "runner-e2e", "chat-scenarios", "access.yaml"), "expected_outcome: secret");
     await writeFile(path.join(repository, "packages", "paperclip-runner", "package.json"), "{}");
-    const config = { hidden: [path.join(repository, "tests")], required: true };
+    const attempt = path.join(root, "attempt");
+    await mkdir(path.join(attempt, "artifacts-private"), { recursive: true });
+    await mkdir(path.join(attempt, "workspace"));
+    await writeFile(path.join(attempt, "artifacts-private", "server.log"), "secret");
+    const config = { hidden: [path.join(repository, "tests"), path.join(attempt, "artifacts-private"), path.join(attempt, "control")], required: true };
     // The fixture lives under the shared temporary directory, so point mktemp at a granted sibling.
-    const probe = probeAgentFilesystemSandbox(config, repository, pythonExecutable(), { ...process.env, TMPDIR: path.join(root, "scratch") });
+    const probe = probeAgentFilesystemSandbox(config, repository, pythonExecutable(), { ...process.env, TMPDIR: path.join(root, "scratch") }, path.join(root, "no-playwright-cache"));
     expect(probe.failures).toEqual([]);
-    expect(probe.result).toMatchObject({ harnessFile: "denied", harnessDirectory: "denied", productFile: "readable", temporaryWrite: "allowed" });
+    expect(probe.result).toMatchObject({ playwrightDefaultCache: "denied", harnessFile: "denied", harnessDirectory: "denied", productFile: "readable", temporaryWrite: "allowed" });
     // The exact read from the reported run: grep over the checkout's scenarios.
     const invocation = sandboxedInvocation(config, pythonExecutable(), "/bin/sh", ["-c", `grep -rn expected_outcome ${repository}/tests; echo "exit=$?"`], process.env);
     const output = execFileSync(invocation.command, invocation.args, { encoding: "utf8" });
     expect(output).not.toContain("secret");
     expect(output).toMatch(/exit=2/);
+    const attemptCheck = sandboxedInvocation(config, pythonExecutable(), "/bin/sh", ["-c", `cat ${attempt}/artifacts-private/server.log; ls ${attempt}/workspace >/dev/null && echo workspace=ok; mkdir ${attempt}/control 2>/dev/null || echo control=blocked`], process.env);
+    const attemptOutput = execFileSync(attemptCheck.command, attemptCheck.args, { encoding: "utf8" });
+    expect(attemptOutput).not.toContain("secret");
+    expect(attemptOutput).toContain("workspace=ok");
+    expect(attemptOutput).toContain("control=blocked");
   });
 });

@@ -1,5 +1,5 @@
 import childProcess, { execFileSync, type SpawnOptions } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +28,55 @@ function within(candidate: string, root: string) {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
+/** Harness-private directories inside the attempt's temporary root. */
+export const HARNESS_PRIVATE_TEMPORARY_CHILDREN = [
+  "artifacts-private",
+  "control",
+  "selected-private-inputs",
+  // Playwright's compiled copy of the harness and graders, with source maps.
+  "playwright-transform-cache",
+] as const;
+
+/** Playwright otherwise caches compiled harness code in the shared temporary directory. */
+export function playwrightCacheDirectory(temporaryRoot: string) {
+  return path.join(temporaryRoot, "playwright-transform-cache");
+}
+
+/** Playwright's default cache location for this user, which the launcher removes. */
+export function defaultPlaywrightCacheDirectory(temporaryDirectory = os.tmpdir()) {
+  return path.join(temporaryDirectory, `playwright-transform-cache-${process.geteuid?.() ?? ""}`);
+}
+
+export function agentFilesystemSandboxApplies(input: {
+  platform: NodeJS.Platform;
+  executions: readonly MatrixExecution[];
+  installedRelease: boolean;
+}) {
+  if (input.platform !== "linux" || input.installedRelease) return false;
+  if (!input.executions.some((execution) => execution.environment.id === "local" && execution.profile.generation === "native")) return false;
+  // Codex's own bubblewrap sandbox mounts, which Landlock forbids. Those cells
+  // keep their existing isolation until Codex permission profiles hide the eval.
+  return !input.executions.some(requiresCodexCiSandbox);
+}
+
+/**
+ * Landlock can only hide a path by leaving its ancestors ungranted, and an
+ * ungranted directory accepts no new entries. Hiding the attempt's private
+ * children of a root under /tmp would stop agents creating files in /tmp, so a
+ * sandboxed attempt keeps its root in /var/tmp instead.
+ */
+export function agentTemporaryParent(applies: boolean, sharedTemporary = os.tmpdir()) {
+  if (applies) {
+    try {
+      accessSync("/var/tmp", constants.W_OK | constants.X_OK);
+      return realpathSync("/var/tmp");
+    } catch {
+      // Fall back to the shared directory; its private children stay visible.
+    }
+  }
+  return realpathSync(sharedTemporary);
+}
+
 /** Selects the paths hidden from local native agents, or null when not applicable. */
 export function agentFilesystemSandboxConfig(input: {
   platform: NodeJS.Platform;
@@ -38,16 +87,14 @@ export function agentFilesystemSandboxConfig(input: {
   privateDir: string;
   evidenceRoot?: string;
   installedRelease: boolean;
+  sharedTemporary?: string;
 }): AgentFilesystemSandboxConfig | null {
-  if (input.platform !== "linux" || input.installedRelease) return null;
-  if (!input.executions.some((execution) => execution.environment.id === "local" && execution.profile.generation === "native")) return null;
-  // Codex's own bubblewrap sandbox mounts, which Landlock forbids. Those cells
-  // keep their existing isolation until Codex permission profiles hide the eval.
-  if (input.executions.some(requiresCodexCiSandbox)) return null;
-  const sharedTemporary = path.resolve(input.env.TMPDIR?.trim() || os.tmpdir());
+  if (!agentFilesystemSandboxApplies(input)) return null;
+  const sharedTemporary = path.resolve(input.sharedTemporary ?? (input.env.TMPDIR?.trim() || os.tmpdir()));
   const candidates = [
     path.join(input.repositoryRoot, "tests"),
     path.join(input.repositoryRoot, ".manual-private-trusted"),
+    ...HARNESS_PRIVATE_TEMPORARY_CHILDREN.map((child) => path.join(input.temporaryRoot, child)),
     input.privateDir,
     input.evidenceRoot,
     input.env.RUNNER_TEMP,
@@ -117,6 +164,7 @@ export function probeAgentFilesystemSandbox(
   repositoryRoot: string,
   python = pythonExecutable(),
   env: NodeJS.ProcessEnv = process.env,
+  playwrightCache = defaultPlaywrightCacheDirectory(),
 ) {
   const harness = path.join(repositoryRoot, "tests", "runner-e2e");
   const script = [
@@ -126,7 +174,8 @@ export function probeAgentFilesystemSandbox(
     'if test -e "$2"; then add harnessDirectoryStat visible; else add harnessDirectoryStat absent; fi',
     'if cat "$3" >/dev/null 2>&1; then add productFile readable; else add productFile denied; fi',
     'probe=$(mktemp) && rm -f "$probe" && add temporaryWrite allowed || add temporaryWrite denied',
-    'shift 3; for hidden in "$@"; do if ls "$hidden" >/dev/null 2>&1; then add "hidden:$hidden" listable; else add "hidden:$hidden" denied; fi; done',
+    'if ls "$4" >/dev/null 2>&1; then add playwrightDefaultCache listable; else add playwrightDefaultCache denied; fi',
+    'shift 4; for hidden in "$@"; do if ls "$hidden" >/dev/null 2>&1; then add "hidden:$hidden" listable; else add "hidden:$hidden" denied; fi; done',
     'printf "%s\\n" "$out"',
   ].join("\n");
   const invocation = sandboxedInvocation(config, python, "/bin/sh", [
@@ -134,6 +183,7 @@ export function probeAgentFilesystemSandbox(
     path.join(harness, "agent-filesystem-sandbox.ts"),
     harness,
     path.join(repositoryRoot, "packages", "paperclip-runner", "package.json"),
+    playwrightCache,
     ...config.hidden,
   ], env);
   const output = execFileSync(invocation.command, invocation.args, { encoding: "utf8", cwd: "/", env, timeout: 30_000 });
@@ -146,6 +196,7 @@ export function probeAgentFilesystemSandbox(
     result.harnessDirectory !== "denied" && "harness directory is listable",
     result.productFile !== "readable" && "product package is unreadable",
     result.temporaryWrite !== "allowed" && "temporary directory is not writable",
+    result.playwrightDefaultCache !== "denied" && "Playwright's default transform cache is listable",
     ...config.hidden.map((hidden) => result[`hidden:${hidden}`] === "listable" && `${hidden} is listable`),
   ].filter((failure): failure is string => Boolean(failure));
   return { result, failures };
