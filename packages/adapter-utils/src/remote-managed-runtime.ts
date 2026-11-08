@@ -281,16 +281,21 @@ async function sweepStaleStableWorkspaces(spec: SshRemoteExecutionSpec, baseDir:
   );
 }
 
-// A failed restore leaves remote edits that never reached the host; the next run must not reset them.
+// Any marker that is not `ok` (`failed`, or `running` from a run that never copied back) means remote edits
+// may not have reached the host; the next run must not reset them.
 async function stableWorkspaceHoldsUnsavedWork(spec: SshRemoteExecutionSpec, workspaceDir: string): Promise<boolean> {
   const marker = shellQuote(path.posix.join(path.posix.dirname(workspaceDir), LAST_RESTORE_MARKER));
-  const result = await runSshCommand(spec, `if [ -f ${marker} ] && grep -q '^failed' ${marker}; then echo UNSAVED; fi; true`);
+  const result = await runSshCommand(spec, `if [ -f ${marker} ] && ! grep -q '^ok' ${marker}; then echo UNSAVED; fi; true`);
   return result.stdout.trim().split("\n").pop() === "UNSAVED";
 }
 
-async function markStableWorkspaceRestore(spec: SshRemoteExecutionSpec, workspaceDir: string, ok: boolean): Promise<void> {
+async function markStableWorkspaceRestore(
+  spec: SshRemoteExecutionSpec,
+  workspaceDir: string,
+  state: "ok" | "failed" | "running",
+): Promise<void> {
   const marker = shellQuote(path.posix.join(path.posix.dirname(workspaceDir), LAST_RESTORE_MARKER));
-  await runSshCommand(spec, `printf '%s %s\n' ${ok ? "ok" : "failed"} "$(date +%s)" > ${marker}`);
+  await runSshCommand(spec, `printf '%s %s\n' ${state} "$(date +%s)" > ${marker}`);
 }
 
 // Removes `runs/<runId>` (or only its runtime assets, which hold bearer tokens) after the restore.
@@ -432,6 +437,10 @@ export async function prepareRemoteManagedRuntime(input: {
     });
   }
 
+  // The import is done: from here the folder may hold remote edits, so it is not `ok` until a copy-back
+  // succeeds. A failed write fails the prepare (the catch above releases the lock).
+  if (stableWorkspaceDir) await markStableWorkspaceRestore(input.spec, stableWorkspaceDir, "running");
+
   const assetDirs: Record<string, string> = {};
   try {
     for (const asset of input.assets ?? []) {
@@ -540,7 +549,7 @@ export async function prepareRemoteManagedRuntime(input: {
         restored = true;
       } finally {
         if (stableWorkspaceDir) {
-          await markStableWorkspaceRestore(input.spec, stableWorkspaceDir, restored).catch(() => undefined);
+          await markStableWorkspaceRestore(input.spec, stableWorkspaceDir, restored ? "ok" : "failed").catch(() => undefined);
         }
         // A per-run workspace is removed after a good restore only; assets (bearer tokens) always.
         await cleanupRun(syncWorkspace && !stableWorkspaceDir && !restored ? { dir: workspaceRemoteDir } : null);

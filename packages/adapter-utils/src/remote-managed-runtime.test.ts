@@ -618,6 +618,38 @@ describe.skipIf(process.getuid?.() === 0)("read-only trees on the SSH host", () 
     expect(await exists(path.join(dir, "lock"))).toBe(false);
   });
 
+  it("keeps the stable folder of a run that died before its copy-back and uses a per-run folder", async () => {
+    await setup();
+    const dir = path.join(base, ".paperclip-runtime", "workspaces", WS_ID);
+    const first = await prepareRemoteManagedRuntime({
+      spec: spec("execution_workspace"), runId: "run-a", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(first.workspaceRemoteDir).toBe(path.join(dir, "workspace"));
+    await mkdir(path.join(dir, "workspace"), { recursive: true });
+    await writeFile(path.join(dir, "workspace", "unsaved.txt"), "remote edit");
+    // run-a never calls restoreWorkspace (killed process); its lock is now stale.
+    const second = await prepareRemoteManagedRuntime({
+      spec: { ...spec("execution_workspace"), isRunActive: async (id: string) => id !== "run-a" },
+      runId: "run-b", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(second.workspaceRemoteDir).toBe(path.join(base, ".paperclip-runtime", "runs", "run-b", "workspace"));
+    expect(await exists(path.join(dir, "workspace", "unsaved.txt"))).toBe(true);
+  });
+
+  it("reuses the stable folder on the first run and after a good copy-back", async () => {
+    await setup();
+    const folder = path.join(base, ".paperclip-runtime", "workspaces", WS_ID, "workspace");
+    const first = await prepareRemoteManagedRuntime({
+      spec: spec("execution_workspace"), runId: "run-a", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(first.workspaceRemoteDir).toBe(folder);
+    await first.restoreWorkspace();
+    const second = await prepareRemoteManagedRuntime({
+      spec: spec("execution_workspace"), runId: "run-b", adapterKey: "claude", workspaceLocalDir: base, executionWorkspaceId: WS_ID,
+    });
+    expect(second.workspaceRemoteDir).toBe(folder);
+  });
+
   it("keeps a persistent state folder beside the stable workspace, and none for a per-run folder", async () => {
     await setup();
     const stableState = path.join(base, ".paperclip-runtime", "workspaces", WS_ID, "state", "claude");
