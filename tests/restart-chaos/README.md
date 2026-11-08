@@ -55,6 +55,78 @@ and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 receipts are in `faults.json`. A replay of a storm task fires the faults that
 crossed it, without a new storm. `--triggers time,result` may join a storm: a `result` task (C1) also fires its own K1 or K2 (from `--faults`) just after its run accepts a result, the next storm gap runs from its settle, and no triggered fault fires during the drain. Other triggers do not combine with a storm.
 
+## Governance across restarts (G1, H1)
+
+```sh
+# Approval-gated action: the fault fires 0-3 s after the approval appears pending.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads G1 --faults K1,K2,K4 --triggers approval --concurrency 4 --tasks 6 --seed 31
+# Budget hard stop: its own wave, one task at a time.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads H1 --faults K1,K2,K4 --triggers paused --concurrency 1 --tasks 3 --seed 32
+```
+
+**G1.** The agent asks for board approval through its `call_api` tool
+(`POST /api/companies/{companyId}/approvals`, type `request_board_approval`,
+linked to its task), blocks the task and ends its turn. The `approval` trigger
+fires the planned fault once the observer sees the approval pending.
+
+After the restart, with the server ready, the harness acts as the board through
+the board's own routes. It either approves (`POST /api/approvals/:id/approve`),
+or rejects (`POST /api/approvals/:id/reject`) and cancels the task. The
+decision is fixed by the task's nonce, so about half approve and half reject.
+
+On approval, the woken agent creates exactly one backlog subtask named after the
+nonce and finishes. The oracle checks these points:
+
+- exactly one approval was requested (a restart that made the agent ask twice fails);
+- it was still pending when the board decided after the restart;
+- it reached the board's decision;
+- the subtask exists exactly once on approval, and never after a rejection.
+
+A rejected task rests `cancelled`; R1 and R3 grade against that status.
+
+**H1.** Before launch, the harness sets the company budget to its observed spend
+plus one cent through the board's budget route. The task's first priced usage
+then crosses the hard stop mid-run, which pauses the company. The `paused`
+trigger fires the fault once the observer sees `paused` with `pauseReason`
+`budget`.
+
+After the restart, the pause must hold for 30 s with the server ready. The
+harness records every run that started while paused (there must be none), then
+resolves the incident with `raise_budget_and_resume` (spend plus 3000 cents).
+The task must then finish its brief on its own. H1 pauses the whole company, so
+it runs alone (`--workloads H1 --concurrency 1`) and never with `--rc06-masked`.
+
+Neither G1 nor H1 is in the default workloads. The board's actions and what the
+observer saw are in the timeline (`governance_*`) and in each task's grade
+(`governance`).
+
+## Upgrade mid-run (K14, `--upgrade-from`)
+
+```sh
+git worktree add ../paperclip-838e9bf3 838e9bf3d2        # an older master build
+(cd ../paperclip-838e9bf3 && node scripts/agent-preflight.mjs)
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads A1,C1,M1 --faults K14 --upgrade-from ../paperclip-838e9bf3 \
+  --concurrency 4 --tasks 8 --seed 21
+```
+
+The wave's server starts from the older checkout. The first K14 stops it
+gracefully (SIGTERM, as a deploy does) and starts this checkout against the same
+database, instance directory, port and secrets, so the new build applies its
+migrations to the old build's data and resumes what the old build saved. Each
+task is graded as usual. Pass means:
+
+- no task needed Retry (R3);
+- C1's follow-up comment reached the work (T);
+- the wave-end sweep finds no stuck records (R6).
+
+A later K14 in the same wave restarts the current build, like K2. Every K14
+receipt names both commits (`upgrade` in `faults.json`, `upgrade_switched` in the
+timeline). K14 is local-only, because a Daytona runner must match its image, and
+it is never part of a storm's default faults.
+
 ## Daytona (`--env daytona`)
 
 The control plane stays local; agent runs execute in Daytona sandboxes from an
@@ -168,7 +240,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
 | `grader.ts` | Pure R1–R6 grading over the samples. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |

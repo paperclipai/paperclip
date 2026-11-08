@@ -110,6 +110,20 @@ function preflight(plan: WavePlan) {
   const runner = process.env.PAPERCLIP_RUNNER_BINARY
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
   if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
+  // K14: the older checkout must be prepared (installed and built) before the wave, like this one.
+  const upgradeFrom = plan.options.upgradeFrom;
+  if (upgradeFrom) {
+    for (const required of ["tests/runner-e2e/server-entry.ts", "node_modules", "packages/paperclip-runner/runner/target/debug/paperclip-runnerd"]) {
+      if (!existsSync(path.join(upgradeFrom, required))) {
+        throw new Error(`--upgrade-from ${upgradeFrom} is not a prepared checkout (missing ${required}). `
+          + "Create it with `git worktree add <dir> <commit>`, then run `node scripts/agent-preflight.mjs` in it.");
+      }
+    }
+    if (path.resolve(upgradeFrom) === repositoryRoot) throw new Error("--upgrade-from must be a different checkout than the one running the harness");
+    const oldBuild = spawnSync(process.execPath, [path.join(upgradeFrom, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
+      { cwd: upgradeFrom, stdio: "inherit" });
+    if (oldBuild.status !== 0) throw new Error("Verified provider entrypoint build failed in the --upgrade-from checkout");
+  }
   // Same provider bundle preparation as tests/runner-e2e/verified-provider-bundles.setup.mjs.
   const build = spawnSync(process.execPath, [path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs")],
     { cwd: repositoryRoot, stdio: "inherit" });
@@ -143,7 +157,8 @@ async function main(): Promise<number> {
   // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
   startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
-  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
+  const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
+    ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are

@@ -42,13 +42,20 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   queued: [0, 0],
   tool: [15_000, 60_000],
   result: [0, 3_000],
+  approval: [0, 3_000],
+  paused: [0, 3_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
   if (trigger === "comment" || trigger === "result") return workload === "C1";
   if (trigger === "tool") return workload === "B5";
+  if (trigger === "approval") return workload === "G1";
+  if (trigger === "paused") return workload === "H1";
   return true;
 }
+
+/** The workload a trigger needs, for the error when none is selected. */
+const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1" };
 
 /** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
 const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
@@ -76,7 +83,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
     if (!options.workloads.some(workload => triggerFitsWorkload(trigger, workload))) {
-      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" || trigger === "result" ? "C1" : "B5"} in --workloads`);
+      throw new Error(`Trigger "${trigger}" needs workload ${TRIGGER_WORKLOAD[trigger] ?? "?"} in --workloads`);
     }
   }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
