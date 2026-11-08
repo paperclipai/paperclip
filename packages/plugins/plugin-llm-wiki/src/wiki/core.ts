@@ -260,7 +260,6 @@ type OperationInput = {
   operationType: "ingest" | "query" | "lint" | "file-as-page" | "index" | "distill" | "backfill";
   title?: string | null;
   prompt?: string | null;
-  useCheapModelProfile?: boolean;
 };
 
 type OperationSpaceContext = {
@@ -2354,7 +2353,6 @@ export async function createOperationIssue(ctx: PluginContext, input: OperationI
     status: "todo",
     priority: input.operationType === "query" ? "medium" : "low",
     assigneeAgentId: assignableAgentId,
-    assigneeAdapterOverrides: input.useCheapModelProfile ? { modelProfile: "cheap" } : null,
     billingCode: operationBillingCode(wikiId, space),
     surfaceVisibility: "plugin_operation",
     originKind: `${OPERATION_ORIGIN_KIND}:${input.operationType}` as PluginIssueOriginKind,

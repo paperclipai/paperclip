@@ -318,14 +318,22 @@ export function TaskChatStatusPill({
     const statusLine = (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         {chevronOpen !== undefined ? (
-          <ChevronRight
-            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
-            aria-hidden
-          />
+          <span
+            className="flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+            data-testid="task-chat-status-caret-slot"
+          >
+            <ChevronRight
+              className={cn("h-3 w-3 transition-transform", chevronOpen ? "rotate-90" : null)}
+              aria-hidden
+            />
+          </span>
         ) : null}
         {/* Fixed-size lead slot keeps the label from moving as tool icons
             come and go; the pulse dot renders unconditionally. */}
-        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        <span
+          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+          data-testid="task-chat-status-dot-slot"
+        >
           <span
             aria-hidden
             className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"

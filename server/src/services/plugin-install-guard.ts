@@ -27,6 +27,7 @@
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { BUNDLED_LOCAL_PLUGIN_ROOT } from "./plugin-loader.js";
+import { BUNDLED_CATALOG_ROOT_ENV_VAR } from "./bundled-plugins.js";
 
 export { isCloudManagedInstance } from "./cloud-instance.js";
 
@@ -93,7 +94,7 @@ export async function isWithinBundledPluginRoot(
   canonicalPath: string,
   bundledRootOverride?: string,
 ): Promise<boolean> {
-  const bundledRoot = bundledRootOverride ?? BUNDLED_LOCAL_PLUGIN_ROOT;
+  const bundledRoot = bundledRootOverride ?? (process.env[BUNDLED_CATALOG_ROOT_ENV_VAR]?.trim() || BUNDLED_LOCAL_PLUGIN_ROOT);
 
   let canonicalRoot: string;
   try {

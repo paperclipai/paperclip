@@ -7,7 +7,11 @@
 // never runs a synthetic value.
 
 import { describe, expect, it } from "vitest";
-import { buildSessionFingerprint, finalizeLaunchEnvironment } from "./execute.js";
+import {
+  buildSessionFingerprint,
+  finalizeLaunchEnvironment,
+  projectAcpxInheritedHostEnvironment,
+} from "./execute.js";
 import type {
   LaunchEnvironment,
   RunScopedContribution,
@@ -58,9 +62,15 @@ describe("acpx identity split and launch environment", () => {
   it("test_finalize_launch_environment_is_sole_constructor_of_branded_environment", () => {
     // The finalizer merges every contribution and freezes the launch env.
     const baseEnv: Record<string, string> = { LAUNCH_ENV_TEST_BASE: "base" };
-    const launchEnvironment = finalizeLaunchEnvironment(baseEnv, [
-      { scope: "session", env: { LAUNCH_ENV_TEST_CONTRIB: "contrib" } },
-    ]);
+    const launchEnvironment = finalizeLaunchEnvironment(
+      baseEnv,
+      [{ scope: "session", env: { LAUNCH_ENV_TEST_CONTRIB: "contrib" } }],
+      {
+        acpxAgent: "claude",
+        inheritHostEnvironment: true,
+        inheritedEnv: {},
+      },
+    );
     expect(launchEnvironment.env.LAUNCH_ENV_TEST_BASE).toBe("base");
     expect(launchEnvironment.env.LAUNCH_ENV_TEST_CONTRIB).toBe("contrib");
     expect(Object.isFrozen(launchEnvironment.env)).toBe(true);
@@ -91,5 +101,163 @@ describe("acpx identity split and launch environment", () => {
     }
     void _assertNotReusable;
     expect(true).toBe(true);
+  });
+
+  it("inherits only safe host context and the selected provider's credentials", () => {
+    const inherited = {
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      OPENAI_API_KEY: "openai-host-secret",
+      ANTHROPIC_API_KEY: "anthropic-host-secret",
+      ANTHROPIC_AUTH_TOKEN: "anthropic-auth-host-secret",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-host-secret",
+      ANTHROPIC_BASE_URL: "https://anthropic.example",
+      ANTHROPIC_MODEL: "claude-test",
+      ANTHROPIC_SMALL_FAST_MODEL: "claude-fast-test",
+      CLAUDE_CONFIG_DIR: "/host/claude",
+      CLAUDE_CODE_USE_BEDROCK: "true",
+      ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example",
+      AWS_BEARER_TOKEN_BEDROCK: "bedrock-host-secret",
+      OPENROUTER_API_KEY: "openrouter-host-secret",
+      GOOGLE_GENAI_USE_GCA: "true",
+      KIMI_MODEL_NAME: "kimi-code/test",
+      KIMI_MODEL_API_KEY: "kimi-host-secret",
+      KIMI_MODEL_BASE_URL: "https://kimi.example",
+      KIMI_MODEL_PROVIDER_TYPE: "openai_legacy",
+      KIMI_CODE_HOME: "/host/kimi",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "native-mcp-host-secret",
+      PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "managed-auth-host-secret",
+      UNRELATED_SECRET: "unrelated-host-secret",
+      NODE_OPTIONS: "--require /tmp/host-hook.cjs",
+    };
+
+    expect(projectAcpxInheritedHostEnvironment(inherited, "codex", true)).toEqual({
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      OPENAI_API_KEY: "openai-host-secret",
+    });
+    expect(projectAcpxInheritedHostEnvironment(inherited, "claude", true)).toEqual({
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      ANTHROPIC_API_KEY: "anthropic-host-secret",
+      ANTHROPIC_AUTH_TOKEN: "anthropic-auth-host-secret",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-host-secret",
+      ANTHROPIC_BASE_URL: "https://anthropic.example",
+      ANTHROPIC_MODEL: "claude-test",
+      ANTHROPIC_SMALL_FAST_MODEL: "claude-fast-test",
+      CLAUDE_CONFIG_DIR: "/host/claude",
+      CLAUDE_CODE_USE_BEDROCK: "true",
+      ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example",
+      AWS_BEARER_TOKEN_BEDROCK: "bedrock-host-secret",
+    });
+    expect(projectAcpxInheritedHostEnvironment(inherited, "pi", true)).toEqual({
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      OPENROUTER_API_KEY: "openrouter-host-secret",
+    });
+    expect(projectAcpxInheritedHostEnvironment(inherited, "gemini", true)).toEqual({
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      GOOGLE_GENAI_USE_GCA: "true",
+    });
+    expect(projectAcpxInheritedHostEnvironment(inherited, "kimi", true)).toEqual({
+      PATH: "/usr/bin",
+      LC_ALL: "C.UTF-8",
+      HTTPS_PROXY: "https://proxy.example",
+      KIMI_MODEL_NAME: "kimi-code/test",
+      KIMI_MODEL_API_KEY: "kimi-host-secret",
+      KIMI_MODEL_BASE_URL: "https://kimi.example",
+      KIMI_MODEL_PROVIDER_TYPE: "openai_legacy",
+      KIMI_CODE_HOME: "/host/kimi",
+    });
+  });
+
+  it("does not project any ambient host environment across a remote boundary", () => {
+    const inherited = {
+      PATH: "/host/bin",
+      OPENAI_API_KEY: "ambient-provider-secret",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "ambient-native-mcp-secret",
+      PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "ambient-bootstrap-secret",
+    };
+
+    expect(projectAcpxInheritedHostEnvironment(inherited, "codex", false)).toEqual({});
+  });
+
+  it("keeps explicit remote adapter and run contributions while rejecting ambient authority", () => {
+    const launchEnvironment = finalizeLaunchEnvironment(
+      {
+        OPENAI_API_KEY: "explicit-provider-secret",
+        EXPLICIT_ADAPTER_SECRET: "adapter-secret",
+        PAPERCLIP_RUNTIME_API_URL: "http://paperclip.internal/api",
+      },
+      [
+        {
+          scope: "session",
+          env: { PAPERCLIP_NATIVE_MCP_TOKEN: "explicit-run-contribution" },
+        },
+      ],
+      {
+        acpxAgent: "codex",
+        inheritHostEnvironment: false,
+        inheritedEnv: {
+          PATH: "/host/bin",
+          OPENAI_API_KEY: "ambient-provider-secret",
+          PAPERCLIP_NATIVE_MCP_TOKEN: "ambient-native-mcp-secret",
+          PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "ambient-bootstrap-secret",
+        },
+      },
+    );
+
+    expect(launchEnvironment.env).toMatchObject({
+      OPENAI_API_KEY: "explicit-provider-secret",
+      EXPLICIT_ADAPTER_SECRET: "adapter-secret",
+      PAPERCLIP_RUNTIME_API_URL: "http://paperclip.internal/api",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "explicit-run-contribution",
+    });
+    expect(launchEnvironment.env).not.toHaveProperty("PATH");
+    expect(launchEnvironment.env).not.toHaveProperty("PAPERCLIP_RUNNER_BOOTSTRAP_TICKET");
+  });
+
+  it("preserves an explicit remote PATH instead of synthesizing a host fallback", () => {
+    const launchEnvironment = finalizeLaunchEnvironment(
+      { PATH: "/sandbox/bin" },
+      [],
+      {
+        acpxAgent: "codex",
+        inheritHostEnvironment: false,
+        inheritedEnv: { PATH: "/host/bin" },
+      },
+    );
+
+    expect(launchEnvironment.env).toEqual({ PATH: "/sandbox/bin" });
+  });
+
+  it("lets explicit Windows env values suppress differently-cased ambient values", () => {
+    const launchEnvironment = finalizeLaunchEnvironment(
+      {
+        openai_api_key: "",
+        Path: "C:\\explicit\\bin",
+      },
+      [],
+      {
+        acpxAgent: "codex",
+        inheritHostEnvironment: true,
+        inheritedEnv: {
+          OPENAI_API_KEY: "ambient-provider-secret",
+          PATH: "C:\\ambient\\bin",
+        },
+        platform: "win32",
+      },
+    );
+
+    expect(launchEnvironment.env).toEqual({
+      openai_api_key: "",
+      Path: "C:\\explicit\\bin",
+    });
   });
 });

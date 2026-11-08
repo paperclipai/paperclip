@@ -1,8 +1,11 @@
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,7 +16,6 @@ import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { agentsApi } from "../api/agents";
-import { ApiError } from "../api/client";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -36,22 +38,19 @@ import {
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
 import { WorkspaceServiceControlBar } from "../components/WorkspaceServiceControlBar";
-import { WorkspaceAccessCard } from "../components/WorkspaceAccessCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { useToastActions } from "../context/ToastContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import {
-  resolveWorkspaceAccessState,
-  type WorkspaceLoginHandoffFailureInfo,
-} from "../lib/workspace-access-state";
-import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 type WorkspaceFormState = {
   name: string;
@@ -422,27 +421,6 @@ export function resolveRuntimeProvisionStatus(input: {
   return configured ? { kind: "deferred" } : { kind: "eager" };
 }
 
-/**
- * Read the structured refusal the login-handoff endpoint returns.
- *
- * The server keeps a machine `reason` (and, where it probed, the workspace's own
- * readiness) on the error body so the UI can name the cause instead of showing a
- * bare HTTP failure. Anything else is a genuine transport error.
- */
-export function readWorkspaceHandoffFailure(error: unknown): WorkspaceLoginHandoffFailureInfo | null {
-  if (!(error instanceof ApiError)) return null;
-  const body = error.body as
-    | { reason?: unknown; detail?: unknown; readiness?: unknown }
-    | null
-    | undefined;
-  if (!body || typeof body.reason !== "string") return null;
-  return {
-    reason: body.reason,
-    detail: typeof body.detail === "string" ? body.detail : null,
-    readiness: (body.readiness as WorkspaceLoginHandoffFailureInfo["readiness"]) ?? null,
-  };
-}
-
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 py-1.5 sm:flex-row sm:items-start sm:gap-3">
@@ -575,15 +553,13 @@ function ExecutionWorkspaceIssuesList({
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-      if (project?.id) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
-      }
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id),
+      queryKeys.issues.list(companyId),
+      ...(project?.id ? [queryKeys.issues.listByProject(companyId, project.id)] : []),
+    ],
   });
 
   const projectOptions = useMemo(
@@ -679,10 +655,14 @@ function ExecutionWorkspaceRoutinesList({
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
 
-  const { data: routines, isLoading, error } = useQuery({
+  const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
     queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
   });
+  // Read the routine list through the shared view: cached rows stay usable
+  // during a transient refetch failure,and a no-data failure shows readable
+  // copy with Retry.
+  const routinesView = useQueryView(routinesQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(workspace.companyId),
@@ -690,8 +670,8 @@ function ExecutionWorkspaceRoutinesList({
   });
 
   const workspaceRoutines = useMemo(
-    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
-    [routines],
+    () => sortWorkspaceRoutinesByName((routinesQuery.data ?? []).filter(routineHasWorkspaceSpecificVariables)),
+    [routinesQuery.data],
   );
 
   const runRoutine = useMutation({
@@ -730,7 +710,7 @@ function ExecutionWorkspaceRoutinesList({
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: describeError(mutationError).body,
         tone: "error",
       });
     },
@@ -746,12 +726,16 @@ function ExecutionWorkspaceRoutinesList({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {routinesView.kind === "loading" || routinesView.kind === "reconnecting" ? (
             <p className="text-sm text-muted-foreground">Loading routines...</p>
-          ) : error ? (
-            <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : "Failed to load routines."}
-            </p>
+          ) : routinesView.kind === "error" ? (
+            <QueryErrorState
+              size="inline"
+              error={routinesView.error}
+              action="load workspace routines"
+              onRetry={routinesView.retry}
+              retrying={routinesView.isFetching}
+            />
           ) : workspaceRoutines.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <Repeat className="h-5 w-5 text-muted-foreground" />
@@ -799,19 +783,19 @@ function ExecutionWorkspaceRoutinesList({
 }
 
 export function ExecutionWorkspaceDetail() {
+  const { visible: workspaceIsolationControlsVisible, loaded: workspaceVisibilityLoaded } = useWorkspaceIsolationControls();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
-  const [handoffFailure, setHandoffFailure] = useState<WorkspaceLoginHandoffFailureInfo | null>(null);
-  const [handoffErrorMessage, setHandoffErrorMessage] = useState<string | null>(null);
   const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
   const pluginTabFromSearch = useMemo(() => {
@@ -825,11 +809,12 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.get(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  const workspaceView = useQueryView(workspaceQuery);
   const workspace = workspaceQuery.data ?? null;
 
   const projectQuery = useQuery({
-    queryKey: workspace ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
-    queryFn: () => projectsApi.get(workspace!.projectId, workspace!.companyId),
+    queryKey: workspace?.projectId ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
+    queryFn: () => projectsApi.get(workspace!.projectId!, workspace!.companyId),
     enabled: Boolean(workspace?.projectId),
   });
   const project = projectQuery.data ?? null;
@@ -856,6 +841,7 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => issuesApi.list(workspace!.companyId, { executionWorkspaceId: workspace!.id }),
     enabled: Boolean(workspace?.companyId),
   });
+  const linkedIssuesView = useQueryView(linkedIssuesQuery);
   const linkedIssues = linkedIssuesQuery.data ?? [];
 
   const linkedProjectWorkspace = useMemo(
@@ -883,8 +869,11 @@ export function ExecutionWorkspaceDetail() {
     [workspacePluginDetailSlots],
   );
   const workspaceTabItems = useMemo(
-    () => orderExecutionWorkspaceTabItems([...EXECUTION_WORKSPACE_BASE_TAB_ITEMS, ...workspacePluginTabItems]),
-    [workspacePluginTabItems],
+    () => orderExecutionWorkspaceTabItems([
+      ...EXECUTION_WORKSPACE_BASE_TAB_ITEMS.filter((item) => item.value !== "configuration" || workspaceIsolationControlsVisible),
+      ...workspacePluginTabItems,
+    ]),
+    [workspacePluginTabItems, workspaceIsolationControlsVisible],
   );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
   const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;
@@ -953,7 +942,7 @@ export function ExecutionWorkspaceDetail() {
       setErrorMessage(null);
     },
     onError: (error) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to save execution workspace.");
+      setErrorMessage(describeError(error).body);
     },
   });
   const workspaceOperationsQuery = useQuery({
@@ -961,6 +950,11 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.listWorkspaceOperations(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  // Read workspace operations through the shared view: cached rows stay
+  // visible during a transient refetch failure,and a no-data failure shows
+  // readable copy with Retry.
+
+  const opsView = useQueryView(workspaceOperationsQuery);
   const runtimeProvisionCommand =
     workspace?.config?.runtimeProvisionCommand
     ?? project?.executionWorkspacePolicy?.workspaceStrategy?.runtimeProvisionCommand
@@ -980,7 +974,7 @@ export function ExecutionWorkspaceDetail() {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
       setRuntimeActionMessage(
         request.action === "run"
@@ -994,80 +988,25 @@ export function ExecutionWorkspaceDetail() {
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionErrorMessage(describeError(error).body);
     },
     onSettled: (_result, _error, request) => {
       setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
     },
   });
 
-  /**
-   * Password-independent workspace entry (PAP-17572).
-   *
-   * The server answers with a ticket-bearing URL, and the workspace answers *that*
-   * with a redirect — which is what keeps the ticket out of session history.
-   *
-   * The target tab is opened synchronously on click and only pointed at the URL
-   * once the ticket arrives. Opening it after the request resolves would be a
-   * popup the browser did not attribute to the click, and Safari and Firefox
-   * block exactly that. If the tab could not be opened anyway, fall back to
-   * navigating this one rather than silently doing nothing.
-   */
-  const openWorkspace = useMutation({
-    mutationFn: async () => {
-      const target = window.open("about:blank", "_blank", "noopener,noreferrer");
-      try {
-        return { ticket: await executionWorkspacesApi.requestLoginHandoff(workspace!.id), target };
-      } catch (error) {
-        target?.close();
-        throw error;
-      }
-    },
-    onSuccess: ({ ticket, target }) => {
-      setHandoffFailure(null);
-      setHandoffErrorMessage(null);
-      if (target && !target.closed) target.location.replace(ticket.url);
-      else window.location.assign(ticket.url);
-    },
-    onError: async (error) => {
-      // A structured refusal is rendered as workspace state by the access card,
-      // so only an unrecognized transport error needs its own message line.
-      const failure = readWorkspaceHandoffFailure(error);
-      setHandoffFailure(failure);
-      setHandoffErrorMessage(
-        failure ? null : error instanceof Error ? error.message : "Failed to open the workspace.",
-      );
-      // The refusal reason often comes from an operation that has since advanced,
-      // so refresh the log the access card derives its state from.
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.executionWorkspaces.workspaceOperations(workspace!.id),
-      });
-    },
-  });
-  const repairWorkspace = useMutation({
-    mutationFn: () => executionWorkspacesApi.repair(workspace!.id),
-    onSuccess: (result) => {
-      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id),
-      });
-      setHandoffFailure(null);
-      setHandoffErrorMessage(null);
-      setRuntimeActionErrorMessage(null);
-      setRuntimeActionMessage("Workspace database repaired.");
-    },
-    onError: (error) => {
-      setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to repair the workspace.");
-    },
-  });
-
-  if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
-  if (workspaceQuery.error) {
+  if (workspaceQuery.isLoading || workspaceView.kind === "reconnecting") {
+    return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+  }
+  if (workspaceView.kind === "error") {
     return (
-      <p className="text-sm text-destructive">
-        {workspaceQuery.error instanceof Error ? workspaceQuery.error.message : "Failed to load workspace"}
-      </p>
+      <QueryErrorState
+        size="page"
+        error={workspaceQuery.error}
+        action="load this workspace"
+        onRetry={workspaceView.retry}
+        retrying={workspaceView.isFetching}
+      />
     );
   }
   if (!workspace || !form || !initialState) return null;
@@ -1086,12 +1025,6 @@ export function ExecutionWorkspaceDetail() {
     runtimeServices: workspace.runtimeServices ?? [],
     pendingRequests: pendingRuntimeActions,
   });
-  const workspaceAccess = resolveWorkspaceAccessState({
-    runtimeServices: workspace.runtimeServices ?? [],
-    operations: workspaceOperationsQuery.data,
-    handoffFailure,
-  });
-
   const pluginSlotContext = {
     companyId: workspace.companyId,
     projectId: workspace.projectId,
@@ -1099,6 +1032,11 @@ export function ExecutionWorkspaceDetail() {
     entityType: "execution_workspace" as const,
   };
   const activePluginTab = workspacePluginTabItems.find((item) => item.value === activeTab) ?? null;
+
+  if (activeTab === "configuration" && !workspaceVisibilityLoaded) return null;
+  if (workspaceId && activeTab === "configuration" && !workspaceIsolationControlsVisible) {
+    return <LegacyWorkspaceTabRedirect workspaceId={workspaceId} />;
+  }
 
   if (workspaceId && activeTab === null) {
     return <LegacyWorkspaceTabRedirect workspaceId={workspaceId} />;
@@ -1119,12 +1057,11 @@ export function ExecutionWorkspaceDetail() {
       return;
     }
 
-    let patch: Record<string, unknown>;
+    let patch: Record<string, unknown> = {};
     try {
       patch = buildWorkspacePatch(initialState, form);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to build workspace update.");
-      return;
+} catch (error) {
+      setErrorMessage(describeError(error).body);
     }
 
     if (Object.keys(patch).length === 0) return;
@@ -1160,20 +1097,6 @@ export function ExecutionWorkspaceDetail() {
         </div>
         {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
         {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
-
-        <WorkspaceAccessCard
-          access={workspaceAccess}
-          isBusy={openWorkspace.isPending || repairWorkspace.isPending}
-          onOpen={() => openWorkspace.mutate()}
-          onStart={() => {
-            runRuntimeControlRequests(
-              resolveWorkspaceServiceControlRequests(runtimeControlSections, "start", null),
-            );
-          }}
-          onRepair={() => repairWorkspace.mutate()}
-          onViewLogs={() => handleTabChange("runtime_logs")}
-          errorMessage={handoffErrorMessage}
-        />
 
         <PluginSlotOutlet
           slotTypes={["toolbarButton", "contextMenuItem"]}
@@ -1281,72 +1204,94 @@ export function ExecutionWorkspaceDetail() {
 
                 <Separator />
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
-                  <Field label="Working directory">
-                    <Input
-                      className="font-mono"
-                      value={form.cwd}
-                      onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                      placeholder="/absolute/path/to/workspace"
-                    />
-                  </Field>
+                {/*
+                  Both fields name a path on the execution host. Under the
+                  managed-sandbox-only policy every agent runs in the
+                  platform-managed environment, which owns the paths, so the
+                  whole group and its separator disappear, and stay hidden
+                  until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
+                      <Field label="Working directory">
+                        <Input
+                          className="font-mono"
+                          value={form.cwd}
+                          onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
+                          placeholder="/absolute/path/to/workspace"
+                        />
+                      </Field>
 
-                  <Field label="Provider path / ref">
-                    <Input
-                      className="font-mono"
-                      value={form.providerRef}
-                      onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
-                      placeholder="/path/to/worktree or provider ref"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Provider path / ref">
+                        <Input
+                          className="font-mono"
+                          value={form.providerRef}
+                          onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
+                          placeholder="/path/to/worktree or provider ref"
+                        />
+                      </Field>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
-                  <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.provisionCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/provision-worktree.sh"
-                    />
-                  </Field>
+                {/*
+                  Every lifecycle command runs a shell on the execution host and
+                  its placeholder names a host script path. The platform-managed
+                  environment owns that lifecycle, so the managed-sandbox-only
+                  policy hides the group and its separator, and keeps them
+                  hidden until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
+                      <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.provisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree.sh"
+                        />
+                      </Field>
 
-                  <Field
-                    label="Runtime provision command"
-                    hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
-                  >
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.runtimeProvisionCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/provision-worktree-runtime.sh"
-                    />
-                  </Field>
+                      <Field
+                        label="Runtime provision command"
+                        hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
+                      >
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.runtimeProvisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                        />
+                      </Field>
 
-                  <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.teardownCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/teardown-worktree.sh"
-                    />
-                  </Field>
+                      <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.teardownCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/teardown-worktree.sh"
+                        />
+                      </Field>
 
-                  <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
-                    <Textarea
-                      className="min-h-16 font-mono"
-                      value={form.cleanupCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
-                      placeholder="pkill -f vite || true"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
+                        <Textarea
+                          className="min-h-16 font-mono"
+                          value={form.cleanupCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
+                          placeholder="pkill -f vite || true"
+                        />
+                      </Field>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
                 <div className="space-y-4">
                   <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Runtime config</div>
@@ -1502,7 +1447,7 @@ export function ExecutionWorkspaceDetail() {
               </CardHeader>
               <CardContent>
               <DetailRow label="Project">
-                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId} />}
+                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId ?? "No project"} />}
               </DetailRow>
               <DetailRow label="Project workspace">
                 {project && linkedProjectWorkspace ? (
@@ -1526,7 +1471,7 @@ export function ExecutionWorkspaceDetail() {
               </DetailRow>
               <DetailRow label="Derived from">
                 {derivedWorkspace ? (
-                  <Link to={executionWorkspaceTabPath(derivedWorkspace.id, "configuration")} className="hover:underline">
+                  <Link to={executionWorkspaceTabPath(derivedWorkspace.id, workspaceIsolationControlsVisible ? "configuration" : "issues")} className="hover:underline">
                     {derivedWorkspace.name}
                   </Link>
                 ) : workspace.derivedFromExecutionWorkspaceId ? (
@@ -1599,14 +1544,16 @@ export function ExecutionWorkspaceDetail() {
               <CardDescription>Recent operations</CardDescription>
             </CardHeader>
             <CardContent>
-            {workspaceOperationsQuery.isLoading ? (
+            {(opsView.kind === "loading" || opsView.kind === "reconnecting") ? (
               <p className="text-sm text-muted-foreground">Loading workspace operations…</p>
-            ) : workspaceOperationsQuery.error ? (
-              <p className="text-sm text-destructive">
-                {workspaceOperationsQuery.error instanceof Error
-                  ? workspaceOperationsQuery.error.message
-                  : "Failed to load workspace operations."}
-              </p>
+            ) : opsView.kind === "error" ? (
+              <QueryErrorState
+                size="inline"
+                error={opsView.error}
+                action="load workspace operations"
+                onRetry={opsView.retry}
+                retrying={opsView.isFetching}
+              />
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
               <div className="space-y-3">
                 {workspaceOperationsQuery.data.map((operation) => (
@@ -1643,14 +1590,16 @@ export function ExecutionWorkspaceDetail() {
               title="Workspace summary"
               description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
             />
+            {linkedIssuesView.kind === "error" ? <QueryErrorState error={linkedIssuesView.error} action="load workspace tasks" onRetry={linkedIssuesView.retry} retrying={linkedIssuesView.isFetching} /> : (
             <ExecutionWorkspaceIssuesList
               companyId={workspace.companyId}
               workspace={workspace}
               issues={linkedIssues}
-              isLoading={linkedIssuesQuery.isLoading}
-              error={linkedIssuesQuery.error as Error | null}
+              isLoading={linkedIssuesView.kind === "loading" || linkedIssuesView.kind === "reconnecting"}
+              error={null}
               project={project}
             />
+            )}
           </div>
         ) : activePluginTab ? (
           <PluginSlotMount

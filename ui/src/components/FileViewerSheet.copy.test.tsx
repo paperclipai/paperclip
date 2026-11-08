@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedWorkspaceResource, WorkspaceFileContent } from "@paperclipai/shared";
-import { FileViewerSheet } from "./FileViewerSheet";
+import { FileContentViewer, FileViewerSheet } from "./FileViewerSheet";
 
 const useQueryMock = vi.fn();
 const viewerMock = {
@@ -204,5 +204,29 @@ describe("FileViewerSheet copy actions", () => {
 
     expect(document.body.querySelector('[aria-label="launch.md source"]')).not.toBeNull();
     expect(document.body.querySelector('[aria-label="launch.md rendered Markdown"]')).toBeNull();
+  });
+});
+
+
+describe("source line navigation", () => {
+  it("scrolls plain source to its selected line when the toolbar requests rendered mode", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      flushSync(() => root.render(<FileContentViewer content={{
+        resource: { ...resolvedResource, title: "util.ts", displayPath: "src/util.ts", contentType: "text/plain" },
+        content: { encoding: "utf8", data: "first\nsecond\nthird" },
+      }} highlightedLine={2} previewMode="rendered" />));
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+      expect(container.textContent).toContain("second");
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+      HTMLElement.prototype.scrollIntoView = original;
+    }
   });
 });

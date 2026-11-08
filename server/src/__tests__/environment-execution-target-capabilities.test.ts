@@ -8,11 +8,11 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 
-const SNAPSHOT: EffectiveSandboxCapabilities = {
+const SNAPSHOT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: false,
@@ -23,11 +23,12 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
   // inbound sync, so the opt-in stays off.
   concurrentSyncOperations: false,
   duplexCommandStream: false,
+  runnerWebSocketIngress: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
 // that the removed capability alone changes the runtime decision.
-const FULL_GRANT: EffectiveSandboxCapabilities = {
+const FULL_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
@@ -36,13 +37,14 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
   incrementalSessionOutput: true,
   concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed
 // `supportsSync` result. The helper returns the sandbox target so a test reads
 // the runner and the streaming flag the snapshot gates.
 async function buildSandboxTarget(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
@@ -66,7 +68,7 @@ async function buildSandboxTarget(input: {
     supportsSync: () => input.supportsSync,
     syncIn: vi.fn(),
     syncOut: vi.fn(),
-    effectiveSandboxCapabilities: vi.fn(async () => {
+    resolveCapabilities: vi.fn(async () => {
       if (input.rejectResolution) {
         throw new Error("capability resolution failed");
       }
@@ -88,7 +90,7 @@ async function buildSandboxTarget(input: {
   if (target?.kind !== "remote" || target.transport !== "sandbox") {
     throw new Error("expected a sandbox target");
   }
-  return { target, execute };
+  return { target, execute, environmentRuntime };
 }
 
 describe("resolveEnvironmentExecutionTarget effective capability snapshot", () => {
@@ -102,10 +104,10 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
     });
 
-    const effectiveSandboxCapabilities = vi.fn(async () => Object.freeze({ ...SNAPSHOT }));
+    const resolveCapabilities = vi.fn(async () => Object.freeze({ ...SNAPSHOT }));
     const environmentRuntime = {
       supportsSync: () => false,
-      effectiveSandboxCapabilities,
+      resolveCapabilities,
     } as unknown as EnvironmentRuntimeService;
 
     const target = await resolveEnvironmentExecutionTarget({
@@ -123,12 +125,12 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     if (target?.kind !== "remote" || target.transport !== "sandbox") {
       throw new Error("expected a sandbox target");
     }
-    expect(effectiveSandboxCapabilities).toHaveBeenCalledTimes(1);
+    expect(resolveCapabilities).toHaveBeenCalledTimes(1);
     expect(target.effectiveCapabilities).toEqual(SNAPSHOT);
 
     // The snapshot is read-only: it is frozen, so a write does not change it.
     expect(Object.isFrozen(target.effectiveCapabilities)).toBe(true);
-    const snapshot = target.effectiveCapabilities as EffectiveSandboxCapabilities;
+    const snapshot = target.effectiveCapabilities as EffectiveExecutionCapabilities;
     try {
       (snapshot as { reusableLeases: boolean }).reusableLeases = false;
     } catch {
@@ -160,6 +162,99 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     }
     expect(target.effectiveCapabilities).toBeUndefined();
   });
+
+  // The static `hasLeaseCapabilityModel` trait is `true` only for the
+  // `sandbox` driver in this phase (see `environment-driver-traits.ts`). An
+  // `ssh` lease must never reach the general resolver: the new
+  // `resolveCapabilities` method never returns `null` for a registered
+  // driver, so an ungated call would turn "no snapshot" into "every
+  // capability denied" for a driver this file does not otherwise gate on.
+  it("never calls the general capability resolver for an ssh lease", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "example.test",
+        port: 22,
+        username: "agent",
+        remoteWorkspacePath: "/work",
+      },
+    });
+
+    const resolveCapabilities = vi.fn(async () => ({ ...SNAPSHOT }));
+    const environmentRuntime = {
+      resolveCapabilities,
+    } as unknown as EnvironmentRuntimeService;
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "ssh", config: {} },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
+      environmentRuntime,
+    });
+
+    expect(target?.kind).toBe("remote");
+    expect(resolveCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("carries the environment-owned warm runner lifecycle and reuse requirement", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: FULL_GRANT,
+      supportsSync: false,
+      config: {
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        runnerIdleTimeoutMs: 45_000,
+      },
+    });
+
+    expect(target.runnerLifecyclePolicy).toEqual({
+      mode: "warm",
+      idleTimeoutMs: 45_000,
+    });
+    expect(target.reusableLeaseConfigured).toBe(true);
+  });
+
+  it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
+    });
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      // This substrate PR does not advertise remote paperclip_runner support
+      // until the Rust WSS transport lands. A supported direct adapter exercises
+      // the same host-owned acquisition contract without widening rollout here.
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
+      leaseId: "lease-row-1",
+      leaseMetadata: {
+        remoteCwd: "/work",
+        sandboxLeaseAcquisition: { outcome: "resumed" },
+      },
+      lease: {
+        id: "lease-row-1",
+        providerLeaseId: "daytona-sandbox-1",
+        leasePolicy: "reuse_by_environment",
+        metadata: { sandboxLeaseAcquisition: { outcome: "resumed" } },
+      } as never,
+      environmentRuntime: {
+        supportsSync: () => false,
+        resolveCapabilities: vi.fn(async () => ({ ...FULL_GRANT })),
+      } as unknown as EnvironmentRuntimeService,
+    });
+    if (target?.kind !== "remote" || target.transport !== "sandbox") {
+      throw new Error("expected a sandbox target");
+    }
+    expect(target.sandboxLeaseAcquisition).toEqual({
+      outcome: "resumed",
+      providerLeaseId: "daytona-sandbox-1",
+    });
+  });
 });
 
 describe("effective snapshot gates the sync decision", () => {
@@ -171,6 +266,17 @@ describe("effective snapshot gates the sync decision", () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
     expect(target.runner?.syncIn).toBeTypeOf("function");
     expect(target.runner?.syncOut).toBeTypeOf("function");
+  });
+
+  it.each(["syncIn", "syncOut"] as const)("carries a %s deadline only on the requested transfer", async method => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
+    const operations = [{ operationId: "archive-deadline", files: [] }];
+    await target.runner![method]!(operations, { minimumTimeoutMs: 900_000 });
+    await target.runner![method]!(operations);
+    const calls = vi.mocked(environmentRuntime[method]).mock.calls;
+    expect(calls[0]?.[0]).toMatchObject({ operations, minimumTimeoutMs: 900_000 });
+    expect(calls[1]?.[0]).toMatchObject({ operations });
+    expect(calls[1]?.[0]).not.toHaveProperty("minimumTimeoutMs");
   });
 
   it("omits the native sync hooks when the snapshot removes a sync verb", async () => {
@@ -279,9 +385,10 @@ describe("effective snapshot gates the persistent-session execution decision", (
 
   it("forces the persistent session when the snapshot grants persistent process sessions", async () => {
     const { target, execute } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
-    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true });
+    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true, commandTimeoutMs: 12000 });
     const call = execute.mock.calls[0]![0] as { forceSession?: boolean };
     expect(call.forceSession).toBe(true);
+    expect(call).toHaveProperty("commandTimeoutMs", 12000);
   });
 
   it("never forces the persistent session when the snapshot removes persistent process sessions", async () => {
@@ -302,29 +409,6 @@ describe("a rejected capability resolution fails closed for persistent-session b
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
   });
 
-  it("omits the snapshot when the resolution rejects", async () => {
-    // A rejected resolution carries no snapshot; the target never publishes a
-    // guessed capability set.
-    const { target } = await buildSandboxTarget({
-      snapshot: null,
-      supportsSync: false,
-      rejectResolution: true,
-    });
-    expect(target.effectiveCapabilities).toBeUndefined();
-  });
-
-  it("carries no snapshot for session-output streaming when the resolution rejects", async () => {
-    // A rejected resolution must not read as an open grant that enables
-    // streaming. The target carries no snapshot, so the bridge keeps the host
-    // output-file poll path.
-    const { target } = await buildSandboxTarget({
-      snapshot: null,
-      supportsSync: false,
-      rejectResolution: true,
-    });
-    expect(target.effectiveCapabilities).toBeUndefined();
-  });
-
   it("never forces the persistent session when the resolution rejects", async () => {
     // The bridge asks for the session with `useSession`, but a rejected
     // resolution fails closed, so the seam runs the command one-shot instead.
@@ -333,6 +417,7 @@ describe("a rejected capability resolution fails closed for persistent-session b
       supportsSync: false,
       rejectResolution: true,
     });
+    expect(target.effectiveCapabilities).toBeUndefined();
     await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true });
     const call = execute.mock.calls[0]![0] as { forceSession?: boolean };
     expect(call.forceSession).toBe(false);

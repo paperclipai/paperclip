@@ -1,0 +1,510 @@
+# Everyday Paperclip workflow evals
+
+## Main-server outage qualification
+
+The remote native Codex and Claude `recover-controller` cells default to SIGKILL,
+an observed 125-second offline interval and retirement of the old controller cache. They use
+natural ownership timing. The wrapper emits `controller-outage.json`; the grader
+requires distinct server processes, confirmed HTTP loss, cache retirement and the
+requested interval, in addition to same-run/provider-turn and finalization proof.
+Partial fault receipts remain in the attempt's private `control/` directory on
+failure. A successful task without the fault receipt cannot qualify.
+
+Use `PAPERCLIP_RUNNER_E2E_CONTROLLER_STOP_SIGNAL=SIGTERM` for graceful shutdown,
+`PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=1000` for an explicit one-second
+experiment, or `PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=300000` for the
+five-minute contract. These settings are recorded; compare only matching configurations. The configured
+duration is a minimum hold after confirmed HTTP loss. Shutdown and startup add
+to total recovery time; they do not extend the runner's seven-minute grace or the
+workflow's attempt deadline. `recover-controller` permits no automatic retries.
+
+```sh
+PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=300000 pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+The credential-free wrapper smoke starts the actual main server and a separate
+disposable Postgres, kills/replaces the server, checks that Postgres never
+restarted, reads existing data, accepts a new HTTP mutation, and confirms cleanup:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/controller-replacement-smoke.ts
+```
+
+It prints a private JSON evidence path. It uses no model and **does not qualify
+active-agent continuity, queued launches, or an A-to-B version upgrade**. See the
+[qualification plan](../../doc/plans/2026-10-22-hot-upgrade-qualification.md) for the
+separate gates and outstanding work. Hosted qualification still requires a valid
+pinned Daytona image and the existing credential/budget admission.
+
+## Workflow suite
+
+This manual suite tests useful work through the production browser, public API,
+native runner, and normal agent instructions. It complements the tightly
+scripted runner contract fixtures. It does not add a scheduled or default paid
+run: `--all` and generic profile selectors exclude it. Select the suite or an
+exact execution ID explicitly.
+
+## Stories and assertions
+
+| Story | Cases | Required evidence |
+|---|---|---|
+| Build a small project and revise it | `build-revise` | Download both ZIPs through the UI; independently execute the delivered CLI and import its function; test the revision; retrieve the original bytes again. |
+| Delegate and incorporate late feedback | `delegate-feedback` | One child assigned to Riley; send feedback while the child runs; find it in the child history and independently test `--max-length` in the delivered ZIP. The worker must not execute on the parent. |
+| Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
+| Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
+| Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
+| Request an email address | `agentmail-setup` | Enable Chat connectors, ask for an email address, and require a durable AgentMail card for the requesting agent and user. Reload and verify one password field, the direct API-key link, and no access selectors or modal. Decline and verify no connection or repeated request. |
+| Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. Native Daytona cases keep the controller offline for 125 seconds before restarting. |
+| Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
+| Create and edit a company skill | `create-skill-studio` | Create one skill through the runner, verify its persisted library entry and activity-feed card, open Skill Studio, save an edit, and verify the edit after returning. Local Codex, local ACPX Claude, and warm Daytona cells are explicit. |
+
+For normal completion, all story tasks must reach Done, with no active run,
+pending completion confirmation, or scheduled recovery. Runs must prove native
+identity and native terminal contracts. A workspace-contention cancellation is
+not provider execution only when the persisted pre-dispatch record explicitly
+says `providerWorkStarted: false` and no process/session/runner identity exists.
+Other unexplained cancellations remain failures. Twelve total run records bound
+each story, including contention and recovery.
+
+Arbitrary runner-process termination is not part of the model scorecard. The
+historical `recover-runner`, `recover-runner-safe`, and `recover-runner-uncertain`
+attempts remain available as diagnostics, with their original grades and costs.
+The first two did not establish a safe restart boundary, and the uncertainty
+case measures a deterministic safety rule. None supports ranking models.
+See [controlled recovery tests](../runner-recovery/README.md).
+
+## Staging-soak reliability group
+
+Seven explicit-only cases turn the staging soak's ad-hoc browser scripts into
+repeatable runs. Each case comes from a real staging failure. They live in the
+`everyday-workflows` suite, but neither `--all`, `--suite everyday-workflows`, a
+profile/environment selector, nor a scheduled campaign selects them. Only the
+`reliability` group, an explicit `--case`, or an exact `--id` does
+(`explicitGroup` on the task fixture enforces this in `selectors.ts`).
+
+```sh
+pnpm test:e2e:runner -- --list --suite everyday-workflows --group reliability
+pnpm test:e2e:runner -- --suite everyday-workflows --group reliability --max-parallel 2
+pnpm test:e2e:runner -- --suite everyday-workflows --case queue-steer
+pnpm test:e2e:runner -- --id everyday-workflows.runner-opencode-deepseek-1017.local.interrupt-redirect
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.interrupt-redirect
+```
+
+**Cadence:** launch the [TestOps Reliability plan](#testops-reliability-plan)
+before a release and after a risky runner, recovery, queue, tree-control or
+restart change. Do not run it per PR, and it has no schedule. It is paid:
+single attempt per cell, with a 1,000-cent company and lead-agent hard stop.
+Missing provider or Daytona credentials, or a mutable Daytona image, stop the
+launch before any provider spend.
+
+**Product rule (every case):** work interrupted by a restart, Stop,
+reassignment or lost runner must resume automatically, or offer a Retry that
+works on first use. The harness watches each task's `executionBlocker`,
+`interruption` and execution projection while it waits. It uses an offered
+Retry at most once (never while an automatic retry is scheduled) and requires
+a new run from it. These fail: a "send a message to continue" blocker
+(`resume.no-send-message-blocker`), a dead or repeated Retry
+(`resume.retry-works-first-use`), a silent stall past the case bound
+(`resume.no-silent-stall`), and duplicate execution. Evidence is saved to
+`reliability-observations.json`.
+
+Message delivery is attributed through each run's wake context
+(`wakeCommentIds`), not its saved prompt: the prompt carries the whole
+conversation history, so later turns legitimately repeat earlier messages. A
+message delivered by more than one successful run is duplicate execution.
+`--group slow` selects only `long-silent-command`.
+
+| Case | Soak signature | Journey | Key checks |
+|---|---|---|---|
+| `interrupt-redirect` | S47 (fixes #19370, #19355) | While a slow step loop runs, send a follow-up and click its queued **Interrupt**. Then reopen with a second slow loop, click **Stop**, and immediately send another message while the stopped run is still saving (the `workspace_busy` retry path). | Interrupted run ends `operator_interrupted`; exactly one continuation carries the message and starts within 180 s (the soak saw 13–90 s once fixed, 4 minutes or never before); no second user message; the Stop-settlement message is consumed once within 180 s; Done. |
+| `reassign-midrun` | S48 (fix #19354) | While the lead runs a resumable step loop, reassign the task to Riley through the public issue API. | Request is 2xx within 10 s (no 409 or 20 s hang); old run ends `issue_reassigned`; Riley's run starts after the request and succeeds; no overlapping executions on the task; `steps.txt` holds step-1..step-8 exactly once, so work continued from saved files. |
+| `three-turn-revise` | S49 | Create `items.md`, then two reopen-comment revisions on the same workspace: add two items, then convert to a table. Runs on the **per-turn** Daytona lease (the bug hit gpt-5.6-sol with an ephemeral lease on turn 3). | Each turn succeeds; no reconciliation or send-a-message blocker; the file is a five-row Number/Item table. |
+| `long-silent-command` | S52/S52b (fixes #19407, #19419) | The agent runs one 13-minute foreground loop (`sleep 60` × 13, appending to `silent.txt`) that prints nothing, then reports. Tagged `slow`; 50-minute Daytona deadline. | Run succeeds after the command (not shortened) and is terminal within 8 minutes after it; `silent.txt` holds tick-1..tick-13; Stop stays available in API and browser samples throughout; any failure carries a named cause. |
+| `tree-pause-release` | S50/S50b (fixes #19394, #19421) | The lead delegates two slow children to Riley. While a child is queued or has a parked `workspace_busy` retry, pause the parent's tree with `POST /api/issues/:id/tree-holds`. Hold past the retry's due time (at least 75 s), then release **without** `wakeAgents`. | The hold interrupted work; no child run starts during the hold; each interrupted task gets exactly one `issue_tree_resumed` run; all tasks reach Done. |
+| `queue-steer` | H2 | During an active run, queue three follow-ups through the public comment API; edit one, discard one, and steer one (retrying only `steering_temporarily_unavailable`, for up to two minutes). | Edited text reaches the agent and the original never does; the discarded text never reaches the agent; the steered message is acknowledged by the active turn and never replayed; the remaining message is handled by exactly one run. |
+| `queued-across-restart` | S55/U9 (fix #19431) | Queue a follow-up through the composer while a run is active, then restart the controller with the existing restart machinery. | The follow-up dispatches only after the restart, automatically within six minutes, exactly once; every observed `queued` wait names a cause (`server_restarting`, `task_drain`, …) rather than a bare "Queued"; any offered Retry works on first use. |
+
+**Matrix (16 cells).** The `reliability` group selects the seven TestOps plan
+cells and nine explicit-only extras. Six plan cells use native OpenCode with
+DeepSeek 1017 via OpenRouter. `queue-steer` must steer an active turn, and the
+OpenCode server driver declares `steering: false`, so the queued-comment route
+answers `steering_unsupported`. Its plan cell is the existing steering-capable
+native Codex Daytona cell.
+
+| Case | Plan cell | Why this profile and environment |
+|---|---|---|
+| `interrupt-redirect` | `runner-opencode-deepseek-1017.local` | S47 is control-plane interrupt and Stop-settlement dispatch. |
+| `reassign-midrun` | `runner-opencode-deepseek-1017.local` | S48 is the reassignment request and native stop settlement. |
+| `three-turn-revise` | `runner-opencode-deepseek-1017.daytona` (per-turn lease) | S49 hit turn 3 on an ephemeral Daytona lease. |
+| `long-silent-command` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S52/S52b hung on remote runners during a silent command. |
+| `tree-pause-release` | `runner-opencode-deepseek-1017.local` | S50/S50b is tree-hold and parked-retry scheduling. |
+| `queue-steer` | `runner-codex.daytona` (warm lease, `gpt-6.1-sol`) | H2 needs a steering-capable driver; OpenCode has no steering. |
+| `queued-across-restart` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S55/U9 happened across a restart with a remote lease. |
+
+The local plan cells cannot reproduce Daytona-only signatures: the remote
+`workspace_busy` save after Stop (S47's sandbox variant), remote stop
+settlement during reassignment, and a lost or replaced remote runner during a
+tree hold. The S51 lost-runner signature has no case yet. The explicit-only
+native Codex Daytona extra for each case still covers the sandbox variants of
+S47, S48 and S50.
+
+The extras are outside the TestOps plan. Every case except `queue-steer` (whose
+Codex cell is the plan cell) also runs once on native Codex (`runner-codex`,
+`gpt-6.1-sol`) on Daytona: the warm environment, except `three-turn-revise` on
+the per-turn lease. `long-silent-command` also runs on
+the released ACPX facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`)
+and OpenRouter/Pi (`runner-acpx-pi`), which hung 3/3 before the fix. They run
+as ordinary released profiles, as in the rolling-deployment matrix; a profile
+whose ACPX qualification returns to pending drops out of the group
+automatically. Their credentials (`OPENAI_API_KEY`, `XAI_API_KEY`,
+`KIMI_API_KEY`, `OPENROUTER_API_KEY`) are only required when those cells are
+selected.
+
+### TestOps Reliability plan
+
+The **Reliability — staging soak** TestOps plan is a sibling of the standing
+Product regression plan (plan 2). It uses the same trusted
+`runner-full-stack-e2e.yml` lane, the same TestOps GitHub job, selection,
+paid admission, cells, retained report and dashboard, Allure projection,
+upload verification and failure classes. Its mapping lives in
+`reliability-testops.mjs`; `product-regression-testops.mjs` selects either
+plan. A launch selects cases from exactly one plan; mixing them fails. Each
+plan keeps its own denominator: only a complete seven-case selection is a full
+Reliability verdict, and plan 2 still needs its 20 cases. Reports tag each
+reliability result with its soak signature (`soak-S55/U9`, for example). A
+launch needs `OPENROUTER_API_KEY`, `DAYTONA_API_KEY` and, for `queue-steer`,
+`OPENAI_API_KEY`; the workflow passes each only to the cells that declare it.
+
+A launch from TestOps dispatches the workflow with `ALLURE_JOB_RUN_ID`; the
+selected case IDs choose the plan and its cells. To bootstrap one manually:
+
+```sh
+gh workflow run runner-full-stack-e2e.yml --ref master -f all=false \
+  -f testops_plan=reliability -f testops_case=all       # or a case name or ID
+```
+
+The plan has no schedule. A weekly run would add a paid 50-minute Daytona
+cell to every week, but these signatures move with release-risky changes
+rather than with time. Launch it from TestOps before releases instead.
+
+**Registration.** TestOps assigns case and plan IDs, and this repository never
+invents them. Until `reliabilityRegistration` in `reliability-testops.mjs`
+holds the plan ID and all seven case IDs, selection fails closed
+(`product_regression_testops_reliability_unregistered` for a bootstrap,
+`case_mismatch` for a TestOps launch) before any provider spend. A partial,
+duplicate or plan-2 registration fails too. To register:
+
+1. Dispatch `runner-e2e-testops-registration.yml` from master with
+   `operation=inspect`. It only reads TestOps and reports existing cases, the
+   plan and the job assigned to plan 2.
+2. Dispatch it again with `operation=register`. It reuses cases with the same
+   full name, creates any missing case and the plan, and assigns the plan to
+   plan 2's GitHub job with plan 2's job parameters. A rerun changes nothing.
+3. Copy the `reliabilityRegistration` snippet from the run summary (or the
+   `reliability-testops-registration-*` receipt artifact) into
+   `reliability-testops.mjs`, and merge it in one reviewed PR.
+4. Launch the plan from TestOps. Tag only a complete seven-case attempt
+   `full-run`.
+
+Only the registration job receives `ALLURE_TOKEN`, from the protected
+`runner-e2e-testops-reporting` environment, and it runs only trusted default-branch
+code for allowlisted actors. It never runs a provider cell.
+
+**Coverage boundary.** The graders and selection are calibrated by
+`everyday-reliability.test.ts` against passing and plausible failing
+observations. No paid cell has run yet; a first run of the group is the
+acceptance step. The original soak browser scripts are not in this repository,
+so these cases encode the reported signatures, not a replay of those scripts.
+`long-silent-command` checks the completion and Stop paths; it does not inject a
+runner connection loss, so the "fails within a bounded time with a named
+cause" contract is checked only if a loss happens naturally.
+
+## Matrix and running
+
+The local matrix has fourteen cases on native Codex `gpt-6.1-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
+also declare build/revise, delegation, controller-restart, and skill-creation cases
+on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,
+for 52 cells total. Hiring/reuse and delegation have one attempt and a
+1,000-cent company and lead-agent hard stop. Remote runner-process killing is not supported. For remote controller
+restart, a verified first download supplies the persistence checkpoint; the
+controller is interrupted during a subsequent revision with another queued
+requirement.
+
+The native Codex and ACPX Daytona restart cells require a completed native tool
+receipt while that revision is still running. They keep the controller offline
+for 125 seconds after its health listener stops, then start its replacement.
+Before and after restart each pins
+the same run, normalized session, Runner identity, PID/start time, and active
+sandbox lease. The original receipt prefix must remain unchanged. A run that
+uses this native Codex remote cell also loses the old controller runtime cache
+between stopping and starting the server. The harness moves it into private
+evidence outside product lookup paths and requires an acknowledgement of that
+fault. Postgres and the instance encryption key survive. This checks deployment
+recovery without relying on the old controller journal or local warm-session cache.
+A run that
+ends before either active observation leaves the fault boundary unexercised;
+it cannot pass from the final ZIP alone. The cell no longer exempts an original
+Codex remote run that fails with `process_lost` and is replaced.
+
+Completion requires one original provider turn and control-plane terminal,
+the same native receipt prefix, no failed native tool receipts, and consistent
+results for every stable completed tool identity. Reattached activity can
+redeliver an identical start or tool receipt; changed content or a second
+submission fails. It also requires
+a committed run and successful `workspace_finalize` receipt, and no pending
+workspace operation or recovery. Existing independent ZIP and preserved-download
+checks still apply. These receipt checks do not prove that arbitrary external
+effects with different tool IDs cannot repeat.
+
+`remote-restart-before.json`, `remote-restart-after.json` and
+`remote-restart-final.json` retain receipt identities and hashes. They exclude
+provider text, tool arguments, command output, and raw provider sandbox IDs.
+The dedicated explicit-only `daytona-restart-continuity` definition 7 additionally
+replaces the controller after completion, then posts its unchanged saved-project
+follow-up through the normal authenticated task-comment API. Exactly one matching
+persisted user comment, consumed wake, same native/provider identity, new completed
+tool and useful output are required. Its initial browser journey remains; post-C
+readback is API-only and does not qualify browser reconnection or rendered status.
+The definition 6 browser timeout remains failed with an unknown browser cause.
+The suite definition version and harness digest change with this oracle.
+Its deterministic calibration is not a claim that a live Daytona run passed.
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+```sh
+pnpm test:e2e:runner -- --list --suite everyday-workflows
+pnpm test:e2e:runner -- --suite everyday-workflows --environment local --max-parallel 2
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex-mini.local.build-revise
+pnpm test:e2e:runner -- --suite everyday-workflows --environment daytona --max-parallel 2
+```
+
+Before project stories or the Python calibration tests, start Docker on the
+harness host and fetch the pinned oracle image. CI prepares and verifies this
+same pinned image before the paid project-story cells; artifact checks run on
+the harness host. The workflow verifies the exact repository digest after the
+pull. This is required for local and Daytona stories.
+
+```sh
+docker pull python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+python3 tests/runner-e2e/everyday-artifact.py --preflight
+```
+
+The harness checks this prerequisite before it creates the task. It does not
+pull an image during a model attempt or fall back to host execution.
+
+Use the credential and immutable Daytona image setup in [README.md](README.md).
+Provider calls cost money. Each cell owns an isolated instance and project.
+There are no real third-party mutations in the service fixture; it exercises
+production connection, transport, tool approval, and document delivery paths.
+
+## Deterministic checks and calibration
+
+```sh
+pnpm test:e2e:runner:typecheck
+pnpm test:e2e:runner:unit
+python3 -m unittest discover -s tests/runner-e2e -p test_everyday_artifact.py
+```
+
+The independent oracle rejects wrong output, ignored late feedback, trailing
+separator bugs, invalid argument acceptance, duplicate source modules, archive
+path traversal, and symlinks. Passing agent-authored tests cannot override it.
+Lifecycle calibration rejects legacy execution, missing runner identity,
+unexpected crashes, workers on the parent, and answers left in review.
+
+ZIP evaluation runs delivered Python in a Docker container with a read-only
+project mount and root filesystem, no network, a non-root user, no Linux
+capabilities, and bounded CPU, memory, process count, output, and duration. Only
+the extracted delivery enters the container. The container is removed after
+grading. Calibration includes attempts to read a host file and reach a host
+loopback service.
+
+## Evalbook evidence and qualification
+
+Each packaged attempt retains `snapshots/everyday-workflow.json`, downloaded
+ZIPs, assertions, actual task comments and run records, timing, accounting,
+source provenance, and screenshots. The story records a digest of its harness
+sources. Infrastructure failures and failed attempts must remain inspectable.
+
+Import packaged results with `paperclip-evals/evals/everyday-workflows/import_results.py`.
+It uses the canonical Runner Evalbook generator and the built Runner Lab viewer.
+It does not invent provider transcripts, tool counts, model observations, or
+cost estimates. The selected model is checked against persisted native execution
+inputs; that is distinct from provider-side model identity verification.
+
+Initial live results are diagnostic. They are not a reliability estimate or a
+model ranking. Before promotion, freeze both source revisions and harness
+digest, run at least three independent local repetitions, qualify the eight
+remote cells against a verified image, and review every failure. Keep model
+quality, lifecycle correctness, infrastructure availability, and latency separate.
+
+## Revised evaluation contract (14 September, second campaign)
+
+That campaign used 32 cells: the original local stories plus two local Codex
+text-only safe-replacement probes, and the unchanged six remote cells. The old
+`recover-runner` results remain historical; `recover-runner-uncertain` is a new
+case that expects a visible Blocked safety stop, preserved source and queued
+input, and no unverified provider replay. Its Retry control is inspected, not
+claimed to restore work. Successful manual recovery remains unqualified.
+
+`recover-runner-safe` interrupts a text-only Codex turn and queues new direction.
+A pass requires the server's durable `verified_safe_replacement` evidence and the
+new answer. No safety proof is injected or fabricated. If that premise cannot be
+verified in a live probe, report it as an unqualified recovery boundary, not an
+established product defect. Claude has no catalog cell for this Codex-specific
+replacement proof. Deterministic native-safe-replacement tests cover its proof
+and admission gates independently of model behavior.
+
+Delegation now submits feedback through the existing child task composer and
+records the delivered comment ID. The child must consume the message and deliver
+the revised program. This does not require a lead to relay a parent comment.
+The separate issue-update-comment-wakeup route tests exercise exact supported
+mention routing, including access, dependency, identity, and duplicate-wake gates.
+
+The approval case provisions an authenticated local service through the public
+API, with a random server-held credential that never enters the agent environment
+or browser trace. Approval/decline interactions still use the browser. Provider
+captures distinguish rejected unauthenticated requests from accepted calls. The
+old public-endpoint attempts remain boundary evidence, not an isolation promise.
+
+Stop now waits for the owned runner to exit, records project file hashes, and
+checks them again after the new response. This proves stability over that interval,
+not indefinite monitoring. Hiring and declined-access policy changes are deferred
+by user decision; their old results must not be presented as new campaign runs.
+
+## Decline correction (14 September, third campaign)
+
+That campaign used 35 cells (29 local, six remote). `service-decline` tests
+rejection of a protected action on an already installed service; its former
+"connection request" title was misleading. `connection-decline` separately tests
+Not now on new Notion setup. Both permit a brief explanation as the complete
+fallback, so Done is expected after that explanation. Neither test requires
+completion after refusing work that is still required.
+
+The installed-service decline fixture now uses the same server-held credential
+as approval. The harness requires one pending interaction, validates its kind
+and connection/provider identity before clicking, and waits for the exact
+interaction's saved decision. Wrong interactions fail `decision-request-matches-story`
+with a screenshot; they are not evidence of an ignored decline. Both decline
+stories check a new explanation after the decision and reject repeated requests.
+
+Historical attempts remain unchanged. This campaign resumes the previously
+deferred decline cases; hiring remains deferred. Notion setup is declined in
+the UI, so this test neither authenticates to nor reads real Notion data.
+
+Decision screenshots are included in the evidence package. Before capturing the
+final screen, the harness waits for the thread and latest persisted agent comment
+to render, then scrolls that comment into view. A Done header alone is not proof
+that the final response was visible.
+
+
+## Recovery scope correction (14 September)
+
+This correction reduced the catalog to **30 cells: 24 local and six remote**. Forced runner
+crash probes are retired from paid selection. Their original attempt IDs remain
+in Evalbook's Diagnostics history and Latest pages; they are excluded from the
+main matrix without changing grades or deleting evidence. Reported spend still
+includes all attempts.
+
+`recover-controller` and `stop-redirect` retain concrete supported journeys:
+restart the controller while preserving the runner, or use Stop and submit a new
+direction. Their assertions verify pending input, saved work, and the next
+usable result. Neither claims recovery from an arbitrary provider-process crash.
+
+A future user-facing crash-recovery case needs a reproducible recoverable fault,
+an identified supported recovery action, and evidence through the final usable
+result. A missing test premise must be reported as unexercised, not a model
+failure. Do not introduce a new paid case just to replace a retired row.
+
+## Skill creation (16 September)
+
+`create-skill-studio` adds five cells: three local profiles and the two core
+profiles on Daytona. The current catalog has **35 cells: 27 local and eight
+remote**. The test opens the created skill from its task-feed card, checks the
+canonical skill identity in Studio, saves an edit, and returns to the same skill
+in the task sidebar. A model's authored document heading is not used as the
+identity check.
+
+## External-provider fallback
+
+Three explicit local cases cover aggregator routing with the normal production
+agent guidance. They add nine local cells. The AgentMail setup case adds three
+local cells; the suite now has 50 cells total.
+
+The AgentMail case uses real model discovery and production interaction/UI paths,
+but declines before sending credentials to AgentMail. Its independent grader is
+calibrated against missing, duplicate, misaddressed, hidden, and malformed cards.
+The email integration suite separately proves credential/inbox creation, access
+defaults, assignment checks, and completion using a fixture provider. Neither
+test qualifies live AgentMail delivery. Run a bounded local model cell with:
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex-mini.local.agentmail-setup --max-automatic-retries 0
+```
+
+- `provider-native`: Jira is supported natively and by aggregators. Require the
+  Jira connection card directly, decline it in the browser, and verify no provider
+  question, connection creation, or repeated request.
+- `provider-decline`: HubSpot has no built-in connector in this fixture. Require
+  Composio, Arcade, Zapier, and None in that order with external-service disclosure.
+  Restart the controller, reload the question, choose None through the UI, and
+  verify one saved answer, no connection changes, and no fabricated result.
+- `provider-second`: Install a deterministic Arcade gateway with a read-only
+  HubSpot action through public APIs. Choose Arcade in the browser after restart.
+  Require no calls before selection, exactly one call afterwards, the independently
+  generated contact marker in the agent response, and no duplicate connection.
+
+These use the existing native profiles and 12-minute local attempt deadline;
+expected provider runs are two per case. There are no real third-party mutations.
+The fixture server is closed and the harness cleans its disposable instance.
+Provider-choice screenshots, persisted interactions, gateway call counts, source
+revision, harness digest, and existing usage/cost evidence accompany each attempt.
+`connection-routing-evidence.test.ts` calibrates the grader against undisclosed
+routing, incorrect ordering, early calls, duplicate questions, and fabricated reads.
+Run a single `everyday-workflows.runner-codex-mini.local.provider-decline` cell
+first; do not treat these fixtures as live provider compatibility tests.
+
+### Connection-guidance observation boundaries
+
+The explicit `native-connection-guidance` suite keeps one attempt per cell.
+For decline cases, Done and a succeeded run are insufficient: settlement waits
+within the existing cell deadline for a saved reply attributed by run ID to the
+lead agent's final successful run on this task. Readiness checks storage and
+identity, not favorable wording. A missing reply times out; an incorrect reply
+settles and fails the independent explanation check. Both decline explanation
+checks use the same bounded matcher, including unavailable/rejected access and
+“wasn't able to pull” wording. This is textual evidence, not proof of cognition.
+
+An executed approval or a recorded tool-action rejection with `wake_assignee`
+may precede its continuation run. Only a response bound to the same task, company,
+agent, and completed source run can defer the stranded-blocker check, and only
+within the original deadline. A failed execution, unrelated card, or already
+consumed response cannot extend that wait.
+
+`connection-guidance-decline-grade.json` and the workflow's
+`declineGradeEvidence` retain the exact cloned assertion input and original
+checks. Later final-state or cleanup observations cannot overwrite that input.
+Earlier campaign grades remain unchanged when the evaluator is corrected.
+# Upgrade qualification receipts
+
+`PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS` selects frozen installed A/B artifacts
+and an alternating A/B/A sequence. The remote controller-recovery workflow
+executes every requested replacement on the original active run. If that run
+ends before a later fault can be injected, that boundary is unexercised; starting
+a replacement task does not qualify it.
+
+The supervisor reads existing Postgres ownership and Runner-owned checkpoint
+evidence. It records HTTP readiness, natural lease takeover, a new authenticated
+connection, and ingestion past the stopped controller's saved event cursor.
+Final native and workspace receipts establish backlog settlement. No lease
+timestamps are edited. Authentication and processing must be observed within
+the original 420-second grace, including artifact verification and startup.
+
+For a credential-free startup/migration experiment, run
+`controller-replacement-smoke.ts` with the manifest and an explicit disposable
+`PAPERCLIP_TEST_DATABASE_URL`. The driver creates and drops a unique empty
+database; it does not change the supplied database. This smoke qualifies zero
+agent turns. The [qualification record](../../doc/plans/2026-10-22-hot-upgrade-qualification.md)
+is the acceptance ledger for exact artifacts, attempts, and remaining gates.

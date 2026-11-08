@@ -1,6 +1,6 @@
 import { AlertTriangle, Info, PauseCircle, User, X } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { AgentIcon } from "../AgentIconPicker";
+import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import {
   classifyAssigneeHandoff,
   resolveRunStatusPresentation,
@@ -17,7 +17,7 @@ import {
  * so they can be exercised in isolation by component tests and Storybook.
  */
 
-export interface HandoffAgentLike {
+export interface HandoffAgentLike extends AvatarAgent {
   name: string;
   icon?: string | null;
 }
@@ -60,7 +60,7 @@ export function AssigneeChip({
     return (
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="agent">
         <span className="sr-only">Agent </span>
-        <AgentIcon icon={agentIcon(assignee.agentId, resolvers)} className="h-3 w-3 shrink-0 text-muted-foreground" />
+        <AgentAvatar agent={{ ...resolvers.agentMap?.get(assignee.agentId), id: assignee.agentId }} size={16} />
         <span className="max-w-(--sz-12rem) truncate">{agentName(assignee.agentId, resolvers)}</span>
       </span>
     );

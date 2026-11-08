@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchableSelect, type SearchableSelectGroup, type SearchableSelectOption } from "./SearchableSelect";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import {
   buildReusableExecutionWorkspaceOptionGroups,
   reusableWorkspaceOptionMatches,
@@ -130,6 +131,9 @@ describe("SearchableSelect", () => {
 
     expect(container.querySelector("[data-option-key='recent:alpha']")).not.toBeNull();
     expect(container.querySelector("[data-option-key='all:alpha']")).not.toBeNull();
+    expect(container.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    expect(container.querySelector("[data-mobile-entity-picker-header]")?.textContent).toContain("Pick one");
+    expect(container.querySelector('button[aria-label="Close selector"]')).not.toBeNull();
   });
 
   it("filters options and returns the selected option object", async () => {
@@ -388,6 +392,55 @@ describe("SearchableSelect", () => {
 
     expect(container.querySelector("input[placeholder='Search options...']")).toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it.each([false, true])("dismisses outside a nested worktree picker (modal=%s) without reopening or closing the task", async (modal) => {
+    const onValueChange = vi.fn();
+    root = render(
+      <Dialog defaultOpen>
+        <DialogContent aria-describedby={undefined}>
+          <DialogTitle>New task</DialogTitle>
+          <button type="button" data-testid="outside-worktree">Task draft</button>
+          <SearchableSelect
+            value="new"
+            groups={[{ id: "all", options: [{ key: "new", value: "new", label: "New worktree" }] }]}
+            onValueChange={onValueChange}
+            placeholder="Worktrees"
+            searchPlaceholder="Search worktrees..."
+            modal={modal}
+          />
+        </DialogContent>
+      </Dialog>,
+      container,
+    );
+    await flush();
+    const trigger = document.querySelector<HTMLButtonElement>('button[role="combobox"]')!;
+    const outside = document.querySelector<HTMLButtonElement>('[data-testid="outside-worktree"]')!;
+    act(() => trigger.click());
+    // Radix installs its outside pointer listener after the opening event.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const picker = document.querySelector<HTMLElement>("[data-mobile-entity-picker]")!;
+    const outsideTarget = modal ? picker.parentElement! : outside;
+    act(() => {
+      const pointerDown = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+      Object.defineProperty(pointerDown, "pointerType", { value: modal ? "touch" : "mouse" });
+      outsideTarget.dispatchEvent(pointerDown);
+      if (!modal) outside.focus();
+      outsideTarget.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
+    expect(document.querySelector("[data-slot=dialog-content]")).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.textContent).toContain("New worktree");
+    expect(onValueChange).not.toHaveBeenCalled();
+    if (modal) expect(document.activeElement).toBe(trigger);
+    act(() => {
+      outside.focus();
+      trigger.focus();
+    });
+    await flush();
+    expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
   });
 
   it("filters workspace options, moves with arrows, and selects the workspace id with Enter", async () => {

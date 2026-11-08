@@ -402,7 +402,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     });
   });
 
-  it("includes same-issue plan confirmation target/result and rejects cross-issue interaction context", async () => {
+  it("infers an omitted target issue id while rejecting cross-issue interaction context", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const otherIssueId = randomUUID();
     await db.insert(issues).values({
@@ -428,7 +428,6 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
           prompt: "Approve this plan?",
           target: {
             type: "issue_document",
-            issueId,
             documentId: document.id,
             key: "plan",
             revisionId: document.latestRevisionId,
@@ -718,7 +717,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     });
   });
 
-  it("includes rejection result and open plan annotations even when the reason is empty", async () => {
+  it("includes rejection result with an omitted target issue id even when the reason is empty", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     await annotations.createThread(
       issueId,
@@ -747,7 +746,6 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
           prompt: "Approve this plan?",
           target: {
             type: "issue_document",
-            issueId,
             documentId: document.id,
             key: "plan",
             revisionId: document.latestRevisionId,

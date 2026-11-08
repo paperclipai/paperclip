@@ -3,6 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serviceHealthChecks } from "../checks/service-health-check.js";
+import {
+  extractExecutableFromLaunchdPlist,
+  extractExecutableFromSystemdUnit,
+  isExecutableFile,
+  renderLaunchdPlist,
+  renderSystemdUnit,
+} from "../services/service-manager.js";
 import { resolveRestartExpectedVersion, withHotRestartLock } from "../commands/service.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
@@ -52,6 +59,7 @@ function managerFixture(active = true) {
       linger: true,
     })),
     logs: vi.fn(async () => undefined),
+    installedExecutablePath: vi.fn(async () => null),
   };
 }
 
@@ -129,6 +137,7 @@ describe("service health doctor checks", () => {
     const results = await serviceHealthChecks(config, {
       detect: vi.fn(async () => ({ supported: true as const, manager })),
       probe: vi.fn(async () => ({ ok: true, version: "1.2.3" })),
+      shimPresent: vi.fn(async () => true),
     });
 
     expect(results).toContainEqual(
@@ -138,5 +147,109 @@ describe("service health doctor checks", () => {
         message: expect.stringContaining("another Paperclip process"),
       }),
     );
+  });
+});
+
+describe("isExecutableFile", () => {
+  it("accepts only executable regular files", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-check-"));
+    const executable = path.join(dir, "exec");
+    const plain = path.join(dir, "plain");
+    fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
+    fs.writeFileSync(plain, "data", { mode: 0o644 });
+
+    await expect(isExecutableFile(executable)).resolves.toBe(true);
+    await expect(isExecutableFile(plain)).resolves.toBe(false);
+    await expect(isExecutableFile(dir)).resolves.toBe(false);
+    await expect(isExecutableFile(path.join(dir, "missing"))).resolves.toBe(false);
+  });
+});
+
+describe("service runtime shim awareness", () => {
+  function inactiveManager() {
+    return {
+      platform: "launchd" as const,
+      instanceId: "default",
+      serviceName: "ing.paperclip.paperclipai",
+      definitionPath: "/tmp/nonexistent-definition.plist",
+      renderDefinition: () => "plist",
+      install: vi.fn(async () => ({ changed: false })),
+      uninstall: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      restart: vi.fn(async () => undefined),
+      status: vi.fn(async () => ({
+        platform: "launchd" as const,
+        serviceName: "ing.paperclip.paperclipai",
+        installed: true,
+        active: false,
+        enabled: true,
+        pid: null,
+        detail: "loaded",
+      })),
+      logs: vi.fn(async () => undefined),
+      installedExecutablePath: vi.fn(async (): Promise<string | null> => null),
+    };
+  }
+
+  it("blames the missing binary, not a port conflict, when the shim is gone", async () => {
+    const results = await serviceHealthChecks({} as never, {
+      detect: vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never })),
+      probe: vi.fn(async () => ({ ok: false, version: null, error: "fetch failed" })),
+      shimPresent: vi.fn(async () => false),
+    });
+    const runtime = results.find((r) => r.name === "Service runtime");
+    expect(runtime?.status).toBe("fail");
+    expect(runtime?.message).toContain("no executable exists at");
+    expect(runtime?.repairHint).toContain("paperclipai install");
+  });
+
+  it("diagnoses against the executable recorded in the definition, not the current env", async () => {
+    const manager = inactiveManager();
+    manager.installedExecutablePath = vi.fn(async () => "/custom/bin/paperclipai");
+    const shimPresent = vi.fn(async () => false);
+    const results = await serviceHealthChecks({} as never, {
+      detect: vi.fn(async () => ({ supported: true as const, manager: manager as never })),
+      probe: vi.fn(async () => ({ ok: false, version: null, error: "fetch failed" })),
+      shimPresent,
+    });
+    const runtime = results.find((r) => r.name === "Service runtime");
+    expect(shimPresent).toHaveBeenCalledWith("/custom/bin/paperclipai");
+    expect(runtime?.message).toContain("/custom/bin/paperclipai");
+    expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
+    expect(runtime?.repairHint).toContain("unset PAPERCLIP_SHIM_PATH");
+    expect(runtime?.repairHint).toContain("`paperclipai install` followed by `paperclipai service install`");
+  });
+
+  it("attributes a healthy foreign responder instead of reporting Healthy", async () => {
+    const results = await serviceHealthChecks({} as never, {
+      detect: vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never })),
+      probe: vi.fn(async () => ({ ok: true, version: "9.9.9" })),
+      shimPresent: vi.fn(async () => true),
+    });
+    const healthResult = results.find((r) => r.name === "Service health");
+    expect(healthResult?.status).toBe("warn");
+    expect(healthResult?.message).toContain("but not from ing.paperclip.paperclipai");
+    const runtime = results.find((r) => r.name === "Service runtime");
+    expect(runtime?.message).toContain("serving another Paperclip process");
+  });
+});
+
+describe("definition executable extraction", () => {
+  it("round-trips through both renderers", () => {
+    const unit = renderSystemdUnit({ instanceId: "default", shimPath: "/custom/bin/paperclipai", homeDir: "/home/x/.paperclip" });
+    expect(extractExecutableFromSystemdUnit(unit)).toBe("/custom/bin/paperclipai");
+    const plist = renderLaunchdPlist({ instanceId: "default", shimPath: "/custom/bin/paperclipai", homeDir: "/home/x/.paperclip", stdoutPath: "/tmp/o.log", stderrPath: "/tmp/e.log" });
+    expect(extractExecutableFromLaunchdPlist(plist)).toBe("/custom/bin/paperclipai");
+    expect(extractExecutableFromSystemdUnit("garbage")).toBe(null);
+    expect(extractExecutableFromLaunchdPlist("garbage")).toBe(null);
+  });
+
+  it("round-trips paths the renderers escape", () => {
+    const hostile = '/tmp/we"ird $pa%th & <x>/paperclipai';
+    const unit = renderSystemdUnit({ instanceId: "default", shimPath: hostile, homeDir: "/home/x/.paperclip" });
+    expect(extractExecutableFromSystemdUnit(unit)).toBe(hostile);
+    const plist = renderLaunchdPlist({ instanceId: "default", shimPath: hostile, homeDir: "/home/x/.paperclip", stdoutPath: "/tmp/o.log", stderrPath: "/tmp/e.log" });
+    expect(extractExecutableFromLaunchdPlist(plist)).toBe(hostile);
   });
 });

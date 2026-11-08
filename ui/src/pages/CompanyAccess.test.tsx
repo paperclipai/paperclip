@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 
 const listMembersMock = vi.hoisted(() => vi.fn());
@@ -14,6 +16,13 @@ const listAgentsMock = vi.hoisted(() => vi.fn());
 const listIssuesMock = vi.hoisted(() => vi.fn());
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const listInvitesMock = vi.hoisted(() => vi.fn());
+const listCloudStacksMock = vi.hoisted(() => vi.fn());
+const mockSearchParamsState = vi.hoisted(() => ({ current: new URLSearchParams() }));
+
+vi.mock("@/api/cloud", () => ({
+  cloudApi: { listStacks: listCloudStacksMock },
+}));
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -27,6 +36,9 @@ vi.mock("@/api/access", () => ({
       archiveMemberMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
     rejectJoinRequest: vi.fn(),
+    listInvites: (companyId: string, options: unknown) => listInvitesMock(companyId, options),
+    createCompanyInvite: vi.fn(),
+    revokeInvite: vi.fn(),
   },
 }));
 
@@ -48,10 +60,29 @@ vi.mock("@/lib/router", () => ({
     mockNavigate(to, replace);
     return <div data-testid="navigate">{to}</div>;
   },
+  useSearchParams: () => [
+    mockSearchParamsState.current,
+    (
+      updater:
+        | URLSearchParams
+        | ((prev: URLSearchParams) => URLSearchParams),
+    ) => {
+      mockSearchParamsState.current =
+        typeof updater === "function"
+          ? updater(mockSearchParamsState.current)
+          : new URLSearchParams(updater);
+    },
+  ],
 }));
 
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: mockUsePluginSlots,
+}));
+
+vi.mock("@/context/SidebarContext", () => ({
+  useSidebar: () => ({
+    isMobile: false,
+  }),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -85,6 +116,8 @@ describe("CompanyAccess", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
     listMembersMock.mockResolvedValue({
       members: [
         {
@@ -236,7 +269,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Update company role and membership status");
+    expect(document.body.textContent).toContain("Update organization role and membership status");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
 
@@ -466,5 +499,281 @@ describe("CompanyAccess", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("CompanyAccess invites tab", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
+    listCloudStacksMock.mockResolvedValue({ stacks: [] });
+    listMembersMock.mockResolvedValue({
+      members: [],
+      access: { currentUserRole: "owner", canApproveJoinRequests: false },
+    });
+    listAgentsMock.mockResolvedValue([]);
+    listJoinRequestsMock.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(queryClient?: QueryClient) {
+    const root = createRoot(container);
+    const client =
+      queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("shows Members and Invites tabs with Members active by default", async () => {
+    const root = await renderPage();
+
+    const tabLabels = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabLabels).toEqual(["Members", "Invites"]);
+    expect(container.textContent).toContain("Organization Members");
+    expect(container.textContent).not.toContain("Invite a person");
+    expect(container.textContent).not.toContain("Invite people");
+    expect(listCloudStacksMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the Invites tab from a ?tab=invites deep link", async () => {
+    mockSearchParamsState.current = new URLSearchParams("tab=invites");
+    const root = await renderPage();
+
+    expect(container.textContent).toContain("Invite a person");
+    expect(container.textContent).toContain("Invite history");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Invites tab when the operator hides company.invites", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["health"], { hiddenSettings: ["company.invites"] } as never);
+    mockSearchParamsState.current = new URLSearchParams("tab=invites");
+    const root = await renderPage(client);
+
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(container.textContent).not.toContain("Invite a person");
+    expect(container.textContent).toContain("Organization Members");
+    expect(listInvitesMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  function cloudClient(cloudBaseUrl: string | null = "https://cloud.example.test") {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["health"], {
+      hiddenSettings: ["company.invites"],
+      cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl, stackSlug: "old-slug" },
+    });
+    return client;
+  }
+
+  function cloudStack(role: string, isCurrent = true) {
+    return { stackSlug: isCurrent ? "current-team" : "other-team", role, isCurrent,
+      displayName: "Team", primaryHost: null, lifecycleState: "active", sleepState: "awake" };
+  }
+
+  it.each(["owner", "admin"])("offers Cloud invitations to the current stack's %s even with local invites hidden", async (role) => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false), cloudStack(role)] });
+    const root = await renderPage(cloudClient());
+
+    const invite = [...container.querySelectorAll("a")].find((link) => link.textContent === "Invite people");
+    expect(invite?.getAttribute("href")).toBe("https://cloud.example.test/workspaces/current-team/settings?section=people");
+    expect(invite?.getAttribute("target")).toBeNull();
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(listInvitesMock).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["member", "support", "unknown"])("does not expose Cloud invitations to a %s who owns another stack", async (role) => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false), cloudStack(role)] });
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("waits for the Cloud role before showing the invitation action", async () => {
+    let resolveStacks!: (value: { stacks: ReturnType<typeof cloudStack>[] }) => void;
+    listCloudStacksMock.mockReturnValue(new Promise((resolve) => { resolveStacks = resolve; }));
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => resolveStacks({ stacks: [cloudStack("admin")] }));
+    await flushReact();
+    expect(container.textContent).toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("hides a cached invitation action when the Cloud role refresh fails", async () => {
+    const client = cloudClient();
+    client.setQueryData(["cloud", "stacks"], { stacks: [cloudStack("owner")] });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Invite people");
+    listCloudStacksMock.mockRejectedValue(new Error("Portfolio unavailable"));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud", "stacks"] }); });
+    await flushReact();
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+
+  it("requires an identified current stack and a configured Cloud destination", async () => {
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner", false)] });
+    const root = await renderPage(cloudClient());
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => root.unmount());
+
+    listCloudStacksMock.mockResolvedValue({ stacks: [cloudStack("owner")] });
+    const secondRoot = await renderPage(cloudClient(null));
+    expect(container.textContent).not.toContain("Invite people");
+    await act(async () => secondRoot.unmount());
+  });
+
+  it("keeps a cached invitation action when the Cloud role refresh fails transiently", async () => {
+    const client = cloudClient();
+    client.setQueryData(["cloud", "stacks"], { stacks: [cloudStack("owner")] });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Invite people");
+    listCloudStacksMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud", "stacks"] }); });
+    await flushReact();
+    expect(listCloudStacksMock).toHaveBeenCalled();
+    expect(container.textContent).toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("CompanyAccess read resilience", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
+    listMembersMock.mockResolvedValue({
+      members: [
+        {
+          id: "member-1",
+          companyId: "company-1",
+          principalType: "user",
+          principalId: "user-1",
+          status: "active",
+          membershipRole: "owner",
+          createdAt: "2026-04-10T00:00:00.000Z",
+          updatedAt: "2026-04-10T00:00:00.000Z",
+          user: { id: "user-1", email: "codexcoder@paperclip.local", name: "Codex Coder", image: null },
+          grants: [],
+        },
+      ],
+      access: { currentUserRole: "owner", canManageMembers: true, canInviteUsers: true, canApproveJoinRequests: false },
+    });
+    listAgentsMock.mockResolvedValue([]);
+    listJoinRequestsMock.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(client: QueryClient) {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("keeps loaded members on screen when a refetch fails transiently", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Codex Coder");
+
+    listMembersMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.access.companyMembers("company-1") });
+    });
+    await flushReact();
+
+    expect(listMembersMock).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Codex Coder");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows readable copy and a Retry button when members fail to load", async () => {
+    listMembersMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+
+    expect(container.textContent).toContain("Couldn't load organization members");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Codex Coder");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the permission copy for a forbidden members list", async () => {
+    listMembersMock.mockRejectedValue(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+
+    expect(container.textContent).toContain("You do not have permission to manage organization members.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
   });
 });

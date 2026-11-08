@@ -25,7 +25,16 @@ export type IssueThreadInteractionResolutionDenialCode =
 
 export type IssueThreadInteractionResolverActor =
   | { type: "user"; userId: string }
-  | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
+  | {
+      type: "agent";
+      agentId: string | null | undefined;
+      runId: string | null | undefined;
+      /**
+       * Set only by conversational confirmation resolution after it verified
+       * the bound user's latest comment. It never makes the agent a human.
+       */
+      relayedHumanUserId?: string | null;
+    }
   | { type: "system"; systemId: string };
 
 export type IssueThreadInteractionResolverRestriction = {
@@ -46,7 +55,9 @@ export type IssueThreadInteractionResolverAudienceInput = {
     createdByUserId?: string | null;
     sourceRunId?: string | null;
     addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
     effectiveResolverPolicy: IssueThreadInteractionResolverPolicy | string;
+    effectiveResolverPolicySource?: string | null;
     resolverPolicyProvenance?: string | null;
   };
   /**
@@ -64,7 +75,8 @@ export type IssueThreadInteractionResolverAudienceDecision =
   | {
       allowed: true;
       effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
-      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override";
+      reason: "allow_anyone" | "allow_addressee" | "allow_human" | "allow_system" | "allow_human_override"
+        | "allow_relayed_human";
     }
   | {
       allowed: false;
@@ -147,6 +159,31 @@ function reviewPolicyDeniedDecision(
 }
 
 /**
+ * An agent may record a human-only confirmation only as the relay of a verified
+ * human decision, and only on a card it created with an explicit human_only
+ * request. Company caps (checked again at resolution by the caller), governed
+ * actions and binding-flow restrictions still require a direct human resolution.
+ */
+function relayedHumanDecisionAllowed(
+  input: IssueThreadInteractionResolverAudienceInput,
+  persistedPolicy: IssueThreadInteractionCanonicalResolverPolicy,
+  additionalRestriction: IssueThreadInteractionResolverRestriction | null | undefined,
+) {
+  if (input.actor.type !== "agent") return false;
+  const userId = input.actor.relayedHumanUserId;
+  return Boolean(userId && input.actor.agentId)
+    && !input.governedAction
+    && persistedPolicy === "human_only"
+    // Only this agent's own explicit request; a company default, cap or a
+    // human-created card keeps its direct human resolution.
+    && input.interaction.createdByAgentId === input.actor.agentId
+    && input.interaction.resolverPolicyProvenance === "explicit"
+    && input.interaction.effectiveResolverPolicySource === "requested"
+    && !additionalRestriction
+    && (!input.interaction.addresseeUserId || input.interaction.addresseeUserId === userId);
+}
+
+/**
  * The single pure audience evaluator for issue-thread interaction resolution.
  * Resource access, run validation, containment, and current-target checks must
  * happen before this evaluator. Mutation routes must re-run it at use time.
@@ -181,6 +218,18 @@ export function evaluateIssueThreadInteractionResolverAudience(
 
   if (input.actor.type === "user") {
     if (
+      input.interaction.addresseeUserId
+      && input.interaction.addresseeUserId !== input.actor.userId
+    ) {
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_addressee_mismatch",
+        message: "Only the addressed user may resolve this issue-thread interaction",
+      };
+    }
+    if (
       creatorExcluded
       && input.interaction.createdByUserId === input.actor.userId
     ) {
@@ -204,7 +253,11 @@ export function evaluateIssueThreadInteractionResolverAudience(
     return {
       allowed: true,
       effectiveResolverPolicy,
-      reason: input.interaction.addresseeAgentId ? "allow_human_override" : "allow_human",
+      reason: input.interaction.addresseeUserId
+        ? "allow_addressee"
+        : input.interaction.addresseeAgentId
+          ? "allow_human_override"
+          : "allow_human",
     };
   }
 
@@ -229,12 +282,25 @@ export function evaluateIssueThreadInteractionResolverAudience(
   }
 
   if (effectiveResolverPolicy === "human_only") {
+    if (relayedHumanDecisionAllowed(input, persistedPolicy, additionalRestriction)) {
+      return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
+    }
     return {
       allowed: false,
       effectiveResolverPolicy,
       status: 403,
       code: "interaction_human_only",
       message: "This issue-thread interaction is human-only",
+    };
+  }
+
+  if (input.interaction.addresseeUserId) {
+    return {
+      allowed: false,
+      effectiveResolverPolicy,
+      status: 403,
+      code: "interaction_addressee_mismatch",
+      message: "This issue-thread interaction is addressed to a specific user",
     };
   }
 

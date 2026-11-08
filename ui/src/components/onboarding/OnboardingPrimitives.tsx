@@ -36,7 +36,9 @@ export function OnboardingHeading({
 }) {
   return (
     <div className={cn("space-y-2", center && "text-center")}>
-      <h1 className="text-4xl font-semibold tracking-tight text-foreground">{title}</h1>
+      <h1 className="text-(length:--text-onboarding-title) font-semibold leading-(--leading-onboarding-title) tracking-tight text-foreground">
+        {title}
+      </h1>
       {lede ? (
         <p className="text-base leading-relaxed text-muted-foreground">{lede}</p>
       ) : null}

@@ -13,6 +13,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   type EnvBinding,
   type Environment,
+  type EnvironmentDeleteBlastRadius,
   type EnvironmentProviderCapability,
   type EnvironmentProbeResult,
   type EnvironmentCustomImageSetupSession,
@@ -26,9 +27,22 @@ import {
   type EnvironmentCustomImageSetupSessionResult,
   type EnvironmentUpdateResult,
 } from "@/api/environments";
+import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import {
   EnvironmentVariablesEditor,
@@ -79,6 +93,25 @@ const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
 
 function environmentEditPath(environmentId: string) {
   return `${ENVIRONMENTS_PATH}/${encodeURIComponent(environmentId)}/edit`;
+}
+
+// Keep in sync with environmentDeleteBlockMessage in server/src/routes/environments.ts —
+// the server enforces these gates with a 409; this copy lets the modal explain
+// the block before the user hits it.
+function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): string | null {
+  if (impact.staticReferences.isManagedLocal) {
+    return "Cannot delete the managed local environment.";
+  }
+  if (impact.staticReferences.isInstanceDefault) {
+    return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
+  }
+  if (impact.pendingCleanupLeaseCount > 0) {
+    return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
+  }
+  if (impact.reusableSandboxLeaseCount > 0) {
+    return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
+  }
+  return null;
 }
 
 function buildEnvironmentPayload(form: EnvironmentFormState) {
@@ -531,7 +564,7 @@ function EnvironmentCustomImageBrowserTerminal({
       cursorStyle: "bar",
       cursorWidth: 2,
       customGlyphs: true,
-      fontFamily: CUSTOM_IMAGE_TERMINAL_FONT_FAMILY,
+      fontFamily: `${getComputedStyle(element).getPropertyValue("--font-mono").trim()}, ${CUSTOM_IMAGE_TERMINAL_FONT_FAMILY}`,
       fontSize: 12,
       letterSpacing: 0,
       lineHeight: 1.35,
@@ -678,7 +711,7 @@ function EnvironmentCustomImageBrowserTerminal({
       };
     } catch (error) {
       setConnectionState("error");
-      setErrorMessage(error instanceof Error ? error.message : "Terminal session could not be opened.");
+      setErrorMessage(describeError(error).body);
     }
   }, [closeSocket, fitTerminal, getTerminalDimensions, resetTerminalScreen, sendTerminalResize, sessionId]);
 
@@ -842,7 +875,6 @@ function EnvironmentImageTemplatePanel({
     queryKey: overviewKey,
     queryFn: () => environmentsApi.customImageTemplate(environment.id, companyId),
     enabled: state.kind === "supported",
-    retry: false,
   });
 
   const activeSessionId = overviewQuery.data?.activeSession?.id ?? null;
@@ -852,8 +884,9 @@ function EnvironmentImageTemplatePanel({
       : ["environment-custom-image-setup-sessions", "none", environment.id],
     queryFn: () => environmentsApi.customImageSetupSession(activeSessionId!),
     enabled: Boolean(activeSessionId && isActiveCustomImageSetupSession(overviewQuery.data?.activeSession)),
-    retry: false,
   });
+  const overviewView = useQueryView(overviewQuery);
+  const sessionView = useQueryView(sessionQuery);
 
   function setSessionResult(result: EnvironmentCustomImageSetupSessionResult) {
     queryClient.setQueryData(
@@ -889,7 +922,7 @@ function EnvironmentImageTemplatePanel({
     onError: (error) => {
       pushToast({
         title: "Failed to start setup",
-        body: error instanceof Error ? error.message : "Setup session could not be started.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -914,7 +947,7 @@ function EnvironmentImageTemplatePanel({
     onError: (error) => {
       pushToast({
         title: "Failed to capture template",
-        body: error instanceof Error ? error.message : "Template capture failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -940,7 +973,7 @@ function EnvironmentImageTemplatePanel({
     onError: (error) => {
       pushToast({
         title: "Failed to cancel setup",
-        body: error instanceof Error ? error.message : "Setup session could not be cancelled.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -964,7 +997,7 @@ function EnvironmentImageTemplatePanel({
     onError: (error) => {
       pushToast({
         title: "Failed to roll back template",
-        body: error instanceof Error ? error.message : "Rollback failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -979,7 +1012,7 @@ function EnvironmentImageTemplatePanel({
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
           const conflict = (error.body as { details?: EnvironmentCustomImageRelinkConflict } | null)?.details;
-          const warning = conflict ? relinkDriftWarning(conflict) : error.message;
+          const warning = conflict ? relinkDriftWarning(conflict) : describeError(error).body;
           if (!window.confirm(`${warning}\n\nRelink this image anyway?`)) {
             throw new RelinkConfirmationDeclined();
           }
@@ -1008,7 +1041,7 @@ function EnvironmentImageTemplatePanel({
       if (error instanceof RelinkConfirmationDeclined) return;
       pushToast({
         title: "Failed to relink template",
-        body: error instanceof Error ? error.message : "Relink failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1032,7 +1065,7 @@ function EnvironmentImageTemplatePanel({
     onError: (error) => {
       pushToast({
         title: "Failed to disable template",
-        body: error instanceof Error ? error.message : "Disable failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1047,7 +1080,7 @@ function EnvironmentImageTemplatePanel({
     );
   }
 
-  if (overviewQuery.isLoading) {
+  if (overviewQuery.isLoading || overviewView.kind === "reconnecting") {
     return (
       <div className="mt-3 border-t border-border/60 pt-3 text-xs text-muted-foreground">
         Loading template setup...
@@ -1055,10 +1088,16 @@ function EnvironmentImageTemplatePanel({
     );
   }
 
-  if (overviewQuery.isError) {
+  if (overviewView.kind === "error") {
     return (
-      <div className="mt-3 border-t border-border/60 pt-3 text-xs text-destructive">
-        {overviewQuery.error instanceof Error ? overviewQuery.error.message : "Template setup could not be loaded."}
+      <div className="mt-3 border-t border-border/60 pt-3">
+        <QueryErrorState
+          size="inline"
+          error={overviewQuery.error}
+          action="load the template setup"
+          onRetry={overviewView.retry}
+          retrying={overviewView.isFetching}
+        />
       </div>
     );
   }
@@ -1077,8 +1116,8 @@ function EnvironmentImageTemplatePanel({
   const connectionFallbackMessage = session?.status === "waiting_for_user"
     ? setupConnectionFallbackMessage({
         payload: connectionPayload,
-        refreshError: sessionQuery.isError ? sessionQuery.error : null,
-        isLoading: sessionQuery.isLoading,
+        refreshError: sessionView.kind === "error" ? sessionQuery.error : null,
+        isLoading: sessionQuery.isLoading || sessionView.kind === "reconnecting",
       })
     : null;
   const sessionExpiresAt = formatDateTime(connectionPayload?.expiresAt ?? session?.expiresAt ?? null);
@@ -1277,6 +1316,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   const [environmentVariablesDirty, setEnvironmentVariablesDirty] = useState(false);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  // "" means "inherit the instance default", mirroring the agent config form's
+  // environment override select.
+  const [reassignEnvironmentTargetId, setReassignEnvironmentTargetId] = useState("");
   const environmentHasUnsavedChanges =
     isEnvironmentFormPage &&
     (environmentVariablesDirty ||
@@ -1297,23 +1340,40 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
-    retry: false,
   });
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
 
-  const { data: environments } = useQuery({
+  const environmentsQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
+  const { data: environments } = environmentsQuery;
+  const environmentsView = useQueryView(environmentsQuery);
   const savedEnvironments = environments ?? [];
+  // Delete preflight: the blast radius names what still references the
+  // environment, and the agent list identifies which of this company's agents
+  // need reassignment. Both only load while the delete dialog is open.
+  const deleteBlastRadiusQuery = useQuery({
+    queryKey: editingEnvironmentId
+      ? ["environment-delete-blast-radius", editingEnvironmentId]
+      : ["environment-delete-blast-radius", "none"],
+    queryFn: () => environmentsApi.deleteBlastRadius(editingEnvironmentId!),
+    enabled: deleteDialogOpen && Boolean(editingEnvironmentId),
+  });
+  const deleteBlastRadiusView = useQueryView(deleteBlastRadiusQuery);
+  const companyAgentsQuery = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: deleteDialogOpen && Boolean(selectedCompanyId),
+  });
+  const companyAgentsView = useQueryView(companyAgentsQuery);
   // Descriptors for the edited environment's secret refs. Environments are
   // instance-scoped while secrets are company-scoped, so a ref may point at
   // a secret this company's picker cannot list; these hints let the picker
@@ -1324,15 +1384,15 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       : ["environment-secret-refs", "none"],
     queryFn: () => environmentsApi.secretRefs(editingEnvironmentId!),
     enabled: Boolean(editingEnvironmentId) && environmentsEnabled,
-    retry: false,
   });
+  const environmentSecretRefsView = useQueryView(environmentSecretRefsQuery);
   const environmentSecretRefHints = useMemo<SecretRefHintsContextValue>(() => {
     // A new environment has no persisted refs, so the empty map is
     // authoritative. For an existing environment the map is only "ready"
     // once the descriptor request resolved — the picker must not call a
     // reference missing off a pending or failed lookup.
     if (!editingEnvironmentId) return { status: "ready", hints: {} };
-    if (environmentSecretRefsQuery.isError) return { status: "error", hints: {} };
+    if (environmentSecretRefsView.kind === "error") return { status: "error", hints: {} };
     if (!environmentSecretRefsQuery.data) return { status: "loading", hints: {} };
     const hints: Record<string, SecretRefHint> = {};
     for (const ref of environmentSecretRefsQuery.data.refs) {
@@ -1344,7 +1404,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       };
     }
     return { status: "ready", hints };
-  }, [editingEnvironmentId, environmentSecretRefsQuery.data, environmentSecretRefsQuery.isError]);
+  }, [editingEnvironmentId, environmentSecretRefsQuery.data, environmentSecretRefsView.kind]);
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId ? ["environment-capabilities", selectedCompanyId] : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
@@ -1358,7 +1418,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: async () => {
@@ -1396,7 +1456,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     onError: (error) => {
       pushToast({
         title: "Failed to save environment variables",
-        body: error instanceof Error ? error.message : "Environment variables save failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1453,7 +1513,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     onError: (error) => {
       pushToast({
         title: "Failed to save environment",
-        body: error instanceof Error ? error.message : "Environment save failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1473,7 +1533,69 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     onError: (error) => {
       pushToast({
         title: "Failed to update default environment",
-        body: error instanceof Error ? error.message : "Default environment update failed.",
+        body: describeError(error).body,
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteEnvironmentMutation = useMutation({
+    mutationFn: async (input: {
+      environment: Environment;
+      reassignAgentIds: string[];
+      reassignTargetId: string | null;
+      destroyReusableLeases: boolean;
+    }) => {
+      // Reassign before deleting: the FK would null the references anyway, but
+      // an explicit PATCH records the change in each agent's config history and
+      // honors the operator's chosen target instead of the implicit fallback.
+      for (const agentId of input.reassignAgentIds) {
+        await agentsApi.update(
+          agentId,
+          { defaultEnvironmentId: input.reassignTargetId },
+          selectedCompanyId ?? undefined,
+        );
+      }
+      return input.destroyReusableLeases
+        ? await environmentsApi.remove(input.environment.id, { destroyReusableSandboxLeases: true })
+        : await environmentsApi.remove(input.environment.id);
+    },
+    onSuccess: async (environment, input) => {
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.environments.list(selectedCompanyId) });
+        if (input.reassignAgentIds.length > 0) {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
+        }
+      }
+      queryClient.removeQueries({ queryKey: ["environment-delete-blast-radius", environment.id] });
+      setDeleteDialogOpen(false);
+      initializedFormKeyRef.current = null;
+      setEnvironmentForm(createEmptyEnvironmentForm());
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
+      navigate(ENVIRONMENTS_PATH, { replace: true });
+      const destroyedCount = environment.destroyedReusableSandboxLeaseCount ?? 0;
+      pushToast({
+        title: "Environment deleted",
+        body:
+          destroyedCount > 0
+            ? `${environment.name} was deleted. Destroyed ${destroyedCount === 1 ? "1 reusable sandbox" : `${destroyedCount} reusable sandboxes`}.`
+            : `${environment.name} was deleted.`,
+        tone: "success",
+      });
+    },
+    onError: async (error, input) => {
+      // Agents reassigned before the failure keep their new target; refresh so
+      // the dialog reflects the actual remaining usage.
+      if (selectedCompanyId && input.reassignAgentIds.length > 0) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
+      }
+      await queryClient.invalidateQueries({
+        queryKey: ["environment-delete-blast-radius", input.environment.id],
+      });
+      pushToast({
+        title: "Failed to delete environment",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1505,13 +1627,13 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         [environmentId]: {
           ok: false,
           driver: failedEnvironment?.driver ?? "local",
-          summary: error instanceof Error ? error.message : "Environment probe failed.",
+          summary: describeError(error).body,
           details: null,
         },
       }));
       pushToast({
         title: "Environment probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1533,7 +1655,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     onError: (error) => {
       pushToast({
         title: "Draft probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1745,9 +1867,93 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     instanceSettings?.defaultEnvironmentId ?? null,
     savedEnvironments,
   );
+  const instanceDefaultEnvironment =
+    savedEnvironments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null;
+
+  const deleteBlastRadius = deleteBlastRadiusQuery.data ?? null;
+  // Reusable sandbox leases are a soft blocker: with explicit consent the
+  // delete destroys those sandboxes inline. Any other reason is a hard block.
+  const reusableLeaseOnlyBlock =
+    deleteBlastRadius !== null &&
+    deleteBlastRadius.deleteBlockedReasons.length > 0 &&
+    deleteBlastRadius.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease");
+  const deleteBlockMessage =
+    deleteBlastRadius && !reusableLeaseOnlyBlock ? environmentDeleteBlockMessage(deleteBlastRadius) : null;
+  const deleteUsageLoading =
+    deleteBlastRadiusQuery.isPending ||
+    companyAgentsQuery.isPending ||
+    deleteBlastRadiusView.kind === "reconnecting" ||
+    companyAgentsView.kind === "reconnecting";
+  const deleteUsageError = deleteBlastRadiusView.kind === "error" || companyAgentsView.kind === "error";
+  // Environments are instance-scoped while the agent list is company-scoped, so
+  // this covers only the agents the current company context can reassign.
+  // References the list cannot see (other companies, terminated agents) fall
+  // back to the instance default via the FK's on-delete-set-null.
+  const agentsUsingEnvironment = editingEnvironmentId
+    ? (companyAgentsQuery.data ?? []).filter(
+        (agent) => agent.status !== "terminated" && agent.defaultEnvironmentId === editingEnvironmentId,
+      )
+    : [];
+  const reassignTargetEnvironments = nonLocalEnvironments.filter(
+    (environment) => environment.id !== editingEnvironmentId,
+  );
+  const deleteImpactNotes: string[] = [];
+  if (deleteBlastRadius && !deleteBlockMessage) {
+    if (deleteBlastRadius.staticReferences.agentDefaultCount > agentsUsingEnvironment.length) {
+      deleteImpactNotes.push(
+        "Other references to this environment (agents in other organizations or terminated agents) fall back to the instance default.",
+      );
+    }
+    const selectionCount =
+      deleteBlastRadius.staticReferences.executionWorkspaceSelectionCount +
+      deleteBlastRadius.staticReferences.issueSelectionCount +
+      deleteBlastRadius.staticReferences.projectSelectionCount;
+    if (selectionCount > 0) {
+      deleteImpactNotes.push(
+        `${selectionCount} workspace, issue, or project environment ${selectionCount === 1 ? "selection" : "selections"} will be cleared.`,
+      );
+    }
+    if (deleteBlastRadius.staticReferences.secretBindingCount > 0) {
+      deleteImpactNotes.push(
+        `${deleteBlastRadius.staticReferences.secretBindingCount} secret ${deleteBlastRadius.staticReferences.secretBindingCount === 1 ? "binding" : "bindings"} will be removed.`,
+      );
+    }
+    if (deleteBlastRadius.activeRuntimeUse.hasActiveRuntimeUse) {
+      deleteImpactNotes.push("Active runs or sandbox leases currently resolve to this environment.");
+    }
+  }
+  // One row per workspace holding blocking sandbox leases (several leases can
+  // share a workspace). A lease whose workspace FK was nulled groups alone.
+  const reusableLeaseHolderGroups = (() => {
+    const groups = new Map<
+      string,
+      { workspaceId: string | null; label: string; issueLabels: string[]; leaseCount: number }
+    >();
+    for (const holder of deleteBlastRadius?.reusableSandboxLeaseHolders ?? []) {
+      const key = holder.executionWorkspaceId ?? `lease:${holder.leaseId}`;
+      const issueLabel = holder.issueIdentifier ?? holder.issueTitle;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.leaseCount += 1;
+        if (issueLabel && !existing.issueLabels.includes(issueLabel)) existing.issueLabels.push(issueLabel);
+      } else {
+        groups.set(key, {
+          workspaceId: holder.executionWorkspaceId,
+          label:
+            holder.executionWorkspaceName
+            ?? holder.issueIdentifier
+            ?? holder.issueTitle
+            ?? "Workspace no longer on record",
+          issueLabels: issueLabel ? [issueLabel] : [],
+          leaseCount: 1,
+        });
+      }
+    }
+    return Array.from(groups.values());
+  })();
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company context to manage environment secrets and bindings.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization context to manage environment secrets and bindings.</div>;
   }
 
   if (!environmentsEnabled) {
@@ -1803,6 +2009,16 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
           </Button>
         </div>
 
+        {environmentsQuery.isLoading || environmentsView.kind === "reconnecting" ? (
+          <QueryPlaceholder label="Loading environments" />
+        ) : environmentsView.kind === "error" ? (
+          <QueryErrorState
+            error={environmentsQuery.error}
+            action="load environments"
+            onRetry={environmentsView.retry}
+            retrying={environmentsView.isFetching}
+          />
+        ) : (
         <div className="space-y-1">
           {savedEnvironments.map((environment) => {
             const probe = probeResults[environment.id] ?? null;
@@ -1897,19 +2113,29 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             );
           })}
         </div>
+        )}
       </div>
       ) : null}
 
       {isEnvironmentFormPage && mode === "edit" && environments === undefined ? (
-        <div className="text-sm text-muted-foreground">
-          Loading environment...
-        </div>
+        environmentsView.kind === "error" ? (
+          <QueryErrorState
+            error={environmentsQuery.error}
+            action="load the environment"
+            onRetry={environmentsView.retry}
+            retrying={environmentsView.isFetching}
+          />
+        ) : (
+          <div className="text-sm text-muted-foreground">
+            Loading environment...
+          </div>
+        )
       ) : null}
 
       {isEnvironmentFormPage && mode === "edit" && environments !== undefined && !editingEnvironment ? (
         <div className="space-y-3 text-sm">
           <div className="font-medium">Environment not found</div>
-          <div className="text-muted-foreground">The environment may have been removed or is not available in this company.</div>
+          <div className="text-muted-foreground">The environment may have been removed or is not available in this organization.</div>
           <Button size="sm" variant="outline" asChild>
             <Link to={ENVIRONMENTS_PATH}>Back to environments</Link>
           </Button>
@@ -1946,7 +2172,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
           <div className="py-4">
             <Field
               label="Environment variables"
-              hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
+              hint="Injected into runs that resolve through this environment. Use plain values or organization secrets."
             >
               <EnvironmentVariablesEditor
                 ref={environmentVariablesEditorRef}
@@ -1958,11 +2184,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 onDirtyChange={setEnvironmentVariablesDirty}
               />
             </Field>
-            {managedEnvironmentEnvVarsMutation.isError ? (
+            {managedEnvironmentEnvVarsMutation.error ? (
               <div className="mt-3 text-xs text-destructive">
-                {managedEnvironmentEnvVarsMutation.error instanceof Error
-                  ? managedEnvironmentEnvVarsMutation.error.message
-                  : "Failed to save environment variables"}
+                {describeError(managedEnvironmentEnvVarsMutation.error).body}
               </div>
             ) : null}
           </div>
@@ -1990,13 +2214,29 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
         <div data-testid="environment-form-page">
           <div className="pb-4">
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between gap-2">
               <Button size="sm" variant="ghost" asChild>
                 <Link to={ENVIRONMENTS_PATH}>
                   <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
                   Environments
                 </Link>
               </Button>
+              {editingEnvironment ? (
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label={`Delete ${editingEnvironment.name}`}
+                  title="Delete environment"
+                  data-testid="environment-delete-button"
+                  onClick={() => {
+                    setReassignEnvironmentTargetId("");
+                    setDeleteDialogOpen(true);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              ) : null}
             </div>
             <h1 className="text-lg font-semibold">{editingEnvironmentId ? "Edit environment" : "Add environment"}</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
@@ -2084,6 +2324,13 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshUsername: e.target.value }))}
                     />
                   </Field>
+                  {/*
+                    This path lives on the user's own remote SSH host, not on a
+                    Paperclip execution host, so it stays visible under the
+                    managed-sandbox-only policy. The policy hides host paths that
+                    the platform-managed environment owns; an SSH environment the
+                    user configured is outside that contract.
+                  */}
                   <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -2218,7 +2465,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
               <Field
                 label="Environment variables"
-                hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
+                hint="Injected into runs that resolve through this environment. Use plain values or organization secrets."
               >
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
@@ -2231,11 +2478,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 />
               </Field>
 
-              {environmentMutation.isError ? (
+              {environmentMutation.error ? (
                 <div className="text-xs text-destructive">
-                  {environmentMutation.error instanceof Error
-                    ? environmentMutation.error.message
-                    : "Failed to save environment"}
+                  {describeError(environmentMutation.error).body}
                 </div>
               ) : null}
               {draftEnvironmentProbeMutation.data ? (
@@ -2276,6 +2521,138 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   : "Create environment"}
             </Button>
           </div>
+
+          {editingEnvironment ? (
+            <AlertDialog
+              open={deleteDialogOpen}
+              onOpenChange={(open) => {
+                if (!open && deleteEnvironmentMutation.isPending) return;
+                setDeleteDialogOpen(open);
+              }}
+            >
+              <AlertDialogContent data-testid="environment-delete-dialog">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {editingEnvironment.name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {deleteUsageLoading
+                      ? "Checking what uses this environment..."
+                      : deleteUsageError
+                        ? "Could not check what uses this environment. Close this dialog and retry."
+                        : deleteBlockMessage
+                          ?? ([
+                            reusableLeaseOnlyBlock && deleteBlastRadius
+                              ? `${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 reusable sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} reusable sandboxes`} will be destroyed; the workspaces holding them stay open and provision a fresh sandbox on their next run.`
+                              : null,
+                            agentsUsingEnvironment.length > 0
+                              ? `${agentsUsingEnvironment.length === 1 ? "1 agent uses" : `${agentsUsingEnvironment.length} agents use`} this environment as their default. Choose the environment those agents should be reassigned to.`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                            || "This environment will be permanently deleted and future runs stop resolving to it.")}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                {reusableLeaseHolderGroups.length > 0 ? (
+                  <div className="space-y-1.5" data-testid="environment-delete-lease-holders">
+                    <div className="text-xs font-medium text-muted-foreground">Sandbox leases held by</div>
+                    <ul className="space-y-1">
+                      {reusableLeaseHolderGroups.map((group) => (
+                        <li key={group.workspaceId ?? group.label} className="text-sm">
+                          {group.workspaceId ? (
+                            <Link
+                              className="underline underline-offset-2 hover:text-foreground"
+                              to={`/execution-workspaces/${group.workspaceId}`}
+                            >
+                              {group.label}
+                            </Link>
+                          ) : (
+                            <span>{group.label}</span>
+                          )}
+                          <span className="text-xs text-muted-foreground">
+                            {" "}
+                            · {group.leaseCount === 1 ? "1 sandbox lease" : `${group.leaseCount} sandbox leases`}
+                            {group.issueLabels.length > 0 ? ` · ${group.issueLabels.join(", ")}` : ""}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="text-xs text-muted-foreground">
+                      {reusableLeaseOnlyBlock
+                        ? "Deleting destroys these sandboxes; the workspaces stay open."
+                        : "Close these workspaces to let Paperclip destroy their sandboxes, then retry the delete."}
+                    </div>
+                  </div>
+                ) : null}
+                {!deleteUsageLoading && !deleteUsageError && !deleteBlockMessage ? (
+                  <div className="space-y-3">
+                    {agentsUsingEnvironment.length > 0 ? (
+                      <label className="block space-y-1.5 text-sm">
+                        <span className="font-medium">
+                          Reassign {agentsUsingEnvironment.length === 1 ? "agent" : "agents"} to
+                        </span>
+                        <select
+                          aria-label="Reassign agents to environment"
+                          data-testid="environment-delete-reassign-select"
+                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-normal outline-none"
+                          value={reassignEnvironmentTargetId}
+                          onChange={(event) => setReassignEnvironmentTargetId(event.target.value)}
+                        >
+                          <option value="">
+                            Default: {instanceDefaultEnvironment
+                              ? `${instanceDefaultEnvironment.name} · ${instanceDefaultEnvironment.driver}`
+                              : "Local"}
+                          </option>
+                          {reassignTargetEnvironments.map((environment) => (
+                            <option key={environment.id} value={environment.id}>
+                              {environment.name} · {environment.driver}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="block text-xs text-muted-foreground">
+                          Affected: {agentsUsingEnvironment.map((agent) => agent.name).join(", ")}
+                        </span>
+                      </label>
+                    ) : null}
+                    {deleteImpactNotes.length > 0 ? (
+                      <ul className="space-y-1 text-xs text-muted-foreground">
+                        {deleteImpactNotes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleteEnvironmentMutation.isPending}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    data-testid="environment-delete-confirm"
+                    disabled={
+                      deleteEnvironmentMutation.isPending ||
+                      deleteUsageLoading ||
+                      deleteUsageError ||
+                      Boolean(deleteBlockMessage)
+                    }
+                    onClick={(event) => {
+                      event.preventDefault();
+                      deleteEnvironmentMutation.mutate({
+                        environment: editingEnvironment,
+                        reassignAgentIds: agentsUsingEnvironment.map((agent) => agent.id),
+                        reassignTargetId: reassignEnvironmentTargetId || null,
+                        destroyReusableLeases: reusableLeaseOnlyBlock,
+                      });
+                    }}
+                  >
+                    {deleteEnvironmentMutation.isPending
+                      ? "Deleting..."
+                      : reusableLeaseOnlyBlock && deleteBlastRadius
+                        ? `Destroy ${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} sandboxes`} and delete`
+                        : "Delete environment"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : null}
         </div>
         </SecretRefHintsContext.Provider>
       ) : null}

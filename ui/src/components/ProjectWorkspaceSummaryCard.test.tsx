@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import { queryKeys } from "../lib/queryKeys";
 import { ProjectWorkspaceSummaryCard } from "./ProjectWorkspaceSummaryCard";
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => <a href={to} {...props}>{children}</a>,
@@ -18,6 +29,20 @@ vi.mock("./IssuesQuicklook", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+/**
+ * The card reads the managed-sandbox-only policy through the shared
+ * instance-settings query, so every render needs a query client. Renders here
+ * are synchronous and the path guard fails closed until the policy resolves, so
+ * the cache is primed by default. Pass `null` to leave the policy unresolved.
+ */
+function withQueryClient(node: ReactNode, experimentalSettings: Record<string, unknown> | null = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (experimentalSettings) {
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
+  return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
+}
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -115,16 +140,20 @@ describe("ProjectWorkspaceSummaryCard", () => {
       configurable: true,
       value: true,
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.clearAllMocks();
   });
 
-  it("renders a stacked mobile-friendly summary with metadata labels and compact issue pills", () => {
+  it("keeps the path row hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary()}
@@ -133,7 +162,102 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
+        null,
+      ));
+    });
+
+    expect(container.textContent).not.toContain("Path");
+    expect(container.textContent).toContain("Branch");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the path row hidden when the policy read fails", async () => {
+    // A failed settings read leaves the policy unknown, and an unknown policy
+    // must not be read as "not managed". React Query reports such a query as
+    // fetched with no data, so a guard keyed on "fetched" would show the
+    // execution-host path on exactly the managed instance whose settings
+    // endpoint is unreachable.
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(new Error("settings unavailable"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectWorkspaceSummaryCard
+            projectRef="paperclip-app"
+            summary={createSummary()}
+            runtimeActionKey={null}
+            runtimeActionPending={false}
+            onRuntimeAction={() => {}}
+            onCloseWorkspace={() => {}}
+          />
+        </QueryClientProvider>,
       );
+    });
+
+    // Drive the rejected query all the way to a settled failure, so the
+    // assertion below covers the resolved-error case and not merely the
+    // in-flight one the loading test already covers.
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status === "error") break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status).toBe("error");
+
+    expect(container.textContent).not.toContain("Path");
+    expect(container.textContent).toContain("Branch");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("drops the path row when the instance runs agents only in the platform-managed environment", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary()}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+        { enableManagedSandboxOnly: true },
+      ));
+    });
+
+    expect(container.textContent).not.toContain("Path");
+    // Branch, service, and linked-task rows describe the workspace, not the host.
+    expect(container.textContent).toContain("Branch");
+    expect(container.textContent).toContain("Service");
+    expect(container.textContent).toContain("Linked tasks");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders a stacked mobile-friendly summary with metadata labels and compact issue pills", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary()}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      ));
     });
 
     expect(container.textContent).toContain("Execution workspace");
@@ -162,7 +286,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -178,7 +302,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={runtimeSpy}
           onCloseWorkspace={closeSpy}
         />,
-      );
+      ));
     });
 
     const titleLink = container.querySelector("a[href='/projects/paperclip-app/workspaces/workspace-1']");
@@ -195,7 +319,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -206,7 +330,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).toContain("Retry close");
@@ -223,61 +347,55 @@ describe("ProjectWorkspaceSummaryCard", () => {
       cwd: "/Users/dotta/paperclip/.worktrees/PAP-1552-workspace-polish",
     });
 
-    await act(async () => {
-      root.render(
-        <ProjectWorkspaceSummaryCard
-          projectRef="paperclip-app"
-          summary={summary}
-          runtimeActionKey={null}
-          runtimeActionPending={false}
-          onRuntimeAction={() => {}}
-          onCloseWorkspace={() => {}}
-        />,
-      );
-    });
+    vi.useFakeTimers();
+    try {
+      await reactAct(async () => {
+        root.render(withQueryClient(
+          <ProjectWorkspaceSummaryCard
+            projectRef="paperclip-app"
+            summary={summary}
+            runtimeActionKey={null}
+            runtimeActionPending={false}
+            onRuntimeAction={() => {}}
+            onCloseWorkspace={() => {}}
+          />,
+        ));
+      });
 
-    const branchTextButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === summary.branchName);
-    const pathTextButton = container.querySelector(`button[title="${summary.cwd}"]`);
-    const branchIconButton = container.querySelector('button[aria-label="Copy branch"]');
-    const pathIconButton = container.querySelector('button[aria-label="Copy path"]');
+      const branchTextButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === summary.branchName);
+      const pathTextButton = container.querySelector(`button[title="${summary.cwd}"]`);
+      const branchIconButton = container.querySelector('button[aria-label="Copy branch"]');
+      const pathIconButton = container.querySelector('button[aria-label="Copy path"]');
 
-    expect(branchTextButton).not.toBeNull();
-    expect(pathTextButton).not.toBeNull();
-    expect(branchIconButton).not.toBeNull();
-    expect(pathIconButton).not.toBeNull();
+      const copyWithFeedback = async (button: Element | null | undefined, text: string) => {
+        expect(button).toBeTruthy();
+        await reactAct(async () => {
+          button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        expect(writeClipboard).toHaveBeenLastCalledWith(text);
+        expect(button!.nextElementSibling?.className).toContain("opacity-100");
+        await reactAct(async () => { await vi.advanceTimersByTimeAsync(1499); });
+        expect(button!.nextElementSibling?.className).toContain("opacity-100");
+        await reactAct(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(button!.nextElementSibling?.className).toContain("opacity-0");
+      };
 
-    await act(async () => {
-      branchTextButton!.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
-    expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
-
-    await act(async () => {
-      pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
-    expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
-
-    await act(async () => {
-      branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenCalledWith(summary.branchName);
-    expect(writeClipboard).toHaveBeenCalledWith(summary.cwd);
-
-    act(() => {
-      root.unmount();
-    });
+      await copyWithFeedback(branchTextButton, summary.branchName!);
+      await copyWithFeedback(pathTextButton, summary.cwd!);
+      await copyWithFeedback(branchIconButton, summary.branchName!);
+      await copyWithFeedback(pathIconButton, summary.cwd!);
+    } finally {
+      try {
+        await reactAct(async () => { root.unmount(); });
+      } finally { vi.useRealTimers(); }
+    }
   });
   it("colors live service urls green", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -290,7 +408,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+      ));
     });
 
     const serviceLink = container.querySelector("a[href='http://127.0.0.1:62475']");

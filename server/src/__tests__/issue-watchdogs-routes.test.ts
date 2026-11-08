@@ -4,6 +4,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentWakeupRequests,
@@ -80,6 +81,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -510,6 +512,18 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       .from(issueWatchdogs)
       .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, watchedChildId)));
     expect(nestedWatchdogs).toHaveLength(0);
+
+    // Watchdog runs are authorized for the watched subtree, so the agent depth
+    // limit does not move their tasks above the requested parent. Remove the
+    // task afterwards so the watched subtree returns to its stopped state.
+    const allowedCreate = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Allowed watched grandchild", parentId: watchedChildId });
+    expect(allowedCreate.status, JSON.stringify(allowedCreate.body)).toBe(201);
+    expect(allowedCreate.body.parentId).toBe(watchedChildId);
+    expect(allowedCreate.body).not.toHaveProperty("parentAdjusted");
+    await db.delete(activityLog).where(eq(activityLog.entityId, allowedCreate.body.id));
+    await db.delete(issues).where(eq(issues.id, allowedCreate.body.id));
 
     const allowedChild = await request(app)
       .post(`/api/issues/${watchedChildId}/children`)

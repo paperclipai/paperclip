@@ -112,7 +112,7 @@ function expandTargetKeysForLegacyCompatibility(targetKeys: string[]) {
   return [...expanded];
 }
 
-export function changeConsentGateService(db: Db) {
+export function changeConsentGateService(db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0]) {
   return {
     assertConsented: async (input: {
       companyId: string;

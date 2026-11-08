@@ -1,0 +1,111 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Unknown optional fields",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_future",
+    "runId": "run_replay_future",
+    "environmentLeaseId": "lease_replay_future",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_future",
+    "driverSessionId": "driver_replay_future",
+    "futureIdentityLabel": "preserved"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "fake",
+      "version": "1.1.0",
+      "futureDriverField": true
+    },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "futureCapability": {
+      "mode": "optional"
+    }
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "completed",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "Unknown optional fields did not change the v1 projection.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [],
+    "verification": [],
+    "attentionRequests": [],
+    "artifacts": [],
+    "futureResultAnnotation": {
+      "safe": true
+    }
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "done",
+    "futureTerminalReason": "optional"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_future_01",
+      "sourceSeq": 1,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:50:00.010Z",
+      "summary": "session started"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_future_02",
+      "sourceSeq": 2,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:50:00.020Z",
+      "summary": "Unknown optional fields did not change the v1 projection."
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_future_03",
+      "sourceSeq": 3,
+      "eventType": "turn.completed",
+      "emittedAt": "2026-08-07T12:50:00.030Z",
+      "summary": "turn completed"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_future_04",
+      "sourceSeq": 4,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:50:00.040Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_replay": 4
+  },
+  "processedEventIds": [
+    "event_future_01",
+    "event_future_02",
+    "event_future_03",
+    "event_future_04"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

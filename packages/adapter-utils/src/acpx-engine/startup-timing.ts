@@ -43,9 +43,17 @@ export function normalizeProviderFamily(key: string | undefined): string {
 
 /**
  * The common prefix for every sandbox-startup span attribute. One prefix keeps
- * the attribute namespace closed and easy to find in the telemetry backend.
+ * the attribute namespace closed and easy to find in the OpenTelemetry backend.
  */
 export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
+
+export const EXECUTION_PREPARATION_SPAN_ATTRS = {
+  runId: "paperclip.task.run.run_id",
+  fileCount: "paperclip.execution.fileCount",
+  bytes: "paperclip.execution.bytes",
+  repositoryCacheOutcome: "paperclip.execution.repositoryCache.outcome",
+  repositoryCacheReferenceSupplied: "paperclip.execution.repositoryCache.reference_supplied",
+} as const;
 
 /**
  * The closed attribute-name contract for every sandbox-startup span. This is
@@ -59,6 +67,8 @@ export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
  * command, a path, an argument, or an environment value can never ride a span.
  */
 export const SANDBOX_STARTUP_SPAN_ATTRS = {
+  /** Provider state before a lease start or recovery; the host clamps values. */
+  state: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}state`,
   /** The low-cardinality provider family (through `normalizeProviderFamily`). */
   provider: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider`,
   /** The step or execution outcome: `ok`, `skipped`, or `failed`. */
@@ -87,8 +97,10 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   rootWorkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.work_ms`,
   /** The difference between the work sum and the wall time (overlap). */
   rootDiffMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.diff_ms`,
-  /** Whether this bring-up is a cold start (no warm handle). */
+  /** Legacy boolean, emitted only for completely evidenced cold/warm startup. */
   coldStart: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}cold_start`,
+  /** Derived from per-layer receipts: cold, warm, partial_reuse, or unknown. */
+  warmth: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}warmth`,
   /** The clamped region label (through `clampSpanLabel`). */
   region: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}region`,
   /** The hashed image-id label (through `clampSpanLabel`). */
@@ -699,6 +711,7 @@ export interface SandboxRootSpanTimings {
  */
 export interface SandboxRootSpanContext {
   coldStart?: boolean;
+  warmth?: "cold" | "warm" | "partial_reuse" | "unknown";
   provider?: string;
   region?: string;
   imageId?: string;
@@ -723,6 +736,7 @@ export function setSandboxRootSpanAttributes(
   setFiniteNumberAttr(span, A.rootWorkMs, timings.workMs);
   setFiniteNumberAttr(span, A.rootDiffMs, timings.workMs - timings.wallMs);
   if (context.coldStart !== undefined) span.setAttribute(A.coldStart, context.coldStart);
+  if (context.warmth !== undefined) span.setAttribute(A.warmth, context.warmth);
   if (context.provider !== undefined) {
     span.setAttribute(A.provider, normalizeProviderFamily(context.provider));
   }
@@ -794,11 +808,12 @@ export async function emitSkippedStartupStep(
 
 /**
  * Structured event emitted once per named run-lifecycle phase, so the duration
- * and the outcome of each phase land in the run-events stream. It is
- * observability-only and rides the existing `ctx.onEvent` bridge. The payload is
- * a closed shape: exactly `phase`, `durationMs`, and `outcome`. The phase name is
- * from a closed allowlist, so the event never carries a command, an argument, a
- * path, an environment value, or a raw identifier.
+ * and the outcome of each phase land in the run-events stream. It is a
+ * run-log event and rides the existing `ctx.onEvent` bridge. It never changes
+ * startup control flow. The payload is a closed shape: exactly `phase`,
+ * `durationMs`, and `outcome`. The phase name is from a closed allowlist, so
+ * the event never carries a command, an argument, a path, an environment
+ * value, or a raw identifier.
  */
 export const RUN_PHASE_TIMING_EVENT_TYPE = "run.phase.timing";
 

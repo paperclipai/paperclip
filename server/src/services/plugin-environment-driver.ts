@@ -1,4 +1,6 @@
-import type { Db } from "@paperclipai/db";
+import { agents, plugins, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { conflict } from "../errors.js";
 import type {
   EnvironmentProbeResult,
   PluginEnvironmentConfig,
@@ -30,6 +32,57 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+type AgentEnvironmentRef = { driver: string; config: Record<string, unknown> | null };
+type AgentEnvironmentPlugin = {
+  pluginKey: string;
+  manifestJson: { environmentDrivers?: Array<{ driverKey: string; kind?: string; requiresAgent?: boolean }> };
+};
+
+export function pluginHasAgentEnvironments(plugin: AgentEnvironmentPlugin) {
+  const drivers = plugin.manifestJson.environmentDrivers?.filter(driver => driver.requiresAgent === true) ?? [];
+  return drivers.length > 0 && drivers.every(driver => driver.kind !== "sandbox_provider");
+}
+
+export function pluginServesAgentEnvironment(plugin: AgentEnvironmentPlugin, environment: AgentEnvironmentRef | null | undefined) {
+  if (environment?.driver !== "plugin" || environment.config?.pluginKey !== plugin.pluginKey) return false;
+  return plugin.manifestJson.environmentDrivers?.some(driver => driver.requiresAgent === true && driver.kind !== "sandbox_provider"
+    && driver.driverKey === environment.config?.driverKey) ?? false;
+}
+
+export async function pluginForAgentEnvironment(db: Db, environment: AgentEnvironmentRef) {
+  const pluginKey = environment.config?.pluginKey;
+  if (environment.driver !== "plugin" || typeof pluginKey !== "string") return null;
+  const plugin = await pluginRegistryService(db).getByKey(pluginKey);
+  return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
+}
+
+/** Whether a saved environment change would give active agents a plugin that has not prepared them. */
+export async function agentsNeedSetupForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  const plugin = after ? await pluginForAgentEnvironment(db, after) : null;
+  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return false;
+  const usesEnvironment = or(users.environmentId ? eq(agents.defaultEnvironmentId, users.environmentId) : undefined,
+    users.inheritsDefault ? isNull(agents.defaultEnvironmentId) : undefined);
+  if (!usesEnvironment) return false;
+  const [waiting] = await db.select({ id: agents.id }).from(agents).where(and(usesEnvironment,
+    inArray(agents.lifecycleState, ["ready", "verifying"]),
+    sql`not coalesce(${agents.lifecycleRequiredPluginIds}, '[]'::jsonb) @> ${JSON.stringify([plugin.id])}::jsonb`)).limit(1);
+  return Boolean(waiting);
+}
+
+/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
+export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  if (await agentsNeedSetupForEnvironmentChange(db, before, after, users)) {
+    throw conflict("Agents that use this environment need setup first. Pause those agents, save this change, and then resume them.",
+      { code: "environment_requires_agent_setup" });
+  }
+}
+
+export async function pluginEnvironmentRequiresAgent(db: Db, environment: AgentEnvironmentRef) {
+  return await pluginForAgentEnvironment(db, environment) !== null;
+}
+
 /**
  * The worker methods a sandbox provider must advertise before the host reuses
  * a provider lease across runs. The host resumes a lease through
@@ -47,6 +100,31 @@ export const REUSABLE_LEASE_WORKER_METHODS = [
   "environmentResumeLease",
   "environmentReleaseLease",
   "environmentDestroyLease",
+] as const;
+
+/**
+ * The worker methods a sandbox provider must advertise before the customImage
+ * setup gate in `environment-custom-images.ts` allows an interactive setup
+ * session. The setup lifecycle starts a session through
+ * `environmentStartInteractiveSetup`, polls it through
+ * `environmentGetInteractiveSetup`, and cancels it through
+ * `environmentCancelInteractiveSetup`. A provider that omits any of the three
+ * can strand a setup session partway through the lifecycle.
+ */
+export const INTERACTIVE_SETUP_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+] as const;
+
+/** The worker method the customImage template-capture gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_CAPTURE_WORKER_METHODS = [
+  "environmentCaptureTemplate",
+] as const;
+
+/** The worker method the customImage template-delete gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_DELETE_WORKER_METHODS = [
+  "environmentDeleteTemplate",
 ] as const;
 
 export interface ReadyPluginWorkerRecovery {
@@ -137,6 +215,62 @@ export async function resolvePluginEnvironmentDriverByKey(input: {
   });
 }
 
+type CachedProviderSchema = { pluginId: string; revision: string; schema: Record<string, unknown> | null };
+const providerSchemas = new WeakMap<Db, Map<string, CachedProviderSchema>>();
+const MAX_CACHED_PROVIDER_SCHEMAS = 32;
+const MAX_CACHED_PROVIDER_SCHEMA_BYTES = 64 * 1024;
+
+export async function resolvePluginSandboxProviderConfigSchema(input: {
+  db: Db; driverKey: string;
+}): Promise<Record<string, unknown> | null> {
+  const { db, driverKey } = input;
+  let cache = providerSchemas.get(db);
+  const cached = cache?.get(driverKey);
+  const unchanged = sql`coalesce(plugin_id = ${cached?.pluginId ?? null}::uuid
+    and revision = ${cached?.revision ?? null}, false)`;
+  const [row] = await db.execute<{
+    pluginId: string; revision: string; unchanged: boolean; configSchema: unknown;
+  }>(sql`with selected_provider as materialized (
+    select ${plugins.id} as plugin_id, (
+      select declaration.value->'configSchema'
+      from jsonb_array_elements(${plugins.manifestJson}->'environmentDrivers')
+        with ordinality as declaration(value, position)
+      where declaration.value->'driverKey' = to_jsonb(${driverKey}::text)
+        and declaration.value->>'kind' = 'sandbox_provider'
+      order by declaration.position limit 1
+    ) as schema_value
+    from ${plugins}
+    where ${plugins.manifestJson} @> ${JSON.stringify({ environmentDrivers: [{ driverKey, kind: "sandbox_provider" }] })}::jsonb
+    order by ${plugins.installOrder} limit 1
+  ), versioned_provider as materialized (
+    select plugin_id, schema_value,
+      encode(sha256(convert_to(coalesce(schema_value::text, 'null'), 'UTF8')), 'hex') as revision
+    from selected_provider
+  )
+  select plugin_id as "pluginId", revision, ${unchanged} as unchanged,
+    case when ${unchanged} then null else schema_value end as "configSchema"
+  from versioned_provider`);
+  if (!row) {
+    cache?.delete(driverKey);
+    return null;
+  }
+  if (row.unchanged) {
+    if (!cached || cached.pluginId !== row.pluginId || cached.revision !== row.revision) {
+      throw new Error("Sandbox provider schema revision did not match the retained definition");
+    }
+    return structuredClone(cached.schema);
+  }
+  const schema = row.configSchema && typeof row.configSchema === "object" && !Array.isArray(row.configSchema)
+    ? row.configSchema as Record<string, unknown> : null;
+  cache?.delete(driverKey);
+  if (Buffer.byteLength(JSON.stringify(schema)) <= MAX_CACHED_PROVIDER_SCHEMA_BYTES) {
+    if (!cache) { cache = new Map(); providerSchemas.set(db, cache); }
+    if (cache.size >= MAX_CACHED_PROVIDER_SCHEMAS) cache.delete(cache.keys().next().value!);
+    cache.set(driverKey, { pluginId: row.pluginId, revision: row.revision, schema: structuredClone(schema) });
+  }
+  return schema;
+}
+
 export async function resolvePluginSandboxProviderDriverByKey(input: {
   db: Db;
   driverKey: string;
@@ -144,7 +278,7 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
   requireRunning?: boolean;
 }): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["list"]>>[number]; driver: PluginEnvironmentDriverDeclaration } | null> {
   const pluginRegistry = pluginRegistryService(input.db);
-  const plugins = await pluginRegistry.list();
+  const plugins = await pluginRegistry.list({ sandboxProviderDriverKey: input.driverKey });
   for (const plugin of plugins) {
     const driver = plugin.manifestJson.environmentDrivers?.find(
       (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
@@ -437,6 +571,7 @@ export async function resumePluginEnvironmentLease(input: {
   config: PluginEnvironmentConfig;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }): Promise<PluginEnvironmentLease> {
   const { plugin } = await resolvePluginEnvironmentDriver(input);
   return await input.workerManager.call(plugin.id, "environmentResumeLease", {
@@ -447,6 +582,7 @@ export async function resumePluginEnvironmentLease(input: {
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
+    ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
   });
 }
 

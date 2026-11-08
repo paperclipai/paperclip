@@ -21,7 +21,7 @@ When a heartbeat fires, Paperclip:
 | [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally, with a native ACP engine when available |
 | [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally, with a native ACP engine when available |
 | [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
-| [Kimi Code CLI](/adapters/kimi-local) | `kimi_local` | Runs Kimi Code CLI locally through ACP, with headless `-p` mode as a fallback |
+| [Kimi Code CLI](/adapters/kimi-local) | `kimi_local` | Runs Kimi Code CLI locally through ACP, with explicitly selectable headless `-p` mode |
 | OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
@@ -52,6 +52,19 @@ Worked examples:
   `CLAUDE_CONFIG_DIR`, then fills missing `.credentials.json` /
   `credentials.json` from the sandbox image's own `$HOME/.claude`. The
   snapshot's Claude login is the credential source for the run.
+
+### OpenCode sandbox memory pressure
+
+On managed Linux sandboxes, the Legacy OpenCode adapter adds a local plugin through
+OpenCode's [`shell.env` hook](https://opencode.ai/docs/plugins/#inject-environment-variables).
+The hook supplies a Bash startup file only to shell subprocesses. It sets their
+Linux `oom_score_adj` to `1000`, so the kernel prefers to kill memory-heavy tool
+commands before OpenCode when the sandbox runs out of memory.
+
+An existing `BASH_ENV` takes precedence. Local and SSH execution keep their
+existing behavior. The guard does not increase the sandbox memory limit, apply
+to other shells, or prevent OpenCode itself from exhausting memory. If the
+runtime cannot set the process preference, the command still runs.
 
 ### Hermes local vs gateway
 
@@ -137,3 +150,12 @@ Rough tiers, richest first:
 ## UI Parser Contract
 
 External adapters can ship a self-contained UI parser that tells the Paperclip web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.
+
+### Cursor failure details
+
+The Cursor CLI adapter uses structured error output first, then the first
+nonempty diagnostic line. It skips the informational `cursor-retrieval: tracing
+to ...` file-location notice. If the CLI exits unsuccessfully with only that
+notice, the run shows the exit code. The original stdout and stderr remain in
+the local run result and log for troubleshooting. Environment probes use the
+same diagnostic selection. This does not change retry or success decisions.

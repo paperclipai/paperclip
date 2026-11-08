@@ -1,0 +1,90 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Semantic governance target and continuation chain",
+  "description": "A semantic result binds immutable interaction and approval targets while carrying only safe wake and monitor causal references.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_semantic_governance", "issueId": "issue_semantic_governance",
+    "runId": "run_semantic_governance", "environmentLeaseId": "lease_semantic_governance", "runnerInstanceId": "runner_semantic_governance",
+    "normalizedSessionId": "session_semantic_governance", "driverSessionId": "driver_semantic_governance"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "reuse_per_issue",
+    "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": true, "interrupt": true, "resume": true, "runtimeRequests": true, "structuredResult": true, "typedEvents": true,
+    "semanticTools": { "schema": "paperclip.prp.semantic_tools.v1", "schemaVersion": 1, "operations": [{
+      "operationId": "request_human_input", "version": 1, "availability": "available", "redactionDisposition": "digest_only", "requiredClaims": []
+    }] },
+    "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_governance_01", "sourceSeq": 1, "sourceInstanceId": "runner_semantic_governance",
+      "sourceKind": "runner", "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance",
+      "turnId": "turn_semantic_governance", "itemId": "item_semantic_governance", "eventType": "mcp_app.tool_input",
+      "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:30:00.000Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "input", "operationId": "request_human_input", "callId": "call_semantic_governance",
+        "correlation": { "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance", "turnId": "turn_semantic_governance", "itemId": "item_semantic_governance", "requestId": "request_semantic_governance" },
+        "idempotencyKey": "interaction_once",
+        "content": { "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "redactionDisposition": "digest_only", "references": [{ "kind": "document_revision", "id": "revision_plan_7" }] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_governance_02", "sourceSeq": 2, "sourceInstanceId": "runner_semantic_governance",
+      "sourceKind": "runner", "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance",
+      "turnId": "turn_semantic_governance", "itemId": "item_semantic_governance", "eventType": "mcp_app.tool_result",
+      "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:30:00.010Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result", "operationId": "request_human_input", "callId": "call_semantic_governance",
+        "correlation": { "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance", "turnId": "turn_semantic_governance", "itemId": "item_semantic_governance", "requestId": "request_semantic_governance" },
+        "idempotencyKey": "interaction_once",
+        "content": { "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "redactionDisposition": "allowlisted_references", "references": [{ "kind": "interaction", "id": "interaction_semantic_governance" }, { "kind": "wake", "id": "wake_semantic_governance" }, { "kind": "monitor", "id": "monitor_semantic_governance" }] },
+        "outcome": "succeeded", "code": "ok", "retryable": false, "authorizationBoundary": "governed_action",
+        "operationReceiptId": "receipt_semantic_governance", "auditReceiptId": "audit_semantic_governance", "currentRevision": 8,
+        "targets": [
+          { "kind": "interaction", "id": "interaction_semantic_governance", "immutable": true, "revisionId": "revision_plan_7" },
+          { "kind": "approval", "id": "approval_semantic_governance", "immutable": true, "decisionId": "decision_approval_semantic_governance" }
+        ],
+        "causalRefs": [
+          { "kind": "document_revision", "id": "revision_plan_7" },
+          { "kind": "interaction", "id": "interaction_semantic_governance" },
+          { "kind": "approval", "id": "approval_semantic_governance" },
+          { "kind": "decision", "id": "decision_approval_semantic_governance" },
+          { "kind": "wake", "id": "wake_semantic_governance" },
+          { "kind": "monitor", "id": "monitor_semantic_governance" }
+        ]
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_governance_03", "sourceSeq": 3, "sourceInstanceId": "runner_semantic_governance",
+      "sourceKind": "runner", "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance", "turnId": "turn_semantic_governance",
+      "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:30:00.020Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "yielded", "summary": "The immutable decision target is waiting on a bounded monitor continuation.",
+        "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Wait for the interaction response.", "blocksCompletion": true }] },
+        "evidence": [{ "receiptId": "receipt_semantic_governance" }],
+        "verification": [{ "commandOrCheck": "immutable target and causal chain", "status": "passed" }],
+        "attentionRequests": [], "artifacts": [],
+        "continuation": { "kind": "monitor", "summary": "Recheck after the typed response wake.", "idempotencyKey": "monitor_semantic_governance" }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_governance_04", "sourceSeq": 4, "sourceInstanceId": "runner_semantic_governance",
+      "sourceKind": "runner", "runId": "run_semantic_governance", "normalizedSessionId": "session_semantic_governance", "turnId": "turn_semantic_governance",
+      "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:30:00.030Z",
+      "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "workAssessmentId": "assessment_semantic_governance", "statusDecisionId": "decision_semantic_governance" }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "yielded", "summary": "The immutable decision target is waiting on a bounded monitor continuation.",
+    "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Wait for the interaction response.", "blocksCompletion": true }] },
+    "evidence": [{ "receiptId": "receipt_semantic_governance" }],
+    "verification": [{ "commandOrCheck": "immutable target and causal chain", "status": "passed" }],
+    "attentionRequests": [], "artifacts": [],
+    "continuation": { "kind": "monitor", "summary": "Recheck after the typed response wake.", "idempotencyKey": "monitor_semantic_governance" }
+  }
+}

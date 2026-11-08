@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isNode24ImageTag } from "./node-image-policy.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expectedEngine = ">=24.11.0";
@@ -39,7 +40,13 @@ const workflowRoot = path.join(repoRoot, ".github", "workflows");
 walk(workflowRoot, (filePath) => {
   if (!/\.ya?ml$/.test(filePath)) return;
   const source = fs.readFileSync(filePath, "utf8");
+  const packProducer = relative(filePath) === ".github/workflows/release-verify.yml"
+    ? /(?:^|\n)  runner_binaries:\n[\s\S]*?(?=\n  [a-z_]+:\n|$)/.exec(source)
+    : null;
   for (const match of source.matchAll(/node-version:\s*["']?([^\s"'#]+)/g)) {
+    if (match[1] === "24.21.0" && packProducer
+      && match.index >= packProducer.index
+      && match.index < packProducer.index + packProducer[0].length) continue;
     if (match[1] !== "24") failures.push(`${relative(filePath)}: node-version must be 24, found ${match[1]}`);
   }
 });
@@ -48,7 +55,7 @@ walk(repoRoot, (filePath) => {
   if (!path.basename(filePath).startsWith("Dockerfile")) return;
   const source = fs.readFileSync(filePath, "utf8");
   for (const match of source.matchAll(/^\s*FROM\s+node:([^\s]+)/gm)) {
-    if (!match[1].startsWith("24-")) failures.push(`${relative(filePath)}: Node base image must use the Node 24 major, found node:${match[1]}`);
+    if (!isNode24ImageTag(match[1])) failures.push(`${relative(filePath)}: Node base image must use the Node 24 major, found node:${match[1]}`);
   }
   for (const match of source.matchAll(/^\s*ARG\s+NODE_(?:MAJOR|VERSION)=([^\s]+)/gm)) {
     if (match[1] !== "24") failures.push(`${relative(filePath)}: Node build argument must be 24, found ${match[1]}`);

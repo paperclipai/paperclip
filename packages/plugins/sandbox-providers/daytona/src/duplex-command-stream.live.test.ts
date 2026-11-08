@@ -24,6 +24,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import http2 from "node:http2";
+import { Duplex } from "node:stream";
 import {
   openDaytonaDuplexChannelSession,
   type DaytonaPtyProcess,
@@ -117,7 +119,7 @@ describeLive("Daytona duplex channel (live)", () => {
 
         // The channel child still answers. A write returns as program output.
         const ping = `chan-${randomUUID()}`;
-        session.write(`${ping}\n`);
+        session.write(Buffer.from(`${ping}\n`));
         await waitFor(readOutput, (text) => text.includes(ping), 30_000, "channel echo");
       } finally {
         await session.close();
@@ -139,7 +141,7 @@ describeLive("Daytona duplex channel (live)", () => {
         const baseline = readOutput().length;
 
         const line = `PING-${randomUUID()}`;
-        session.write(`${line}\n`);
+        session.write(Buffer.from(`${line}\n`));
         await waitFor(
           readOutput,
           (text) => text.slice(baseline).includes(line),
@@ -214,7 +216,7 @@ describeLive("Daytona duplex channel (live)", () => {
           const line = `RTT-${index}-${randomUUID()}`;
           const baseline = readOutput().length;
           const start = Date.now();
-          session.write(`${line}\n`);
+          session.write(Buffer.from(`${line}\n`));
           await waitFor(
             readOutput,
             (text) => text.slice(baseline).includes(line),
@@ -262,7 +264,7 @@ describeLive("Daytona duplex channel (live)", () => {
       // before its echo returns. The abrupt close models a lost provider channel.
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       const inFlight = `INFLIGHT-${randomUUID()}`;
-      session.write(`${inFlight}\n`);
+      session.write(Buffer.from(`${inFlight}\n`));
       // Close at once, without waiting for the echo. The pending round trip never
       // settles through the stream; the channel tears down instead.
       await session.close();
@@ -285,6 +287,126 @@ describeLive("Daytona duplex channel (live)", () => {
       expect(probe.result ?? "").toContain(token);
       // eslint-disable-next-line no-console
       console.log("[duplex-live] forced mid-flight disconnect: leaked sessions=0; sandbox usable after=yes");
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
+  it(
+    "test_live_daytona_run_uses_http2_v1_end_to_end",
+    async () => {
+      // Phase 4 selects http2_v1 by running one Node HTTP/2 session directly
+      // on this same pseudo-terminal channel, right after the READY line.
+      // This package ships standalone (see the file header), so it cannot
+      // import the host readiness gate or the preface scan from
+      // `@paperclipai/adapter-utils`; this test reimplements the minimal,
+      // self-contained version of both, using only `node:http2`, so the
+      // proof runs against a real Daytona PTY end to end.
+      const live = sandbox!;
+      const nonce = randomUUID();
+
+      // The 24-octet HTTP/2 client connection preface (RFC 9113, Section 3.4).
+      const CLIENT_PREFACE = Buffer.from("505249202a20485454502f322e300d0a0d0a534d0d0a0d0a", "hex");
+
+      // The sandbox-side child: send the READY line, then hand stdin/stdout to
+      // a real HTTP/2 client session and dispatch one request — the same
+      // shape `runHttp2Gateway()` in `sandbox-callback-bridge.ts` runs.
+      const nodeScript = [
+        `process.stdout.write(JSON.stringify({version:2,type:"ready",nonce:${JSON.stringify(nonce)}})+"\\n");`,
+        `const http2=require("node:http2");`,
+        `const {Duplex}=require("node:stream");`,
+        `const stdio=new Duplex({read(){},write(chunk,enc,cb){const ok=process.stdout.write(chunk);if(ok)cb();else process.stdout.once("drain",cb);}});`,
+        `process.stdin.on("data",c=>stdio.push(c));`,
+        `process.stdin.on("end",()=>stdio.push(null));`,
+        `const session=http2.connect("http://bridge.internal",{createConnection:()=>stdio});`,
+        `session.on("error",()=>process.exit(1));`,
+        `const stream=session.request({":method":"GET",":path":"/ping"});`,
+        `let body="";`,
+        `stream.on("data",c=>{body+=c;});`,
+        `stream.on("error",()=>process.exit(3));`,
+        `stream.on("end",()=>{session.close(()=>process.exit(body==="pong"?0:2));});`,
+        `stream.end();`,
+      ].join("");
+
+      const session = await openDaytonaDuplexChannelSession(live.process, ["node", "-e", nodeScript]);
+      try {
+        // Reads bytes from the channel until it finds one complete newline-
+        // terminated READY line, then hands every later byte — including any
+        // already-buffered suffix of the same chunk — to `onAfterReady`.
+        const readyAndAfter = await new Promise<{ nonce: string; afterReady: Buffer }>((resolve, reject) => {
+          let buffer = Buffer.alloc(0);
+          const timer = setTimeout(
+            () => reject(new Error(`Timed out waiting for the READY line. Bytes so far: ${buffer.length}`)),
+            30_000,
+          );
+          session.onData((chunk) => {
+            buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+            const newlineIndex = buffer.indexOf(0x0a);
+            if (newlineIndex === -1) return;
+            clearTimeout(timer);
+            const line = buffer.subarray(0, newlineIndex).toString("utf8");
+            const decoded = JSON.parse(line) as { type?: string; nonce?: string };
+            resolve({ nonce: decoded.nonce ?? "", afterReady: Buffer.from(buffer.subarray(newlineIndex + 1)) });
+          });
+        });
+        expect(readyAndAfter.nonce).toBe(nonce);
+
+        // Scan the retained suffix for the client preface, the same rule
+        // `createHttp2PrefaceScanningChannel` in `execution-target.ts` applies:
+        // the scan window opens only on bytes after the accepted READY line.
+        let sawPreface = false;
+        let downstream: ((chunk: Buffer) => void) | null = null;
+        let pendingAfterPreface = Buffer.alloc(0);
+        let scanBuffer = readyAndAfter.afterReady;
+        function deliver(chunk: Buffer): void {
+          if (downstream) downstream(chunk);
+          else pendingAfterPreface = Buffer.concat([pendingAfterPreface, chunk]);
+        }
+        function handleChunk(chunk: Buffer): void {
+          if (sawPreface) {
+            deliver(chunk);
+            return;
+          }
+          scanBuffer = Buffer.concat([scanBuffer, chunk]);
+          const offset = scanBuffer.indexOf(CLIENT_PREFACE);
+          if (offset === -1) return;
+          sawPreface = true;
+          const fromPreface = Buffer.from(scanBuffer.subarray(offset));
+          scanBuffer = Buffer.alloc(0);
+          deliver(fromPreface);
+        }
+        // The already-retained suffix might already hold the preface.
+        handleChunk(Buffer.alloc(0));
+        session.onData((chunk) => handleChunk(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+
+        // Wrap the channel as a Node `Duplex` starting at the preface offset,
+        // and bind one plaintext HTTP/2 server session on it.
+        const boundDuplex: Duplex = new Duplex({
+          read() {},
+          write(chunk: unknown, _encoding, callback) {
+            session.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBufferLike));
+            callback();
+          },
+        });
+        downstream = (chunk) => boundDuplex.push(chunk);
+        if (pendingAfterPreface.length > 0) {
+          boundDuplex.push(pendingAfterPreface);
+          pendingAfterPreface = Buffer.alloc(0);
+        }
+
+        const server = http2.createServer();
+        server.on("stream", (stream) => {
+          stream.respond({ ":status": 200 });
+          stream.end("pong");
+        });
+        server.emit("connection", boundDuplex);
+
+        const exit = await session.wait();
+        expect(exit.exitCode).toBe(0);
+        // eslint-disable-next-line no-console
+        console.log("[duplex-live] http2_v1: READY, then the real client preface, then one full HTTP/2 round trip, all over one live Daytona PTY.");
+      } finally {
+        await session.close();
+      }
     },
     LIVE_TIMEOUT_MS,
   );

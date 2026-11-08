@@ -1,6 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
+export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // The bundled-plugin boot reconcile refreshes the persisted manifest for an
 // existing install only when PLUGIN_VERSION changes. A manifest change without a
 // version bump never reaches an existing install. The reconcile also reads the
@@ -11,7 +12,10 @@ const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 // neutral `supportsLoginPty`.
 // 0.1.4 adds the `concurrentSyncOperations` sandbox capability to the driver.
 // 0.1.5 adds the `duplexCommandStream` sandbox capability to the driver.
-const PLUGIN_VERSION = "0.1.5";
+// 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
+// 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
+// 0.1.8 declares the default provider acquisition budget to the host.
+const PLUGIN_VERSION = "0.1.10";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -29,11 +33,13 @@ const manifest: PaperclipPluginManifestV1 = {
   environmentDrivers: [
     {
       driverKey: "daytona",
+      defaultAcquireTimeoutMs: DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
       kind: "sandbox_provider",
       displayName: "Daytona Sandbox",
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      creationOperationVersion: 1,
       // Daytona keeps a persistent session and tails its callback log form, so it
       // emits incremental session output while the command runs. Declare the
       // opt-in capability so the host selects the session-output streaming path.
@@ -50,10 +56,15 @@ const manifest: PaperclipPluginManifestV1 = {
       // over a raw pseudo-terminal. Declare the opt-in capability so the host may
       // select the duplex transport. The host resolves it `true` only when the
       // worker also verifies the `duplexChannelOpen` handler.
+      //
+      // Daytona is the first provider that runs the HTTP/2 transport over this
+      // channel. HTTP/2 is the preferred transport. `queue_v1` is the
+      // soft-deprecated fallback.
       sandboxCapabilities: {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
         duplexCommandStream: true,
+        runnerWebSocketIngress: true,
       },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
@@ -67,7 +78,11 @@ const manifest: PaperclipPluginManifestV1 = {
       supportsTemplateDelete: true,
       // Daytona hosts an interactive login on a real pseudo-terminal. It is the
       // only bundled provider that implements the login pseudo-terminal methods,
-      // so it advertises the capability.
+      // so it advertises the capability. The session home helpers and the
+      // credential reader run on node, and the sandbox already runs node for the
+      // Paperclip bridge. So the login has no extra runtime prerequisite, and the
+      // advertised capability matches the runtime contract for every configured
+      // image or snapshot.
       supportsLoginPty: true,
       configSchema: {
         type: "object",
@@ -128,8 +143,8 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           timeoutMs: {
             type: "number",
-            description: "Timeout for Daytona create/start/stop/execute operations in milliseconds.",
-            default: 300000,
+            description: "Timeout for Daytona operations in milliseconds. Fresh lease acquisition shares one budget across creation, setup, and inline cleanup.",
+            default: DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
           },
           livenessTimeoutMs: {
             type: "number",
@@ -137,10 +152,15 @@ const manifest: PaperclipPluginManifestV1 = {
               "Per-call timeout in milliseconds for the sandbox liveness read (refreshData). A silently unresponsive sandbox connection surfaces as a fast error instead of stalling until the outer RPC ceiling. The start and recovery calls derive their own deadline from timeoutMs, not this bound. `0` or less disables the bound. Defaults to 30000 when unset.",
             default: 30000,
           },
+          ttlMinutes: {
+            type: "integer",
+            minimum: 1,
+            description: "Optional wall-clock lifetime in minutes from creation. Daytona destroys the sandbox and its files at expiry in any state, even while active. Omit to leave the lifetime unchanged.",
+          },
           autoStopInterval: {
             type: "number",
             description:
-              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset.",
+              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset. A reusable sandbox that keeps a warm runner never auto-stops before the warm idle window plus 5 minutes, and a sandbox running a Paperclip runner never auto-stops before the host's runner reconnect grace plus 5 minutes.",
             default: 15,
           },
           autoArchiveInterval: {
@@ -160,6 +180,21 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
             default: false,
+          },
+          runnerLifecycleMode: {
+            type: "string",
+            enum: ["inherit", "per_turn", "warm"],
+            description:
+              "paperclip_runner lifecycle for this environment. Inherit uses the agent setting; warm keeps runnerd and the sandbox available between turns.",
+            default: "inherit",
+          },
+          runnerIdleTimeoutMs: {
+            type: "integer",
+            description:
+              "How long an idle warm paperclip_runner stays alive before it checkpoints and suspends.",
+            minimum: 1000,
+            maximum: 86400000,
+            default: 300000,
           },
         },
       },

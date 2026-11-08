@@ -5,6 +5,14 @@ import {
 } from "./document-annotation-hash";
 
 describe("parseDocumentAnnotationHash", () => {
+  it("retains an image position with the reviewed document identity", () => {
+    const target = { documentKey: "design", threadId: null, commentId: null, revisionId: "old", documentIssueId: "owner", viewer: "full" as const, image: 2 };
+    expect(parseDocumentAnnotationHash(buildDocumentAnnotationHash(target))).toEqual(target);
+  });
+
+  it.each(["0", "-1", "1.5", "text", "9007199254740992"])("ignores invalid image positions: %s", (image) => {
+    expect(parseDocumentAnnotationHash(`#document-design&image=${image}`)).not.toHaveProperty("image");
+  });
   it("returns null for non-document hashes", () => {
     expect(parseDocumentAnnotationHash("")).toBeNull();
     expect(parseDocumentAnnotationHash("#issue-foo")).toBeNull();
@@ -15,6 +23,7 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "plan",
       threadId: null,
       commentId: null,
+      viewer: null,
     });
   });
 
@@ -25,6 +34,25 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "plan",
       threadId: "t1",
       commentId: "c2",
+      viewer: null,
+    });
+  });
+
+  it("parses the viewer=full request", () => {
+    expect(parseDocumentAnnotationHash("#document-direction-package&viewer=full")).toEqual({
+      documentKey: "direction-package",
+      threadId: null,
+      commentId: null,
+      viewer: "full",
+    });
+  });
+
+  it("ignores unknown viewer values", () => {
+    expect(parseDocumentAnnotationHash("#document-plan&viewer=huge")).toEqual({
+      documentKey: "plan",
+      threadId: null,
+      commentId: null,
+      viewer: null,
     });
   });
 
@@ -33,6 +61,7 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "my notes",
       threadId: "abc",
       commentId: null,
+      viewer: null,
     });
   });
 
@@ -60,8 +89,24 @@ describe("buildDocumentAnnotationHash", () => {
     ).toBe("#document-plan&thread=t1&comment=c2");
   });
 
+  it("includes the viewer request", () => {
+    expect(
+      buildDocumentAnnotationHash({
+        documentKey: "direction-package",
+        threadId: null,
+        commentId: null,
+        viewer: "full",
+      }),
+    ).toBe("#document-direction-package&viewer=full");
+  });
+
   it("survives a round trip", () => {
-    const target = { documentKey: "plan-2", threadId: "t-abc", commentId: "c-xyz" };
+    const target = {
+      documentKey: "plan-2",
+      threadId: "t-abc",
+      commentId: "c-xyz",
+      viewer: "full" as const,
+    };
     expect(parseDocumentAnnotationHash(buildDocumentAnnotationHash(target))).toEqual(target);
   });
 });
