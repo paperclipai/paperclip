@@ -126,6 +126,17 @@ describe("Daytona R6 reconciliation", () => {
     expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["r2", "e1"]);
   });
 
+  it("keeps a stopped restore source (retain_on_failure) as retained, but not a running one or one with no lease", () => {
+    const result = reconcileSandboxes(
+      [{ id: "s1", state: "stopped" }, { id: "s2", state: "started" }, { id: "s3", state: "stopped" }],
+      [{ id: "f1", status: "released", leasePolicy: "retain_on_failure", providerLeaseId: "s1" },
+        { id: "f2", status: "released", leasePolicy: "retain_on_failure", providerLeaseId: "s2" }],
+    );
+    expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["f1"]);
+    // Running, or left behind by a deleted environment (no lease): still leaks.
+    expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["s2", "s3"]);
+  });
+
   it("judges a reused sandbox by its current lease row, whatever the listing order", () => {
     const rows = [{ id: "old", status: "expired", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
       { id: "new", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" }];
