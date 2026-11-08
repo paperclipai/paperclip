@@ -311,6 +311,7 @@ registerIdleLocalWorkProbe(readWorkspaceRuntimeIdleWork);
  */
 const OPEN_EXECUTION_WORKSPACE_LEASE_STATUSES = ["active", "idle", "in_review"] as const;
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+const WORKTREE_LIST_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 export const WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS = 32;
 const ACTIVE_RUNTIME_PORT_RESERVATION_STATUSES = ["provisioning", "starting", "running"] as const;
 const DEFAULT_TAILSCALE_BROKER_SOCKET = "/run/paperclip-tailscale-broker/broker.sock";
@@ -854,6 +855,11 @@ function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator 
       if (!chunk) return;
       totalBytes += Buffer.byteLength(chunk, "utf8");
 
+      if (!truncated && totalBytes <= limit) {
+        text += chunk;
+        return;
+      }
+
       const combined = text + chunk;
       if (Buffer.byteLength(combined, "utf8") <= limit) {
         text = combined;
@@ -932,6 +938,7 @@ async function executeProcess(input: {
 
 async function runGit(args: string[], cwd: string, opts?: {
   env?: NodeJS.ProcessEnv;
+  maxStdoutBytes?: number;
   observe?: (result: Awaited<ReturnType<typeof executeProcess>>) => void;
 }): Promise<string> {
   const proc = await executeProcess({
@@ -939,6 +946,7 @@ async function runGit(args: string[], cwd: string, opts?: {
     args,
     cwd,
     env: opts?.env,
+    maxStdoutBytes: opts?.maxStdoutBytes,
   });
   opts?.observe?.(proc);
   if (proc.code !== 0) {
@@ -2740,7 +2748,9 @@ async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
 }
 
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
-  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot, {
+    maxStdoutBytes: WORKTREE_LIST_MAX_STDOUT_BYTES,
+  }).catch(() => null);
   if (!raw) return null;
 
   const expectedBranchRef = `refs/heads/${branchName}`;
@@ -2753,7 +2763,9 @@ async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: s
 }
 
 async function findRegisteredGitWorktreeByPath(repoRoot: string, worktreePath: string): Promise<GitWorktreeListEntry | null> {
-  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot, {
+    maxStdoutBytes: WORKTREE_LIST_MAX_STDOUT_BYTES,
+  }).catch(() => null);
   if (!raw) return null;
 
   const expectedPath = await resolvePathForWorktreeComparison(worktreePath);
@@ -2839,7 +2851,12 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
 > {
   let proc: Awaited<ReturnType<typeof executeProcess>>;
   try {
-    proc = await executeProcess({ command: "git", args: ["worktree", "list", "--porcelain"], cwd: repoRoot });
+    proc = await executeProcess({
+      command: "git",
+      args: ["worktree", "list", "--porcelain"],
+      cwd: repoRoot,
+      maxStdoutBytes: WORKTREE_LIST_MAX_STDOUT_BYTES,
+    });
   } catch (error) {
     return { diagnostic: readManagedGitInspectionDiagnostic({
       command: "worktree_list", failure: "spawn_failed", errorCode: (error as NodeJS.ErrnoException)?.code,
@@ -2850,11 +2867,15 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
       command: "worktree_list", failure: "nonzero_exit", exitCode: proc.code,
     })! };
   }
-  if (proc.stdoutTruncated) {
+  const lines = proc.stdout.split("\n");
+  if (
+    proc.stdoutTruncated ||
+    lines.some((line) => Buffer.byteLength(line, "utf8") > DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES)
+  ) {
     return { diagnostic: { command: "worktree_list", failure: "output_truncated" } };
   }
   const paths = new Set<string>();
-  for (const line of proc.stdout.split("\n")) {
+  for (const line of lines) {
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;
