@@ -118,7 +118,12 @@ pub struct AcpxProviderState {
     pending_runtime_request_bytes: usize,
     semantic_result: Option<AcpxSemanticResult>,
     attempted_turn_controls: BTreeSet<String>,
+    history_event_diagnostics: u32,
 }
+
+/// History diagnostics recorded per provider state before later ones are
+/// dropped silently. History never fails the current turn either way.
+const MAX_HISTORY_EVENT_DIAGNOSTICS: u32 = 32;
 
 impl AcpxProviderState {
     pub fn new(run_id: impl Into<String>) -> Result<Self, LocalRunnerError> {
@@ -137,6 +142,7 @@ impl AcpxProviderState {
             pending_runtime_request_bytes: 0,
             semantic_result: None,
             attempted_turn_controls: BTreeSet::new(),
+            history_event_diagnostics: 0,
         })
     }
 
@@ -233,6 +239,23 @@ impl AcpxProviderState {
         &mut self,
         event: &AcpxSidecarEvent,
     ) -> Result<Vec<AcpxProviderStateEvent>, LocalRunnerError> {
+        if self.scope.names_settled_turn(event) {
+            // A late event for a settled turn (for example a sidecar that
+            // reports the previous turn after the next one started) is
+            // history. Record it; never fail the current turn.
+            self.history_event_diagnostics = self.history_event_diagnostics.saturating_add(1);
+            if self.history_event_diagnostics > MAX_HISTORY_EVENT_DIAGNOSTICS {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![AcpxProviderStateEvent::Diagnostic {
+                code: "stale_generation_event".to_owned(),
+                message: format!(
+                    "recorded a {:?} event for settled turn {} as history",
+                    event.event_type,
+                    event.turn_id.as_deref().unwrap_or_default()
+                ),
+            }]);
+        }
         let payload = decode_acpx_event(&self.scope, event)?;
         match payload {
             AcpxEventPayload::RichActivity {

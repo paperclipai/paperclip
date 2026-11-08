@@ -588,14 +588,20 @@ fn terminal_events_retain_dispatched_tools_and_reject_late_turn_events() {
     assert!(state.begin_turn("turn-2").is_err());
     state.complete_tool("call-1", "issues.read").unwrap();
     assert!(state.pending_tool("call-1").is_none());
-    assert!(state
+    // A late event for the settled turn is history: recorded, never applied.
+    let late = state
         .accept_event(&event(
             3,
             GeneratedAcpxSidecarEventType::RuntimeEvent,
             Some("turn-1"),
             json!({"type":"text_delta","text":"late"}),
         ))
-        .is_err());
+        .unwrap();
+    assert!(matches!(
+        late.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+    assert_eq!(state.active_turn_id(), None);
 }
 
 #[test]
@@ -746,14 +752,20 @@ fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_ne
         assert!(state
             .complete_input(projected_id.as_str().unwrap())
             .is_err());
-        assert!(state
+        // A replayed terminal for the settled turn is history and never
+        // replays the terminal or its request expiry.
+        let replay = state
             .accept_event(&event(
                 4,
                 GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
                 Some("turn-1"),
-                json!({"status":status})
+                json!({"status":status}),
             ))
-            .is_err());
+            .unwrap();
+        assert!(matches!(
+            replay.as_slice(),
+            [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+        ));
     }
 }
 
@@ -815,4 +827,83 @@ fn cursor_plan_parent_identity_survives_decode_pending_and_terminal_projection()
         state.begin_turn("turn-1").unwrap();
         assert!(state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"provider":"cursor","method":"cursor/create_plan"}}))).is_err());
     }
+}
+
+// Section G: a late sidecar event for a turn that already settled is history.
+// It is recorded as a bounded diagnostic and never fails the current turn,
+// whether it arrives between turns or after the next turn started. An event
+// for an unknown turn still fails closed.
+#[test]
+fn records_late_events_for_a_settled_turn_as_history() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    let late = |sequence| {
+        event(
+            sequence,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({"type":"text_delta","text":"late"}),
+        )
+    };
+    let between = state.accept_event(&late(2)).unwrap();
+    assert!(matches!(
+        between.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+
+    state.begin_turn("turn-2").unwrap();
+    let during = state.accept_event(&late(3)).unwrap();
+    assert!(matches!(
+        during.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+    let late_terminal = state
+        .accept_event(&event(
+            4,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"failed"}),
+        ))
+        .unwrap();
+    assert!(matches!(
+        late_terminal.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { .. }]
+    ));
+    assert_eq!(state.active_turn_id(), Some("turn-2"));
+
+    // The current turn continues normally.
+    let current = state
+        .accept_event(&event(
+            5,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-2"),
+            json!({"type":"text_delta","text":"current"}),
+        ))
+        .unwrap();
+    assert!(!current
+        .iter()
+        .any(|event| matches!(event, AcpxProviderStateEvent::Diagnostic { .. })));
+
+    // History diagnostics are bounded.
+    for sequence in 6..60 {
+        state.accept_event(&late(sequence)).unwrap();
+    }
+    assert!(state.accept_event(&late(60)).unwrap().is_empty());
+
+    // A turn this scope never saw is not history.
+    let unknown = state.accept_event(&event(
+        61,
+        GeneratedAcpxSidecarEventType::RuntimeEvent,
+        Some("turn-unknown"),
+        json!({"type":"text_delta","text":"foreign"}),
+    ));
+    assert!(unknown.unwrap_err().to_string().contains("stale turn"));
 }
