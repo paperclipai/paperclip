@@ -15,6 +15,7 @@ import type {
   ResourceMembershipUpdateResult,
 } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
+import { isClientMembershipRole } from "./company-member-roles.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { logger } from "../middleware/logger.js";
 
@@ -119,6 +120,13 @@ function assertBoardSelfMembershipAccess(actor: BoardActor, companyId: string, u
   const membership = actor.memberships?.find((item) => item.companyId === companyId);
   if (!membership || membership.status !== "active") {
     throw forbidden("User does not have active company access");
+  }
+  // These routes are company-scoped but authorize themselves rather than
+  // going through `assertCompanyAccess`, so the client deny is repeated here.
+  // Self-scoping is not sufficient on its own: without this a client could
+  // still join or star projects and agents by id.
+  if (isClientMembershipRole(membership.membershipRole)) {
+    throw forbidden("Client access is limited to client-facing routes");
   }
 }
 

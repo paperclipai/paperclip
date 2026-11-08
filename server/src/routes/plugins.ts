@@ -77,6 +77,7 @@ import {
   getActorInfo,
   hasCompanyAccess,
 } from "./authz.js";
+import { filterStaffCompanyIds } from "../services/company-member-roles.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
   findLocalFolderDeclaration,
@@ -715,7 +716,9 @@ export function pluginRoutes(
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
       return null;
     }
-    return req.actor.companyIds ?? [];
+    // Clients get no operational read scope: a company where the actor is only
+    // a client contributes nothing to the readable set.
+    return filterStaffCompanyIds(req.actor.companyIds, req.actor.memberships);
   }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
@@ -731,7 +734,7 @@ export function pluginRoutes(
     }
 
     if (req.actor.type === "board") {
-      return req.actor.companyIds ?? [];
+      return filterStaffCompanyIds(req.actor.companyIds, req.actor.memberships);
     }
 
     return [];
