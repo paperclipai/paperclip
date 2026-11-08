@@ -3623,7 +3623,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compactionFailed: 0,
       };
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
-      const backOffTerminalWorkspace = async (target: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
+      const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
+        const [target = snapshot] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
         const retry = await recordTerminalWorkspaceFailure(db, target, readExecutionWorkspaceLifecycleGeneration(target.metadata), failure, now());
         terminalWorkspaceDeadlines.set(target.id, Date.parse(retry.retryAt));
         logger.warn({ event: "execution_workspace.terminal_cleanup_retry", executionWorkspaceId: target.id, sourceIssueId: target.sourceIssueId,

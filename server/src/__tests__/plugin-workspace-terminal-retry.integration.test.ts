@@ -93,21 +93,20 @@ function providerRefusal() {
     let clock = Date.now();
     const svc = executionWorkspaceService(db, { pluginWorkerManager: s.workers, workspaceReaperCooldownDays: 0, now: () => new Date(clock) });
     await svc.sweepTerminalWorkspaces(100);
-    expect(await s.read(reservation.id)).toMatchObject({ status: "archived",
-      metadata: { workspaceProviderRemoval: { operation: { kind: "remove", binding: null } } } });
-    expect(s.callsFor(reservation.id, "remove")).toHaveLength(1);
-    clock = Date.now() + 1;
-    await svc.sweepTerminalWorkspaces(100);
     const pending = await s.read(reservation.id);
+    expect(pending).toMatchObject({ status: "archived",
+      metadata: { workspaceProviderRemoval: { operation: { kind: "remove", binding: null } } } });
     expect(pending.metadata?.terminalCleanupRetry).toMatchObject({ failures: 1, generation: pending.metadata?.lifecycleGeneration,
       retryAt: new Date(clock + 5 * MINUTE).toISOString(), failure: { kind: "transport" } });
+    const retryAt = Date.parse((pending.metadata?.terminalCleanupRetry as { retryAt: string }).retryAt);
+    clock = Date.now() + 1;
     await svc.sweepTerminalWorkspaces(100);
-    expect(s.callsFor(reservation.id, "remove")).toHaveLength(2);
+    expect(s.callsFor(reservation.id, "remove")).toHaveLength(1);
     s.failures.remove = false;
-    clock += 5 * MINUTE;
+    clock = retryAt;
     await svc.sweepTerminalWorkspaces(100);
     const removes = s.callsFor(reservation.id, "remove");
-    expect(removes).toHaveLength(3);
+    expect(removes).toHaveLength(2);
     expect(new Set(removes.map(call => call.operationId)).size).toBe(1);
     expect(s.callsFor(reservation.id, "prepare")).toHaveLength(1);
     const retired = await s.read(reservation.id);
@@ -154,15 +153,15 @@ function providerRefusal() {
     let clock = Date.now();
     const svc = executionWorkspaceService(db, { pluginWorkerManager: s.workers, workspaceReaperCooldownDays: 0, now: () => new Date(clock) });
     await svc.sweepTerminalWorkspaces(100);
-    clock = Date.now() + 1;
-    await svc.sweepTerminalWorkspaces(100);
     const refused = await s.read(reservation.id);
     expect(refused).toMatchObject({ status: "archived", metadata: { workspaceProviderRemoval: { operation: { binding: null } } } });
     expect(refused.metadata?.workspaceProviderRemoved).not.toBe(true);
     expect(refused.metadata?.terminalCleanupRetry).toMatchObject({ failures: 1, retryAt: new Date(clock + 5 * MINUTE).toISOString(),
+      generation: refused.metadata?.lifecycleGeneration,
       failure: { kind: "provider", reason: "unsupported_operation", message: expect.not.stringContaining("private") } });
+    clock = Date.now() + 1;
     await svc.sweepTerminalWorkspaces(100);
-    expect(s.callsFor(reservation.id, "remove")).toHaveLength(2);
+    expect(s.callsFor(reservation.id, "remove")).toHaveLength(1);
     expect(s.callsFor(reservation.id, "prepare")).toHaveLength(1);
   });
 
