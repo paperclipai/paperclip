@@ -717,6 +717,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--hold-first-durable-turn");
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
+    // Real Codex records each turn's input, and accepted steering input when it
+    // enters the conversation at the next model step, as userMessage items.
+    let consume_steer = args.iter().any(|value| value == "--consume-steer");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
@@ -1833,6 +1836,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if consume_steer {
+                    // Real Codex records the turn's own input as its first userMessage item.
+                    for method in ["item/started", "item/completed"] {
+                        send(json!({
+                            "method": method,
+                            "params": {
+                                "threadId": state.thread_id,
+                                "turnId": provider_turn_id,
+                                "item": {"id": format!("{provider_turn_id}-input"), "type": "userMessage", "content": []}
+                            }
+                        }))?;
+                    }
+                }
                 if args.iter().any(|value| value == "--account-notifications") {
                     send(json!({"method":"account/updated", "params":{
                         "authMode":"chatgpt", "planType":"pro"
@@ -2262,6 +2278,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/steer" => {
                 send(json!({"id": id, "result": {"accepted": true}}))?;
+                if consume_steer {
+                    for method in ["item/started", "item/completed"] {
+                        send(json!({
+                            "method": method,
+                            "params": {
+                                "threadId": state.thread_id,
+                                "turnId": state.active_turn_id,
+                                "item": {"id": "steered-user-message-1", "type": "userMessage", "content": []}
+                            }
+                        }))?;
+                    }
+                }
                 if linger_after_turn_start {
                     send(json!({
                         "method": "item/completed",
