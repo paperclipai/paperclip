@@ -385,8 +385,8 @@ describe("Codex security configuration", () => {
     // be able to read (and so copy) them into the workspace, nothing else there.
     for (const profile of ["paperclip-runner-workspace-only", "paperclip-runner-workspace-read-only"]) {
       const rules = args.find((arg) => arg.startsWith(`permissions.${profile}.filesystem=`))!;
-      expect(rules).toContain('"/host/codex"="none"');
-      expect(rules).toContain('"/host/codex/generated_images"="read"');
+      expect(rules).toContain(filesystemRule("/host/codex", "none"));
+      expect(rules).toContain(filesystemRule("/host/codex/generated_images", "read"));
     }
     // The existing key is reused by the provider, never exposed to the shell.
     expect(serialized).not.toContain("OPENAI_API_KEY");
@@ -397,7 +397,7 @@ describe("Codex security configuration", () => {
     const inside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/users/executor/.codex", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
     expect(inside).not.toContain("generated_images");
     const outside = createIsolatedCodexAppServerArgs({ HOME: "/users/executor", CODEX_HOME: "/var/lib/codex-home", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }).join("\n");
-    expect(outside.match(/"\/var\/lib\/codex-home\/generated_images"="read"/g)).toHaveLength(2);
+    expect(outside.split(filesystemRule("/var/lib/codex-home/generated_images", "read"))).toHaveLength(3);
     expect(outside).not.toContain('"/var/lib/codex-home"=');
   });
 
