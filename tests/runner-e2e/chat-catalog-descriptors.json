@@ -780,7 +780,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime-retirement.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
