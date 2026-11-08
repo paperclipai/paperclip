@@ -85,6 +85,10 @@ export type OwnerProofReason =
   | "provider_stopped"
   | "deployment_replaced"
   | "operator_attested"
+  /** This process owns the record and is not executing its run. Only a
+   * caller that knows this process's executions may conclude it
+   * (`settleOwnableKind` with `currentProcessIdle`); the prover never does. */
+  | "current_process_idle"
   // alive
   | "current_process"
   | "pid_alive"

@@ -140,8 +140,8 @@ describe("report-only ownership reconciliation", () => {
     const names = OWNABLE_KINDS.map(kind => kind.id);
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
-    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "wake_request_claimed"]);
+    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(
+      ["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "environment_run_lease_active", "wake_request_claimed"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -150,7 +150,7 @@ describe("report-only ownership reconciliation", () => {
     const before = await snapshot();
     const state = createOwnershipReportState();
 
-    const first = await runOwnershipReconciliationPass(db, { state });
+    const first = await runOwnershipReconciliationPass(db, { state, settle: false });
 
     expect(kindReport(first, "native_executor_claim")).toMatchObject({ inProgress: 1,
       verdicts: { alive: 1, gone: 0, unprovable: 0 }, reasons: { current_process: 1 } });
@@ -178,13 +178,13 @@ describe("report-only ownership reconciliation", () => {
       "I7_scope", "record_cap", "wake_coverage"]);
 
     expect(first.awaitingSecondProof).toBe(1);
-    const second = await runOwnershipReconciliationPass(db, { state });
+    const second = await runOwnershipReconciliationPass(db, { state, settle: false });
     expect(rules(second, "environment_run_lease_active")).toEqual(["I2_settled"]);
     expect(second.newViolations.map(violation => `${violation.rule}:${violation.kind}`)).toEqual(["I2_settled:environment_run_lease_active"]);
 
     // A stuck record already reported for I2 needs no further pass.
     expect(second.awaitingSecondProof).toBe(0);
-    expect((await runOwnershipReconciliationPass(db, { state })).awaitingSecondProof).toBe(0);
+    expect((await runOwnershipReconciliationPass(db, { state, settle: false })).awaitingSecondProof).toBe(0);
 
     // Report-only: nothing was settled, released or retried.
     expect(await snapshot()).toEqual(before);
