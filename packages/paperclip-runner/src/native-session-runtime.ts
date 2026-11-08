@@ -304,6 +304,12 @@ export interface ExecuteNativeSessionOptions {
   resumeInterruptedTurn?: boolean;
   /** Read bounded task history only after recovery requires a fresh conversation. */
   getFreshSessionHandoff?: () => Promise<string | null>;
+  /**
+   * Steered messages the provider acknowledged but the model never read, read
+   * when a restart continuation starts. The provider lost them with the
+   * interrupted turn, so the continuation delivers them.
+   */
+  getUnreadSteeredMessages?: () => Promise<Array<{ id: string; text: string }>>;
   /** Durable launch intent, after cleanup admission and before provider calls. */
   onSessionAdmission?: () => Promise<void>;
   input: NativeExecutionInput;
@@ -2339,6 +2345,10 @@ export async function executeNativeSession(
       const attach = async (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         await options.existingSession!.attachRun!({ identity,
+        completionContract: {
+          revision: input.completionContract.contract.revision,
+          criterionIds: input.completionContract.contract.criteria.map((criterion) => criterion.id),
+        },
         ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
           ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
               instructions: nativeSystemInstructions(input) } }
@@ -2645,18 +2655,22 @@ export async function executeNativeSession(
       return snapshot;
     };
     const recoveredSnapshot = await session.snapshot();
-    const restartContinuation = () => ({
+    const restartContinuation = (steeredMessages: Array<{ id: string; text: string }>) => ({
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
           "This is a resumed session after a Paperclip control-plane restart. Paperclip restored this same conversation and workspace; the restart interrupted the previous turn.",
           "Continue the current user request from the recorded progress and preserved workspace.",
+          ...(steeredMessages.length > 0 ? [
+            "During the interrupted turn the user sent the messages in steeredMessages. The restart happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
+          ] : []),
           "Shell commands and background processes started in earlier turns may no longer be running, and their tool sessions may be gone. Do not block only because such a process or its tool session cannot be found or inspected.",
           "Reconcile any unfinished tool or command before proceeding: check the workspace for the outputs or artifacts it should have produced. If the expected output is present, use it. If the expected output is missing, re-run the command.",
           "Do not repeat completed work. Before you repeat an action with external effects, such as a push, a message or a deployment, check whether it already took effect. If you cannot determine that, report the specific blocker.",
           "Finish in this turn. Nothing resumes this conversation after the turn ends, so do not end it to wait for a background command or a notification; wait for or check that work first.",
           "Then invoke exactly one paperclip_finish or paperclip_block with the accurate disposition.",
         ].join("\n"),
+        ...(steeredMessages.length > 0 ? { steeredMessages: steeredMessages.map(message => message.text) } : {}),
         completion: {
           revision: input.completionContract.contract.revision,
           criterionIds: input.completionContract.contract.criteria.map(criterion => criterion.id),
@@ -2701,7 +2715,9 @@ export async function executeNativeSession(
       continuationSetup = (async () => {
         // The driver reports the borrowed marker with the accepted turn; a
         // later snapshot may already show the marker returned.
-        const started = await session.startTurn(restartContinuation());
+        const steeredMessages = await options.getUnreadSteeredMessages?.() ?? [];
+        signal?.throwIfAborted();
+        const started = await session.startTurn(restartContinuation(steeredMessages));
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
         await checkpoint(signal);
       })();

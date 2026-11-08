@@ -169,6 +169,12 @@ export class CodexSessionState {
    * notifications; those replays are not new provider activity.
    */
   readonly restoredTerminalTurns = new Set<string>();
+  /**
+   * Turns that an earlier session generation accepted: every turn this
+   * session restored from its checkpoint. With the turns settled in this
+   * generation they form the history set (see isHistoryTurn).
+   */
+  readonly priorGenerationTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
   #workspaceRoots: string[] | null = null;
@@ -331,6 +337,15 @@ export class CodexSessionState {
     this.dispositionOnlyRecoveryConsumed =
       dispositionOnlyRecoveryPreviouslyConsumed;
     this.dispositionOnlyRecoveryTurnId = dispositionOnlyRecoveryTurnId;
+    for (const turnId of this.terminalTurns.keys()) this.priorGenerationTurns.add(turnId);
+    // The checkpoint's active turn (or one the previous controller's runner
+    // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
+    // live while it stays active; once reconcile settles it, its late reports
+    // are history too.
+    for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
+      if (turnId) this.priorGenerationTurns.add(turnId);
+    if (dispositionOnlyRecoveryTurnId && dispositionOnlyRecoveryTurnId !== this.activeTurnId)
+      this.priorGenerationTurns.add(dispositionOnlyRecoveryTurnId);
   }
 
   requireActiveTurn(turnId: string, operation: string): void {
@@ -379,13 +394,47 @@ export class CodexSessionState {
    * fingerprint was already committed, and turn/completed still checks it.
    */
   isRestoredTerminalReplay(turnId: string): boolean {
+    return this.restoredTerminalTurns.has(turnId) && this.isHistoryTurn(turnId);
+  }
+
+  /**
+   * The one stale-event rule (durable-ownership plan, section G). A provider
+   * event that names a turn which is not the active turn, and which an earlier
+   * session generation accepted (restored from the checkpoint, or reported
+   * lost on restore) or this generation already settled, is history: it is
+   * recorded and never fails the current turn. A turn this session never saw
+   * is not history and still fails closed.
+   */
+  isHistoryTurn(turnId: string): boolean {
     return turnId.length > 0
       && !this.protocolFailed
       && turnId !== this.activeTurnId
-      && this.restoredTerminalTurns.has(turnId);
+      && (this.priorGenerationTurns.has(turnId) || this.restoredTerminalTurns.has(turnId)
+        || this.terminalTurns.has(turnId));
+  }
+
+  /** Every turn the history rule covers, for classifiers that take a set. */
+  historyTurnIds(): Set<string> {
+    return new Set([...this.priorGenerationTurns, ...this.restoredTerminalTurns, ...this.terminalTurns.keys()]);
+  }
+
+  recordHistoryEvent(kind: string, turnId: string): void {
+    if (this.notificationIdentityDiagnostics >= 32) return;
+    this.notificationIdentityDiagnostics += 1;
+    this.emit("harness.diagnostic", {
+      code: "provider_notification_identity",
+      classification: "stale_generation_event",
+      kind: kind.slice(0, 128),
+      expectedTurnId: this.activeTurnId,
+      receivedTurnId: turnId.slice(0, 256),
+    });
   }
 
   notificationNamesActiveTurn(turnId: string, kind: string): boolean {
+    if (this.isHistoryTurn(turnId)) {
+      this.recordHistoryEvent(kind, turnId);
+      return false;
+    }
     if (
       this.protocolFailed ||
       this.terminal ||

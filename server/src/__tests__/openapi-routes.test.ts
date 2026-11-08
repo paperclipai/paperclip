@@ -497,13 +497,13 @@ describe("openapi routes", () => {
     expect(operation.responses["404"]).toBeDefined();
   });
 
-  it("documents strict run-attributed feedback and board-only commentary reads", () => {
+  it("documents strict run-attributed feedback and board-or-agent commentary reads", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
     expect(Object.keys(path)).toEqual(["get", "post"]);
     const detail = spec.paths["/api/companies/{companyId}/agent-commentary/{id}"].get;
     for (const read of [path.get, detail]) {
-      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentBearerAuth: [] }]);
       expect(read.responses["403"]).toBeDefined();
       expect(read.responses["404"]).toBeDefined();
     }

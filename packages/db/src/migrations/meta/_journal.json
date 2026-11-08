@@ -3074,6 +3074,55 @@
       "when": 1794035686391,
       "tag": "0440_flippant_the_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 441,
+      "version": "7",
+      "when": 1794069983192,
+      "tag": "0441_lucky_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 442,
+      "version": "7",
+      "when": 1794071961340,
+      "tag": "0442_low_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 443,
+      "version": "7",
+      "when": 1794076124161,
+      "tag": "0443_native_warm_follow_up_default",
+      "breakpoints": true
+    },
+    {
+      "idx": 444,
+      "version": "7",
+      "when": 1794080714388,
+      "tag": "0444_github_access_refresh_runtime_bookkeeping",
+      "breakpoints": true
+    },
+    {
+      "idx": 445,
+      "version": "7",
+      "when": 1794104103100,
+      "tag": "0445_native_accepted_result_lease_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 446,
+      "version": "7",
+      "when": 1794105010331,
+      "tag": "0446_native_lease_holder",
+      "breakpoints": true
+    },
+    {
+      "idx": 447,
+      "version": "7",
+      "when": 1794105389611,
+      "tag": "0447_legacy_controller_process",
+      "breakpoints": true
     }
   ]
 }

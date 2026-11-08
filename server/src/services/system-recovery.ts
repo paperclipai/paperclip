@@ -3,8 +3,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { createSystemRecovery, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
+import { createSystemRecovery, exhaustedSystemRecoveryAction, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import { workspaceRecoverySourceEligible, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import { retainedSourceFallbackDueAt, retainedSourceFallbackPendingCondition } from "./workspace-recovery-fallback-discovery.js";
 
 export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   return db.transaction(async tx => {
@@ -47,18 +48,7 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
   });
 }
 
-export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
-  // Another Retry cannot release a copyback owner that stopped without reporting.
-  if (state.failure?.code === "copyback_stop_unconfirmed")
-    return "Automatic recovery of saved work is waiting for the previous server's file copy to stop, and Paperclip cannot verify "
-      + "that it stopped. A board member who manages this company's runtime can confirm that it stopped; recovery then "
-      + "resumes. No provider turn is submitted.";
-  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
-  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
-  return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
-    + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
-    + "If Retry keeps failing, inspect the run and its environment.";
-}
+export { exhaustedSystemRecoveryAction };
 
 /** CAS protects a newer manual generation from an old worker's late write.
  * This is bookkeeping authority only; physical writes still require ownership. */
@@ -124,6 +114,7 @@ export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySource
 
 export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
   const rows = await db.select({ at: sql<number>`case
+    when ${retainedSourceFallbackPendingCondition()} then ${retainedSourceFallbackDueAt()}
     when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}') = 'number'
     then (${issueRecoveryActions.evidence}#>>'{systemRecovery,nextAttemptAt}')::bigint else 0 end` })
     .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
@@ -134,6 +125,7 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
     )).where(and(
       workspaceRecoverySourceEligible(true),
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or ${retainedSourceFallbackPendingCondition()}
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
           and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'

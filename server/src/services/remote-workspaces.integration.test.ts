@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -406,7 +407,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore", "restore lock busy"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -511,6 +512,29 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(missing).toMatchObject({ step: "snapshot_download", retryable: false,
         message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_object_missing" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+    }
+    if (mode === "stalled download") {
+      let ready!: () => void;
+      const started = new Promise<void>(resolve => { ready = resolve; });
+      const body = new Readable({ read() {} });
+      const stalledStorage: StorageService = { ...storage, getObject: async () => { ready(); return { stream: body }; } };
+      const realTimeout = globalThis.setTimeout;
+      const deadline = vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, ms, ...args) =>
+        realTimeout(fn, ms === 300_000 ? 25 : ms, ...args));
+      const restoring = prepareRemoteWorkspace({ db, storage: stalledStorage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      try {
+        await started;
+        expect(await restoring).toMatchObject({ step: "snapshot_download", retryable: true,
+          message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_download_stalled" });
+        expect(body.destroyed).toBe(true);
+        expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
+          .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally {
+        body.destroy(new Error("test cleanup")); await restoring;
+        deadline.mockRestore();
+      }
     }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
     expect(restored.remoteRoot).toBe(expectedRemoteRoot);
@@ -974,10 +998,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     for (const mode of ["abort", "storage_failure"] as const) {
       const controller = new AbortController(), failure = new Error("Saved object unavailable");
       let observedSignal: AbortSignal | undefined;
+      let observedBody: Readable | undefined;
       const interruptedStorage: StorageService = { ...storage, getObject: async (companyId, objectKey, options) => {
         observedSignal = options?.signal;
         if (mode === "storage_failure") throw failure;
         const object = await storage.getObject(companyId, objectKey, options);
+        observedBody = object.stream;
         controller.abort(new DOMException("Saved read cancelled", "AbortError"));
         return object;
       } };
@@ -986,9 +1012,15 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       const access = await remoteFiles.open({ companyId: ids.company, workspaceId: reserved.id, signal: controller.signal })
         .catch(error => { readError = error; return null; });
       await access?.close();
-      expect(observedSignal).toBe(controller.signal);
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(observedSignal?.aborted).toBe(controller.signal.aborted);
       if (mode === "storage_failure") expect(readError).toBe(failure);
-      else expect(readError).toMatchObject({ name: "AbortError" });
+      else {
+        expect(observedSignal?.reason).toBe(controller.signal.reason);
+        expect(readError).toMatchObject({ name: "AbortError" });
+        expect(observedBody?.destroyed).toBe(true);
+        expect(observedBody?.closed).toBe(true);
+      }
       expect(await fs.readdir(savedTemp)).toEqual([]);
     }
     const cancelled = new DOMException("Already cancelled", "AbortError");
@@ -1115,8 +1147,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
     const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
-    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
-      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    // New children never share a parent's workspace; `inherited` is the shape an
+    // older release wrote, which saved-file continuation must still handle.
+    const child = (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
+      ...(inherited ? { parentId: ids.issue, executionWorkspaceId: reserved.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode } } : {}) }).returning())[0]!;
     if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
     const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,
@@ -1653,6 +1688,50 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(authority.location!.remoteCwd, "setup-result.txt"), "utf8")).toBe("one effect\n");
     const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision")));
     expect(journal).toMatchObject({ status: "running", metadata: { uncertain: true } });
+  }, 60_000);
+
+  // An uncertain provisioning row used to block every later reservation of
+  // the workspace forever. It settles only once the earlier run's sandbox is
+  // provably stopped; until then the reservation names the operator's action.
+  it("settles an uncertain provisioning command once its run's sandbox is provably stopped", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-stop-proof");
+    const execute = first.runner!.execute.bind(first.runner!);
+    first.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash") throw new Error("lost provisioning reply");
+      return result;
+    };
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "printf 'one effect\\n' >> setup-result.txt" })).rejects.toThrow("lost provisioning reply");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    const reserveNext = () => reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const provision = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision"))))[0]!;
+    // A failed run alone is not proof: its sandbox may still run the command.
+    await expect(reserveNext()).rejects.toMatchObject({ status: 409,
+      details: { code: "remote_workspace_provision_unverified", operationId: (await provision()).id, runId: ids.run } });
+    expect(await provision()).toMatchObject({ status: "running", metadata: { uncertain: true } });
+    const stopped = await lease();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: remoteTerminationReceipt(stopped,
+        { providerLeaseId: stopped.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, ids.lease));
+    const outcome = await reserveNext().then(() => null, (error: unknown) => error as { details?: { code?: string } });
+    expect(outcome?.details?.code).not.toBe("remote_workspace_provision_unverified");
+    expect(await provision()).toMatchObject({ status: "failed", metadata: { uncertain: false, settledBy: "owner_sandbox_stopped" } });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(eq(activityLog.companyId, ids.company),
+      eq(activityLog.action, "workspace.remote_provision_settled")))).toHaveLength(1);
+  }, 60_000);
+
+  it("records a provisioning command that reported a failing exit as finished, not uncertain", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-exit-failure");
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "exit 3" })).rejects.toThrow("remote_workspace_provision_unverified");
+    const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(journal).toMatchObject({ status: "failed", metadata: { uncertain: false, exitCode: 3 } });
   }, 60_000);
 
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {

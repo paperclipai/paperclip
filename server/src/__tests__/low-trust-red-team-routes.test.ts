@@ -1949,6 +1949,50 @@ describeEmbeddedPostgres(
       expect(lowTrustCount.body.count).toBe(1);
     });
 
+    it("withholds raw-page pagination headers from a low-trust agent", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      const hiddenId = "00000000-0000-4000-8000-000000000001";
+      const visibleId = "00000000-0000-4000-8000-000000000002";
+      await db.insert(issues).values([
+        {
+          id: hiddenId,
+          companyId: fixture.company.id,
+          projectId: fixture.projects.outOfScope.id,
+          title: "Pagination probe hidden",
+          status: "todo",
+          priority: "medium",
+        },
+        {
+          id: visibleId,
+          companyId: fixture.company.id,
+          projectId: fixture.projects.allowed.id,
+          parentId: fixture.issues.reviewRoot.id,
+          title: "Pagination probe visible",
+          status: "todo",
+          priority: "medium",
+        },
+      ]);
+      const query = { q: "Pagination probe", sortField: "id", sortDir: "asc", limit: "1" };
+
+      const board = await request(createApp(db, boardActor(fixture)))
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query(query);
+      expect(board.status, JSON.stringify(board.body)).toBe(200);
+      expect(board.headers["x-paperclip-has-more"]).toBe("true");
+      expect(board.headers["x-paperclip-next-after-id"]).toBe(hiddenId);
+
+      const lowTrust = await request(createApp(db, agentActor(fixture)))
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query(query);
+      expect(lowTrust.status, JSON.stringify(lowTrust.body)).toBe(200);
+      expect(lowTrust.body).toEqual([]);
+      expect(lowTrust.headers["x-paperclip-has-more"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-limit"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-next-offset"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-next-after-id"]).toBeUndefined();
+      expect(JSON.stringify(lowTrust.headers)).not.toContain(hiddenId);
+    });
+
     it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
       const fixture = await seedLowTrustFixture(db);
       const lowTrustApp = createApp(db, agentActor(fixture));

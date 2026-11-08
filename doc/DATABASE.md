@@ -126,6 +126,30 @@ Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
 
+### Original local Git sources for archived workspaces
+
+When an archived runtime branch has an exact successful deletion receipt, its
+saved commit can be imported from the recorded original file-URL repository if
+the canonical private/project cache is definitively absent. A present, corrupt,
+foreign or unreadable primary source never falls through to this path.
+
+This fallback requires the matching company/project source record, a real bare
+repository under the same instance root, and the exact full saved base SHA matching
+the deleted tip (`baseRefSnapshot.resolvedSha`, with the legacy `baseRefSha` form
+accepted when no canonical snapshot exists). Conflicting records fail closed. It accepts self-contained SHA-1 storage with a bounded standard
+configuration and at most 10,000 metadata entries. Aliases, special files,
+alternates, replacement/graft/shallow state and execution hooks fail closed.
+Every retained branch or lightweight tag must still name that full base commit.
+Saved retries and final publication recheck that all recorded private and generated
+primary sources remain absent. Returned or unreadable primary files block the
+original-source path. Git reads use a restricted environment and local-file transport only.
+
+Materialization uses private migration scratch. Existing encrypted snapshot
+readback, journal identity, source reinspection and publication fences still
+apply. Original repository bytes and cleanup history remain unchanged. This
+imports the retained workspace tree; it does not turn a configured local file
+URL into a portable source for future fresh project work.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -954,6 +978,20 @@ retains the prepared reference, provider checkpoint, remote allocations and
 recovery hold. The existing migration recipe routes later file recovery away
 from the retired local destination. This neither declares preexecution nor
 proves remote export, provider termination or permission to resume execution.
+
+An exhausted prepared-export hold can also retain the canonical historical-source
+marker added by recovery backfill. Its schema and run must match, and every unique
+recorded lease must already belong to the proven prepared source or its declared
+recovery allocations. The existing historical-source inspector verifies those
+same allocation bindings. Unknown fields, malformed markers and foreign, duplicate
+or uncovered lease references still block import.
+
+The full historical marker stays in the action fingerprint. Existing source,
+task, lifecycle and finalizer locks and publication reinspection remain required.
+This permits preservation of the current local files only. It neither clears the
+hold nor claims that remote files were copied or a provider stopped. Marked holds
+add bounded database reads during maintenance inspection; they add no provider
+calls or recurring background work.
 
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this

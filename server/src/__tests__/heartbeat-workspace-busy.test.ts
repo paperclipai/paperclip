@@ -240,6 +240,9 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     // Bind both issues to one reused shared execution workspace, as when a child
     // task inherits the workspace of a parent whose run is still live.
     sharedExecutionWorkspace?: boolean;
+    // Make the deferred issue a child of the holder issue, in the shape older
+    // releases wrote: the child bound to the parent's realized workspace.
+    childOfHolder?: boolean;
     holderIssueWorkspaceSettings?: Record<string, unknown> | null;
     holderProjectWorkspaceId?: string;
     holderActivityAt?: Date;
@@ -400,9 +403,15 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         : {}),
     });
 
+    if (sharedExecutionWorkspaceId && input?.childOfHolder) {
+      await db.update(executionWorkspaces).set({ sourceIssueId: holderIssueId })
+        .where(eq(executionWorkspaces.id, sharedExecutionWorkspaceId));
+    }
+
     await db.insert(issues).values({
       id: issueId,
       companyId,
+      ...(input?.childOfHolder ? { parentId: holderIssueId } : {}),
       title: "Deferred issue",
       status: "in_progress",
       priority: "medium",
@@ -696,6 +705,35 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
       const [issueRow] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, fixture.issueId));
       expect(issueRow?.status).not.toBe("blocked");
+    });
+
+    it("gives an old-release subtask its own workspace instead of waiting on its running parent", async () => {
+      const fixture = await seedInheritedWorkspace({ childOfHolder: true });
+
+      const run = await heartbeat.invoke(
+        fixture.agentId,
+        "assignment",
+        { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+        "system",
+      );
+      expect(run).not.toBeNull();
+
+      const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+      expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
+      expect(finishedRun?.status).toBe("succeeded");
+      expect(executedRunIds).toContain(run!.id);
+      // The parent was never interrupted and keeps its workspace.
+      expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+      const [parentRow] = await db.select({ executionWorkspaceId: issues.executionWorkspaceId })
+        .from(issues).where(eq(issues.id, fixture.holderIssueId));
+      expect(parentRow?.executionWorkspaceId).toBe(fixture.sharedExecutionWorkspaceId);
+      const [parentWorkspace] = await db.select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces).where(eq(executionWorkspaces.id, fixture.sharedExecutionWorkspaceId!));
+      expect(parentWorkspace?.status).toBe("active");
+      // The child now has its own workspace.
+      const [childRow] = await db.select({ executionWorkspaceId: issues.executionWorkspaceId })
+        .from(issues).where(eq(issues.id, fixture.issueId));
+      expect(childRow?.executionWorkspaceId).not.toBe(fixture.sharedExecutionWorkspaceId);
     });
 
     it("resumes in the inherited workspace once the holder finishes", async () => {
