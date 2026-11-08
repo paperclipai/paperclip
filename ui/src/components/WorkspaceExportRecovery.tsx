@@ -84,7 +84,9 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {
     const resource = OWNER_GONE_RESOURCE[String(action.evidence.kind)] ?? OWNER_GONE_DEFAULT;
     return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
-      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}`}
+      {/* Keyed by the record version: a request refreshed to a newer version resets an open form, so
+          the board never confirms a version it was not shown. */}
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}:${String(action.evidence.recordUpdatedAt ?? "")}`}
         action={action} issueId={issueId} companyId={companyId} className={className}
         confirmStop={stopEvidence => issuesApi.confirmOwnerGone(issueId, {
           actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence,
