@@ -2307,6 +2307,41 @@ proof must match exactly; an absent or foreign field cannot certify a folded
 legacy Retry. Ordinary legacy history that already names the exact preservation
 generation retains only its existing passive proof, without status ownership.
 
+Retained-file recovery verifies the recorded source strictly, including the
+reusable-lease chain of its sandbox. When that verification refuses the source
+permanently (`allocation_ownership_ambiguous`, `source_binding_invalid`,
+`source_unavailable` or `historical_source_missing`), retrying repeats the
+refusal. The recovery worker then continues the task from its last committed
+workspace save, with the named outcome
+`retained_source_unverifiable_continued_from_last_saved`. The unverified files
+are never applied. When the retained root can still be read, the worker copies it
+without writing to the sandbox and attaches the copy to the task as unverified
+files of that run. The copy follows the workspace file policy: secrets,
+repository metadata and dependency directories are omitted. Otherwise it records why the root could not be read. In one
+transaction the worker then abandons the unverified remote workspace epoch:
+the writer and dirty flag are cleared, the last save is kept, the location and
+published root are dropped and the epoch advances. The next writer therefore
+restores the last save into a new directory and never reuses the old root. The
+same transaction resolves the hold and denies native replacement. A Blocked
+task belongs to the hold only while the hold's own Blocked receipt still owns
+the status, or, for holds saved before receipts existed, while the block was set
+by the run's terminal failure and no status decision followed. Only then is the
+task restored to `todo`; otherwise the newer block is kept and no continuation is
+started. If no user input is waiting, one continuation is delivered through the
+reconciled execution path; the decision carries the workspace repair evidence
+that a restore failure requires. Its recovery outcome tells the agent which
+changes were not applied and where the attached copy is. Every allocation of
+the source run must carry a provider stop receipt; the worker obtains a missing
+one through the same stop-only cleanup as normal recovery, but never stops a
+sandbox that another lease holds. The fallback does not run while a writer is
+live, a status effect is pending, or an external action has an uncertain
+outcome; those keep their existing reconciliation. A deferred check records its
+reason. Transient reasons are checked again after five minutes, at most twelve
+times; new input, Retry or a new recovery generation reconsiders the hold. The
+recovery worker discovers these holds itself, so holds saved by earlier releases
+take the same path after deploy. An exhausted hold whose run's files a sibling
+recovery action already saved settles as recovered.
+
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
 restore the accepted passive wait only while that receipt still owns the task

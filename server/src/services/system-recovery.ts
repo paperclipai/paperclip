@@ -5,6 +5,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createSystemRecovery, exhaustedSystemRecoveryAction, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import { workspaceRecoverySourceEligible, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import { retainedSourceFallbackDueAt, retainedSourceFallbackPendingCondition } from "./workspace-recovery-fallback-discovery.js";
 
 export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   return db.transaction(async tx => {
@@ -113,6 +114,7 @@ export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySource
 
 export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
   const rows = await db.select({ at: sql<number>`case
+    when ${retainedSourceFallbackPendingCondition()} then ${retainedSourceFallbackDueAt()}
     when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}') = 'number'
     then (${issueRecoveryActions.evidence}#>>'{systemRecovery,nextAttemptAt}')::bigint else 0 end` })
     .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
@@ -123,6 +125,7 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
     )).where(and(
       workspaceRecoverySourceEligible(true),
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or ${retainedSourceFallbackPendingCondition()}
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
           and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'
