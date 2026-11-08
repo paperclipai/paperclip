@@ -45,10 +45,28 @@ One owned kind on the shared ownership reconciler,
   - its newest lease row is `released` or `retained`.
   A new turn on the task inside the window adopts the sandbox as it does today.
 
-Its owner is the lease's run (`runOwner`), which is terminal. All the existing
-holds from `environment-retained-orphan-settlement.ts` apply: shared provider
+Its owner is the lease's run (`runOwner`), which is terminal. Most holds from
+`environment-retained-orphan-settlement.ts` still apply: shared provider
 resource, stop or restore intents in flight, pending cleanup claim, open runs
 on the task.
+
+Two existing guards are deliberately replaced for this kind, and only for it:
+
+- The unconditional hold on `workspaceRestoreRecovery` lease metadata
+  (`alwaysHeldSql`, `heldBy`). For a restore source it is replaced by the
+  closed-actions and later-success conditions above, plus the salvage receipt.
+- The `resourceDisposition === "destroy"` requirement in
+  `scheduleRecoveredWorkspaceCleanup`. Restore sources (`retain_on_failure`)
+  and warm leases (`keep_running`) never record `destroy`, so retirement uses
+  the salvage receipt instead.
+
+**Adoption versus retirement.** Reuse eligibility today is status-only
+(`reusableLeaseCanBeResumed` accepts any `released` or `retained` lease), so a
+metadata stamp cannot stop a new run from resuming a sandbox mid-salvage. At
+claim time, the settle moves the lease to a non-resumable state with a
+compare-and-swap on its status (the stop-only `pending_cleanup` claim shape).
+A run admitted after that provisions a fresh sandbox. A run admitted before the
+claim adopts the sandbox, and the claim's compare-and-swap then fails.
 
 ## Settle: salvage, then retire
 
@@ -62,8 +80,9 @@ retried with backoff.
    path `recoverRetainedWorkspace` uses (`resumeWorkspaceRecoveryLease`), under
    `withNativeWorkspaceFinalizationOwnership`.
    - **Remote workspace reference:** capture the read-only manifest digest and
-     compare it with the committed `executionWorkspaceSnapshots.sha256` of the
-     reference's snapshot.
+     compare it with the committed `executionWorkspaceSnapshots.manifestDigest`
+     of the reference's snapshot. (`sha256` hashes the encrypted archive bytes and
+     can never match a manifest digest.)
    - **Legacy native descriptor:** compare `captureDirectorySnapshotOffThread` +
      `directorySnapshotSha256` with the descriptor's `finalHostSha256`, else its
      `baselineSha256`.
@@ -72,16 +91,32 @@ retried with backoff.
      content.
    - **Equal:** record `compare: clean` and go to stage 3. **Unequal or
      unknown:** go to stage 2.
+   - **Every exit after a resume attempt re-stops the sandbox**, clean or not,
+     in a `finally`. `recoverRetainedWorkspace` does the same with
+     `retryPendingSandboxTeardown` and `settleStopOnlyCleanup`. If the stop
+     cannot be confirmed, a durable stop obligation stays on the lease.
+     Preparing the resume clears `remoteExecutionTermination`, so stage 3 uses
+     the new stop receipt from this re-stop, not the old one.
 2. **Export.** Capture the filtered workspace: extract `quarantineRetainedRoot`'s
    capture, `omitDeniedWorkspaceFiles` and `putFile` steps from
    `workspace-recovery-fallback.ts` into an exported helper.
-   - Store the archive.
-   - Attach it to the issue with `issueService.createAttachment`, which creates
-     the `artifact` work product.
-   - Add one comment naming the file and why it was kept.
-   - Record a `workspaceOperations` receipt (`kept_sandbox_salvage`, archive
-     sha256) as the idempotency key. Then re-stop the sandbox through the
-     stop-only contract (`prepareSandboxStopAndRetain` → `settleStopOnlyCleanup`).
+   - Store the archive under a deterministic object key derived from the lease
+     and the attempt.
+   - **Write the receipt with the attachment, in one transaction:** the asset,
+     the issue attachment and `artifact` work product, the comment, and a
+     `workspaceOperations` receipt (`kept_sandbox_salvage`, archive sha256),
+     as `quarantineRetainedRoot` already does. `createAttachment` always
+     inserts and assets are unique on `(company_id, object_key)`, so a retry
+     first looks up an existing receipt or asset by object key and reuses it.
+     It never creates a second artifact or comment.
+   - Re-stop the sandbox through the stop-only contract (step 1's `finally`).
+   - **Exposure.** The filter (`omitDeniedWorkspaceFiles`) only denies known
+     secret names and directories; a credential in an ordinary file would be
+     included. The export is therefore restricted to the issue's existing
+     readers, stored with a bounded retention, and run through the run-log
+     secret redaction on file contents. If the design review prefers, the
+     first version can instead record "unsaved files exist" on the issue and
+     wait for a user's decision before attaching the archive.
    - **First version:** export the whole filtered workspace. A file-level diff
      needs new code on top of the manifest and `selectDirectorySnapshot`, and
      can follow.
@@ -120,6 +155,13 @@ destroyed without a clean compare or a confirmed export.
 - Holds: open run, open recovery action, pending export, another lease on the
   sandbox, an operator owner-gone attestation.
 - Concurrency: two reconciler processes settle once (one work product).
+- Crash between the attachment write and the receipt: the retry reuses the
+  artifact by object key and records the receipt once.
+- Every exit after resume re-stops the sandbox (clean compare, capture
+  failure, upload failure); an unconfirmed stop leaves a durable obligation.
+- A turn admitted at the claim boundary: before the claim it adopts the
+  sandbox and the claim fails its compare-and-swap; after the claim it gets a
+  fresh sandbox.
 - Warm: a done task within the window is adopted by a new turn; past the window
   it is retired; a still-running task's warm sandbox is never listed.
 
