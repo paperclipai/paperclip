@@ -89,6 +89,7 @@ import {
   isNull,
   lte,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -1754,6 +1755,56 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         logger.warn({ err, queueId: wake.id }, "failed to resume interrupted comment queue");
       });
     }
+    // Work-intent outbox: a message refused by a pause waits for the pause to
+    // lift, not behind the run. Lifting the pause is the operator's explicit
+    // authorization to send what the pause refused, as Send is after a Stop:
+    // when the pause stopped the task's run, the release drain never promotes
+    // queued work behind that acknowledged stop, so the lifted pause issues the
+    // task's next explicit wake here. It reconsiders the exact saved receipt
+    // through normal admission (a refusal rewrites the receipt in place) and
+    // adopts it atomically, so it is delivered once. It runs before the
+    // stranded-queue pass, which touches each saved wake.
+    const pauseLifted = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId), isNull(issues.executionRunId),
+        notInArray(issues.status, ["done", "cancelled"])))
+      .innerJoin(companies, and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active")))
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        // Only pauses this query can see lifted. A refusal by any other gate
+        // rewrites the receipt's reason, so it never retries in a loop here.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`,
+        sql`exists (select 1 from agents pause_agent where pause_agent.id = ${agentWakeupRequests.agentId}
+          and pause_agent.status not in ('paused', 'terminated', 'pending_approval'))`,
+        sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
+          WHERE live_issue_run.company_id = ${issues.companyId}
+            AND (live_issue_run.context_snapshot->>'issueId' = ${issues.id}::text
+              OR live_issue_run.native_issue_id = ${issues.id})
+            AND live_issue_run.status IN ('queued', 'running', 'scheduled_retry'))`,
+        cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const pauseLiftedIssues = new Set<string>();
+    for (const { wake } of pauseLifted) {
+      const issueKey = `${wake.companyId}:${String(wake.payload?.issueId)}`;
+      if (pauseLiftedIssues.has(issueKey)) continue;
+      pauseLiftedIssues.add(issueKey);
+      const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+      const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
+      await enqueueWakeup(wake.agentId, {
+        source: wake.source as WakeupOptions["source"], triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
+        reason: wake.reason ?? undefined, payload, contextSnapshot: context,
+        requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
+        requestedByActorId: wake.requestedByActorId ?? undefined,
+      }, wake.id).catch(err => {
+        if (err instanceof PersistedExecutionWaitRefusal) return;
+        scope.onError?.(err);
+        logger.warn({ err, requestId: wake.id }, "a message saved during a pause could not resume");
+      });
+    }
+
     // A server restart or a message/cleanup race can leave a deferred wake
     // after its owner has released the issue lock. Revisit it through the same
     // release admission, so recovery holds and operator Stops still apply.

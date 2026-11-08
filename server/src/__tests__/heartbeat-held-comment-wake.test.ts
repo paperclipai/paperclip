@@ -273,12 +273,11 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
-  // A pause stops the task's run with an acknowledged cancellation. A message
-  // saved behind that run is kept through the pause's stop and its lift: it is
-  // never skipped or cancelled. Its delivery then follows the existing
-  // acknowledged-Stop and execution-recovery rules for messages saved behind a
-  // stopped run (doc/execution-semantics.md), which this change does not alter.
-  it("keeps a message saved behind a run the pause stopped through the stop and the lift", async () => {
+  // A pause stops the task's run with a clean, acknowledged cancellation. The
+  // release drain never promotes queued work behind an acknowledged stop, so
+  // the lifted pause issues the task's next explicit wake, which adopts the
+  // saved message once. The pause's own stop sweep keeps the message.
+  it("delivers a message saved behind a run the pause stopped, once, after the pause lifts", async () => {
     const f = await seedHeldComment();
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
     await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
@@ -292,17 +291,20 @@ describePostgres("saved intents while another run's accounting is pending", () =
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
       requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // The pause's stop is acknowledged: the run ends cancelled with a clean stop
+    // record, and the stop releases the task's execution lock.
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled",
+      resultJson: { executionCancellation: { state: "acknowledged" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
     expect(await heartbeat.stopInvocationsForAgents([f.agentId], "Agent lifecycle stop requested",
       { preservePauseDeferred: true })).toBeTypeOf("boolean");
-    await heartbeat.cancelRun(f.sourceRunId, "Company paused");
-    await heartbeat.drainActiveRunExecutions();
+    expect(deliveries(comment.id)).toHaveLength(0);
     await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
     await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
     await settle(f); await settle(f);
-    const saved = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
-      sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
-    expect(saved.map(row => row.status)).toEqual(["deferred_issue_execution"]);
-    expect(deliveries(comment.id)).toHaveLength(0);
+    expect(deliveries(comment.id)).toHaveLength(1);
+    await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
   // A task that never ran has no terminal run for the release drain to promote
