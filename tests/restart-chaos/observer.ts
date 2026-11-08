@@ -501,7 +501,6 @@ export class TaskObserver {
     return null;
   }
 
-  /** The task's agent and another Chaos Lab agent (itself when the lab has one adapter). */
   workloadAgents(): WorkloadAgents {
     const self = this.lab.agents[this.plan.adapter];
     const other = Object.values(this.lab.agents).find(agent => agent.id !== self.id) ?? self;

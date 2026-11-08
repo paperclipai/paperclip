@@ -22,7 +22,6 @@ export interface WorkloadDefinition {
   grade(nonce: string, artifacts: OracleArtifacts, agents?: WorkloadAgents): OracleResult;
 }
 
-/** The task's own agent and the other Chaos Lab agent it may delegate to. */
 export interface WorkloadAgents { self: { id: string; name: string }; other: { id: string; name: string } }
 
 const partMarker = (nonce: string, part: number) => `PART${part}-${nonce}`;

@@ -18,12 +18,9 @@ export interface SpeedRow {
 export interface WaveSpeed {
   environment: EnvironmentKind;
   rows: SpeedRow[];
-  /** Spans shortened by control-plane outage time (fault start to ready), and the time removed. */
   outageAdjustedSpans: number;
   outageRemovedMs: number;
-  /** Restart samples with no provider event after the control plane came back. */
   recoveryWithoutProviderEvent: number;
-  /** Per-run `run.performance.budget_exceeded` rows (single runs over the p95 budget). */
   runBudgetExceeded: number;
   breaches: number;
   errors: string[];
@@ -48,25 +45,18 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
   return out;
 }
 
-/** The runs each fault crossed: created before it started and not finished before it. */
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!,
     runIds: runs.filter(run => run.createdAt <= fault.startedAt && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
       .map(run => run.id) }));
 }
 
-/** A fault's outage: from its start until the replacement server was ready. */
 export interface OutageWindow { startedAt: number; readyAt: number }
 
 export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
 }
 
-/**
- * The run with every performance span shortened by the outage time inside it,
- * so a held or restarting control plane is never graded as a slow turn.
- * Span offsets are relative to the run's creation.
- */
 export function withoutOutage(run: BaselineRun, createdAtMs: number, windows: readonly OutageWindow[]):
   { run: BaselineRun; adjusted: number; removedMs: number } {
   let adjusted = 0, removedMs = 0;
@@ -115,7 +105,6 @@ async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
   }
 }
 
-/** Reads every task run's log through the API and grades it against the speed budgets. */
 export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKind, tasks: readonly WaveSpeedTask[],
   faults: readonly FaultReceipt[]): Promise<WaveSpeed> {
   const runs: BaselineRun[] = [];

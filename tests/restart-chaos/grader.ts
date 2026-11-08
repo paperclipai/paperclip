@@ -100,16 +100,12 @@ export function gradeR3(record: TaskRecord): RuleResult {
   const newRun = record.samples.some(sample => (sample.runs ?? []).some(run => (ms(run.createdAt) || 0) >= retryAt - 1_000));
   if (!newRun) return { verdict: "fail", detail: "retry_no_new_run" };
   if (record.finalStatus !== "done") return { verdict: "fail", detail: `retry_did_not_complete (status ${record.finalStatus ?? "unknown"}${record.timedOut ? ", timed out" : ""})` };
-  // A restart must continue on its own; Retry is only the fallback. The
-  // harness still clicks it so the task can finish and be graded, but a task
-  // that needed it fails, and a second click is its own, worse failure.
   const clicks = 1 + (record.priorRetries?.length ?? 0);
   const failed = failedRunCodes(record).join(",") || "unknown";
   if (clicks > 1) return { verdict: "fail", detail: `retry_needed_${clicks}_clicks (${failed})` };
   return { verdict: "fail", detail: `retry_needed (${failed})` };
 }
 
-/** Error codes of the task's failed runs, in order, for the R3 detail. */
 function failedRunCodes(record: TaskRecord): string[] {
   const codes = new Map<string, string>();
   for (const sample of record.samples) {

@@ -432,7 +432,6 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
-    // Speed is graded like reliability: a budget breach fails the wave.
     const speed = await collectWaveSpeed(api, plan.options.env, launched.flatMap(observer => observer.record.issueId
       ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), faults)
       .catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); return null; });

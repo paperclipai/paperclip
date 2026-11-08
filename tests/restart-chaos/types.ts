@@ -209,7 +209,6 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
-  /** M1: the task's direct subtasks, with the documents the workload collects from them. */
   children?: Array<{ id: string; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
 }
 
