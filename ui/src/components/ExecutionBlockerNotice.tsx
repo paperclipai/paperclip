@@ -1,5 +1,5 @@
 import { describeError } from "../api/errors";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import type { IssueRelationIssueSummary, TaskInterruptionPresentation } from "@paperclipai/shared";
 import { AlertCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -15,9 +15,15 @@ const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recover
   finishing_recovery: "Finishing recovery of saved work",
 };
 
+const blockerAction: Record<string, string> = {
+  blocked: "Blocked: open it to Retry",
+  cancelled: "Cancelled: remove or replace it",
+};
+
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
-export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
+export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName, blockers }: {
   presentation: TaskInterruptionPresentation | null | undefined;
+  blockers?: IssueRelationIssueSummary[];
   canRetry: boolean;
   onRetry: () => void;
   optimistic?: boolean;
@@ -48,23 +54,24 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
-  // A task that has not started yet names the admission hold it waits for. A
-  // saved Retry held by unfinished blockers links each one, where its own
-  // Retry or unblocking is.
-  if (!optimistic && presentation?.state === "working" && presentation.retryWait) return <div role="status"
-    aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>
-    <p>{presentation.retryWait.message}</p>
-    {presentation.waitingOn?.length ? <ul className="mt-1 space-y-0.5" data-testid="retry-waiting-on">
-      {presentation.waitingOn.map(dependency => <li key={dependency.issueId} className="flex min-w-0 items-center gap-2">
-        <Link to={createIssueDetailPath(dependency.identifier ?? dependency.issueId)}
-          className="font-mono text-xs text-foreground underline-offset-2 hover:underline">
-          {dependency.identifier ?? "Task"}
-        </Link>
-        <span className="min-w-0 truncate">{dependency.title}</span>
-        <span className="shrink-0 text-xs">{dependency.status === "blocked" ? "Blocked: open it to Retry" : dependency.status.replace(/_/g, " ")}</span>
-      </li>)}
-    </ul> : null}
-  </div>;
+  // A task that has not started yet names the admission hold it waits for.
+  if (!optimistic && presentation?.state === "working" && presentation.retryWait) {
+    const waitingOn = presentation.retryWait.reason === "dependency_blocked"
+      ? (blockers ?? []).filter(blocker => blocker.status !== "done") : [];
+    return <div role="status" aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>
+      <p>{presentation.retryWait.message}</p>
+      {waitingOn.length ? <ul className="mt-1 space-y-0.5" data-testid="retry-waiting-on">
+        {waitingOn.map(blocker => <li key={blocker.id} className="flex min-w-0 items-center gap-2">
+          <Link to={createIssueDetailPath(blocker.identifier ?? blocker.id)}
+            className="font-mono text-xs text-foreground underline-offset-2 hover:underline">
+            {blocker.identifier ?? "Task"}
+          </Link>
+          <span className="min-w-0 truncate">{blocker.title}</span>
+          <span className="shrink-0 text-xs">{blockerAction[blocker.status] ?? blocker.status.replace(/_/g, " ")}</span>
+        </li>)}
+      </ul> : null}
+    </div>;
+  }
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   return (

@@ -97,7 +97,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .toMatchObject({ state: "failed", canRetry: true });
   });
 
-  it("names the blocked subtask a saved Retry waits on instead of offering Retry again (restart chaos t05)", async () => {
+  it("explains a saved Retry held by unfinished blockers instead of offering Retry again (restart chaos t05)", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Waiting parent", issuePrefix: `W${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Parent agent", adapterType: "paperclip_runner" });
@@ -105,30 +105,22 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       status: "blocked", assigneeAgentId: agentId }).returning();
     const [child] = await db.insert(issues).values({ companyId, title: "Part 2", identifier: "CHA-10", parentId: parent.id,
       status: "blocked", assigneeAgentId: agentId }).returning();
-    const [secret] = await db.insert(issues).values({ companyId, title: "Private dependency", identifier: "CHA-11",
-      status: "todo", visibility: "private" }).returning();
     await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: parent.id, type: "blocks" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: parent.id, scopeKind: "issue",
       status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date(Date.now() - 60_000) });
-    // The board's Retry, saved and deferred by the queue behind the blocker.
     const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", reason: "task_retry",
       status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 30_000),
       payload: { issueId: parent.id, taskRetry: { sourceRunId: runId } } }).returning();
     const presentation = await taskInterruptionPresentation(db, parent);
     expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: retry.id,
-      retryWait: { reason: "dependency_blocked" },
-      waitingOn: [{ issueId: child.id, identifier: "CHA-10", title: "Part 2", status: "blocked", relation: "subtask" }] });
-    expect(presentation?.retryWait?.message).toContain("blocked subtask CHA-10");
-    // A private blocker is counted, never named.
-    await db.insert(issueRelations).values({ companyId, issueId: secret.id, relatedIssueId: parent.id, type: "blocks" });
-    const withPrivate = (await taskInterruptionPresentations(db, companyId, [parent])).get(parent.id);
-    expect(withPrivate?.waitingOn?.map(dependency => dependency.identifier)).toEqual(["CHA-10"]);
-    expect(withPrivate?.retryWait?.message).toContain("2 unfinished tasks");
-    expect(JSON.stringify(withPrivate)).not.toContain("Private dependency");
-    // Once the blockers are done the Retry is no longer explained as waiting.
-    await db.update(issues).set({ status: "done" }).where(and(eq(issues.companyId, companyId),
-      eq(issues.parentId, parent.id)));
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, secret.id));
+      retryWait: { reason: "dependency_blocked" } });
+    expect(presentation?.retryWait?.message).toContain("blocked task this one depends on");
+    expect(JSON.stringify(presentation)).not.toContain("Part 2");
+    expect(JSON.stringify(presentation)).not.toContain("CHA-10");
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, child.id));
+    expect((await taskInterruptionPresentations(db, companyId, [parent])).get(parent.id)?.retryWait?.message)
+      .toContain("Remove or replace that dependency");
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, child.id));
     expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
 

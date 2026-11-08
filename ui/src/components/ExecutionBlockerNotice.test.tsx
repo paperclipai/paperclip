@@ -52,14 +52,21 @@ describe("ordinary task interruption", () => {
     expect(container.textContent).toBe("Waiting for the budget to allow new work. The task starts automatically when it does.");
     expect(container.querySelector("button")).toBeNull();
   });
-  it("names and links the blocked subtask a saved Retry waits on, with no second Retry (restart chaos t05)", async () => {
-    const message = "Retry is waiting on blocked subtask CHA-10. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
-    await render({ ...failed, state: "working", canRetry: false, retryWait: { reason: "dependency_blocked", message },
-      waitingOn: [{ issueId: "child", identifier: "CHA-10", title: "Part 2", status: "blocked", relation: "subtask" }] });
+  it("names and links the readable blockers a saved Retry waits on, with no second Retry (restart chaos t05)", async () => {
+    const message = "Retry is waiting on a blocked task this one depends on. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
+    const summary = (id: string, identifier: string, title: string, status: string) =>
+      ({ id, identifier, title, status, priority: "medium", assigneeAgentId: null, assigneeUserId: null }) as never;
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", canRetry: false,
+      retryWait: { reason: "dependency_blocked", message } }} canRetry onRetry={retry}
+      blockers={[summary("child", "CHA-10", "Part 2", "blocked"), summary("gone", "CHA-11", "Part 3", "cancelled"),
+        summary("done", "CHA-9", "Part 1", "done")]} />));
     expect(container.textContent).toContain(message);
-    const link = container.querySelector<HTMLAnchorElement>("[data-testid='retry-waiting-on'] a");
-    expect(link?.getAttribute("href")).toContain("CHA-10");
+    const links = [...container.querySelectorAll<HTMLAnchorElement>("[data-testid='retry-waiting-on'] a")].map(link => link.getAttribute("href"));
+    expect(links).toHaveLength(2);
+    expect(links[0]).toContain("CHA-10");
     expect(container.textContent).toContain("Blocked: open it to Retry");
+    expect(container.textContent).toContain("Cancelled: remove or replace it");
+    expect(container.textContent).not.toContain("Part 1");
     expect(container.querySelector("button")).toBeNull();
   });
   it("names the saved-work recovery step instead of a bare queue", async () => {
