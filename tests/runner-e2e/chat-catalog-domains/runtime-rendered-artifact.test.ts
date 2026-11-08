@@ -6,13 +6,21 @@ const node = (tag: string, text: string, extra: Partial<RuntimeRenderedNode> = {
 const simple = () => [node("MAIN", "Acorn Notes organizes research into clear summaries so teams can work without the busywork. Join the early access list."), node("H1", "Acorn Notes"), node("A", "Join early access", { href: "#signup" })];
 it("accepts visible substantive natural single-page content and action", () => expect(hasSimplerWebsite(simple())).toBe(true));
 it("accepts a visible product paragraph without a main landmark", () => { const x = simple(); x[0] = node("P", x[0]!.text); expect(hasSimplerWebsite(x)).toBe(true); expect(hasSimplerWebsite([node("P", "Short."), x[1]!, x[2]!])).toBe(false); });
+it("accepts a tagline heading under a visible brand header", () => {
+  const page = [node("BODY", "Acorn Notes Small notes that grow into big ideas. Capture a thought in seconds and watch it connect to the rest of your work. Sign up for Acorn Notes"),
+    node("HEADER", "Acorn Notes"), node("MAIN", "Small notes that grow into big ideas. Capture a thought in seconds and watch it connect to the rest of your work."),
+    node("H1", "Small notes that grow into big ideas."), node("BUTTON", "Sign up for Acorn Notes")];
+  expect(hasSimplerWebsite(page)).toBe(true);
+  // The product must still be named somewhere visible.
+  expect(hasSimplerWebsite(page.map(n => ({ ...n, text: n.text.replace(/Acorn Notes/g, "Our app") })))).toBe(false);
+});
 it("accepts a natural button signup equivalent", () => { const x = simple(); x[2] = node("BUTTON", "Subscribe"); expect(hasSimplerWebsite(x)).toBe(true); });
 it("rejects comment-only/hidden heading absent from rendered evidence", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "H1"))).toBe(false));
 it("rejects an invisible signup action", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "A"))).toBe(false));
 it("rejects an actual tabbed complex layout", () => expect(hasSimplerWebsite([...simple(), node("BUTTON", "Dashboard", { role: "tab" })])).toBe(false));
 it("rejects actual multi-page navigation", () => expect(hasSimplerWebsite([...simple(), node("A", "Pricing", { href: "pricing.html", inNavigation: true })])).toBe(false));
 it("accepts in-page navigation in a simple page", () => expect(hasSimplerWebsite([...simple(), node("A", "Signup", { href: "#signup", inNavigation: true })])).toBe(true));
-it("rejects the wrong visible product page", () => { const x = simple(); x[1]!.text = "Unrelated dashboard"; expect(hasSimplerWebsite(x)).toBe(false); });
+it("rejects the wrong visible product page", () => { const x = simple(); x[1]!.text = "Unrelated dashboard"; x[0]!.text = x[0]!.text.replace("Acorn Notes", "Ledgerly"); expect(hasSimplerWebsite(x)).toBe(false); });
 // Chromium remains explicit opt-in under the repository browser-suite contract.
 it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_RENDERED_ARTIFACT_CANARY !== "1")("qualifies actual rendered hidden/comment/complex controls without backend or provider calls", async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE } : {}) });

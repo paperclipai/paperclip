@@ -30,7 +30,10 @@ export async function renderRuntimeArtifact(ctx: ChatCatalogContext, html: strin
 }
 /** Closed sub-results of the single-page check, for diagnosis without retaining page text. */
 export function simplerWebsiteChecks(nodes: RuntimeRenderedNode[]) {
-  const headline = nodes.some(node => (node.tag === "H1" || node.role === "heading") && /\bAcorn\s+Notes\b/i.test(node.text));
+  // A visible heading, and the product named somewhere visible. The request asked for a heading,
+  // not for the brand inside it (a tagline H1 under a brand header is a natural design).
+  const headline = nodes.some(node => (node.tag === "H1" || node.role === "heading") && node.text.trim().length > 0)
+    && nodes.some(node => /\bAcorn\s+Notes\b/i.test(node.text));
   // A visible product paragraph; the request never named a <main> landmark.
   const content = nodes.some(node => ["MAIN", "SECTION", "P"].includes(node.tag) && node.text.length >= 40);
   const signup = nodes.some(node => ["BUTTON", "A"].includes(node.tag) && /sign.?up|subscribe|join|early access/i.test(node.text));
