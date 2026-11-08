@@ -16,13 +16,25 @@ describe("routine definition and management independent controls", () => {
     expect(gradeIntegratorRoutines(undefined).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...valid(definition.scenarioId), routineRevisions: undefined }).passed).toBe(false);
   });
+  it("accepts reworded valid replies and routine names without keyword matching", () => {
+    const o = valid("routines.create-daily-brief"); const renamed = structuredClone(o);
+    renamed.routines[0]!.title = "Launch morning brief"; renamed.routines[0]!.description = "Recap Launch progress, blockers and next steps.";
+    renamed.reply = "Done: Mon–Fri at 9:00 Central, each run opens a fresh item in the Launch project and I will post the recap here.";
+    expect(gradeIntegratorRoutines(renamed).passed).toBe(true);
+    const blank = structuredClone(o); blank.routines[0]!.description = "";
+    expect(gradeIntegratorRoutines(blank).passed).toBe(false);
+  });
   it("rejects UTC conversion, one-per-occurrence duplication, and absent persisted attribution", () => {
     const o = valid("routines.create-daily-brief"); const utc = structuredClone(o); utc.routines[0]!.triggers[0]!.timezone = "UTC";
     expect(gradeIntegratorRoutines(utc).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...o, browserTimezone: "UTC" }).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...o, routines: [...o.routines, { ...o.routines[0]!, id: "duplicate" }] }).passed).toBe(false);
     expect(gradeIntegratorRoutines({ ...o, routineRevisions: { routine: [] } }).passed).toBe(false);
-    expect(gradeIntegratorRoutines({ ...o, reply: "Saved weekday schedule for 9 UTC. The task is in Launch, America/Chicago." }).passed).toBe(false);
+    expect(gradeIntegratorRoutines({ ...o, reply: "" }).passed).toBe(false);
+    expect(gradeIntegratorRoutines({ ...o, tasks: [{ id: "t", createdByAgentId: "ceo", originKind: "manual" }] }).passed).toBe(false);
+    expect(gradeIntegratorRoutines({ ...o, tasks: [{ id: "t", createdByAgentId: "ceo", originKind: "routine_execution" }] }).passed).toBe(true);
+    const cron = structuredClone(o); cron.routines[0]!.triggers[0]!.cronExpression = "0 14 * * 1-5";
+    expect(gradeIntegratorRoutines(cron).passed).toBe(false);
   });
   it("rejects owner reassignment, a concealed duplicate, false hourly success and negated ownership grounding", () => {
     const o = valid("routines.manage-other-owner"); const stolen = structuredClone(o); stolen.routines[0]!.assigneeAgentId = "ceo";

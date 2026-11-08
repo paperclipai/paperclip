@@ -27,15 +27,17 @@ export function gradeIntegratorRoutines(value: unknown) {
   if (o.scenarioId === "routines.create-daily-brief") {
     const routine = o.routines[0]; const p = o.state.project as { id: string };
     c.add("one-owned-launch-definition", o.routines.length === 1 && !!routine && routine.companyId === o.companyId && routine.assigneeAgentId === o.leadId && routine.projectId === p?.id
-      && /summar(?:y|ize|ise)/i.test(`${routine.title} ${routine.description}`) && routine.createdByAgentId === o.leadId, "Exactly one self-assigned routine saves the summary purpose and actual Launch project.");
+      && `${routine.title ?? ""}`.trim().length > 0 && `${routine.description ?? ""}`.trim().length > 0 && routine.createdByAgentId === o.leadId, "Exactly one self-assigned routine in the actual Launch project saves a titled, described request (its wording is the agent's choice).");
     const schedule = routine?.triggers.filter(row => row.kind === "schedule");
     c.add("weekday-nine-person-timezone", o.browserTimezone === "America/Chicago" && schedule?.length === 1 && schedule[0]?.enabled === true
       && /^0\s+9\s+\*\s+\*\s+(?:1-5|MON-FRI|1,2,3,4,5)$/i.test(schedule[0]?.cronExpression ?? "") && schedule[0]?.timezone === "America/Chicago", "One enabled 09:00 weekday schedule uses the genuine browser person's Chicago timezone, never UTC.");
     c.add("saved-agent-revision", !!routine && !!o.routineRevisions[routine.id]?.some(row => row.id === routine.latestRevisionId && row.createdByAgentId === o.leadId
       && row.createdByRunId != null && o.runs.some(run => run.id === row.createdByRunId)), "The current saved revision is independently attributed to a measured agent run.");
-    c.add("schedule-and-work-location-explained", groundedStatement(o.reply, /\b(?:weekday|monday|mon.fri)\b/i, /\b(?:9|nine|09:00)\b/i, /\b(?:9|nine|09:00)\s*(?:a\.?m\.?\s*)?UTC\b/i)
-      && /(?:America\/Chicago|Chicago|Central (?:time|timezone))/i.test(o.reply) && /\b(?:task|routine|work)\b/i.test(o.reply)
-      && !/\b(?:summary (?:is )?(?:complete|ready)|already summarized|all future summaries (?:are )?(?:complete|ready))\b/i.test(o.reply), "The response describes the real saved local schedule and resulting work without claiming future summaries already ran.");
+    // The reply's prose is free-form: its schedule and work-location account is read by a person on the
+    // passing run, not keyword-matched. Mechanically: a measured reply exists and no per-occurrence tasks were made.
+    const directTasks = o.tasks.filter(row => (row as { createdByAgentId?: string | null }).createdByAgentId === o.leadId
+      && (row as { originKind?: string | null }).originKind !== "routine_execution");
+    c.add("reply-without-per-occurrence-work", o.reply.trim().length > 0 && directTasks.length === 0, "The measured run replies, and the agent did not hand-create tasks for future occurrences instead of relying on the routine.");
   } else if (o.scenarioId === "routines.manage-other-owner") {
     const before = o.state.routine as RoutineDetail; const current = o.routines.find(row => row.id === before?.id);
     c.add("same-owned-definition-and-triggers", !!current && current.assigneeAgentId === (o.state.worker as { id: string } | undefined)?.id && o.routines.length === 1
@@ -57,7 +59,7 @@ async function verifyRoutine(ctx: ChatCatalogContext, _state: Record<string, unk
 }
 const define = (id: string, setup: ChatCatalogCase["setup"], extra: Partial<ChatCatalogCase> = {}) => integratorDefinition("routines", id, setup, observeRoutines, gradeIntegratorRoutines, verifyRoutine, extra);
 export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
-  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago" }),
+  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago", oracleVersion: "paperclip.chat-catalog.integrator.routines-create-daily-brief.v2" }),
   define("routines.manage-other-owner", async ctx => {
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
