@@ -104,6 +104,7 @@ import {
 } from "../drivers/runtime-context-materializer.js";
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
+import { crashPoint } from "../crash-point.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -5990,6 +5991,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#handle = handle;
     this.#watchRunner(handle);
+    // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+    if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
     await this.#publishSpawnedProcess(handle);
     this.#assertStartupOpen();
     await registration?.activate?.();
@@ -6827,6 +6830,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (handle) {
       this.#handle = handle;
       this.#watchRunner(handle);
+      // A remote launcher returns before runnerd exists; only a local spawn reaches this gap.
+      if (!this.options.runnerProcessLauncher) crashPoint("runner.process.after_spawn_before_identity");
       await this.#publishSpawnedProcess(handle);
     }
     this.#assertStartupOpen();

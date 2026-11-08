@@ -52,6 +52,7 @@ import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-wo
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   parseSandboxProviderPluginNotReadyFailureMessage,
@@ -2947,6 +2948,7 @@ export function heartbeatService(
           reserveRunBudget(db, run.companyId, run.id,
             readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner))
           .catch(async (error: unknown) => { throw await relinquished() ? new NativeControllerDetachedForRestartError() : error; });
+        crashPoint("budget.reservation.after_hold_before_dispatch");
         let entered = false, handedOff = false;
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
@@ -3934,6 +3936,7 @@ export function heartbeatService(
             providerResourceDisposition: providerResourceDispositionForRun,
             nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
           }));
+          crashPoint("environment.lease.after_release_before_runtime_services");
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           caseHandoffCleanupSettled = true;
         }

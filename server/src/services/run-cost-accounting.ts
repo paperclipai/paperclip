@@ -21,6 +21,7 @@ import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -422,6 +423,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         timeoutMinutes: ACCOUNTING_CLOSURE_TIMEOUT_MS / 60_000 } }, publications);
     return true;
   }), { "budget.accounting.owner": "run" });
+  // Only a closed account reaches this gap; an open one returned false above.
+  if (accounted) crashPoint("accounting.closure.after_commit_before_spool_unlink");
   for (const file of recoveredFiles) {
     try { await fs.rm(file, { force: true }); }
     catch (error) { logger.warn({ err: error, runId }, "Accounting committed; recovered receipt cleanup will retry"); }

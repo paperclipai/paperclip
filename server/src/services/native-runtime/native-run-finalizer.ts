@@ -107,6 +107,7 @@ import {
 import {
   isNativeRunnerOwnershipHeld,
 } from "./native-runner-ownership.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1697,6 +1698,7 @@ export async function finalizeNativeRun(input: {
             : undefined,
         failpoint: input.failpoint,
       });
+      crashPoint("native.finalize.after_decision_before_projection");
       const now = new Date();
       const finalizationFailed = decision.effects.some(
         (effect) => effect.kind === "record_finalization_error",

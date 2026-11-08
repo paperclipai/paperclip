@@ -191,6 +191,7 @@ import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
@@ -1550,6 +1551,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     publishRunLifecyclePluginEvent(claimed);
 
     if (!nativeReviewContext) {
+      crashPoint("wake.claim.after_run_running_before_wakeup_claimed");
       await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
     }
 

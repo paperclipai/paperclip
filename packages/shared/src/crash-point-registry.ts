@@ -45,8 +45,8 @@ export const CRASH_POINTS = {
     invariants: ["I2", "I5", "I7"],
   },
   "runner.process.after_spawn_before_identity": {
-    description: "runnerd is spawned (own process group, survives the server); its pid and process identity are not yet recorded on the run. Recovery must find or stop the orphan by identity.",
-    environments: ["local", "daytona"],
+    description: "runnerd is spawned (own process group, survives the server); its pid and process identity are not yet recorded on the run. Recovery must find or stop the orphan by identity. Local spawns only: a remote launcher returns before runnerd exists.",
+    environments: ["local"],
     kinds: ["native_executor_claim", "detached_process_marker"],
     invariants: ["I1", "I2", "I5"],
   },
