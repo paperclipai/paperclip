@@ -20,6 +20,7 @@ import { userDelegateActorMiddleware } from "../middleware/user-delegate.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { assertBoard } from "../routes/authz.js";
 import { userDelegateRoutes } from "../routes/user-delegates.js";
+import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { matchUserDelegateAction } from "../services/user-delegates.js";
 import {
@@ -269,6 +270,12 @@ describeEmbeddedPostgres("user delegates", () => {
     // Control: the same person signed in directly is an instance admin.
     const asPerson = await authorizationService(db).decide({ actor: { type: "board", userId, source: "session" }, ...request_ });
     expect(asPerson).toMatchObject({ allowed: true, reason: "allow_instance_admin" });
+
+    // Permission checks that rebuild the actor from a user ID (routines, tool
+    // rules) must keep the delegate's instance-admin exclusion too.
+    const access = accessService(db);
+    expect(await access.canUser(otherCompanyId, userId, "tasks:assign", { ignoreInstanceAdmin: true })).toBe(false);
+    expect(await access.canUser(otherCompanyId, userId, "tasks:assign")).toBe(true);
   });
 
   it("requires a reason, an allowlisted action, the named agent and an unrestricted credential", async () => {

@@ -358,7 +358,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    if (connectionRequestUserId(req) && await access.canUser(companyId, connectionRequestUserId(req)!, permissionKey)) return;
+    if (connectionRequestUserId(req) && await access.canUser(companyId, connectionRequestUserId(req)!, permissionKey, {
+      ignoreInstanceAdmin: req.actor.type === "board" && req.actor.ignoreInstanceAdmin,
+    })) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 

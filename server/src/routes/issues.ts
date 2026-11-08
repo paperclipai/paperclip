@@ -6180,6 +6180,20 @@ export function issueRoutes(
             secretProposal?: unknown;
           })
         : null;
+    const governedAction =
+      interaction.kind === "request_confirmation" &&
+      (payload?.toolAction !== undefined ||
+        payload?.secretProposal !== undefined);
+    // A delegate acts as the person, but governed tool actions and secret
+    // proposals still need the person's own direct resolution.
+    if (governedAction && req.actor.type === "board" && req.actor.source === "delegate") {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "interaction_governed_action_denied",
+        message: "This interaction is bound to a governed action that the person must resolve directly",
+        details: { effectiveResolverPolicy: interaction.effectiveResolverPolicy },
+      });
+    }
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
@@ -6194,10 +6208,7 @@ export function issueRoutes(
             : { type: "user", userId: actor.actorId },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
-        governedAction:
-          interaction.kind === "request_confirmation" &&
-          (payload?.toolAction !== undefined ||
-            payload?.secretProposal !== undefined),
+        governedAction,
       });
     if (!decision.allowed) {
       return denyIssueThreadInteractionResolution(res, {

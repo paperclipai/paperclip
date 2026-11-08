@@ -443,9 +443,10 @@ export function accessService(db: Db) {
     companyId: string,
     userId: string | null | undefined,
     permissionKey: PermissionKey,
+    options: { ignoreInstanceAdmin?: boolean } = {},
   ): Promise<boolean> {
     return authorization.decide({
-      actor: { type: "board", userId },
+      actor: { type: "board", userId, ...(options.ignoreInstanceAdmin ? { ignoreInstanceAdmin: true } : {}) },
       action: permissionKey,
       resource: { type: "company", companyId },
     }).then((decision) => decision.allowed);
