@@ -55,12 +55,13 @@ export function recoverableSandboxCreationCondition() {
   ));
 }
 
-/** A run lease the ownership settle moved to cleanup, before its first
+/** A run lease the ownership settle moved to cleanup (an orphaned active
+ * lease, or a retained orphan sandbox nothing references any more), before its first
  * cleanup attempt. Its holder is proven gone, so the first stop or teardown is
  * due now regardless of how recently the lease was used; a failed attempt
  * counts and the normal retry backoff applies from then on. */
 export function recoveredOrphanFirstAttemptSql() {
-  return sql`(${environmentLeases.failureReason} = 'orphaned_active_lease_recovered'
+  return sql`(${environmentLeases.failureReason} in ('orphaned_active_lease_recovered', 'retained_orphan_sandbox_released')
     or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true')
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupRetryAttempts', '0') = '0'
     and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`;

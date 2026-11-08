@@ -554,6 +554,19 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       logger.warn({ err: error }, "ownership invariant check failed; the report continues");
     }
   }
+  // A settling kind can become settleable at a known time without a signal
+  // (a retention window ending); wake then.
+  for (const kind of kinds) {
+    if (!settleRecords || !kind.settle || !kind.nextDueAt) continue;
+    try {
+      const due = await kind.nextDueAt(db, now);
+      const current = nextDueAt as Date | null;
+      if (due && (!current || due < current)) nextDueAt = due;
+    } catch (error) {
+      retryNeeded = true;
+      logger.warn({ err: error, kind: kind.id }, "ownership due-time read failed; a later pass retries");
+    }
+  }
 
   // Only a first proof needs a second pass; a record already reported for I2
   // is not a reason to keep scanning.

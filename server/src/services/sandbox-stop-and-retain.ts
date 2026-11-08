@@ -11,6 +11,10 @@ import type { SandboxAbsenceProof } from "./sandbox-absence-proof.js";
 type Lease = Pick<typeof environmentLeases.$inferSelect,
   "id" | "companyId" | "heartbeatRunId" | "provider" | "providerLeaseId" | "metadata">;
 export const SANDBOX_STOP_AND_RETAIN_KEY = "sandboxStopAndRetain";
+/** Top-level marker an ownership settle leaves on a lease whose sandbox it
+ * stopped and kept. It outlives the stop intent, so the retained orphan can
+ * be destroyed once nothing references it. */
+export const ORPHANED_SANDBOX_RECOVERY_KEY = "orphanedRunLeaseRecovery";
 
 /** A successful stop is not by itself proof that the allocation was retained.
  * Require the dedicated stop-only dispatch receipt and its independent stop
@@ -75,8 +79,9 @@ export function readStopOnlyCleanup(lease: Lease) {
 
 /** Persist before provider dispatch so an older worker or a restart cannot turn
  * an explicit stop into ordinary destructive release. Invalid pins stay pending.
- * `recovery` marks an ownership settle on the intent; the pending-cleanup
- * sweep dispatches such a stop's first attempt without its retry backoff. */
+ * `recovery` marks an ownership settle on the intent and on the lease
+ * (`ORPHANED_SANDBOX_RECOVERY_KEY`); the pending-cleanup sweep dispatches such
+ * a stop's first attempt without its retry backoff. */
 export async function prepareSandboxStopAndRetain(db: Db, lease: Lease, recovery?: Record<string, unknown>) {
   return prepareStopAndRetain(db, lease, "active", recovery);
 }
@@ -158,6 +163,8 @@ async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" |
     status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now, updatedAt: now,
     metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
       [SANDBOX_STOP_AND_RETAIN_KEY]: intent, pendingCleanupAttemptId: requestId,
+      ...(fromStatus === "active" && Object.keys(recovery).length
+        ? { [ORPHANED_SANDBOX_RECOVERY_KEY]: { ...recovery, runId: lease.heartbeatRunId, recoveredAt: now.toISOString() } } : {}),
       pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupRetryCapWarned: false,
     })}::jsonb`,
