@@ -11,3 +11,8 @@ Provider credentials retain their existing isolation.
 
 For ACPX Codex, this policy is emitted when an agent identity or configured task
 environment keys are present.
+
+Preserving these variables does not grant filesystem access to the CA files or
+directories they reference. Those paths must already be readable under the
+sandbox’s existing filesystem policy. Custom CA files outside the sandbox’s
+existing readable paths remain unsupported.
