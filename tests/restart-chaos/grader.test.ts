@@ -229,6 +229,17 @@ describe("T-oracles", () => {
     expect(workloadDefinitions.B1.grade("abcd1234", { ...base, commands: { ...base.commands, unittest: { exitCode: 1, stdout: "", stderr: "FAILED" } } }).verdict).toBe("fail");
   });
 
+  it("grades R1 by running the agent's node test and a hidden case against its module", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
+      files: { "packages/shared/src/chaos/slug-abcd1234.ts": "export function chaosSlug() {}",
+        "packages/shared/src/chaos/slug-abcd1234.test.ts": "import test from \"node:test\";" },
+      commands: { node_test: { exitCode: 0, stdout: "", stderr: "" }, slug: { exitCode: 0, stdout: "r1-paperclip-chaos-2026\n", stderr: "" } } };
+    expect(workloadDefinitions.R1.grade("abcd1234", base).verdict).toBe("pass");
+    expect(workloadDefinitions.R1.grade("abcd1234", { ...base, commands: { ...base.commands, slug: { exitCode: 0, stdout: "-r1-paperclip-chaos-2026-\n", stderr: "" } } }).verdict).toBe("fail");
+    const argv = workloadDefinitions.R1.collect.commands.find(command => command.name === "node_test")!.argv;
+    expect(typeof argv === "function" ? argv("abcd1234") : argv).toEqual(["node", "--test", "packages/shared/src/chaos/slug-abcd1234.test.ts"]);
+  });
+
   it("grades B5 against the deterministic bench result", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws", commands: {},
       benchProgressObserved: 6,

@@ -758,7 +758,10 @@ export class TaskObserver {
         files[relative] = await readFile(path.join(workspacePath, relative), "utf8").catch(() => null);
       }
       // Agent-editable code: run it sandboxed, away from the operator's home directory.
-      for (const command of definition.collect.commands) commands[command.name] = await runOracleCommand(command.argv, workspacePath, { protectedRoots: this.protectedRoots });
+      for (const command of definition.collect.commands) {
+        const argv = typeof command.argv === "function" ? command.argv(this.plan.nonce) : command.argv;
+        commands[command.name] = await runOracleCommand(argv, workspacePath, { protectedRoots: this.protectedRoots });
+      }
     }
     return {
       issueStatus: issue?.status ?? this.record.finalStatus,

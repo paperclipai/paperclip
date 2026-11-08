@@ -102,6 +102,22 @@ Neither G1 nor H1 is in the default workloads. The board's actions and what the
 observer saw are in the timeline (`governance_*`) and in each task's grade
 (`governance`).
 
+## Code change in a real repository (R1, `--workspace-repo`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads R1,C1 --workspace-repo /path/to/paperclip \
+  --faults K1,K2,K4 --concurrency 4 --tasks 8 --seed 22
+```
+
+The harness clones the given git repository (shallow, from its committed HEAD)
+as the project's workspace, in place of the chaoscli fixture. R1 asks the agent
+to add a TypeScript module and a `node:test` file under
+`packages/shared/src/chaos/`, named with the task's nonce so concurrent tasks
+share the repository without colliding. The oracle runs the agent's test and a
+hidden case against its module. B1 and B5 need the chaoscli fixture, so they do
+not combine with `--workspace-repo`. Local only.
+
 ## Upgrade mid-run (K14, `--upgrade-from`)
 
 ```sh
