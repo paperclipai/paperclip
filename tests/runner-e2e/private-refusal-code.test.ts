@@ -11,7 +11,7 @@ it("names only fixed literal refusals from the trusted evidence modules", () => 
 
 it("never returns the text of a dynamic or system message", () => {
   const leaked = "/home/runner/_work/private/secret-token-abc";
-  expect(privateRefusalCode(new Error(`Secret leak in ${leaked}`))).toBe("dynamic");
+  expect(privateRefusalCode(new Error(`Unexpected state at ${leaked}`))).toBe("dynamic");
   expect(privateRefusalCode(Object.assign(new Error(`ENOENT: no such file, open '${leaked}'`), { code: "ENOENT" }))).toBe("fs-ENOENT");
   expect(privateRefusalCode(new TypeError(`bad ${leaked}`))).toBe("error-type-TypeError");
   expect(privateRefusalCode(leaked)).toBe("non-error-thrown");
@@ -38,4 +38,21 @@ it("covers every local module the trusted transfer imports that has fixed refusa
 it("never throws while naming a refusal", () => {
   const broken = new Proxy(new Set<string>(), { get() { throw new Error("read failed /private/path"); } });
   expect(privateRefusalCode(new Error("x"), broken)).toBe("unnamed");
+});
+
+it("names runtime-built refusal templates without their variable parts", () => {
+  const secret = "/home/runner/private/token-xyz";
+  expect(privateRefusalCode(new Error(`Secret leak in ${secret}: exact secret value`))).toBe("template-secret-leak");
+  expect(privateRefusalCode(new Error("Private cell archive exceeds the publication boundary (300 files, 70000000 bytes)"))).toBe("template-publication-boundary-exceeded");
+  expect(privateRefusalCode(new Error(`${secret} contains invalid or duplicate file metadata`))).toBe("template-invalid-file-metadata");
+  expect(privateRefusalCode(new Error(`Secret leak in ${secret}: x`))).not.toContain("token");
+});
+it("has a named template for every runtime-built refusal in the trusted modules", () => {
+  for (const file of PRIVATE_REFUSAL_MODULES) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+    for (const match of source.matchAll(/new Error\(`([^`]+)`\)/g)) {
+      const sample = match[1]!.replace(/\$\{[^}]+\}/g, "X").replace(/\(X files, X bytes\)/, "(1 files, 2 bytes)");
+      expect(privateRefusalCode(new Error(sample)), `${file}: ${match[1]}`).not.toBe("dynamic");
+    }
+  }
 });
