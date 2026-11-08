@@ -1,7 +1,7 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
-import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "./controller-process-identity.js";
+import { and, eq, lte, or, sql } from "drizzle-orm";
+import { currentControllerProcess } from "./controller-process-identity.js";
 import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
@@ -15,37 +15,6 @@ export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSe
 // A live creator may still be waiting for the provider, and a provider may still
 // materialize an aborted request. Absence is conclusive only after this delay.
 const CREATION_SETTLE_FLOOR_MS = 30 * 60_000;
-const CREATION_PROMOTION_PAGE_SIZE = 100;
-
-/** After a restart, creation intents from an exited server cannot still be in
- * flight there. Reconcile them now instead of at the settle deadline. Absence
- * stays inconclusive until that deadline; see recoverSandboxCreations. */
-async function promoteAbandonedSandboxCreations(db: Db): Promise<void> {
-  const now = new Date();
-  // Page past live, foreign, and unidentified creators so they cannot hide an
-  // abandoned intent behind them.
-  let after: string | null = null;
-  for (;;) {
-    const waiting: Array<Pick<SandboxCreationOperation, "id" | "metadata">> = await db
-      .select({ id: sandboxCreationOperations.id, metadata: sandboxCreationOperations.metadata })
-      .from(sandboxCreationOperations).where(and(
-        eq(sandboxCreationOperations.state, "pending"), gt(sandboxCreationOperations.nextAttemptAt, now),
-        sql`${sandboxCreationOperations.metadata}->'creationController'->>'bootId' is distinct from ${currentControllerBootId()}`,
-        sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`,
-        after === null ? undefined : gt(sandboxCreationOperations.id, after),
-      )).orderBy(asc(sandboxCreationOperations.id)).limit(CREATION_PROMOTION_PAGE_SIZE);
-    for (const operation of waiting) {
-      const controller = readControllerProcess(operation.metadata.creationController);
-      if (!controller || !await controllerProcessExited(controller)) continue;
-      await db.update(sandboxCreationOperations).set({ nextAttemptAt: now, updatedAt: now,
-        metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationControllerLost":true}'::jsonb` })
-        .where(and(eq(sandboxCreationOperations.id, operation.id), eq(sandboxCreationOperations.state, "pending"),
-          gt(sandboxCreationOperations.nextAttemptAt, now)));
-    }
-    if (waiting.length < CREATION_PROMOTION_PAGE_SIZE) return;
-    after = waiting[waiting.length - 1]!.id;
-  }
-}
 
 function creationAbsenceInconclusive(operation: SandboxCreationOperation): boolean {
   const settleAt = Date.parse(typeof operation.metadata.creationSettleAt === "string" ? operation.metadata.creationSettleAt : "");
@@ -199,7 +168,13 @@ export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
   onTaskRecovered?: (operation: SandboxCreationOperation) => void | Promise<void>,
 ): Promise<void> {
-  await promoteAbandonedSandboxCreations(db);
+  // After a restart, an intent whose creator is proven gone cannot still be in
+  // flight there: the shared ownership path makes it due now. Absence stays
+  // inconclusive until the settle deadline (creationAbsenceInconclusive).
+  const { settleOwnableKind } = await import("./recovery/ownership-invariant-report.js");
+  await settleOwnableKind(db, "sandbox_creation_intent").catch(() => {
+    logger.warn({ errorKind: "sandbox_creation_intent_settle_failed" }, "Sandbox creation intents keep their saved deadlines");
+  });
   const due = await db.select().from(sandboxCreationOperations).where(and(
     recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
   )).limit(100);
