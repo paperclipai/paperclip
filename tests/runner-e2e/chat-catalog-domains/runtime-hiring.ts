@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime, unchangedAgent, type RuntimeAgent } from "./runtime-support.js";
+import { runtimeDefinition, runtimeObservation, observeRuntime, unchangedAgent, type RuntimeAgent, type RuntimeObservation } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 interface HireApproval { id: string; companyId: string; type: string; status: string; requestedByAgentId: string | null;
   decidedByUserId: string | null; payload: { agentId?: string; name?: string; role?: string; title?: string; reportsTo?: string; adapterType?: string; adapterConfig?: unknown } }
@@ -17,12 +17,20 @@ async function pendingHire(ctx: ChatCatalogContext, name: string) {
       && value.runs.every(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded"),
     reject: value => value.runs.length > 4 || value.runs.some(run => run.agentId !== ctx.input.fixtures.agent.id || ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Governed hire admitted unexpected work or failed" : undefined });
 }
-export function pendingHireGuidance(reply: string, name: "Morgan" | "Jules") {
-  if (!/pending|approv(?:al|e)|propos|await|board/i.test(reply) || /successfully hired/i.test(reply)) return false;
-  // A hire request can be ready for the board while its intended employee
-  // remains pending. Do not turn that into a general exemption for ready.
-  const employeeClaim = new RegExp(`\\b(?:${name}|(?:the )?(?:QA engineer|employee|agent|hire)|they|he|she)\\s+(?:is|are|has|have)\\s+(?:now |already )?(?:been )?(?:ready(?! for (?:board )?(?:approval|review))|working|started|active|running)\\b`, "i");
-  return !employeeClaim.test(reply);
+/**
+ * The reply reports the pending approval by giving the person the exact
+ * approval to open and decide. Its wording is not graded; whether the hire ran
+ * early is graded from saved state and runs.
+ */
+export function repliesLinkApproval(o: RuntimeObservation, commentIds: unknown, approvalId: string | undefined) {
+  const ids = Array.isArray(commentIds) ? commentIds.map(String) : [];
+  return !!approvalId && ids.length > 0 && (o.renderedLinkEvidence ?? []).some(link => {
+    if (link.source !== "reply" || !link.commentId || !ids.includes(link.commentId)) return false;
+    try {
+      const url = new URL(link.href, o.origin); const parts = url.pathname.split("/").map(decodeURIComponent);
+      return url.origin === new URL(o.origin).origin && parts.length === 4 && !!parts[1] && parts[1] !== "api" && parts[2] === "approvals" && parts[3] === approvalId;
+    } catch { return false; }
+  });
 }
 export function gradeGovernedHire(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
@@ -52,9 +60,9 @@ export function gradeGovernedHire(value: unknown) {
   c.add("bounded-authoritative-decision-notifications", extra.every(run => ["approval.approved", "approval.rejected"].includes(String(run.contextSnapshot?.source))
     && [rejected?.id, accepted?.id].includes(String(run.contextSnapshot?.approvalId))),
   "Any extra provider turn is independently tied to one of these exact real human approval decisions.");
-  c.add("honest-pending-phase-guidance", pendingHireGuidance(String(o.state.firstReply), "Morgan")
-    && pendingHireGuidance(String(o.state.secondReply), "Jules"),
-  "Each actual reply describes an approvable proposal, without claiming that its employee is ready or working before approval.");
+  c.add("reply-links-each-pending-approval", repliesLinkApproval(o, o.state.firstReplyCommentIds, rejected?.id)
+    && repliesLinkApproval(o, o.state.secondReplyCommentIds, accepted?.id),
+  "Each request's own reply links the exact pending approval the person must decide.");
   return c.result();
 }
 export const runtimeHiringCases = [runtimeDefinition("agents.hire-needs-approval", async ctx => {
@@ -64,6 +72,7 @@ export const runtimeHiringCases = [runtimeDefinition("agents.hire-needs-approval
   return { companyRequiresApproval: true };
 }, gradeGovernedHire, {
   sourceFiles: ["chat-catalog-domains/runtime-hiring.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
+  oracleVersion: "paperclip.chat-catalog.runtime-hiring.v3",
   expectedHumanMessageCount: 2, expectedRunCount: 4, minimumRunCount: 2, attemptTimeoutMs: 720_000,
   async act(ctx, state) {
     const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
@@ -90,7 +99,10 @@ export const runtimeHiringCases = [runtimeDefinition("agents.hire-needs-approval
     const profiles = await Promise.all(next.map(run => ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`)));
     state.secondRequestAttributed = human.length === 1 && next.length === 1 && profiles.some(run => run.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id));
     state.requestRunIds = [...firstRequestRuns, ...next.map(run => run.id)];
-    state.secondReply = comments.filter(row => next.some(run => run.id === row.createdByRunId) && row.authorAgentId === ctx.input.fixtures.agent.id).map(row => row.body ?? "").join("\n");
+    const leadReplies = (runIds: string[]) => comments.filter(row => runIds.includes(String(row.createdByRunId)) && row.authorAgentId === ctx.input.fixtures.agent.id);
+    state.firstReplyCommentIds = leadReplies(firstRequestRuns).map(row => row.id);
+    state.secondReplyCommentIds = leadReplies(next.map(run => run.id)).map(row => row.id);
+    state.secondReply = leadReplies(next.map(run => run.id)).map(row => row.body ?? "").join("\n");
     state.acceptedBefore = secondPhase.agents.find(row => row.id === second.payload.agentId);
     state.worker = state.acceptedBefore;
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/approvals/${second.id}`, { waitUntil: "domcontentloaded" });
