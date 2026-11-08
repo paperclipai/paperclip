@@ -98,7 +98,9 @@ import {
 } from "../native-runtime/native-runner-ownership.js";
 import { performance } from "node:perf_hooks";
 import { buildProcessLossDiagnostic } from "../process-loss-diagnostics.js";
-import { logActivity } from "../activity-log.js";
+import { logActivity, persistActivity } from "../activity-log.js";
+import { proveRunProcessGone } from "../run-process-owner.js";
+import { LEGACY_HOST_FALLBACK_EVENT } from "../native-runtime/native-restart-recovery.js";
 import { releaseRuntimeServicesForRun } from "../workspace-runtime.js";
 import { isProcessGroupAlive } from "../local-service-supervisor.js";
 import {
@@ -789,13 +791,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      const processPidAlive = isProcessAlive(processPid);
-      const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
         classify(candidate, "lost", "missing_process_metadata", patch);
         continue;
       }
-      if (!processPidAlive && !processGroupAlive) {
+      // The shared prover decides. Only a proven-gone child is lost; an
+      // unprovable one is never released, so it stays adopted and the
+      // active-execution reaper keeps holding it (Stop is its operator action).
+      const processProof = await proveRunProcessGone({ processPid, processGroupId,
+        processStartedAt: run.processStartedAt, processHostHash: run.processHostHash }, "hot_restart_adoption_marker");
+      if (!processProof || processProof.verdict === "gone") {
         classify(candidate, "lost", "process_not_alive", patch);
         continue;
       }
@@ -869,7 +874,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       classify(
         candidate,
         "adopted",
-        processPidAlive ? "process_pid_alive" : "process_group_alive",
+        processProof.reason === "process_group_alive" ? "process_group_alive" : "process_pid_alive",
         patch,
       );
     }
@@ -2535,15 +2540,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         run.controllerBootId !== legacyControllerBootId &&
         !run.processPid &&
         !run.processGroupId;
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0 && !priorBootSetupExpired && !legacyControllerGone) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) {
-          scope.onDeferredDeadline?.(refTime + staleThresholdMs);
-          continue;
-        }
-      }
-
       const currentAdapterTracksLocalChild =
         isTrackedLocalChildProcessAdapter(adapterType);
       const tracksLegacyLocalChild =
@@ -2554,16 +2550,35 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // overlapping provider/tool execution while that child is still alive.
       const checksPersistedChildLiveness =
         nativeRun ? nativeLocalProcess : currentAdapterTracksLocalChild;
-      const processPidAlive =
-        checksPersistedChildLiveness &&
-        run.processPid &&
-        isProcessAlive(run.processPid);
+      // A legacy child is judged by the shared owner prover, with the stamp the
+      // orphan sweep and the ownership report read. A proven-gone child needs
+      // no age guard. An unprovable one (another PID space, a sandbox, or an
+      // ephemeral server's pre-#19871 row) is never released here; Stop is its
+      // operator action.
+      // Any recorded child is proven, whatever the adapter: a run handed over
+      // by the orphan sweep (for example the `process` adapter) must never be
+      // released while its child may still work.
+      const legacyProcessProof = !nativeRun && (checksPersistedChildLiveness || run.processPid != null || run.processGroupId != null)
+        ? await proveRunProcessGone(run, "legacy_run_process") : null;
+      // Apply staleness threshold to avoid false positives
+      if (staleThresholdMs > 0 && !priorBootSetupExpired && !legacyControllerGone && legacyProcessProof?.verdict !== "gone") {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        if (now.getTime() - refTime < staleThresholdMs) {
+          scope.onDeferredDeadline?.(refTime + staleThresholdMs);
+          continue;
+        }
+      }
+
+      const processPidAlive = nativeRun
+        ? checksPersistedChildLiveness && !!run.processPid && isProcessAlive(run.processPid)
+        : !!legacyProcessProof && legacyProcessProof.verdict !== "gone";
       const processGroupAlive =
+        nativeRun &&
         checksPersistedChildLiveness &&
-        run.processGroupId &&
+        !!run.processGroupId &&
         isProcessGroupAlive(run.processGroupId);
       if (
-        (processPidAlive || processGroupAlive) &&
+        (nativeRun ? processPidAlive || processGroupAlive : legacyProcessProof?.verdict === "alive") &&
         readHotRestartAdoptionMetadata(parseObject(run.resultJson))
       ) {
         scope.onDeferredDeadline?.(Date.now() + 30_000);
@@ -2571,13 +2586,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       }
       if (processPidAlive || processGroupAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = processPidAlive
-            ? `Lost in-memory process handle, but child pid ${run.processPid} is still alive`
-            : `Lost in-memory process handle, but persisted process group ${run.processGroupId} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
+          const detachedMessage = legacyProcessProof?.verdict === "unprovable"
+            ? `Lost in-memory process handle, and cannot prove child pid ${run.processPid ?? run.processGroupId} stopped (${legacyProcessProof.reason}); stop the run to release it`
+            : processPidAlive && legacyProcessProof?.reason !== "process_group_alive"
+              ? `Lost in-memory process handle, but child pid ${run.processPid} is still alive`
+              : `Lost in-memory process handle, but persisted process group ${run.processGroupId} is still alive`;
+          // Only a run that is still running: a Stop or the stale-lock sweep may
+          // have finished it since this pass read it, and that outcome stands.
+          const detachedWrite = await setRunStatusFromLive(run.id, "running", ["running"], {
             error: detachedMessage,
             errorCode: DETACHED_PROCESS_ERROR_CODE,
           });
+          const detachedRun = detachedWrite.updated ? detachedWrite.run : null;
           if (detachedRun) {
             await appendRunEvent(detachedRun, {
               eventType: "lifecycle",
@@ -2692,6 +2712,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         },
       );
       if (!failureWrite.updated || !failureWrite.run) continue;
+      // Counted by the release that removes the pre-#19871 fallback. It never
+      // holds the settle back.
+      if (legacyProcessProof?.legacyHostFallback) {
+        await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "orphan-reaper",
+          action: LEGACY_HOST_FALLBACK_EVENT, entityType: "heartbeat_run", entityId: run.id, runId: run.id,
+          agentId: run.agentId, details: { reason: "process_lost", source: "active_execution_recovery" } })
+          .catch(error => logger.error({ err: error, runId: run.id }, "failed to record the legacy host fallback event"));
+      }
       let finalizedRun: typeof heartbeatRuns.$inferSelect | null =
         failureWrite.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {

@@ -127,16 +127,19 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.update(heartbeatRuns).set({ processPid: 2_000_000_000,
       contextSnapshot: { issueId, explicitUserContinuation: { previousRunId: failedRunId, commentId: randomUUID() } },
     }).where(eq(heartbeatRuns.id, runningRunId));
-    const beforeOrphanedRunTerminalWrite = vi.fn(async () => {
+    // The sweep hands the legacy run to the one lost-process settle path;
+    // finalization wins that race and records the run timed out.
+    const settleLostRunProcess = vi.fn(async () => {
       await db.update(heartbeatRuns).set({ status: "timed_out", finishedAt: new Date() })
         .where(eq(heartbeatRuns.id, runningRunId));
     });
     const settleExplicitContinuationRetry = vi.fn(async () => {});
-    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), beforeOrphanedRunTerminalWrite,
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), settleLostRunProcess,
       ...(withSettler ? { settleExplicitContinuationRetry } : {}),
     }).sweepStaleIssueLocks();
-    expect(beforeOrphanedRunTerminalWrite).toHaveBeenCalledOnce();
-    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(settleLostRunProcess).toHaveBeenCalledOnce();
+    // The sweep reads the outcome back and never clears the retry's lock.
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [runningRunId] });
     expect(settleExplicitContinuationRetry).toHaveBeenCalledTimes(withSettler ? 1 : 0);
     if (withSettler) expect(settleExplicitContinuationRetry).toHaveBeenCalledWith(expect.objectContaining({
       id: runningRunId, status: "timed_out",
@@ -439,17 +442,19 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     const result = await heartbeatService(db).sweepStaleIssueLocks();
     expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
     const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
-    expect(run?.status).toBe(terminalized ? "interrupted" : "running");
+    // A legacy run with a proven-gone child gets the one lost-process
+    // reaper's outcome; an unprovable one stays running (Stop releases it).
+    expect(run?.status).toBe(terminalized ? "failed" : "running");
   });
 
-  it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
+  it("terminalizes an orphaned running native run whose process is gone, then clears the lock", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid, but the process and its sandbox are gone. A pid
-    // this large never maps to a live process, so isPidAlive returns false.
+    // this large never maps to a live process, so the prover finds it gone.
     // The issue is not terminal, so only the process-death authority applies.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: 2_000_000_000 })
+      .set({ processPid: 2_000_000_000, runtimeMode: "native" })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -1084,6 +1089,67 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
+  // One lost-process reaper (Phase 3, non-wake recovery): the orphan sweep no
+  // longer judges a legacy child itself. It hands the run to the
+  // active-execution reaper, so the run gets that reaper's failed/process_lost
+  // outcome and retry policy, with no age guard once the child is proven gone,
+  // and the dead run no longer holds the task.
+  it("hands a legacy run whose child is proven gone to the one lost-process reaper", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date() }).where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lost legacy child", status: "in_progress",
+      priority: "high", assigneeAgentId: agentId, checkoutRunId: runningRunId, executionRunId: runningRunId,
+      executionLockedAt: new Date() });
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "failed", errorCode: "process_lost" });
+    const [lock] = await db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues).where(eq(issues.id, issueId));
+    expect(lock.checkoutRunId).not.toBe(runningRunId);
+    expect(lock.executionRunId).not.toBe(runningRunId);
+  });
+
+  // RC-27: the reaper waited out a 5-minute age guard even when the shared
+  // prover could already show the legacy child was gone. Age is never proof.
+  it("settles a legacy run whose child is proven gone without waiting out the age guard", async () => {
+    const { runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date() }).where(eq(heartbeatRuns.id, runningRunId));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "failed", errorCode: "process_lost" });
+  });
+
+  // Greptile on #20004: the reaper proved children only for session adapters,
+  // so a handed-over `process` run with a live child fell through to
+  // process_lost once the age guard passed.
+  it("never releases a process-adapter run whose recorded child is still alive", async () => {
+    const { agentId, runningRunId } = await seed();
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runningRunId));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "running", errorCode: "process_detached" });
+  });
+
+  it("never releases a legacy run whose child is unprovable, and names Stop as the way out", async () => {
+    const { runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: "another-host-pid-space",
+      updatedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runningRunId));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toMatchObject({ status: "running", errorCode: "process_detached" });
+    expect(run.error).toMatch(/cannot prove child pid .* stopped .*stop the run/);
+  });
+
   it("still clears the lock when the audit write fails after terminalization", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid that never maps to a live process, so the sweep
@@ -1091,7 +1157,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // process-death authority drives the terminalization here.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: 2_000_000_000 })
+      .set({ processPid: 2_000_000_000, runtimeMode: "native" })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
