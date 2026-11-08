@@ -13,7 +13,7 @@
  * database (that is K9). The controller runtime cache is kept: discarding it is
  * the separate K11 fault.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, readFileSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { mkdir, readFile, symlink } from "node:fs/promises";
@@ -44,7 +44,12 @@ const HEALTH_TIMEOUT_MS = (() => {
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
-export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL" };
+export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM" };
+
+/** The checkout's commit, for the K14 receipt. */
+function checkoutSha(root: string): string | null {
+  try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { return null; }
+}
 
 export const CRASH_LOOP_TARGETS = ["recovering", "ready"] as const;
 const PHASE_POLL_MS = 50;
@@ -117,9 +122,17 @@ export class ChaosSupervisor {
   onCrashPoint: ((receipt: FaultReceipt) => void) | null = null;
   /** Crash-point suite: keep the control plane down this long after a self-kill (a K4-style hold). */
   crashPointHoldMs = 0;
+  /** The checkout the server runs from: the older build (`--upgrade-from`) until the first K14, then this one. */
+  private serverRoot: string;
+  /** The environment overrides the wave passed to `start`, kept for every restart and for the K14 switch. */
+  private extraEnvironment: Record<string, string> = {};
+  /** Wave secrets, kept across a K14 switch as an in-place upgrade keeps its configuration. */
+  private readonly secrets = { PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
+    PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret() };
 
   private constructor(readonly repositoryRoot: string, readonly port: number, readonly paths: SupervisorPaths,
-    private readonly timeline: Timeline) {
+    private readonly timeline: Timeline, upgradeFrom: string | null) {
+    this.serverRoot = upgradeFrom ?? repositoryRoot;
     this.baseUrl = `http://127.0.0.1:${port}`;
     this.log = createWriteStream(paths.serverLogPath, { flags: "a", mode: 0o600 });
     this.stopper = createRunnerE2EServerStopper({
@@ -130,16 +143,20 @@ export class ChaosSupervisor {
     });
   }
 
-  static async create(input: { repositoryRoot: string; waveDir: string; timeline: Timeline }): Promise<ChaosSupervisor> {
+  static async create(input: { repositoryRoot: string; waveDir: string; timeline: Timeline; upgradeFrom?: string }): Promise<ChaosSupervisor> {
     const temporaryRoot = await createRunnerE2ETemporaryRoot();
     const home = path.join(temporaryRoot, "home");
     const paths: SupervisorPaths = { temporaryRoot, home, configPath: path.join(home, "instances", "default", "config.json"),
       serverLogPath: path.join(input.waveDir, "server.log") };
     const port = await reserveRunnerE2EServerPort();
-    const supervisor = new ChaosSupervisor(input.repositoryRoot, port, paths, input.timeline);
-    input.timeline.add("supervisor_created", { temporaryRoot, port });
+    const supervisor = new ChaosSupervisor(input.repositoryRoot, port, paths, input.timeline, input.upgradeFrom ?? null);
+    input.timeline.add("supervisor_created", { temporaryRoot, port, ...(input.upgradeFrom
+      ? { upgradeFrom: input.upgradeFrom, upgradeFromSha: checkoutSha(input.upgradeFrom) } : {}) });
     return supervisor;
   }
+
+  /** K14 waves: whether the older build or this checkout is serving. */
+  get serverBuild(): "upgrade_from" | "current" { return this.serverRoot === this.repositoryRoot ? "current" : "upgrade_from"; }
 
   serverLogOffset(): number {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
@@ -147,17 +164,36 @@ export class ChaosSupervisor {
 
   /** `extraEnvironment` is kept for every restart (e.g. the Daytona image's runnerd and provider pack paths). */
   async start(extraEnvironment: Record<string, string> = {}): Promise<void> {
-    const { temporaryRoot, home, configPath } = this.paths;
+    const { temporaryRoot, configPath } = this.paths;
     const reservation = await prepareRunnerE2EServerConfig({ temporaryRoot, configPath, serverPort: this.port });
     await reservation?.close();
     // Wrapper-owned Postgres: survives K1/K2/K4 like a managed database would.
     this.database = await prepareControllerDatabase(configPath, temporaryRoot);
     this.timeline.add("database_started", {});
+    this.extraEnvironment = extraEnvironment;
+    await this.prepareServerEnvironment(this.serverRoot);
+    const child = await this.spawnServer();
+    await this.waitForHealth(child);
+    await this.waitForReadyPhase([]);
+    this.timeline.add("server_ready", { pid: child.pid, serverRoot: this.serverRoot });
+  }
+
+  /**
+   * The server environment for one checkout: its own runner binary, pinned Codex and source
+   * dependencies. The database, instance directory, port and secrets stay the same across a K14
+   * switch, as an in-place upgrade keeps them.
+   */
+  private async prepareServerEnvironment(root: string): Promise<void> {
+    const { temporaryRoot, home, configPath } = this.paths;
+    const extraEnvironment = this.extraEnvironment;
     const runnerBinary = resolvePaperclipRunnerBinaryForHarness(
-      [{ profile: { generation: "native" } } as unknown as MatrixExecution], this.repositoryRoot);
+      [{ profile: { generation: "native" } } as unknown as MatrixExecution], root);
+    // One provider PATH per checkout: the older build keeps its own pinned Codex.
+    const providerRoot = root === this.repositoryRoot ? temporaryRoot : path.join(temporaryRoot, "upgrade-from");
+    await mkdir(providerRoot, { recursive: true });
     const source = {
       ...buildRunnerE2EProcessEnvironment(process.env, []),
-      PATH: await prepareProviderPath(this.repositoryRoot, temporaryRoot, process.env.PATH),
+      PATH: await prepareProviderPath(root, providerRoot, process.env.PATH),
       PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: "[]",
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
       PAPERCLIP_VITE_CACHE_DIR: path.join(temporaryRoot, "vite-cache"),
@@ -165,8 +201,7 @@ export class ChaosSupervisor {
     const overrides = {
       NODE_ENV: "test", PORT: String(this.port), XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
       PAPERCLIP_HOME: home, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "default",
-      PAPERCLIP_AGENT_JWT_SECRET: secret(), PAPERCLIP_DECISION_SIGNING_SECRET: secret(),
-      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: secret(), BETTER_AUTH_SECRET: secret(),
+      ...this.secrets,
       PAPERCLIP_BIND: "loopback", PAPERCLIP_BIND_HOST: "127.0.0.1", PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private", SERVE_UI: "true", PAPERCLIP_STORAGE_PROVIDER: "local_disk",
       PAPERCLIP_STORAGE_LOCAL_DIR: path.join(temporaryRoot, "storage"), PAPERCLIP_SECRETS_PROVIDER: "local_encrypted",
@@ -181,21 +216,18 @@ export class ChaosSupervisor {
     const environment = buildPaperclipServerEnvironment(source, overrides);
     assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
-    await prepareSourceServerDependencies(this.repositoryRoot, this.environment, false);
-    const child = await this.spawnServer();
-    await this.waitForHealth(child);
-    await this.waitForReadyPhase([]);
-    this.timeline.add("server_ready", { pid: child.pid });
+    await prepareSourceServerDependencies(root, this.environment, false);
   }
 
   private async spawnServer(): Promise<ChildProcess> {
     if (this.shuttingDown) throw new Error("Refusing to start Paperclip during harness shutdown");
-    const entry = path.join(this.repositoryRoot, "tests/runner-e2e/server-entry.ts");
+    const root = this.serverRoot;
+    const entry = path.join(root, "tests/runner-e2e/server-entry.ts");
     const control = this.crashPointControl;
     const env = control ? { ...this.environment, PAPERCLIP_CRASH_POINT_CONTROL: control.controlPath,
       PAPERCLIP_CRASH_POINT_RECEIPT: control.receiptPath } : this.environment;
-    const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(this.repositoryRoot, entry, ["onboard", "--yes", "--run"]),
-      { cwd: this.repositoryRoot, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
+    const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(root, entry, ["onboard", "--yes", "--run"]),
+      { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     this.child = child;
 
     child.stdout?.on("data", chunk => this.log.write(chunk));
@@ -389,7 +421,13 @@ export class ChaosSupervisor {
         waitForUnhealthy: async () => { await this.waitForHealthToStop(); receipt.stoppedAt = Date.now(); this.timeline.add("fault_server_down", { faultId: receipt.faultId }); },
         // K1/K2/K4 keep the controller runtime cache; K11 will discard it.
         discardCache: async () => {},
-        start: async () => { receipt.restartedAt = Date.now(); this.timeline.add("fault_restarting", { faultId: receipt.faultId }); return this.spawnServer(); },
+        start: async () => {
+          receipt.restartedAt = Date.now();
+          // K14: the replacement is the current build, on the same database and instance directory.
+          if (kind === "K14") receipt.upgrade = await this.switchToCurrentBuild(receipt.faultId);
+          this.timeline.add("fault_restarting", { faultId: receipt.faultId });
+          return this.spawnServer();
+        },
         waitForReady: async replacement => { receipt.healthyAt = await this.waitForHealth(replacement, receipt.phases); },
         cancelled: () => this.shuttingDown,
         record: async progress => { outage = progress; },
@@ -410,6 +448,23 @@ export class ChaosSupervisor {
       this.faultInProgress = false;
     }
     return receipt;
+  }
+
+  /**
+   * K14: move the server from the older build to this checkout. Only the first K14 switches; a later
+   * one restarts the current build (recorded with `switched: false`).
+   */
+  private async switchToCurrentBuild(faultId: string): Promise<NonNullable<FaultReceipt["upgrade"]>> {
+    const fromRoot = this.serverRoot;
+    const switched = fromRoot !== this.repositoryRoot;
+    if (switched) {
+      this.serverRoot = this.repositoryRoot;
+      await this.prepareServerEnvironment(this.repositoryRoot);
+    }
+    const upgrade = { fromRoot, fromSha: checkoutSha(fromRoot), toRoot: this.repositoryRoot, toSha: checkoutSha(this.repositoryRoot), switched };
+    this.timeline.add("upgrade_switched", { faultId, ...upgrade });
+    this.log.write(`\n[restart-chaos] ${faultId} K14 upgrade ${upgrade.fromSha ?? fromRoot} -> ${upgrade.toSha ?? this.repositoryRoot}${switched ? "" : " (already upgraded)"}\n`);
+    return upgrade;
   }
 
   private async waitForCrashLoopPhase(child: ChildProcess, target: (typeof CRASH_LOOP_TARGETS)[number],
