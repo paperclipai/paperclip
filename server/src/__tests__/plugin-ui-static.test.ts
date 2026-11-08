@@ -109,6 +109,38 @@ describe("plugin UI static route", () => {
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
   });
 
+  it.each([200, 404])("resolves plugin keys without querying the UUID column (%s)", async (status) => {
+    readyPlugin(createPluginPackage("export const marker = 'key-bundle';\n"));
+    const plugin = await mockRegistry.getById();
+    mockRegistry.getById.mockClear();
+    mockRegistry.getById.mockRejectedValue(Object.assign(new Error("Failed query"), {
+      cause: Object.assign(new Error("invalid input syntax for type uuid"), { code: "22P02" }),
+    }));
+    mockRegistry.getByKey.mockResolvedValue(status === 200 ? plugin : null);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get("/_plugins/paperclip.example/ui/index.js");
+
+    expect(res.status).toBe(status);
+    if (status === 200) expect(res.text).toContain("key-bundle");
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("paperclip.example");
+  });
+
+  it("preserves key fallback for UUID-shaped plugin keys", async () => {
+    readyPlugin(createPluginPackage("export const marker = 'fallback-bundle';\n"));
+    const plugin = await mockRegistry.getById();
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(plugin);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get(`/_plugins/${pluginId}/ui/index.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("fallback-bundle");
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith(pluginId);
+  });
+
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
     readyPlugin(createPluginPackage());
     const app = await createApp({ type: "none", source: "none" });
