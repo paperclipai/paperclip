@@ -2,14 +2,27 @@ import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils"
 import type { Environment } from "@paperclipai/shared";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 
+/**
+ * The same default as the native session policy: an agent that never chose a
+ * lifecycle, in an environment that inherits it, runs a measured harness warm
+ * on a sandbox, so its follow-up keeps the sandbox and workspace instead of
+ * uploading the workspace into a new one.
+ */
+function defaultsToWarmOnSandbox(adapterConfig: Record<string, unknown>): boolean {
+  const provider = adapterConfig.provider;
+  return provider === "codex" || provider === "opencode" || (provider === "acpx" && adapterConfig.acpxAgent === "claude");
+}
+
 function resolveRunnerLifecycleModeForRun(
   config: Record<string, unknown>,
   adapterConfig: Record<string, unknown>,
   admittedLifecycleMode?: "warm" | "per_turn",
+  driver?: string,
 ): unknown {
-  return admittedLifecycleMode ?? (config.runnerLifecycleMode === "warm" || config.runnerLifecycleMode === "per_turn"
-    ? config.runnerLifecycleMode
-    : adapterConfig.lifecycleMode);
+  if (admittedLifecycleMode) return admittedLifecycleMode;
+  if (config.runnerLifecycleMode === "warm" || config.runnerLifecycleMode === "per_turn") return config.runnerLifecycleMode;
+  if (adapterConfig.lifecycleMode === "warm" || adapterConfig.lifecycleMode === "per_turn") return adapterConfig.lifecycleMode;
+  return driver === "sandbox" && defaultsToWarmOnSandbox(adapterConfig) ? "warm" : adapterConfig.lifecycleMode;
 }
 
 /** Resolve runner retention before acquiring a sandbox, not after it is ephemeral.
@@ -25,7 +38,7 @@ export function resolveRunnerEnvironmentForRun<T extends Pick<Environment, "driv
 ): T {
   if (adapterType !== "paperclip_runner" || !["sandbox", "plugin"].includes(environment.driver)) return environment;
   const config = environment.config ?? {};
-  const lifecycleMode = resolveRunnerLifecycleModeForRun(config, adapterConfig, admittedLifecycleMode);
+  const lifecycleMode = resolveRunnerLifecycleModeForRun(config, adapterConfig, admittedLifecycleMode, environment.driver);
   // Warm tasks need a managed credential identity; recovery keeps its admitted policy.
   if (environment.driver === "plugin") return { ...environment, config: { ...config,
     runnerLifecycleMode: admittedLifecycleMode ?? (managedAiCredentialIdentity && lifecycleMode !== "per_turn" ? "warm" : "per_turn"),
@@ -56,7 +69,7 @@ export function resolveWarmRunnerIdleTimeoutMsForRun(
 ): number | undefined {
   if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") return undefined;
   const config = environment.config ?? {};
-  if (resolveRunnerLifecycleModeForRun(config, adapterConfig, admittedLifecycleMode) !== "warm") return undefined;
+  if (resolveRunnerLifecycleModeForRun(config, adapterConfig, admittedLifecycleMode, environment.driver) !== "warm") return undefined;
   return resolvePaperclipRunnerIdleTimeoutMs(config.runnerIdleTimeoutMs ?? adapterConfig.idleTimeoutMs);
 }
 

@@ -271,6 +271,8 @@ function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): N
     managedAiSelected: Boolean(input.config.managedAiRuntime), managedAiAttribution: input.config.managedAiRuntime?.attribution,
     taskOwned: Boolean(input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" && input.workspace.executionTarget.runnerTask),
     localTarget: input.workspace.executionTarget?.kind !== "remote",
+    remoteSandboxTarget: input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox"
+      && !input.workspace.executionTarget.runnerTask,
   });
 }
 
