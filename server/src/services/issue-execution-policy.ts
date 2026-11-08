@@ -1016,6 +1016,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
+      if (requestedStatus === "done") {
+        throw unprocessable(
+          "Only the active reviewer or approver can mark a pending execution stage done",
+          { code: "execution_stage_approval_required" },
+        );
+      }
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
         return { patch };

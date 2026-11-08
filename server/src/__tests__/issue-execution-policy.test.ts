@@ -762,6 +762,43 @@ describe("issue execution policy transitions", () => {
       expect(result.workflowControlledAssignment).toBeUndefined();
     });
 
+    it("does not let a non-current board actor close a pending stage", () => {
+      let thrown: unknown;
+      try {
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { userId: boardUserId },
+          allowBoardOverride: true,
+          commentBody: "Trying to skip the pending stages",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toMatchObject({
+        status: 422,
+        details: { code: "execution_stage_approval_required" },
+      });
+    });
+
     it("cancels instead of requesting changes when the board is the active approver", () => {
       const approvalStageId = policy.stages[1].id;
       const result = applyIssueExecutionPolicyTransition({

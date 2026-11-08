@@ -131,10 +131,13 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     };
   }
 
-  function boardActor(companyId: string): Express.Request["actor"] {
+  function boardActor(
+    companyId: string,
+    userId = "board-user",
+  ): Express.Request["actor"] {
     return {
       type: "board",
-      userId: "board-user",
+      userId,
       companyIds: [companyId],
       memberships: [{ companyId, membershipRole: "admin", status: "active" }],
       isInstanceAdmin: false,
@@ -644,6 +647,99 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       stageId: reviewStageId,
       outcome: "approved",
     });
+  });
+
+  it("rejects a non-current board done override without closing or skipping stages", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    const differentBoardUserId = "different-board-user";
+    await db.insert(authUsers).values({
+      id: differentBoardUserId,
+      name: "Different Board User",
+      email: "different-board@example.test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: differentBoardUserId,
+      status: "active",
+      membershipRole: "admin",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board done bypass",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [{ type: "user", userId: "board-user" }],
+          },
+          {
+            id: approvalStageId,
+            type: "approval",
+            participants: [{ type: "user", userId: differentBoardUserId }],
+          },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const res = await request(
+      createApp(boardActor(companyId, differentBoardUserId)),
+    )
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        comment: "Attempt to close before the active reviewer decides",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "execution_stage_approval_required",
+    });
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentParticipant: { type: "user", userId: "board-user" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(0);
   });
 
   it("cancels a pending staged issue with a timestamp and no live execution", async () => {
