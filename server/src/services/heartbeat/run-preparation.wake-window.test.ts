@@ -205,6 +205,35 @@ describe("wake comment window", () => {
     expect(prompt).not.toMatch(/^1\. comment c1 /m);
   });
 
+  it("names read_current_wake_comments for a native external-chat cut and keeps the thread GET otherwise", async () => {
+    attachments = [];
+    const ids = Array.from({ length: 11 }, (_, index) => `c${index + 1}`);
+    const payload = await wake(ids, commentsFor(ids, (id) => `body ${id}`));
+    const chatWake = {
+      ...payload,
+      externalChatProvider: "github",
+      checkedOutByHarness: true,
+    };
+    const generic = renderPaperclipWakePrompt(chatWake);
+    expect(generic).toContain(
+      "- cut comments: the oldest 3 of 11 are not in this wake; read them with GET /api/issues/issue-1/comments (cut ids: c1, c2, c3)",
+    );
+    expect(generic).not.toContain("read_current_wake_comments");
+
+    for (const resumedSession of [false, true]) {
+      const prompt = renderPaperclipWakePrompt(chatWake, {
+        nativeWakeReaderAvailable: true,
+        resumedSession,
+      });
+      expect(prompt).toContain("call `read_current_wake_comments` without a cursor");
+      expect(prompt).toContain("Make zero other Paperclip API calls");
+      expect(prompt).toContain(
+        "- cut comments: the oldest 3 of 11 are not in this wake; read them with `read_current_wake_comments` (cut ids: c1, c2, c3)",
+      );
+      expect(prompt).not.toContain("GET /api/issues/");
+    }
+  });
+
   it("keeps the newest comments when early long bodies would spend the 12000-character budget", async () => {
     attachments = [];
     const ids = ["c1", "c2", "c3", "c4", "c5"];

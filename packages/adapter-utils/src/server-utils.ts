@@ -2446,10 +2446,15 @@ function renderPaperclipWakePromptBody(
   const issueCommentPath = normalized.issue?.id
     ? `GET /api/issues/${normalized.issue.id}/comments`
     : "GET /api/issues/{id}/comments";
+  // The closed reader already pages every comment id accepted for this run.
+  // A full-thread GET would leave that batch and break the zero-other-calls contract.
+  const cutCommentReadWith = externalChatReaderTurn
+    ? "`read_current_wake_comments`"
+    : issueCommentPath;
   const cutLines = [
     ...(normalized.cutCount > 0
       ? [
-          `- cut comments: the oldest ${normalized.cutCount} of ${normalized.requestedCount} are not in this wake; read them with ${issueCommentPath} (cut ids: ${normalized.cutCommentIds.join(", ")}${normalized.cutCommentIds.length < normalized.cutCount ? ", ..." : ""})`,
+          `- cut comments: the oldest ${normalized.cutCount} of ${normalized.requestedCount} are not in this wake; read them with ${cutCommentReadWith} (cut ids: ${normalized.cutCommentIds.join(", ")}${normalized.cutCommentIds.length < normalized.cutCount ? ", ..." : ""})`,
         ]
       : []),
     ...(normalized.cutAttachmentCount > 0
