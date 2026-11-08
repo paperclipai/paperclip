@@ -14,13 +14,6 @@ export function registerIdleLocalWorkProbe(probe: (options: IdleLocalWorkOptions
   localWorkProbes.add(probe);
   return () => { localWorkProbes.delete(probe); };
 }
-/** In-memory only: true when any registered probe reports work (or cannot tell). */
-export function hasRegisteredLocalWork(): boolean {
-  for (const probe of localWorkProbes) {
-    try { if (probe({}) !== "none") return true; } catch { return true; }
-  }
-  return false;
-}
 export function registerIdleSpoolDirectory(directory: string): void { spoolDirectories.add(path.resolve(directory)); }
 export const idleAccountingSpoolPath = () => path.join(resolvePaperclipInstanceRoot(), "accounting-receipts");
 export const idleOrphanSpoolPath = () => process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR ??
