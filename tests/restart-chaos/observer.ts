@@ -9,12 +9,12 @@ import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.j
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
-  InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
+  AdapterId, InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
-import { workloadDefinitions } from "./workloads.js";
+import { workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -47,6 +47,7 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
+export const CHILD_WAKE_GRACE_MS = 60_000;
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
 export const RETRY_BUDGET_MS = 15 * 60_000;
 
@@ -139,6 +140,7 @@ export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
+  private childrenSettledAt: number | null = null;
   private stallSince: number | null = null;
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
@@ -200,7 +202,7 @@ export class TaskObserver {
     try {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
-        description: definition.description(this.plan.nonce),
+        description: definition.description(this.plan.nonce, this.workloadAgents()),
         status: "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.lab.agents[this.plan.adapter].id } : {}),
@@ -457,6 +459,15 @@ export class TaskObserver {
     // C1: a follow-up posted after rest must be served before the task counts as resting.
     if (this.definition.followUp && !this.record.followUp) return;
     const faultSinceRetry = this.record.retry !== null && (this.record.lastFaultAt ?? 0) > this.record.retry.at;
+    if (status !== "done" && this.definition.collect.childDocuments && this.record.issueId) {
+      const children = await this.collectChildren(this.record.issueId).catch(() => null);
+      const pending = !children || children.some(child => !["done", "cancelled"].includes(child.status ?? ""));
+      this.childrenSettledAt = pending ? null : (this.childrenSettledAt ?? now);
+      if (pending || now - this.childrenSettledAt! < CHILD_WAKE_GRACE_MS) {
+        this.restCandidateSince = null;
+        return;
+      }
+    }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
       if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);
@@ -501,6 +512,44 @@ export class TaskObserver {
     return null;
   }
 
+  workloadAgents(): WorkloadAgents {
+    const self = this.lab.agents[this.plan.adapter];
+    const other = Object.values(this.lab.agents).find(agent => agent.id !== self.id) ?? self;
+    return { self, other };
+  }
+
+  async childSpeedTasks(): Promise<Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }>> {
+    if (!this.definition.collect.childDocuments || !this.record.issueId) return [];
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(this.record.issueId)}&limit=20`);
+    const tasks: Array<{ issueId: string; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }> = [];
+    for (const row of (rows ?? []).filter(child => child.parentId === this.record.issueId)) {
+      const adapter = (Object.entries(this.lab.agents) as Array<[AdapterId, { id: string }]>)
+        .find(([, agent]) => agent.id === row.assigneeAgentId)?.[0];
+      if (!adapter) continue;
+      const runs = await this.api.get<Json[]>(`/api/issues/${row.id}/runs`, 15_000);
+      tasks.push({ issueId: String(row.id), adapter, samples: [{ runs: (runs ?? []).map(toRunSample) }] });
+    }
+    return tasks;
+  }
+
+  async collectChildren(issueId: string): Promise<NonNullable<OracleArtifacts["children"]>> {
+    const keys = this.definition.collect.childDocuments;
+    if (!keys) return [];
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(issueId)}&limit=20`)
+      .catch(() => []);
+    const children: NonNullable<OracleArtifacts["children"]> = [];
+    for (const row of (rows ?? []).filter(child => child.parentId === issueId)) {
+      const documents: Record<string, string | null> = {};
+      for (const key of keys) {
+        const document = await this.api.get<Json>(`/api/issues/${row.id}/documents/${key}`).catch(() => null);
+        documents[key] = typeof document?.body === "string" ? document.body : null;
+      }
+      children.push({ id: String(row.id), status: typeof row.status === "string" ? row.status : null,
+        assigneeAgentId: typeof row.assigneeAgentId === "string" ? row.assigneeAgentId : null, documents });
+    }
+    return children;
+  }
+
   async collectArtifacts(): Promise<OracleArtifacts> {
     const definition = this.definition;
     const issueId = this.record.issueId!;
@@ -538,6 +587,7 @@ export class TaskObserver {
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
+      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId) } : {}),
     };
   }
 

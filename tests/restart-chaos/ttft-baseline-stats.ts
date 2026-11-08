@@ -117,7 +117,7 @@ export function runMetrics(run: BaselineRun): RunMetrics {
 const PROVIDER_EVENT_TYPES = new Set(["turn.submitted", "turn.started", "turn.accepted", "item.started", "item.delta",
   "item.completed", "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "session.resumed"]);
 
-export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; latencyMs: number | null }
+export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; readyAt: number; latencyMs: number | null }
 
 /** Control plane ready → the recovered run's next provider event, keyed by runner disposition. */
 export function recoverySamples(runs: readonly BaselineRun[], faults: readonly BaselineFault[]): RecoverySample[] {
@@ -131,7 +131,7 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
       const transition = after.find(event => event.eventType === "native.recovery.transition"
         && Date.parse(event.createdAt) >= fault.readyAt - 60_000);
       const next = run.events.find(event => PROVIDER_EVENT_TYPES.has(event.eventType) && Date.parse(event.createdAt) >= fault.readyAt);
-      samples.push({ runId, adapter: run.adapter, kind: fault.kind,
+      samples.push({ runId, adapter: run.adapter, kind: fault.kind, readyAt: fault.readyAt,
         disposition: String(transition?.payload?.runnerDisposition ?? "none"),
         latencyMs: next ? Date.parse(next.createdAt) - fault.readyAt : null });
     }

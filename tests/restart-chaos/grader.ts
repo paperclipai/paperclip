@@ -100,7 +100,18 @@ export function gradeR3(record: TaskRecord): RuleResult {
   const newRun = record.samples.some(sample => (sample.runs ?? []).some(run => (ms(run.createdAt) || 0) >= retryAt - 1_000));
   if (!newRun) return { verdict: "fail", detail: "retry_no_new_run" };
   if (record.finalStatus !== "done") return { verdict: "fail", detail: `retry_did_not_complete (status ${record.finalStatus ?? "unknown"}${record.timedOut ? ", timed out" : ""})` };
-  return { verdict: "pass", detail: "one Retry started a run that completed the task" };
+  const clicks = 1 + (record.priorRetries?.length ?? 0);
+  const failed = failedRunCodes(record).join(",") || "unknown";
+  if (clicks > 1) return { verdict: "fail", detail: `retry_needed_${clicks}_clicks (${failed})` };
+  return { verdict: "fail", detail: `retry_needed (${failed})` };
+}
+
+function failedRunCodes(record: TaskRecord): string[] {
+  const codes = new Map<string, string>();
+  for (const sample of record.samples) {
+    for (const run of sample.runs ?? []) if (run.status === "failed") codes.set(run.id, run.errorCode ?? "failed");
+  }
+  return [...codes.values()];
 }
 
 /** Run cancellations decided before adapter dispatch: the run never executed. */

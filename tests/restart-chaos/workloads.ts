@@ -14,12 +14,17 @@ export interface WorkloadDefinition {
   /** Time budget for the task excluding outage time (R1). */
   budgetMs: number;
   title(nonce: string): string;
-  description(nonce: string): string;
+  description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
   /** Files and commands the observer must collect for the T-oracle. */
-  collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] }> };
-  grade(nonce: string, artifacts: OracleArtifacts): OracleResult;
+  collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] }>;
+    childDocuments?: string[] };
+  grade(nonce: string, artifacts: OracleArtifacts, agents?: WorkloadAgents): OracleResult;
 }
+
+export interface WorkloadAgents { self: { id: string; name: string }; other: { id: string; name: string } }
+
+const partMarker = (nonce: string, part: number) => `PART${part}-${nonce}`;
 
 const briefMarker = (nonce: string) => `CHAOS-${nonce}`;
 const followUpMarker = (nonce: string) => `FOLLOWUP-${nonce}`;
@@ -66,7 +71,52 @@ const briefDescription = (nonce: string) => [
   "Do not create files or other tasks. When the document is saved, mark this task done.",
 ].join("\n");
 
+const delegateDescription = (nonce: string, agents?: WorkloadAgents) => {
+  const self = agents?.self.name ?? "yourself";
+  const other = agents?.other.name ?? "yourself";
+  return [
+    "Coordinate this task by delegating it to two subtasks, then summarize.",
+    `1. Create subtask "Part 1 ${nonce}" with this task as its parent, assigned to ${other}. Its description:`,
+    `   "Save this issue's document with key \`part\` (title \"Part\"), in markdown, containing the line \`${partMarker(nonce, 1)}\` exactly on its own line and one sentence on why retries need idempotency keys. Then mark this subtask done."`,
+    `2. Create subtask "Part 2 ${nonce}" with this task as its parent, assigned to ${self}. Same description, with the line \`${partMarker(nonce, 2)}\` instead.`,
+    "Do not do the subtasks' work yourself. Wait until both subtasks are done.",
+    `3. Then save this issue's document with key \`summary\` (title "Summary") containing both lines \`${partMarker(nonce, 1)}\` and \`${partMarker(nonce, 2)}\`, each on its own line.`,
+    "Then mark this task done.",
+  ].join("\n");
+};
+
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
+  M1: {
+    id: "M1",
+    label: "Delegate to two subtasks",
+    usesRepository: false,
+    fireWindowMs: [20_000, 120_000],
+    budgetMs: 20 * 60_000,
+    title: nonce => `Chaos M1 delegation ${nonce}`,
+    description: delegateDescription,
+    collect: { documents: ["summary"], files: () => [], commands: [], childDocuments: ["part"] },
+    grade(nonce, artifacts, agents) {
+      const children = artifacts.children ?? [];
+      const holders = (n: number) => children.filter(child => (child.documents.part ?? "").includes(partMarker(nonce, n)));
+      const part1 = holders(1), part2 = holders(2);
+      const distinct = part1.length === 1 && part2.length === 1 && part1[0]!.id !== part2[0]!.id;
+      const summary = artifacts.documents.summary ?? "";
+      return result([
+        statusCheck(artifacts),
+        { name: "two_agents", ok: Boolean(agents) && agents!.self.id !== agents!.other.id,
+          detail: agents ? `self=${agents.self.id} other=${agents.other.id}` : "no agents" },
+        { name: "two_subtasks", ok: children.length === 2, detail: `children=${children.length}` },
+        { name: "subtasks_done", ok: children.length > 0 && children.every(child => child.status === "done"),
+          detail: children.map(child => child.status).join(",") },
+        { name: "parts_in_distinct_subtasks", ok: distinct, detail: `part1=${part1.length} part2=${part2.length}` },
+        { name: "part1_delegated", ok: distinct && Boolean(agents) && part1[0]!.assigneeAgentId === agents!.other.id,
+          detail: `assignee=${part1[0]?.assigneeAgentId ?? "none"}` },
+        { name: "part2_kept", ok: distinct && Boolean(agents) && part2[0]!.assigneeAgentId === agents!.self.id,
+          detail: `assignee=${part2[0]?.assigneeAgentId ?? "none"}` },
+        { name: "summary_has_both_parts", ok: summary.includes(partMarker(nonce, 1)) && summary.includes(partMarker(nonce, 2)) },
+      ]);
+    },
+  },
   A1: {
     id: "A1",
     label: "Brief to issue document",
