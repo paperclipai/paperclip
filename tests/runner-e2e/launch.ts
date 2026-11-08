@@ -57,6 +57,7 @@ import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { requiresPrivateManualEvidence, manualCellKind } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
+import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
@@ -893,6 +894,10 @@ async function runAttempt(input: {
           `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
           "utf8",
         );
+        // html-report/data already holds identical bytes of each failure trace
+        // and video; drop the playwright-output copies so failures fit the
+        // private evidence allowance with their HTML report still viewable.
+        await dropDuplicatePlaywrightOutput(casePrivateDir);
         let evidence = await packageEvidence({
           privateDir: casePrivateDir,
           uploadDir,

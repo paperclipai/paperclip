@@ -20,6 +20,7 @@ vi.mock("node:fs/promises", async original => {
   };
 });
 import { copySharedEvidence } from "./shared-evidence.js";
+import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
 import { packageEvidence, publishRunnerE2EAttemptEvidence, isStandardEvidencePath } from "./evidence.js";
 import { readManualPrivateHandoff, sealStandardOriginalEvidence, sealManualResultEvidence, preserveOriginalFrameworkResult, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { canonicalGeneratedReportAsset, cellTraceAsset, inspectCellReportProducer, privateCellEvidenceOwner, readPrivateCellTraceAsset, type CellReportProducerIdentity } from "./manual-private-report-assets.js";
@@ -28,6 +29,7 @@ import { MANUAL_PRIVATE_EXECUTIONS, MANUAL_PRIVATE_PROTOCOL, manualCellKind } fr
 import { archivePrivateEvidence, retainPrivateTransfer } from "./private-history.js";
 import { BoundedHistoryPublisher } from "./history-budget.js";
 import { sanitizeJson } from "./redaction.js";
+import { PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments } from "./private-framework-report.js";
 import { sanitizePrivateReporterArtifacts } from "./private-reporter-artifacts.js";
 import type { RunnerE2EResult } from "./types.js";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -290,6 +292,14 @@ it.each([0, 1])("actual launcher packaging call %s retains the verified private 
  for (const name of ["playwright-logo.svg", "manifest.webmanifest", "index.html"]) expect(packaged.files).toContain(`html-report/trace/${name}`);
 });
 
+async function walkFiles(root: string, relative = ""): Promise<string[]> {
+  const found: string[] = [];
+  for (const item of await readdir(path.join(root, relative), { withFileTypes: true })) {
+    const name = relative ? `${relative}/${item.name}` : item.name;
+    if (item.isDirectory()) found.push(...await walkFiles(root, name)); else found.push(name);
+  }
+  return found;
+}
 async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   const source = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
   const parser = createRequire(import.meta.url)("../../node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
@@ -308,8 +318,8 @@ async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { let manualDiagnostic; ${source.slice(start, end)} return result; }`, { mode: "strip" });
   const publisher = vi.fn(publishRunnerE2EAttemptEvidence);
-  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", `${code}; return actualBranch;`)(
-    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation,
+  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", "dropDuplicatePlaywrightOutput", "PRIVATE_FRAMEWORK_REPORT", "referenceSealedFrameworkAttachments", "path", "manualCellKind", `${code}; return actualBranch;`)(
+    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation, dropDuplicatePlaywrightOutput, PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments, path, manualCellKind,
   ) as (context: ManualPrivateHandoff | undefined, candidate: { id: string }, source: string, root: string, target: string, secrets: string[], result: RunnerE2EResult, resultPath: string) => Promise<RunnerE2EResult>;
   return { branch, publisher };
 }
@@ -327,6 +337,16 @@ it("actual launcher public branch uses its normal publisher without retaining pr
   expect(evidence.files).not.toContain("html-report/trace/playwright-logo.svg");
   await expect(readFile(path.join(uploadDir, "html-report/trace/playwright-logo.svg"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(readFile(path.join(f.cell, "snapshots/manual-original-framework-result.json"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("actual launcher private branch seals one HTML report copy of the failure trace instead of a second playwright-output copy", async () => {
+  const f = await fixture(), { branch, publisher } = await actualLauncherEvidenceBranch();
+  const traces = async (root: string) => (await walkFiles(root)).filter(name => name.endsWith("trace.zip") || /^html-report\/data\/[0-9a-f]{40}\.zip$/.test(name));
+  expect((await traces(f.cell)).length).toBe(2);
+  const result = await branch(f.context, { id: f.id }, f.cell, path.join(f.root, "results"), f.upload, [], failedLauncherResult(f.id), path.join(f.cell, "result.json"));
+  expect(result.status).toBe("failed"); expect(publisher).not.toHaveBeenCalled();
+  const sealed = await validateSealedOriginals(f.root, f.id, f.context);
+  const retained = sealed.files.map((row: { path: string }) => row.path).filter((name: string) => name.endsWith("trace.zip") || /^html-report\/data\/[0-9a-f]{40}\.zip$/.test(name));
+  expect(retained).toHaveLength(1); expect(retained[0]).toMatch(/^html-report\/data\//);
 });
 it("actual launcher private package failure preserves original bytes and never falls back to ordinary publication", async () => {
   const f = await fixture(), original = await readFile(path.join(f.cell, "result.json"));
