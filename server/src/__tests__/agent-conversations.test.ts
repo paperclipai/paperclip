@@ -994,6 +994,14 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  it("asks which record is meant before changing one of several matches", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link each candidate");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not pick the first match, change every match");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("ask which one before changing any of them");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
