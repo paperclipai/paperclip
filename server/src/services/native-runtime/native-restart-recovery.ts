@@ -1,4 +1,5 @@
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
+import { isEnvironmentLeaseReattachable } from "../environment-lease-reattachment.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
@@ -1224,10 +1225,22 @@ export async function claimNativeRestartRecoveries(input: {
 
       const hold = admission.exhausted;
       const preserveExecutionBinding = hold !== null;
-      const claimKind = hold || ownershipChanged || exhaustedRemoteRetry ? null : classification.claimKind;
+      const recordedLeases = classification.claimKind === "reattach_remote_runner"
+        ? await tx.select({ status: environmentLeases.status, releasedAt: environmentLeases.releasedAt,
+          cleanupStatus: environmentLeases.cleanupStatus, expiresAt: environmentLeases.expiresAt,
+        }).from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, row.run.companyId),
+          eq(environmentLeases.heartbeatRunId, row.run.id),
+          pluginTask ? eq(environmentLeases.id, pluginTask.id)
+            : eq(environmentLeases.providerLeaseId, remoteWorkspace!.providerLeaseId),
+        )) : [];
+      const remoteLeaseRetired = recordedLeases.length > 0
+        && !recordedLeases.some(lease => isEnvironmentLeaseReattachable(lease, now.getTime()));
+      const claimKind = hold || ownershipChanged || exhaustedRemoteRetry || remoteLeaseRetired ? null : classification.claimKind;
       const reason = hold?.reason ?? (ownershipChanged
         ? "task_ownership_or_status_changed"
-        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason);
+        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted"
+        : remoteLeaseRetired ? "remote_runner_lease_retired" : classification.reason);
       const nextAction = hold
         ? "Automatic admission checks exhausted. The original executor stop and state remain unverified. The provider PID, checkpoint and task bindings are preserved; reconcile that execution before starting fresh work."
         : "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session.";

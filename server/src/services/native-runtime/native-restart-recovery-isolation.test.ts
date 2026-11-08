@@ -98,6 +98,27 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     return { issueId, runId };
   }
 
+  it.each([
+    { status: "expired", releasedAt: new Date(), cleanupStatus: "success" },
+    { status: "released", releasedAt: new Date() },
+    { status: "active", cleanupStatus: "pending" },
+    { status: "active", expiresAt: new Date(0) },
+    { status: "active", releasedAt: new Date() },
+  ])("settles a retired remote lease once: %j", async retired => {
+    const { runId, issueId } = await seedScheduledResume({ lock: "self" });
+    await db.update(environmentLeases).set(retired).where(eq(environmentLeases.heartbeatRunId, runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, runId));
+    const result = await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [runId] });
+    expect(result).toEqual([{ kind: "blocked", runId, reason: "remote_runner_lease_retired" }]);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked", leaseOwner: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0])
+      .toMatchObject({ status: "failed", nativePhase: "terminal_failure" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ executionRunId: null, checkoutRunId: null });
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [runId] })).toEqual([]);
+  });
+
   async function seedRoutineSlotHolder(routine: { id: string; fingerprint: string }) {
     const issueId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Hourly report", status: "in_progress",
@@ -108,6 +129,32 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.update(issues).set({ executionRunId: runId, executionLockedAt: new Date() }).where(eq(issues.id, issueId));
     return { issueId, runId };
   }
+
+  it.each(["sandbox", "plugin_task"])("blocks a retired %s lease", async kind => {
+    const { runId } = await seedScheduledResume({ lock: "self" });
+    await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date(),
+      ...(kind === "plugin_task" ? { metadata: { runnerTaskLease: true, runnerTaskDispatched: true } } : {}),
+    }).where(eq(environmentLeases.heartbeatRunId, runId));
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [runId] }))
+      .toEqual([{ kind: "blocked", runId, reason: "remote_runner_lease_retired" }]);
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [runId] })).toEqual([]);
+  });
+
+  it.each(["no_rows", "active_peer", "unrelated_active"])("checks only recorded provider leases: %s", async scenario => {
+    const { runId } = await seedScheduledResume({ lock: "self" });
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId));
+    if (scenario === "no_rows") {
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    } else {
+      await db.update(environmentLeases).set({ status: "expired" }).where(eq(environmentLeases.id, lease.id));
+      await db.insert(environmentLeases).values({ companyId, issueId: lease.issueId, heartbeatRunId: runId,
+        environmentId: lease.environmentId, provider: lease.provider,
+        providerLeaseId: scenario === "active_peer" ? lease.providerLeaseId : randomUUID(), status: "active" });
+    }
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [runId] }))
+      .toEqual([expect.objectContaining({ runId,
+        kind: scenario === "unrelated_active" ? "blocked" : "reattach_remote_runner" })]);
+  });
 
   async function rejectClaimsFor(runId: string) {
     const name = sql.raw(`reject_recovery_claim_${runId.replaceAll("-", "")}`);

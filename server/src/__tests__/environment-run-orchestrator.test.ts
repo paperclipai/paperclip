@@ -924,6 +924,22 @@ describe("live remote runner lease reattachment", () => {
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
   });
+  it.each(["sandbox", "plugin_task"] as const)("preserves reattachment with a malformed expiry for %s", async kind => {
+    const lease = originalLease();
+    lease.expiresAt = new Date(NaN);
+    if (kind === "plugin_task") {
+      mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
+      lease.metadata = { agentId: "agent-1", runnerTaskLease: true, runnerTaskDispatched: true };
+    }
+    mockGetLease.mockResolvedValue(lease);
+    const runtime = makeMockRuntime();
+    const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun({
+      ...input,
+      reattachRemoteLease: kind === "plugin_task" ? { kind, leaseId: lease.id } : input.reattachRemoteLease,
+    });
+    expect(result.lease).toBe(lease);
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
   it("forwards the admitted warm idle window to the recovery resume", async () => {
     const savedLease = originalLease();
     mockGetLease.mockResolvedValue(savedLease);
@@ -1025,6 +1041,14 @@ describe("live remote runner lease reattachment", () => {
     { metadata: { agentId: "agent-1", remoteCwd: "/other/workspace" } },
   ] as Partial<EnvironmentLease>[])("fails closed before provider acquisition for a mismatched lease %j", async (override) => {
     mockGetLease.mockResolvedValue({ ...originalLease(), ...override });
+    const runtime = makeMockRuntime();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.resumeRunLease).not.toHaveBeenCalled();
+  });
+  it.each(["expired", "pending_cleanup"] as const)("rejects a %s lease without resuming or replacing it", async status => {
+    mockGetLease.mockResolvedValue({ ...originalLease(), status });
     const runtime = makeMockRuntime();
     await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
       .rejects.toThrow("native_remote_recovery_lease_mismatch");

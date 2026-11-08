@@ -20,6 +20,7 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRe
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { isEnvironmentLeaseReattachable } from "./environment-lease-reattachment.js";
 import { EnvironmentProviderUnavailableError, readTransientEnvironmentProviderFailure } from "./environment-provider-unavailable-error.js";
 import { findReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -351,9 +352,7 @@ export function environmentRunOrchestrator(
           lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
           lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
           lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
-          lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
-          lease.releasedAt !== null || lease.cleanupStatus !== null ||
-          (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
+          lease.metadata?.agentId !== input.agentId || !isEnvironmentLeaseReattachable(lease, Date.now()) ||
           (expected.kind === "plugin_task"
             ? environment.driver !== "plugin" || input.adapterType !== "paperclip_runner"
               || lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
