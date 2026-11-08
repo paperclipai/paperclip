@@ -26,14 +26,20 @@ export function retainedOrphanSandboxCondition() {
 function newestRowForSandbox() {
   return sql`not exists (select 1 from environment_leases newer where newer.id <> ${environmentLeases.id}
       and newer.provider = ${environmentLeases.provider} and newer.provider_lease_id = ${environmentLeases.providerLeaseId}
-      and newer.created_at > ${environmentLeases.createdAt})`;
+      and (newer.created_at > ${environmentLeases.createdAt}
+        or (newer.created_at = ${environmentLeases.createdAt} and newer.id > ${environmentLeases.id})))`;
 }
 
-/** No task is bound to this lease's workspace any more (its own task moved to
- * a fresh one, and no other task shares it), so reuse, which matches the exact
+/** The lease's own task is now bound to a different workspace (positive
+ * evidence of the move; an unbound task is not treated as moved), and no other
+ * task is bound to the lease's workspace, so reuse, which matches the exact
  * workspace and agent, can never pick the sandbox again. */
 function taskMovedToAnotherWorkspace() {
   return and(sql`${environmentLeases.executionWorkspaceId} is not null`,
+    sql`exists (select 1 from issues task where task.id = ${environmentLeases.issueId}
+      and task.company_id = ${environmentLeases.companyId}
+      and task.execution_workspace_id is not null
+      and task.execution_workspace_id <> ${environmentLeases.executionWorkspaceId})`,
     sql`not exists (select 1 from issues bound where bound.company_id = ${environmentLeases.companyId}
       and bound.execution_workspace_id = ${environmentLeases.executionWorkspaceId})`);
 }
