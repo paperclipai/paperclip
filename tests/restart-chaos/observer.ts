@@ -14,7 +14,7 @@ import type {
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
-import { workloadDefinitions } from "./workloads.js";
+import { workloadDefinitions, type WorkloadAgents } from "./workloads.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -200,7 +200,7 @@ export class TaskObserver {
     try {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
-        description: definition.description(this.plan.nonce),
+        description: definition.description(this.plan.nonce, this.workloadAgents()),
         status: "todo",
         priority: "medium",
         ...(assign ? { assigneeAgentId: this.lab.agents[this.plan.adapter].id } : {}),
@@ -501,6 +501,31 @@ export class TaskObserver {
     return null;
   }
 
+  /** The task's agent and another Chaos Lab agent (itself when the lab has one adapter). */
+  workloadAgents(): WorkloadAgents {
+    const self = this.lab.agents[this.plan.adapter];
+    const other = Object.values(this.lab.agents).find(agent => agent.id !== self.id) ?? self;
+    return { self, other };
+  }
+
+  async collectChildren(issueId: string): Promise<NonNullable<OracleArtifacts["children"]>> {
+    const keys = this.definition.collect.childDocuments;
+    if (!keys) return [];
+    const rows = await this.api.get<Json[]>(`/api/companies/${this.lab.companyId}/issues?view=index&parentIds=${encodeURIComponent(issueId)}&limit=20`)
+      .catch(() => []);
+    const children: NonNullable<OracleArtifacts["children"]> = [];
+    for (const row of (rows ?? []).filter(child => child.parentId === issueId)) {
+      const documents: Record<string, string | null> = {};
+      for (const key of keys) {
+        const document = await this.api.get<Json>(`/api/issues/${row.id}/documents/${key}`).catch(() => null);
+        documents[key] = typeof document?.body === "string" ? document.body : null;
+      }
+      children.push({ id: String(row.id), status: typeof row.status === "string" ? row.status : null,
+        assigneeAgentId: typeof row.assigneeAgentId === "string" ? row.assigneeAgentId : null, documents });
+    }
+    return children;
+  }
+
   async collectArtifacts(): Promise<OracleArtifacts> {
     const definition = this.definition;
     const issueId = this.record.issueId!;
@@ -538,6 +563,7 @@ export class TaskObserver {
       agentComments: (comments ?? []).filter(comment => comment.authorAgentId).map(comment => String(comment.body ?? "")),
       files, commands, workspacePath,
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
+      ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId) } : {}),
     };
   }
 

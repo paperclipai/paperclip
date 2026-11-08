@@ -414,7 +414,7 @@ async function main(): Promise<number> {
       }
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
-      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts)
+      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle);
       let evidence: string | null = null;

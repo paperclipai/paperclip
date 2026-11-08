@@ -5,7 +5,7 @@ export type FaultKind = (typeof FAULT_KINDS)[number];
 /** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
 export type TaskFaultKind = FaultKind | "K13";
 
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -209,6 +209,8 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
+  /** M1: the task's direct subtasks, with the documents the workload collects from them. */
+  children?: Array<{ id: string; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
 }
 
 export interface OracleResult { verdict: Exclude<Verdict, "n/a">; checks: Array<{ name: string; ok: boolean; detail?: string }> }

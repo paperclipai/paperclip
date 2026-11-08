@@ -189,6 +189,21 @@ describe("R1–R6 grading on fixture timelines", () => {
 });
 
 describe("T-oracles", () => {
+  it("grades M1 delegation: two done subtasks, part 1 delegated, and a summary of both", () => {
+    const agents = { self: { id: "self", name: "Chaos codex" }, other: { id: "other", name: "Chaos claude" } };
+    const child = (n: number, assigneeAgentId: string, status = "done") =>
+      ({ id: `c${n}`, status, assigneeAgentId, documents: { part: `PART${n}-abcd1234\nIdempotency keys.` } });
+    const artifacts: OracleArtifacts = { issueStatus: "done", agentComments: [], files: {}, commands: {}, workspacePath: null,
+      documents: { summary: "PART1-abcd1234\nPART2-abcd1234" }, children: [child(1, "other"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", artifacts, agents).verdict).toBe("pass");
+    expect(workloadDefinitions.M1.description("abcd1234", agents)).toContain("assigned to Chaos claude");
+    const undelegated = { ...artifacts, children: [child(1, "self"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", undelegated, agents).checks.find(check => check.name === "part1_delegated")?.ok).toBe(false);
+    const pending = { ...artifacts, children: [child(1, "other", "in_progress"), child(2, "self")] };
+    expect(workloadDefinitions.M1.grade("abcd1234", pending, agents).verdict).toBe("fail");
+    expect(workloadDefinitions.M1.grade("abcd1234", { ...artifacts, children: [child(1, "other")] }, agents).verdict).toBe("fail");
+  });
+
   it("grades A1 and C1 markers", () => {
     expect(workloadDefinitions.A1.grade("abcd1234", passingBrief).verdict).toBe("pass");
     expect(workloadDefinitions.C1.grade("abcd1234", passingBrief).checks.find(check => check.name.includes("followup"))?.ok).toBe(false);
