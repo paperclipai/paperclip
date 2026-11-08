@@ -227,23 +227,31 @@ default 1), `--env local|daytona` (a point runs only in the environments its
 registry entry lists), plus `--daytona-image`, `--daytona-cpu`, `--budget-cents`,
 `--poll-ms`, `--lifecycle` and `--keep`, passed to each wave.
 
-For each selected point the suite runs one wave of `main.ts --crash-point <name>:<nth>`:
+The suite runs one wave, `main.ts --crash-point <a>:<nth>,<b>:<nth>,...`:
 
-1. A fresh isolated control plane starts with `PAPERCLIP_CRASH_POINT` set and
-   the gate file (`PAPERCLIP_CRASH_POINT_GATE`) absent, so seeding and probes
-   cannot fire the point.
-2. One task per adapter × workload launches. No fault is scheduled. Once every
-   task launched the harness opens the gate.
+1. One isolated control plane boots once, with `PAPERCLIP_CRASH_POINT_CONTROL`
+   set to an empty control file (nothing armed) and without the Vite UI.
+2. For each point in turn: invariants are read as a baseline. Then the
+   point's batch launches (one task per adapter × workload), and the harness
+   arms the point by writing `<token> <name>:<nth>` to the control file.
 3. At the nth hit the server appends a receipt and SIGKILLs itself. The
-   supervisor treats it as K1: it kills what is left of the server's process
-   tree, starts a replacement **without** the point armed, and waits for ready.
-4. The tasks run to rest and are graded R1–R6 and T as in any wave.
-5. `invariants.ts` runs the Phase 1 report-only reconciler against the wave's
-   database (`record: false`): two passes at the real clock for I1 (owned) and
-   I2 (settled), and one pass with the clock moved 15 minutes ahead for I3
-   (admission), I4 (exactly-once intents) and I7 (visible next action). I5, I6
-   and I8 are reported as not measured, with the reconciler's reasons; R3 and
-   R1 cover part of I5 and I8.
+   supervisor treats it as K1: it empties the control file, kills what is
+   left of the server's process tree, starts a replacement, and waits for ready.
+4. When the batch rests, the point is disarmed. `invariants.ts` runs the
+   Phase 1 report-only reconciler against the wave's database
+   (`record: false`), and the point is charged only with violations that are
+   new since its baseline:
+   - two passes at the real clock for I1 (owned) and I2 (settled);
+   - one pass with the clock moved 15 minutes ahead for I3 (admission), I4
+     (exactly-once intents) and I7 (visible next action).
+   Each violation carries its wake and run state as evidence. I5, I6 and I8
+   are reported as not measured, with the reconciler's reasons; R3 and R1
+   cover part of I5 and I8.
+5. Every task is graded R1–R6 and T at the end, as in any wave.
+
+The first full local run (14 points, codex A1) took 11.8 minutes: one boot,
+then about 40–60 seconds per point. One point alone takes about 3 minutes,
+boot included.
 
 Limits: the server kills itself without warning, so there is no pre-fault
 workspace snapshot and R2 checks workspace failures but not lost files
@@ -251,9 +259,9 @@ workspace snapshot and R2 checks workspace failures but not lost files
 the recorded K1 restart at its offset instead of re-arming the point; to
 reproduce a point, rerun the suite for it.
 
-Results: `results/crash-points/<run>/SUMMARY.md` and `summary.json`, plus one
-wave directory per point with `crash-point.json` (receipt, task grades,
-violations). Outcomes: `pass`, `fail` (a task failed R1–R6/T or an invariant was
+Results: `results/crash-points/<run>/SUMMARY.md` and `summary.json`, plus the
+wave directory with `crash-point.json` (per point: receipt, task grades,
+violations with evidence). Outcomes: `pass`, `fail` (a task failed R1–R6/T or an invariant was
 violated, or the wave exited 1 for a wave-level reason such as a Daytona
 sandbox left after cleanup), `not_reached` (the chosen workloads never crossed the point: pick a
 workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
@@ -282,7 +290,8 @@ and grades only (no server logs).
 4. Run the point: `node scripts/crash-points.mjs --points <name>`. A
    `not_reached` result means the workload never crosses it.
 
-Disarmed, a point costs one comparison (about 4 ns) and is ignored under
+Disarmed, a point costs one comparison (about 4 ns), and the arming variables
+(`PAPERCLIP_CRASH_POINT`, `PAPERCLIP_CRASH_POINT_CONTROL`) are ignored under
 `NODE_ENV=production`, so points may sit on the path before `turn.start`.
 In-process tests use `armCrashPointForTest("<name>:<nth>")`, which throws
 `CrashPointReached` at the hit instead of killing the test runner.
