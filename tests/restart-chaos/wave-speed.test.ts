@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { BaselineRun } from "./ttft-baseline-stats.js";
+import type { ChaosApi } from "./api.js";
 import type { FaultReceipt } from "./types.js";
-import { breachesOf, budgetFor, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
+import { breachesOf, budgetFor, collectWaveSpeed, faultBeforeFirstActivity, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
 import { runMetrics } from "./ttft-baseline-stats.js";
 
 const span = (name: string, startOffsetMs: number, durationMs: number, extra: Record<string, unknown> = {}) =>
@@ -66,6 +67,25 @@ describe("wave speed grade", () => {
     runId: "t", adapter: "claude", environment: "local", phase: "cold",
     events: spans.map(([name, offset, duration]) => ({ eventType: "run.performance.span",
       createdAt: new Date(trace + offset + duration).toISOString(), payload: { span: name, startOffsetMs: offset, durationMs: duration } })),
+  });
+
+  it("treats a run that a fault hit before its first activity as a restart, not a cold start", async () => {
+    const hit = traced(1_000_000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 30_000]]);
+    expect(faultBeforeFirstActivity(hit, [1_010_000], 1_000_000)).toBe(true);
+    expect(faultBeforeFirstActivity(hit, [1_040_000, 990_000], 1_000_000)).toBe(false);
+    expect(faultBeforeFirstActivity(hit, [1_005_000], 1_008_000)).toBe(false);
+    const clean = traced(2_000_000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 4_000]]);
+    const events: Record<string, object[]> = { hit: [...hit.events, { eventType: "turn.started", createdAt: new Date(1_013_000).toISOString() }],
+      clean: clean.events };
+    const api = { get: async (route: string) => (route.includes("/hit/") ? events.hit : events.clean)
+      .map((event: object, seq: number) => ({ ...event, seq })) } as unknown as ChaosApi;
+    const sample = (id: string, createdAt: number) => ({ runs: [{ id, status: "succeeded", createdAt: new Date(createdAt).toISOString(),
+      finishedAt: new Date(createdAt + 60_000).toISOString() }] }) as never;
+    const fault = { kind: "K1", startedAt: 1_010_000, readyAt: 1_012_000 } as FaultReceipt;
+    const speed = await collectWaveSpeed(api, "local", [{ issueId: "i1", adapter: "claude", samples: [sample("hit", 1_000_000)] },
+      { issueId: "i2", adapter: "claude", samples: [sample("clean", 2_000_000)] }], [fault]);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity" && row.start === "cold")).toMatchObject({ measured: { n: 1, p50: 4_000 } });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ adapter: "claude", measured: { n: 1 } });
   });
 
   it("finds the trace start from when its spans were written, never later than it", () => {
