@@ -91,6 +91,16 @@ describe("ttft baseline statistics", () => {
       ttftAfterRunCreated: { p50: 18_000 } });
   });
 
+  it("measures first activity from run creation even when it is anchored at an earlier wake request", () => {
+    // A deferred wake accepted 30 s before the run existed; activity 5 s after run creation.
+    const deferred = run("d", "cold", [
+      reuse("fresh"),
+      span("heartbeat.queue", 0, 100),
+      span("task.time_to_first_agent_activity", -30_000, 35_000, { anchor: "wake_request" }),
+    ], "claude");
+    expect(runMetrics(deferred).firstActivityAfterRunCreatedMs).toBe(5_000);
+  });
+
   it("ranks pre-turn steps by p95 without cumulative wrappers", () => {
     const ranked = rankPreTurnSteps([coldRun("a"), coldRun("b", 2)]);
     expect(ranked[0]).toMatchObject({ step: "runner.process.launch", n: 2, p95: 3_000 });

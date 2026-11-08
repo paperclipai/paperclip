@@ -8863,7 +8863,12 @@ describe("native resumed preparation timing", () => {
     try {
       await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner",
         preparationSpans: [{ name: "heartbeat.queue", startedAtMs, endedAtMs: startedAtMs + 100 }],
-        onEvent: async (event) => { events.push(event); } });
+        onEvent: async (event) => {
+          events.push(event);
+          // A slow run-log sink: writing the first-agent-event span takes 3 s.
+          // That write must not count as time until the agent responded.
+          if (event.payload?.span === "provider.time_to_first_agent_event") clock.mockReturnValue(startedAtMs + 8_000);
+        } });
     } finally { clock.mockRestore(); }
     const span = (name: string) => events.filter((candidate) => candidate.payload?.span === name);
     expect(span("task.time_to_first_agent_activity")).toHaveLength(1);

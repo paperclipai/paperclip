@@ -112,7 +112,14 @@ export function runMetrics(run: BaselineRun): RunMetrics {
   const inputWaitMs = ingress && anchor && ingress.startOffsetMs <= anchor.startOffsetMs ? ingress.durationMs : null;
   return {
     inputWaitMs,
-    firstActivityAfterRunCreatedMs: activity ? Math.max(0, activity.durationMs - (inputWaitMs ?? 0)) : null,
+    // From run creation, as the runtime budget judges it: the start of
+    // heartbeat.queue, else the end of the ingress span. Independent of the
+    // span's own anchor (an earlier wake request or comment is not counted).
+    firstActivityAfterRunCreatedMs: activity ? (() => {
+      const runCreatedAt = queue ? queue.startOffsetMs : ingress ? ingress.startOffsetMs + ingress.durationMs : null;
+      const activityEnd = activity.startOffsetMs + activity.durationMs;
+      return runCreatedAt === null ? activity.durationMs : Math.max(0, activityEnd - runCreatedAt);
+    })() : null,
     ttftAfterRunCreatedMs: ttft ? Math.max(0, ttft.durationMs - (inputWaitMs ?? 0)) : null,
     ttftMs: ttft ? ttft.durationMs : null,
     ttftAnchor: ttft && typeof ttft.attributes.anchor === "string" ? ttft.attributes.anchor : null,

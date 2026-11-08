@@ -10363,6 +10363,9 @@ async function executePaperclipNativeSessionWithinScope(
           const kind = firstMeaningfulAgentEventKind(event);
           if (kind) {
             firstAgentEventRecorded = true;
+            // The commit observation, read before any diagnostic write so a slow
+            // run-log sink never counts as time until the agent responded.
+            const activityAt = Date.now();
             await trace.record({
               name: "provider.time_to_first_agent_event",
               parentName: "agent.turn",
@@ -10373,7 +10376,6 @@ async function executePaperclipNativeSessionWithinScope(
             // The user-visible response (the speed budget's metric): the same
             // anchor as time to first text, to this first visible agent event.
             // Detached like TTFT, so the anchor read never delays the turn.
-            const activityAt = Date.now();
             trace.defer(async () => {
               const activityStart = resolveNativeTimeToFirstTokenStart({
                 traceStartedAtMs: trace.traceStartedAtMs,
