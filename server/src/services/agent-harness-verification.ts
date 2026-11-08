@@ -155,12 +155,17 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }
       : await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
+    let probedAccount: { connectionId: string; grantId: string } | null = null;
     try {
       if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });
       const input = { companyId: agent.companyId, adapterType: agent.adapterType, config,
         executionTarget: target.executionTarget, environmentName: target.environmentName };
       const result = binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },
-        managed => tests.testManagedEnvironment(agent.adapterType, { ...input, config: managed.config }, binding!, managed, agent.id))
+        managed => {
+          // The account this probe actually uses; the recorded digest must describe it.
+          probedAccount = { connectionId: managed.attribution.connectionId, grantId: managed.attribution.grantId };
+          return tests.testManagedEnvironment(agent.adapterType, { ...input, config: managed.config }, binding!, managed, agent.id);
+        })
         : await requireServerAdapter(agent.adapterType).testEnvironment(input);
       assertHarnessTestPassed(result);
       status = "released";
@@ -171,12 +176,10 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const verifiedVersions = await readCredentialVersions();
       const sameEpochs = verifiedVersions.length === credentialVersions.length && verifiedVersions.every((row, index) =>
         row.id === credentialVersions[index]!.id && row.aiSessionEpoch === credentialVersions[index]!.aiSessionEpoch);
-      // The managed probe selects the account again when it starts. If the
-      // binding now selects a different account (a default switched meanwhile),
-      // the probe may have tested that one: record nothing.
-      const reselected = selected ? await selectAccount().catch(() => null) : null;
-      const sameAccount = !selected || (reselected?.attribution.connectionId === selected.attribution.connectionId
-        && reselected?.attribution.grantId === selected.attribution.grantId);
+      // The managed probe selects the account again when it starts. Record the
+      // pass only for the account it actually tested.
+      const sameAccount = !selected || (probedAccount?.connectionId === selected.attribution.connectionId
+        && probedAccount?.grantId === selected.attribution.grantId);
       const verifiedDigest = digest && sameEpochs && sameAccount
         ? harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(verifiedVersions), environmentId, runner })
         : null;

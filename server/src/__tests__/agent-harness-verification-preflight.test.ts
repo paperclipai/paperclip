@@ -231,13 +231,19 @@ describePostgres("saved harness account preflight", () => {
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
   });
 
-  it("records nothing when the default account switches while the probe runs", async () => {
-    probe.mockImplementationOnce(async () => {
-      const other = await aiConnectionService(db).save(agent.companyId, userId, {
-        provider: "openrouter", method: "api_key", ownership: "personal", name: "Second account",
-        apiKey: "fixture-second-key", allAgents: true, agentIds: [],
-      }, "fixture-second-key");
+  it("records nothing when the probe tested a different account than the digest describes (A, then B, then A)", async () => {
+    const other = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openrouter", method: "api_key", ownership: "personal", name: "Second account",
+      apiKey: "fixture-second-key", allAgents: true, agentIds: [],
+    }, "fixture-second-key");
+    // Switch to B after verify() selected A, before the probe selects its account.
+    allocate.mockImplementationOnce(async () => {
       await aiConnectionService(db).setDefault(agent.companyId, userId, other.grantId);
+      return { executionTarget: null, environmentName: "Fixture execution target", fallbackChecks: [], release };
+    });
+    // The probe tests B; switch back to A before verify() could look again.
+    probe.mockImplementationOnce(async () => {
+      await aiConnectionService(db).setDefault(agent.companyId, userId, account.grantId);
       return passed;
     });
     await expect(verify()).resolves.toBe("complete");
