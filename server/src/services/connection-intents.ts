@@ -1,3 +1,5 @@
+import { legacyPoolAccountEvidenceMatches } from "./heartbeat/legacy-pool-account-proof.js";
+import { isDeepStrictEqual } from "node:util";
 import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -26,6 +28,7 @@ import {
   toolPolicies,
   companyMemberships,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueThreadInteractions,
   issueComments,
   issues,
@@ -1365,6 +1368,17 @@ export function connectionIntentService(db: Db) {
       const managed = router && selected ? await managedAgent(run.companyId, run.agentId, String(record(selected.binding)?.provider), { sourceRunId: run.id }) : null;
       const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
       if (!binding) return null;
+      if (router && run.runtimeMode !== "native" && isAiAuthenticationFailure(run.errorCode)) {
+        const [receipt] = await db.select().from(heartbeatRunEvents).where(and(
+          eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
+          eq(heartbeatRunEvents.runId, run.id), isNull(heartbeatRunEvents.sourceInstanceId),
+          eq(heartbeatRunEvents.eventType, "ai_connection.auth_attributed"),
+          eq(heartbeatRunEvents.sourceEventId, `ai-connection-auth-attributed:${run.id}`)));
+        const proof = record(receipt?.payload);
+        if (proof?.schema !== "paperclip.ai-connection-auth-attribution.v1" ||
+            proof.taskKey !== run.contextSnapshot?.aiRouterTaskKey || !isDeepStrictEqual(proof.selection, selected) ||
+            !legacyPoolAccountEvidenceMatches("auth", binding.provider, proof.providerEvidence)) return null;
+      }
       const attribution = record(run.contextSnapshot?.aiConnection);
       if (attribution && attribution.provider !== binding.provider) return null;
       if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {

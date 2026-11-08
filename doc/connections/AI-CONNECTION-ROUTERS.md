@@ -32,16 +32,23 @@ scoped cooldowns. A concurrent cooldown defers fresh work without changing an
 already admitted native session. Temporary database contention leaves replacement
 pending for the existing recovery scheduler; it is not a permanent refusal.
 
-Legacy provider quota text can come from model or tool output. It cannot by itself
-write an account-wide cooldown or authorize failover. For saved Claude and Codex
-subscriptions, the host confirms an account-wide exhausted allowance through the
-saved account's authenticated usage endpoint. Claude must have extra usage disabled;
-Codex must deny account-wide admission with neither available nor unlimited credits.
-The host rechecks the credential epoch before committing attribution and uses the
-observed reset, ignoring CLI reset text. Unsupported methods/providers and unavailable
-or inconclusive usage evidence keep the failed turn held. Historical legacy quota
-receipts without account-side evidence cannot authorize a new pin transition;
-saved workspace and session evidence remain available.
+Legacy provider quota or authentication text can come from model or tool output.
+It cannot by itself write an account-wide cooldown, authorize failover, or mark
+a pooled credential unusable through automatic authentication repair. For saved
+Claude and Codex subscriptions, quota attribution requires account-wide exhaustion
+through the saved account's authenticated usage endpoint. Claude must have extra
+usage disabled; Codex must deny account-wide admission without available or
+unlimited credits. Authentication attribution requires an actual HTTP 401 from
+that saved credential's fixed provider endpoint. Local credential parsing failures,
+network errors and permission-denied responses do not count as that observation.
+The host rechecks the credential epoch before committing attribution. Only quota
+uses an observed reset; authentication waits two hours and runner faults five
+minutes, ignoring model-visible reset hints. Unsupported or inconclusive evidence
+keeps the failed turn held. Historical legacy quota/auth receipts without the
+corresponding account evidence cannot authorize a new pin transition. Saved
+workspace and session evidence remain available. Codex panic text without an
+actual host crash signal may enter its existing bounded same-account retry, but
+cannot cool an account or select a backup.
 
 Healthy tasks stay on their selected account, including after a backup takes over.
 When a conversation fails because of quota, authentication, or confirmed runner

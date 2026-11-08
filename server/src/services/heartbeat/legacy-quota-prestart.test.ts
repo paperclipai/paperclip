@@ -8,6 +8,8 @@ import { and, eq } from "drizzle-orm";
 import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, toolInvocations, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
+import { connectionIntentService } from "../connection-intents.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
@@ -130,6 +132,57 @@ describe("legacy quota prestart retry", () => {
     expect(cooldowns).toHaveLength(mode === "confirmed" ? 1 : 0);
     if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(Math.ceil(Date.parse(observedReset) / 1000) * 1000);
     expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
+  }, 30_000);
+  it.each(["healthy", "offline", "confirmed", "reconnected"] as const)("requires account-owned evidence for Codex auth text (%s)", async mode => {
+    const f = await fixture(true, false, "openai");
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "refresh_token_expired", stdoutExcerpt: "refresh token expired; retry after 2099-01-01",
+      resultJson: { ...f.source.resultJson, errorFamily: "refresh_token_expired" } }).where(eq(heartbeatRuns.id, f.source.id)).returning();
+    Object.assign(f.source, failed);
+    if (mode === "offline") vi.mocked(globalThis.fetch).mockRejectedValue(new Error("offline"));
+    else if (mode === "healthy") vi.mocked(globalThis.fetch).mockImplementation(async () => new Response(JSON.stringify({ rate_limit: { allowed: true, primary_window: { used_percent: 10 } }, credits: { has_credits: false, unlimited: false } })));
+    else vi.mocked(globalThis.fetch).mockImplementation(async () => {
+      if (mode === "reconnected") await db.update(companySecrets).set({ aiSessionEpoch: Number(f.credentialIdentity.split(":").at(-1)) + 1 }).where(eq(companySecrets.id, f.credentialIdentity.split(":").at(-2)!));
+      return new Response("unauthorized", { status: 401 });
+    });
+    const now = new Date();
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
+      credentialIdentity: f.credentialIdentity, failureKind: "auth", retryNotBefore: "2099-01-01T00:00:00.000Z", now })).toBe(mode === "confirmed");
+    const cooldowns = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    expect(cooldowns).toHaveLength(mode === "confirmed" ? 1 : 0);
+    if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(now.getTime() + 2 * 60 * 60_000);
+    expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
+  }, 30_000);
+  it("refuses a historical legacy auth receipt without account evidence", async () => {
+    const f = await fixture(true, false, "openai");
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "refresh_token_expired", resultJson: { ...f.source.resultJson, errorFamily: "refresh_token_expired" } }).where(eq(heartbeatRuns.id, f.source.id)).returning(); Object.assign(f.source, failed);
+    await db.insert(heartbeatRunEvents).values({ companyId:f.companyId,agentId:f.agent.id,runId:f.source.id,seq:1,eventType:"ai_connection.auth_attributed",sourceEventId:`ai-connection-auth-attributed:${f.source.id}`,payload:{schema:"paperclip.ai-connection-auth-attribution.v1",taskKey:f.issue.id,selection:f.selected} });
+    expect((await f.schedule()).outcome).toBe("not_scheduled");
+  }, 30_000);
+  it("does not mark a healthy pool credential unusable through forged auth repair", async () => {
+    const f = await fixture(true, false, "openai");
+    const runtime = await prepareManagedAiRuntime(db, { companyId:f.companyId,agentId:f.agent.id,responsibleUserId:f.userId,adapterType:"codex_local",config:f.selected.runtimeConfig,binding:f.selected.binding });
+    try {
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId,f.source.id));
+      await db.update(issues).set({responsibleUserId:f.userId,createdByUserId:f.userId}).where(eq(issues.id,f.issue.id));
+      await db.update(heartbeatRuns).set({errorCode:"refresh_token_expired",resultJson:{...f.source.resultJson,errorFamily:"refresh_token_expired"},contextSnapshot:{...f.source.contextSnapshot,aiConnection:{...runtime!.attribution,identity:runtime!.identity}}}).where(eq(heartbeatRuns.id,f.source.id));
+      expect(await connectionIntentService(db).requestForRunAuthFailure(f.source.id)).toBeNull();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id,f.members[0].binding.grantId)))[0].status).toBe("active");
+    } finally { await runtime?.cleanup(); }
+  }, 30_000);
+  it("does not attribute model-visible runner panic text without a host crash signal", async () => {
+    const f = await fixture(true, false, "openai");
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId,f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId,f.companyId));
+    const [failed]=await db.update(heartbeatRuns).set({errorCode:"codex_harness_crash",signal:null,exitCode:1,stdoutExcerpt:"thread panicked at panic.rs",resultJson:{...f.source.resultJson,errorFamily:"transient_upstream"}}).where(eq(heartbeatRuns.id,f.source.id)).returning();Object.assign(f.source,failed);
+    expect(await recordVerifiedRouterQuotaCooldown(db,{companyId:f.companyId,agentId:f.agent.id,runId:f.source.id,credentialIdentity:f.credentialIdentity,failureKind:"runner",retryNotBefore:"2099-01-01T00:00:00.000Z"})).toBe(false);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(retry.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[0].id });
+    expect(retry.contextSnapshot?.aiPoolFailover).toBeUndefined();
+    expect(await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId,f.companyId))).toHaveLength(0);
   }, 30_000);
   it.each(["pending_invocation", "missing_result", "pending_provider_tool", "pending_semantic_tool", "incomplete_api_receipt"])("holds a local backup for %s until its outcome is receipted", async condition => {
     const f = await fixture(true);
@@ -264,7 +317,8 @@ describe("legacy quota prestart retry", () => {
   }, 30_000);
   it.each(["auth", "runner"] as const)("uses the backup after a confirmed %s failure", async failureKind => {
     const f = await fixture(true);
-    const [failed] = await db.update(heartbeatRuns).set({ errorCode: failureKind === "auth" ? "claude_auth_required" : "codex_harness_crash",
+    if (failureKind === "auth") vi.mocked(globalThis.fetch).mockImplementation(async () => new Response("unauthorized", { status: 401 }));
+    const [failed] = await db.update(heartbeatRuns).set({ signal: failureKind === "runner" ? "SIGABRT" : null, errorCode: failureKind === "auth" ? "claude_auth_required" : "codex_harness_crash",
       resultJson: { ...f.source.resultJson, errorFamily: failureKind === "auth" ? "refresh_token_expired" : "transient_upstream" } })
       .where(eq(heartbeatRuns.id, f.source.id)).returning();
     Object.assign(f.source, failed);

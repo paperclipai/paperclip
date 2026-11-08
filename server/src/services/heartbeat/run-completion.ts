@@ -48,7 +48,7 @@ import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
 import { parseObject } from "../../adapters/utils.js";
-import { observeLegacyPoolQuota, isCurrentLegacyPoolQuotaProof } from "./legacy-pool-quota-proof.js";
+import { observeLegacyPoolAccountFailure, isCurrentLegacyPoolAccountProof } from "./legacy-pool-account-proof.js";
 import { isDeepStrictEqual } from "node:util";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
@@ -95,7 +95,7 @@ function providerQuotaRetryAt(value: unknown): string | undefined {
     ? extractClaudeRetryNotBefore({ errorMessage: failure.message })?.toISOString() : undefined);
 }
 
-/** Only an in-process credential identity can bind a quota result to a pin. */
+/** Credential identity and host-owned failure evidence bind cooldown attribution to the pin. */
 export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   runId: string; companyId: string; agentId: string; credentialIdentity: string | undefined;
   retryNotBefore: string | null | undefined; now?: Date; failureKind?: "quota" | "auth" | "runner";
@@ -104,13 +104,14 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   const [source] = await db.select({ run: heartbeatRuns, adapterType: agents.adapterType }).from(heartbeatRuns)
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
-  const legacyQuota = source && source.run.runtimeMode !== "native" && (input.failureKind ?? "quota") === "quota";
+  const kind = input.failureKind ?? "quota";
+  const legacyAccountFailure = source && source.run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") ? kind : null;
   const proofScope = source ? { companyId: input.companyId, agentId: input.agentId, userId: source.run.responsibleUserId,
     selection: parseObject(source.run.contextSnapshot?.aiRouterSelection) as unknown as AiConnectionRouterSelection,
     credentialIdentity: input.credentialIdentity } : null;
-  const quotaProof = legacyQuota && proofScope ? await observeLegacyPoolQuota(db, proofScope, now) : null;
-  if (legacyQuota && !quotaProof) return false;
-  const supplied = quotaProof ? quotaProof.retryAt.getTime() : input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
+  const accountProof = legacyAccountFailure && proofScope ? await observeLegacyPoolAccountFailure(db, proofScope, now, legacyAccountFailure) : null;
+  if (legacyAccountFailure && !accountProof) return false;
+  const supplied = accountProof ? accountProof.retryAt.getTime() : kind === "quota" && input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
   const deadline = new Date(Number.isFinite(supplied) && supplied > now.getTime()
     ? supplied
     : now.getTime() + (input.failureKind === "runner" ? 5 * 60_000 : POOL_ACCOUNT_DEFAULT_COOLDOWN_MS));
@@ -135,8 +136,8 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     }
     const context = parseObject(run.contextSnapshot);
     const selection = parseObject(context.aiRouterSelection);
-    if (legacyQuota && (!quotaProof || !proofScope || !isDeepStrictEqual(selection, proofScope.selection) ||
-        !(await isCurrentLegacyPoolQuotaProof(tx as unknown as Db, proofScope, quotaProof)))) return false;
+    if (legacyAccountFailure && (!accountProof || !proofScope || !isDeepStrictEqual(selection, proofScope.selection) ||
+        !(await isCurrentLegacyPoolAccountProof(tx as unknown as Db, proofScope, accountProof)))) return false;
     const binding = parseObject(selection.binding);
     const poolId = readNonEmptyString(selection.poolId);
     const taskKey = readNonEmptyString(context.aiRouterTaskKey);
@@ -165,11 +166,11 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     const eventId = `ai-connection-${kind}-attributed:${run.id}`;
     const [existing] = await tx.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.sourceEventId, eventId))).limit(1);
     const existingPayload = parseObject(existing?.payload);
-    const receiptDeadline = existing && !Number.isFinite(supplied) ? readNonEmptyString(existingPayload.retryAt) : deadline.toISOString();
+    const receiptDeadline = existing && (kind !== "quota" || !Number.isFinite(supplied)) ? readNonEmptyString(existingPayload.retryAt) : deadline.toISOString();
     if (!receiptDeadline || !Number.isFinite(Date.parse(receiptDeadline))) return false;
     const payload = { schema: `paperclip.ai-connection-${kind}-attribution.v1`, companyId: run.companyId, runId: run.id,
       agentId: run.agentId, poolId, taskKey, memberId: selection.memberId, connectionId, grantId, selection, retryAt: receiptDeadline,
-      ...(quotaProof ? { providerEvidence: quotaProof.providerEvidence } : {}),
+      ...(accountProof ? { providerEvidence: accountProof.providerEvidence } : {}),
       quotaIdentityHash: createHash("sha256").update(cooldownIdentity).digest("hex") };
     if (existing) {
       const [matches] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.id, existing.id),

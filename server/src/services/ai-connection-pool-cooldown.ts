@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const POOL_ACCOUNT_DEFAULT_COOLDOWN_MS = 2 * 60 * 60_000;
+
 export interface PoolRunnerScope {
   environmentId: string | null;
 }

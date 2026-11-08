@@ -1,3 +1,4 @@
+import { legacyPoolAccountEvidenceMatches } from "./legacy-pool-account-proof.js";
 import { legacyRunHasUnsettledActions } from "../legacy-action-outcomes.js";
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES } from "../native-runtime/native-pool-failure.js";
@@ -12,7 +13,7 @@ import { hasRequiredWorkspaceRecovery } from "../workspace-restore-recovery-stat
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export type PoolFailureKind = "quota" | "auth" | "runner";
-export const POOL_ACCOUNT_DEFAULT_COOLDOWN_MS = 2 * 60 * 60_000;
+export { POOL_ACCOUNT_DEFAULT_COOLDOWN_MS } from "../ai-connection-pool-cooldown.js";
 
 export function poolConversationHandoff(run: Run): string {
   const bounded = (value: unknown) => typeof value === "string" ? value.slice(-8_000).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "") : null;
@@ -24,7 +25,7 @@ export function poolConversationHandoff(run: Run): string {
     ["```json", evidence, "```"].join("\n")].join("\n\n");
 }
 
-export function poolFailureKind(run: Pick<Run, "status" | "errorCode" | "resultJson" | "contextSnapshot"> & Partial<Pick<Run, "runtimeMode">> & Partial<Pick<Run, "runnerProfileJson">>): PoolFailureKind | null {
+export function poolFailureKind(run: Pick<Run, "status" | "errorCode" | "resultJson" | "contextSnapshot"> & Partial<Pick<Run, "runtimeMode" | "signal">> & Partial<Pick<Run, "runnerProfileJson">>): PoolFailureKind | null {
   if (run.status !== "failed" || !parseObject(run.contextSnapshot?.aiRouterSelection).poolId) return null;
   if (run.runtimeMode === "native") {
     const failure = readProviderFailure(run.resultJson?.providerFailure);
@@ -41,7 +42,8 @@ export function poolFailureKind(run: Pick<Run, "status" | "errorCode" | "resultJ
       (parseObject(run.resultJson?.configurationIncomplete).reason === "ai_connection_unavailable" &&
         preparationFailure.kind === "configuration" && preparationFailure.code !== "pool_execution_policy_incompatible") ||
       failure?.category === "authentication") return "auth";
-  if (["codex_harness_crash", "process_lost", "adapter_engine_unavailable"].includes(String(run.errorCode))) return "runner";
+  if (run.errorCode === "codex_harness_crash" && ["SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL"].includes(run.signal ?? "")) return "runner";
+  if (["process_lost", "adapter_engine_unavailable"].includes(String(run.errorCode))) return "runner";
   return null;
 }
 
@@ -96,7 +98,8 @@ export async function switchFailedPoolPin(db: Db, input: {
   if (configured.mode !== "router" || configured.connectionId !== selection.poolId) return null;
   const bootstrap = parseObject(run.resultJson?.executionRecovery);
   const admissionAuthFailure = kind === "auth" && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false &&
-    parseObject(run.resultJson?.configurationIncomplete).reason === "ai_connection_unavailable";
+    parseObject(run.resultJson?.configurationIncomplete).reason === "ai_connection_unavailable" &&
+    parseObject(parseObject(run.runnerProfileJson?.adapterDispatch).poolPreparationFailure).kind === "configuration";
   if (!admissionAuthFailure) {
     const [receipt] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId),
       eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.agentId, run.agentId),
@@ -105,9 +108,8 @@ export async function switchFailedPoolPin(db: Db, input: {
     const proof = parseObject(receipt?.payload);
     if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
         !isDeepStrictEqual(proof.selection, selection)) return null;
-    const expectedEvidence = selection.binding.provider === "anthropic" ? "anthropic_oauth_usage_v1"
-      : selection.binding.provider === "openai" ? "codex_wham_v1" : null;
-    if (kind === "quota" && run.runtimeMode !== "native" && (!expectedEvidence || proof.providerEvidence !== expectedEvidence)) return null;
+    if (run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") &&
+        !legacyPoolAccountEvidenceMatches(kind, selection.binding.provider, proof.providerEvidence)) return null;
   }
   return aiConnectionRouterService(db).transitionQuotaPin({ companyId: run.companyId, poolId: selection.poolId,
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
@@ -158,9 +160,8 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId))).for("share");
     const configured = parseObject(effectiveAiConnectionInput(agent?.runtimeConfig));
     if (!agent || ["paused", "terminated"].includes(agent.status) || configured.mode !== "router" || configured.connectionId !== selection.poolId) return;
-    const expectedEvidence = selection.binding.provider === "anthropic" ? "anthropic_oauth_usage_v1"
-      : selection.binding.provider === "openai" ? "codex_wham_v1" : null;
-    if (kind === "quota" && source.runtimeMode !== "native" && (!expectedEvidence || proof.providerEvidence !== expectedEvidence)) return;
+    if (source.runtimeMode !== "native" && (kind === "quota" || kind === "auth") &&
+        !legacyPoolAccountEvidenceMatches(kind, selection.binding.provider, proof.providerEvidence)) return;
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
     if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
