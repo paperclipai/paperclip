@@ -10477,8 +10477,13 @@ describe("native warm session supervision", () => {
         setTimeout(releaseGate, 100);
         const release = await followUp;
         expect(release).toBeTypeOf("function");
+        // The follow-up's own execution is admitted at once: the previous owner
+        // handed every scope back before the claim returned.
+        const followUpExecution = { ...second, binding: { ...second.binding, runId: followUpRunId } };
+        await expect(executePaperclipNativeSession({ db: leaseDb(followUpExecution), execution: followUpExecution,
+          runnerInstanceId: identity, runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity,
+            remoteCwd: `/tmp/${identity}` }, instructionWorkingCopy: copy(followUpRunId) })).resolves.toBeDefined();
         await previous;
-        // Abandon the claimed preparation so the warm owner is retired.
         await release!();
       } else {
         await expect(followUp).rejects.toThrow("native_session_supervisor_busy");

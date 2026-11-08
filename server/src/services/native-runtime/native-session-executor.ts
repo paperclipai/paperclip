@@ -748,11 +748,12 @@ registerIdleLocalWorkProbe(readNativeSessionIdleWork);
  */
 export const warmSessionReleaseWait = { timeoutMs: 30_000, pollMs: 25 };
 
-async function waitForWarmNativeSessionIdle(scope: string, entry: WarmNativeSession): Promise<void> {
+async function waitForWarmNativeSessionSettled(scope: string): Promise<void> {
   const deadline = Date.now() + warmSessionReleaseWait.timeoutMs;
-  // Wait only while the owner's turn is over and it is releasing the session.
-  while (warmNativeSessions.get(scope) === entry && entry.busy && settlingNativeSessionScopes.has(scope)
-    && Date.now() < deadline) {
+  // Wait while the owner's turn is over and it is releasing the session, until
+  // it has handed every scope back (its execution's final cleanup), so the
+  // follow-up's own admission does not meet the old owner's scopes either.
+  while (settlingNativeSessionScopes.has(scope) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, warmSessionReleaseWait.pollMs));
   }
 }
@@ -779,7 +780,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     })) || prior.workspace.cwd !== input.workspace.cwd) return null;
   const scope = nativeSessionScopeKey(prior);
   const busyEntry = warmNativeSessions.get(scope);
-  if (busyEntry?.busy) await waitForWarmNativeSessionIdle(scope, busyEntry);
+  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope)) await waitForWarmNativeSessionSettled(scope);
   // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
@@ -9391,86 +9392,90 @@ export async function executePaperclipNativeSession(input: {
     }
     throw error;
   } finally {
-    startup.providerPackSourceAbort.abort(new Error("native_execution_startup_completed"));
-    for (const lease of diagnosticLeases) lease.retire();
-    let startupUnsettled = false;
-    if (startup.executionContext) {
-      if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
-      startupUnsettled = !(await startup.executionContext.drain());
-      startup.executionContext.finish();
-    }
-    // Join preparation cleanup before release; keep cancellation reachable
-    // until the exact retained owner has finished the handover.
-    await startup.executionLeaseRenewal?.stop().catch(() => undefined);
-    if (startup.unstartedClaim && !nativeRunsDetachingForRestart.has(runId)) {
-      await releaseUnstartedNativeExecutionClaim({ db: input.db, runId, companyId: input.execution.binding.companyId,
-        issueId: input.execution.binding.issueId, ...startup.unstartedClaim }).catch(error => {
-        logger.warn({ err: error, runId }, "Native preparation claim release failed; the control deadline will settle it");
-      });
-    }
-    let stagedCleanupFailed = false;
     try {
-      await cleanupStagedAttachments();
-    } catch (cleanupError) {
-      stagedCleanupFailed = true;
-      // Cleanup is a confidentiality incident, but it occurs after the native
-      // provider may already have completed the turn. Reclassifying that turn
-      // as failed could replay provider side effects. Emit a private runtime
-      // health event while preserving the provider result/error disposition.
-      await input
-        .onEvent?.({
-          eventType: "native.attachment_staging_cleanup_failed",
-          level: "error",
-          message: "Native inbound attachment staging cleanup failed.",
-          payload: {
-            runId: input.execution.binding.runId,
-            issueId: input.execution.binding.issueId,
-            executionAlreadyFailed: executionFailure !== undefined,
-          },
-        })
-        .catch(() => undefined);
-    }
-    releaseRetainedNativeSessionCleanup(input.db, {
-      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
-      issueId: input.execution.binding.issueId });
-    const pendingRelease = ownsSessionScope && sessionScopeId
-      && executingRunnerdSessionScopes.get(sessionScopeId) === runId
-      ? warmNativeSessions.get(sessionScopeId) : undefined;
-    try {
-      if (pendingRelease?.runId === runId && pendingRelease.finishRelease) {
-        if (executionFailure !== undefined || startupUnsettled || stagedCleanupFailed) {
-          pendingRelease.closeOnReleaseReason = "warm native session final cleanup failed";
+      startup.providerPackSourceAbort.abort(new Error("native_execution_startup_completed"));
+      for (const lease of diagnosticLeases) lease.retire();
+      let startupUnsettled = false;
+      if (startup.executionContext) {
+        if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
+        startupUnsettled = !(await startup.executionContext.drain());
+        startup.executionContext.finish();
+      }
+      // Join preparation cleanup before release; keep cancellation reachable
+      // until the exact retained owner has finished the handover.
+      await startup.executionLeaseRenewal?.stop().catch(() => undefined);
+      if (startup.unstartedClaim && !nativeRunsDetachingForRestart.has(runId)) {
+        await releaseUnstartedNativeExecutionClaim({ db: input.db, runId, companyId: input.execution.binding.companyId,
+          issueId: input.execution.binding.issueId, ...startup.unstartedClaim }).catch(error => {
+          logger.warn({ err: error, runId }, "Native preparation claim release failed; the control deadline will settle it");
+        });
+      }
+      let stagedCleanupFailed = false;
+      try {
+        await cleanupStagedAttachments();
+      } catch (cleanupError) {
+        stagedCleanupFailed = true;
+        // Cleanup is a confidentiality incident, but it occurs after the native
+        // provider may already have completed the turn. Reclassifying that turn
+        // as failed could replay provider side effects. Emit a private runtime
+        // health event while preserving the provider result/error disposition.
+        await input
+          .onEvent?.({
+            eventType: "native.attachment_staging_cleanup_failed",
+            level: "error",
+            message: "Native inbound attachment staging cleanup failed.",
+            payload: {
+              runId: input.execution.binding.runId,
+              issueId: input.execution.binding.issueId,
+              executionAlreadyFailed: executionFailure !== undefined,
+            },
+          })
+          .catch(() => undefined);
+      }
+      releaseRetainedNativeSessionCleanup(input.db, {
+        companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+      }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+        issueId: input.execution.binding.issueId });
+      const pendingRelease = ownsSessionScope && sessionScopeId
+        && executingRunnerdSessionScopes.get(sessionScopeId) === runId
+        ? warmNativeSessions.get(sessionScopeId) : undefined;
+      try {
+        if (pendingRelease?.runId === runId && pendingRelease.finishRelease) {
+          if (executionFailure !== undefined || startupUnsettled || stagedCleanupFailed) {
+            pendingRelease.closeOnReleaseReason = "warm native session final cleanup failed";
+          }
+          await pendingRelease.finishRelease();
         }
-        await pendingRelease.finishRelease();
+      } finally {
+        if (ownsPhysicalIngress && physicalIngressKey && executingNativeIngressAllocations.get(physicalIngressKey) === ownerToken) {
+          executingNativeIngressAllocations.delete(physicalIngressKey);
+        }
+        if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
+          executingNativeOwnerScopes.delete(ownerScope);
+        }
+        if (
+          ownsSessionScope &&
+          sessionScopeId !== null &&
+          executingRunnerdSessionScopes.get(sessionScopeId) ===
+            input.execution.binding.runId
+        ) {
+          executingRunnerdSessionScopes.delete(sessionScopeId);
+        }
+        startup.resolve(null);
+        startup.settle();
+        if (nativeSessionStartups.get(runId) === startup) {
+          nativeSessionStartups.delete(runId);
+          setNativeExecutionActive(runId, false);
+        }
       }
+      if (startupUnsettled) throw new NativeStartupCleanupPendingError(startup.executionContext!.id,
+        startup.executionContext!.deadlineAtMs, startup.leaseOwner!, startup.executionContext!.pluginSupported,
+        input.runnerExecutionTarget?.kind === "remote" ? input.runnerExecutionTarget.leaseId ?? undefined : undefined);
     } finally {
-      if (ownsPhysicalIngress && physicalIngressKey && executingNativeIngressAllocations.get(physicalIngressKey) === ownerToken) {
-        executingNativeIngressAllocations.delete(physicalIngressKey);
-      }
-      if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
-        executingNativeOwnerScopes.delete(ownerScope);
-      }
-      if (
-        ownsSessionScope &&
-        sessionScopeId !== null &&
-        executingRunnerdSessionScopes.get(sessionScopeId) ===
-          input.execution.binding.runId
-      ) {
-        executingRunnerdSessionScopes.delete(sessionScopeId);
-      }
-      startup.resolve(null);
-      startup.settle();
-      if (nativeSessionStartups.get(runId) === startup) {
-        nativeSessionStartups.delete(runId);
-        setNativeExecutionActive(runId, false);
-      }
+      // Always hand the settling mark back, even if a cleanup step throws.
       const settledScope = nativeSessionScopeKey(input.execution);
       if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
     }
-    if (startupUnsettled) throw new NativeStartupCleanupPendingError(startup.executionContext!.id,
-      startup.executionContext!.deadlineAtMs, startup.leaseOwner!, startup.executionContext!.pluginSupported,
-      input.runnerExecutionTarget?.kind === "remote" ? input.runnerExecutionTarget.leaseId ?? undefined : undefined);
   }
 }
 
