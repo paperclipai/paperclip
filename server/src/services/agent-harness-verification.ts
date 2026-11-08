@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { agents, companies, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { agents, companies, companySecrets, type Db } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils/server-utils";
@@ -130,10 +130,20 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
       acpxAgent: config.acpxAgent, binding,
     }) : null;
-    // The account and credential generation the binding selected, never the credential.
+    // The account and credential generation the binding selected, never the
+    // credential: the selected connection and grant, and the current version
+    // (and AI session epoch) of every secret its credential reads. Timestamps
+    // that change on every use are left out, so a pass stays reusable.
+    const connection = selected?.connection;
+    const credentialRefs = [...(connection?.credentialSecretRefs ?? []), ...(selected?.grant?.credentialSecretRefs ?? [])];
+    const credentialSecretIds = [...new Set(credentialRefs.map(ref => ref.secretId))];
+    const credentialVersions = credentialSecretIds.length ? await db.select({ id: companySecrets.id,
+      latestVersion: companySecrets.latestVersion, aiSessionEpoch: companySecrets.aiSessionEpoch })
+      .from(companySecrets).where(and(eq(companySecrets.companyId, agent.companyId), inArray(companySecrets.id, credentialSecretIds)))
+      .then(rows => rows.sort((a, b) => a.id.localeCompare(b.id))) : [];
     const account = selected ? { ...selected.attribution,
-      connectionUpdatedAt: (selected as { connection?: { updatedAt?: unknown } }).connection?.updatedAt ?? null,
-      grantUpdatedAt: (selected as { grant?: { updatedAt?: unknown } }).grant?.updatedAt ?? null } : null;
+      credentialSecretRefs: credentialRefs, externalCredential: connection?.externalCredential ?? null,
+      credentialVersions } : null;
     // A configuration that already passed in this runner image is verified:
     // a restart or a return to verifying never boots another test sandbox.
     const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, account, environmentId, runner });

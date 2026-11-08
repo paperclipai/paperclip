@@ -9,6 +9,7 @@ import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { secretService } from "../services/secrets.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -195,6 +196,17 @@ describePostgres("saved harness account preflight", () => {
     // The digest is keyed: it is not a plain hash a reader could recompute.
     const [stored] = await db.select().from(agents).where(eq(agents.id, agent.id));
     expect(stored!.harnessVerifiedDigest).not.toContain("second-literal");
+  });
+
+  it("tests again after the selected AI account's credential rotates", async () => {
+    await expect(verify()).resolves.toBe("complete");
+    const [grant] = await db.select({ refs: connectionGrants.credentialSecretRefs }).from(connectionGrants)
+      .where(eq(connectionGrants.id, account.grantId));
+    const secretIds = (grant?.refs ?? []).map(ref => ref.secretId);
+    expect(secretIds.length).toBeGreaterThan(0);
+    await secretService(db).rotate(secretIds[0]!, { value: "fixture-rotated-key" }, { userId });
+    await expect(verify()).resolves.toBe("complete");
+    expect(allocate).toHaveBeenCalledTimes(2);
   });
 
   it("does not record a failed verification", async () => {

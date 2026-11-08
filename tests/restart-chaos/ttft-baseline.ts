@@ -356,7 +356,6 @@ async function main() {
           timeline.add("baseline_verify_fault_point", { adapter, agentId, state });
           if (state === "verifying") {
             fault = await supervisor.fault(verifyFault, 0, `verify-${index}`);
-            faults.push({ kind: verifyFault, readyAt: fault.readyAt ?? Date.now(), runIds: [] });
           }
         }
         const settled = await waitForRest(api, supervisor, issueId, 1);
@@ -365,6 +364,9 @@ async function main() {
           timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "verify" });
           continue;
         }
+        // The task's run is created only after verification, so name it once it
+        // exists: the recovery table then measures fault ready to first event.
+        if (fault) faults.push({ kind: verifyFault!, readyAt: fault.readyAt ?? Date.now(), runIds: settled.runs.map(runIdOf) });
         timeline.add("baseline_verify_done", { adapter, agentId, issueId, faulted: Boolean(fault), runs: settled.runs.length });
       }
     }
