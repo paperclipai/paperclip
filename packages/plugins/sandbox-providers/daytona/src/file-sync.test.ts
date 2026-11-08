@@ -1200,6 +1200,33 @@ describe("daytona file-sync inbound gzip transport fallback (sandbox without zst
     }
   });
 
+  it("never promotes a truncated gzip upload: gzip's CRC check fails the sync and the scratch is swept", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-gzip-"));
+    try {
+      const remoteDir = path.join(root, "remote");
+      await fs.mkdir(remoteDir);
+      const sourcePath = path.join(root, "workspace-upload.tar");
+      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      const targetPath = path.posix.join(remoteDir, "workspace-upload.tar");
+      const { sandbox } = createRealExecSandbox({
+        hideZstd: true,
+        uploadOverride: async (uploads) => {
+          for (const upload of uploads) {
+            const bytes = await fs.readFile(upload.source);
+            await fs.writeFile(upload.destination, bytes.subarray(0, Math.floor(bytes.length / 2)));
+          }
+          return true;
+        },
+      });
+      await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+        operations: [{ operationId: "op-1", files: [{ sourcePath, targetPath, kind: "file" }] }] })).rejects.toThrow(/decompress failed|exit 49/);
+      await expect(fs.stat(targetPath)).rejects.toThrow(/ENOENT/);
+      expect((await fs.readdir(remoteDir)).filter((name) => name.includes(".paperclip-upload"))).toHaveLength(0);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("prefers zstd when the sandbox has both, and uploads raw when it has neither", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-gzip-"));
     try {
