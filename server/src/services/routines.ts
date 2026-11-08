@@ -115,7 +115,7 @@ export function routineWebhookUrl(publicId: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
 }
 
-async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
+export async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
     .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
     .from(companies)

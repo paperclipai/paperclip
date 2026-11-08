@@ -26,6 +26,7 @@ import {
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
+  routineRevisions,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
@@ -760,6 +761,270 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(coachGrantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
     expect(coachGrantKeys).not.toContain("agents:configure");
     expect(coachGrantKeys).not.toContain("skills:create");
+  });
+
+  it("resolves a real responsible user for bundle routines instead of the built-in-bundles marker", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await createAgentLifecycle(db).requestHire(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await builtInAgentService(db).ensure(companyId, "reflection-coach");
+
+    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(routine!.responsibleUserId).toBe("responsible-user");
+    expect(routine!.responsibleUserId).not.toBe("built-in-bundles");
+    expect(routine!.createdByUserId).toBeNull();
+    expect(routine!.updatedByUserId).toBeNull();
+
+    const [revision] = await db
+      .select()
+      .from(routineRevisions)
+      .where(eq(routineRevisions.routineId, routine!.id));
+    expect(revision!.responsibleUserId).toBe("responsible-user");
+    expect((revision!.snapshot as { routine?: { responsibleUserId?: string | null } }).routine?.responsibleUserId)
+      .toBe("responsible-user");
+  });
+
+  it("repairs a legacy built-in-bundles responsible user without clobbering operator customizations", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "responsible-user",
+      status: "active",
+    });
+    await createAgentLifecycle(db).requestHire(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    const [installed] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+
+    await db
+      .update(routines)
+      .set({ responsibleUserId: "built-in-bundles", title: "Operator-customized title" })
+      .where(eq(routines.id, installed!.id));
+    await db
+      .update(routineRevisions)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.id, installed!.latestRevisionId!));
+
+    await builtIns.ensure(companyId, "reflection-coach");
+
+    const [repaired] = await db.select().from(routines).where(eq(routines.id, installed!.id));
+    expect(repaired!.responsibleUserId).toBe("responsible-user");
+    expect(repaired!.title).toBe("Operator-customized title");
+    const [repairedRevision] = await db
+      .select()
+      .from(routineRevisions)
+      .where(eq(routineRevisions.id, repaired!.latestRevisionId!));
+    expect(repairedRevision!.responsibleUserId).toBe("responsible-user");
+    expect((repairedRevision!.snapshot as { routine?: { responsibleUserId?: string | null } }).routine?.responsibleUserId)
+      .toBe("responsible-user");
+  });
+
+  it("repairs a legacy built-in-bundles responsible user before running the bundle routine", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "operator-user",
+      status: "active",
+    });
+    await createAgentLifecycle(db).requestHire(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    const [installed] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    await db
+      .update(routines)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routines.id, installed!.id));
+    await db
+      .update(routineRevisions)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.id, installed!.latestRevisionId!));
+
+    await lifecycleWorker.stop();
+    lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "pending" });
+    try {
+      const run = await builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", {
+        userId: "operator-user",
+      });
+      expect(run.status).toBe("issue_created");
+
+      const [repaired] = await db.select().from(routines).where(eq(routines.id, installed!.id));
+      expect(repaired!.responsibleUserId).toBe("operator-user");
+      const [repairedRevision] = await db
+        .select()
+        .from(routineRevisions)
+        .where(eq(routineRevisions.id, repaired!.latestRevisionId!));
+      expect(repairedRevision!.responsibleUserId).toBe("operator-user");
+      const [routineRun] = await db.select().from(routineRuns).where(eq(routineRuns.companyId, companyId));
+      expect(routineRun!.responsibleUserId).toBe("operator-user");
+      const [createdIssue] = await db.select().from(issues).where(eq(issues.companyId, companyId));
+      expect(createdIssue!.responsibleUserId).toBe("operator-user");
+    } finally {
+      await lifecycleWorker.stop();
+      await db.delete(routineRuns).where(eq(routineRuns.companyId, companyId));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    }
+  });
+
+  async function poisonBundleRoutine(companyId: string, patch: Partial<typeof routines.$inferInsert> = {}) {
+    const [installed] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    await db
+      .update(routines)
+      .set({ responsibleUserId: "built-in-bundles", ...patch })
+      .where(eq(routines.id, installed!.id));
+    await db
+      .update(routineRevisions)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.routineId, installed!.id));
+    return installed!;
+  }
+
+  async function expectNoMarkedRevisions(routineId: string, responsibleUserId: string) {
+    const revisions = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, routineId));
+    expect(revisions.length).toBeGreaterThan(0);
+    for (const revision of revisions) {
+      expect(revision.responsibleUserId).toBe(responsibleUserId);
+      expect((revision.snapshot as { routine?: { responsibleUserId?: string | null } }).routine?.responsibleUserId)
+        .toBe(responsibleUserId);
+    }
+  }
+
+  it("repairs a legacy built-in-bundles responsible user when the schedule is enabled", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    const installed = await poisonBundleRoutine(companyId);
+
+    const enabled = await builtIns.enableRoutineSchedule(companyId, "reflection-coach", "recent-agent-reflection", {
+      userId: "board-user",
+    });
+    expect(enabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      scheduleEnabled: true,
+    });
+    const [repaired] = await db.select().from(routines).where(eq(routines.id, installed.id));
+    expect(repaired!.responsibleUserId).toBe("board-user");
+    await expectNoMarkedRevisions(installed.id, "board-user");
+  });
+
+  it("repairs a legacy built-in-bundles responsible user on reset instead of re-persisting it", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    const installed = await poisonBundleRoutine(companyId, { title: "Operator-customized title" });
+
+    await builtIns.reset(companyId, "reflection-coach", { resources: ["routine"] }, instructionOperator);
+
+    const [reset] = await db.select().from(routines).where(eq(routines.id, installed.id));
+    expect(reset!.title).toBe("Review recent agent trajectories for coaching proposals");
+    expect(reset!.responsibleUserId).toBe("local-board");
+    await expectNoMarkedRevisions(installed.id, "local-board");
+  });
+
+  it("repairs marked revisions of a routine whose owner was already fixed", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach");
+    const installed = await poisonBundleRoutine(companyId, { responsibleUserId: "operator-pick" });
+
+    await builtIns.ensure(companyId, "reflection-coach");
+
+    const [repaired] = await db.select().from(routines).where(eq(routines.id, installed.id));
+    expect(repaired!.responsibleUserId).toBe("operator-pick");
+    await expectNoMarkedRevisions(installed.id, "operator-pick");
+  });
+
+  it("defers the bundle routine when the company has no user to own it", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ownerless",
+      issuePrefix: issuePrefix(companyId),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const builtIns = builtInAgentService(db);
+
+    const deferred = await builtIns.ensure(companyId, "reflection-coach");
+    expect(deferred.agentId).toBeTruthy();
+    expect(deferred.resources.find((resource) => resource.resourceKind === "skill")).toMatchObject({
+      stockStatus: "stock_current",
+    });
+    expect(deferred.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      resourceId: null,
+      stockStatus: "missing",
+      resetAvailable: true,
+    });
+    expect(await db.select().from(routines).where(eq(routines.companyId, companyId))).toHaveLength(0);
+    const deferrals = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "built_in_agent.routine_deferred")));
+    expect(deferrals).toEqual([
+      expect.objectContaining({ entityId: deferred.agentId, details: expect.objectContaining({ reason: "no_responsible_user" }) }),
+    ]);
+
+    const materialized = await builtIns.ensure(companyId, "reflection-coach", {}, { createdByUserId: "enabling-user" });
+    expect(materialized.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      stockStatus: "stock_current",
+    });
+    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    expect(routine!.responsibleUserId).toBe("enabling-user");
+    await expectNoMarkedRevisions(routine!.id, "enabling-user");
+  });
+
+  it("disables a legacy built-in-bundles routine schedule even when no user can own it", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ownerless",
+      issuePrefix: issuePrefix(companyId),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const builtIns = builtInAgentService(db);
+    await builtIns.ensure(companyId, "reflection-coach", {}, { createdByUserId: "enabling-user" });
+    await builtIns.enableRoutineSchedule(companyId, "reflection-coach", "recent-agent-reflection", {
+      userId: "enabling-user",
+    });
+    const installed = await poisonBundleRoutine(companyId);
+
+    const disabled = await builtIns.disableRoutineSchedule(companyId, "reflection-coach", "recent-agent-reflection", {
+      agentId: null,
+    });
+    expect(disabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+      scheduleEnabled: false,
+    });
+    const [paused] = await db.select().from(routines).where(eq(routines.id, installed.id));
+    expect(paused!.status).toBe("paused");
+    expect(paused!.responsibleUserId).toBe("built-in-bundles");
+
+    await expect(
+      builtIns.enableRoutineSchedule(companyId, "reflection-coach", "recent-agent-reflection", { agentId: null }),
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it("recreates missing managed resource bindings idempotently during concurrent reconcile", async () => {
