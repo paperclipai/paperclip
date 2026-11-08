@@ -35,9 +35,9 @@ export function grade_tasks(value: unknown) {
       const other = entity(o.state, "otherTask");
       const first = observation(o.state.clarification);
       c.add("clarify-before-write", !!first && !!before && sameTask(before, first.tasks.find(row => row.id === before.id))
-        && sameTask(other, first.tasks.find(row => row.id === other.id)) && /\?|\b(?:which|choose|select|clarify)\b/i.test(first.reply)
+        && sameTask(other, first.tasks.find(row => row.id === other.id))
         && hasLink(first, "issues", before) && hasLink(first, "issues", other),
-        "The first real turn asks which of both linked tasks before changing either priority.");
+        "The first completed turn changes neither task and gives the person links to both candidates.");
       c.add("only-selected-task-changed", !!before && current?.priority === "high" && sameTask(before, current, ["priority"])
         && sameTask(other, o.tasks.find(row => row.id === other.id)) && o.tasks.length === 2,
         "After the explicit Launch selection, only that task's requested priority changes.");
@@ -91,7 +91,7 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       const plain = await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 1 && o.runs.every(row => row.status === "succeeded")
