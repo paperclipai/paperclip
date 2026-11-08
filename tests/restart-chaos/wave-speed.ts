@@ -22,6 +22,7 @@ export interface WaveSpeed {
   outageRemovedMs: number;
   recoveryWithoutProviderEvent: number;
   runBudgetExceeded: number;
+  singleRunBreaches: number;
   breaches: number;
   errors: string[];
 }
@@ -136,9 +137,17 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     const budget = budgetFor(environment, adapter, "restart_recovery", "restart");
     rows.push({ adapter, metric: "restart_recovery", start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
   }
-  const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + runBudgetExceeded;
+  const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
+    const start = runWarmth(run);
+    const activity = firstActivityMs(run), boot = runMetrics(run).bootMs;
+    const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
+    const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
+    return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
+      || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
+  }).length;
+  const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + singleRunBreaches;
   return { environment, rows, recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null).length,
-    runBudgetExceeded, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
+    runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
 }
 
 async function runEventsWithRetry(api: ChaosApi, runId: string, attempts = 3): Promise<BaselineEvent[]> {
@@ -195,7 +204,7 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
 export function speedMarkdown(speed: WaveSpeed): string {
   const s = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
   const lines = [`## Speed (${speed.environment})`, "",
-    `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.runBudgetExceeded} single-run budget_exceeded events).`,
+    `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.singleRunBreaches} runs over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
     `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}.`,
     `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];

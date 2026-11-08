@@ -22,7 +22,10 @@ describe("wave speed grade", () => {
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
     expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
     expect(slow.rows.find(row => row.metric === "ttft")).toMatchObject({ budget: null, breaches: [] });
-    expect(slow.breaches).toBe(3);
+    expect(slow).toMatchObject({ breaches: 4, singleRunBreaches: 2, runBudgetExceeded: 1 });
+    const heldButFast = gradeWaveSpeed("local", [run("c", "codex", 4_000,
+      [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
+    expect(heldButFast).toMatchObject({ breaches: 0, singleRunBreaches: 0, runBudgetExceeded: 1 });
     expect(speedMarkdown(slow)).toContain("| codex | time_to_first_activity | cold | 2 |");
   });
 

@@ -441,7 +441,7 @@ async function main(): Promise<number> {
     if (speed) {
       speedSection = speedMarkdown(speed);
       await writeFile(path.join(waveDir, "speed.json"), `${JSON.stringify(speed, null, 2)}\n`, { mode: 0o600 });
-      timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded,
+      timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded, singleRunBreaches: speed.singleRunBreaches,
         rows: speed.rows.map(row => ({ adapter: row.adapter, metric: row.metric, start: row.start, n: row.measured.n,
           p50: row.measured.p50, p95: row.measured.p95, breaches: row.breaches })) });
       if (speed.breaches > 0 || speed.errors.length > 0) anyFailure = true;
