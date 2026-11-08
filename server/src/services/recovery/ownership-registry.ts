@@ -107,7 +107,8 @@ export type OwnableKind = {
   coverageGap?: string;
 };
 
-const TERMINAL_PHASES = ["committed", "terminal_failure", "applied"];
+/** Final `native_run_finalizations` phases (shared with settle paths). */
+export const TERMINAL_PHASES = ["committed", "terminal_failure", "applied"];
 
 function page<T>(rows: T[], limit: number): { rows: T[]; truncated: boolean } {
   return rows.length > limit ? { rows: rows.slice(0, limit), truncated: true } : { rows, truncated: false };
