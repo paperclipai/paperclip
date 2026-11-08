@@ -85,7 +85,7 @@ describeEmbeddedPostgres("goal and project routes with a malformed id", () => {
     const { companyId, goalId } = await seed();
     const app = createApp(db, boardActor(companyId));
 
-    for (const ref of ["not-a-uuid", goalId.slice(0, 8)]) {
+    for (const ref of ["not-a-uuid", goalId.slice(0, 8), `%20${goalId}`]) {
       const read = await request(app).get(`/api/goals/${ref}`);
       expect(read.status).toBe(404);
       expect(read.body).toEqual({ error: "Goal not found" });
@@ -103,7 +103,7 @@ describeEmbeddedPostgres("goal and project routes with a malformed id", () => {
     const { companyId, projectId } = await seed();
     const app = createApp(db, boardActor(companyId));
 
-    for (const ref of ["not-a-uuid", projectId.slice(0, 8)]) {
+    for (const ref of ["not-a-uuid", projectId.slice(0, 8), `%20${projectId}`]) {
       const read = await request(app).get(`/api/projects/${ref}`);
       expect(read.status).toBe(404);
       expect(read.body).toEqual({ error: "Project not found" });
