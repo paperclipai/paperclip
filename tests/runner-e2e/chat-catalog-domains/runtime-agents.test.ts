@@ -129,14 +129,26 @@ it("uses actual file-mutation audits rather than the current reader's virtual re
   const late = structuredClone(o); late.activity[0]!.createdAt = "2026-10-27T08:03:00Z";
   expect(gradeRuntimeAgents(late).passed).toBe(false);
 });
-it("accepts an explicit unresolved revision conflict preserving the concurrent edit", () => {
-  const o = valid("agents.edit-instructions"); o.instruction!.content = "Original frontend guidance\nKeep keyboard support";
-  o.reply = "Morgan's instruction revision changed concurrently; the testing-rule update has an unresolved conflict.";
+function savedAs(o: RuntimeObservation, content: string) {
+  o.instruction!.content = content;
+  o.activity[1]!.details!.contentHash = createHash("sha256").update(content).digest("hex");
+  return o;
+}
+it("grades a reworded or reordered merged rule and reply by saved structure, not wording", () => {
+  const o = savedAs(valid("agents.edit-instructions"),
+    "## Handoff\nVerify your change with the suites that cover it and share the outcome.\n\nOriginal frontend guidance\nKeep keyboard support\n");
+  o.reply = "Morgan will now verify changes with the covering suites before every handoff; it applies from the next run.";
   expect(gradeRuntimeAgents(o).passed).toBe(true);
+  o.reply = "Done."; expect(gradeRuntimeAgents(o).passed).toBe(true);
 });
-it("rejects claimed success after a conflict left the rule unsaved", () => {
-  const o = valid("agents.edit-instructions"); o.instruction!.content = "Original frontend guidance\nKeep keyboard support";
-  o.reply = "There was a revision conflict, but I have added the testing rule for future work.";
+it("rejects an unsaved rule even when the reply reports a conflict or claims success", () => {
+  for (const reply of ["Morgan's instructions changed concurrently; the testing rule is not saved.", "I added the testing rule for future work."]) {
+    const o = savedAs(valid("agents.edit-instructions"), "Original frontend guidance\nKeep keyboard support");
+    o.reply = reply; expect(gradeRuntimeAgents(o).passed).toBe(false);
+  }
+});
+it("rejects a merged rule that the agent did not save itself", () => {
+  const o = valid("agents.edit-instructions"); o.activity = [o.activity[0]!];
   expect(gradeRuntimeAgents(o).passed).toBe(false);
 });
 
