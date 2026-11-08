@@ -245,10 +245,17 @@ For each selected point the suite runs one wave of `main.ts --crash-point <name>
    and I8 are reported as not measured, with the reconciler's reasons; R3 and
    R1 cover part of I5 and I8.
 
+Limits: the server kills itself without warning, so there is no pre-fault
+workspace snapshot and R2 checks workspace failures but not lost files
+(`notMeasured` in `crash-point.json`). `--replay` of a crash-point task fires
+the recorded K1 restart at its offset instead of re-arming the point; to
+reproduce a point, rerun the suite for it.
+
 Results: `results/crash-points/<run>/SUMMARY.md` and `summary.json`, plus one
 wave directory per point with `crash-point.json` (receipt, task grades,
 violations). Outcomes: `pass`, `fail` (a task failed R1–R6/T or an invariant was
-violated), `not_reached` (the chosen workloads never crossed the point: pick a
+violated, or the wave exited 1 for a wave-level reason such as a Daytona
+sandbox left after cleanup), `not_reached` (the chosen workloads never crossed the point: pick a
 workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
 
 **CI.** `.github/workflows/crash-points.yml` runs the same command on demand

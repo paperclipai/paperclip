@@ -114,6 +114,9 @@ export function classifyWave(point: CrashPointName, exitCode: number | null, fil
   if (!file || exitCode === 2 || exitCode === null) return { ...base, outcome: "harness_error", error: file ? `wave exited ${exitCode}` : "no crash-point.json" };
   const failed = base.failedTasks.length > 0 || base.violations.length > 0;
   if (failed) return { ...base, outcome: "fail" };
+  // Exit 1 with clean grades: a wave-level failure written after crash-point.json
+  // (for example a Daytona sandbox left after cleanup). See the wave timeline.
+  if (exitCode !== 0) return { ...base, outcome: "fail", error: `wave exited ${exitCode} after grading (wave-level failure; see its timeline)` };
   if (!file.reached) return { ...base, outcome: "not_reached" };
   return { ...base, outcome: "pass" };
 }

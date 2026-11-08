@@ -64,6 +64,10 @@ describe("classifyWave", () => {
     expect(classifyWave(point, 1, file({ reached: null, tasks: [{ taskId: "t01", adapter: "codex", workload: "A1", pass: false, signature: "x", rules: { R1: "fail" } }] })).outcome).toBe("fail");
   });
 
+  it("fails a wave that exited 1 after clean grades (wave-level failure)", () => {
+    expect(classifyWave(point, 1, file())).toMatchObject({ outcome: "fail", error: expect.stringContaining("wave exited 1") });
+  });
+
   it("reports an unreached point and a harness error separately", () => {
     expect(classifyWave(point, 0, file({ reached: null })).outcome).toBe("not_reached");
     expect(classifyWave(point, 2, file()).outcome).toBe("harness_error");

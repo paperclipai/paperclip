@@ -142,7 +142,9 @@ async function main(): Promise<number> {
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
   // Crash-point suite: the server kills itself at the named point once every task launched.
-  const crashPoint = plan.options.crashPoint ?? null;
+  // A replay fires the recorded faults (the crash point's K1 restart included)
+  // at their offsets; re-arming the point could miss its nth hit with fewer tasks.
+  const crashPoint = plan.replayOf ? null : plan.options.crashPoint ?? null;
   const crashPointGate = path.join(supervisor.paths.temporaryRoot, "crash-point.gate");
   let crashPointGateOpen = false;
   let crashPointReceipt: FaultReceipt | null = null;
@@ -374,7 +376,8 @@ async function main(): Promise<number> {
       const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
       const connectionString = config.database?.connectionString;
       if (!connectionString) throw new Error("Crash-point wave: the instance config has no database connection string");
-      invariantCheck = await checkPlanInvariants({ connectionString, companyId: lab.companyId });
+      invariantCheck = await checkPlanInvariants({ connectionString, companyId: lab.companyId,
+        paperclipHome: supervisor.paths.home, instanceId: "default" });
       timeline.add("plan_invariants", { byInvariant: invariantCheck.byInvariant, errors: invariantCheck.errors });
       if (invariantCheck.violations.length) anyFailure = true;
       if (invariantCheck.errors.length) harnessError ??= new Error(`Invariant check incomplete: ${invariantCheck.errors.join("; ")}`);
@@ -382,6 +385,9 @@ async function main(): Promise<number> {
       await writeFile(path.join(waveDir, "crash-point.json"), `${JSON.stringify({
         schema: "paperclip.restart-chaos.crash-point/v1", point: crashPoint, gitSha, gitDirty,
         reached: receipt?.crashPoint ?? null, fault: receipt, gateOpened: crashPointGateOpen,
+        // The server kills itself without warning, so no pre-fault workspace
+        // snapshot exists: R2 checks workspace failures, not lost files.
+        notMeasured: { R2_lost_files: "no pre-fault workspace snapshot: the crash point fires inside the server" },
         tasks: lines.map(line => ({ taskId: line.taskId, adapter: line.adapter, workload: line.workload, pass: line.pass,
           signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T })),
         invariants: invariantCheck,

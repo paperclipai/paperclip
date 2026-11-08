@@ -305,11 +305,15 @@ export class ChaosSupervisor {
     };
     this.timeline.add("crash_point_fired", { faultId: receipt.faultId, point: hit.name, hit: hit.hit, pid: hit.pid });
     this.log.write(`\n[restart-chaos] ${receipt.faultId} crash point ${hit.name} hit ${hit.hit} killed pid=${hit.pid}\n`);
+    let cleanupError: string | null = null;
     const run = this.faultChain.then(async () => {
       try {
         // The leader is already dead; this kills its owned descendants, as K1 does.
+        // A cleanup that cannot prove the tree stopped fails the fault (and the
+        // wave); the replacement still starts so the tasks can drain.
         await this.stopper.crashForRestart(previous).catch(error => {
-          this.log.write(`[restart-chaos] crash-point tree cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+          cleanupError = `owned process tree cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
+          this.log.write(`[restart-chaos] crash-point ${cleanupError}\n`);
         });
         if (this.child === previous) this.child = null;
         await this.waitForHealthToStop();
@@ -324,6 +328,7 @@ export class ChaosSupervisor {
         receipt.error = error instanceof Error ? error.message : String(error);
         this.timeline.add("fault_failed", { faultId: receipt.faultId, error: receipt.error });
       } finally {
+        if (cleanupError && !receipt.error) receipt.error = cleanupError;
         this.faultInProgress = false;
         this.onCrashPoint?.(receipt);
       }

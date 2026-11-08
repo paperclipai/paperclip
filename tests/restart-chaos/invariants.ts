@@ -42,18 +42,43 @@ export function summarizeViolations(violations: readonly InvariantViolation[]): 
   return counts;
 }
 
-export async function checkPlanInvariants(input: { connectionString: string; companyId: string | null; now?: Date }): Promise<InvariantCheck> {
+/**
+ * Local-disk kinds (usage-receipt and orphan-cleanup spools) resolve their
+ * directories from the environment when listed. Point them at the wave's
+ * instance, not the operator's, for the duration of the check.
+ */
+async function withWaveInstance<T>(instance: { paperclipHome: string; instanceId: string }, run: () => Promise<T>): Promise<T> {
+  const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR"] as const;
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.PAPERCLIP_HOME = instance.paperclipHome;
+  process.env.PAPERCLIP_INSTANCE_ID = instance.instanceId;
+  delete process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR;
+  try { return await run(); } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+  }
+}
+
+export async function checkPlanInvariants(input: {
+  connectionString: string; companyId: string | null; paperclipHome: string; instanceId: string; now?: Date;
+}): Promise<InvariantCheck> {
   const db = createDb(input.connectionString);
   const errors: string[] = [];
   try {
     const now = input.now ?? new Date();
+    const pass = (state: ReturnType<typeof createOwnershipReportState>, at: Date) =>
+      withWaveInstance(input, () => runOwnershipReconciliationPass(db, { state, now: at, record: false }));
     const state = createOwnershipReportState();
-    await runOwnershipReconciliationPass(db, { state, now, record: false });
-    const second = await runOwnershipReconciliationPass(db, { state, now: new Date(now.getTime() + 1_000), record: false });
-    const shifted = await runOwnershipReconciliationPass(db, {
-      state: createOwnershipReportState(), now: new Date(now.getTime() + GRACE_SHIFT_MS), record: false,
-    });
+    await pass(state, now);
+    const second = await pass(state, new Date(now.getTime() + 1_000));
+    // A failed I3/I4/I7 query is only logged by the pass and sets retryNeeded.
+    // Retry once; a pass that still could not finish is an incomplete check.
+    let shifted = await pass(createOwnershipReportState(), new Date(now.getTime() + GRACE_SHIFT_MS));
+    if (shifted.retryNeeded) shifted = await pass(createOwnershipReportState(), new Date(now.getTime() + GRACE_SHIFT_MS));
     for (const kind of [...second.kinds, ...shifted.kinds]) if (kind.error) errors.push(`${kind.kind}: ${kind.error}`);
+    if (second.retryNeeded) errors.push("the I1/I2 pass did not finish (retryNeeded)");
+    if (shifted.retryNeeded) errors.push("the I3/I4/I7 pass did not finish after one retry (retryNeeded)");
     const ownCompany = (violation: InvariantViolation) => input.companyId === null || violation.companyId === null
       || violation.companyId === input.companyId;
     const fromClock = second.violations.filter(violation => violation.rule === "I1_owned" || violation.rule === "I2_settled");
