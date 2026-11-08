@@ -10,6 +10,10 @@ import {
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesPaperclipBridge,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  startAdapterExecutionTargetPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
@@ -303,6 +307,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+  let runtimeRootDir: string | null = null;
   // Declared here (not inside the try) so the outer `finally` can remove it on
   // every exit path (teardown and setup failure alike), mirroring the Codex
   // adapter's `stagedCodexHomeDir` handling.
@@ -452,6 +458,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
             ]
           : undefined,
       });
+      runtimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
@@ -479,6 +486,34 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+
+    if (authToken) {
+      env.PAPERCLIP_API_KEY = authToken;
+    }
+
+    if (
+      executionTargetIsRemote &&
+      adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)
+    ) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId,
+        target: runtimeExecutionTarget,
+        enableSandboxDuplexBridge:
+          adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+        duplexObservabilityRecorder:
+          adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
+        runtimeRootDir,
+        adapterKey: "grok",
+        timeoutSec,
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        onLog,
+      });
+
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
+      }
+    }
+
     const effectiveEnv = Object.fromEntries(
       Object.entries({ ...process.env, ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -629,6 +664,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog,
+        runLogTail: paperclipBridge?.runLogTail,
+        settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
       return {
         proc,
@@ -756,7 +793,13 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
           resultJson: { ...result.resultJson, instructionCollectionFailure: "collection_failed" },
         };
       },
-      async () => { await restoreRemoteWorkspace?.(); },
+      async () => {
+        try {
+          await paperclipBridge?.stop();
+        } finally {
+          await restoreRemoteWorkspace?.();
+        }
+      },
     );
   } finally {
     // Cleanup runs after settlement on both success and failure.

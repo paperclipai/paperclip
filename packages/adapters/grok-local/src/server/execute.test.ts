@@ -15,10 +15,36 @@ import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixt
 const mocks = vi.hoisted(() => {
   const state: {
     isRemote: boolean;
-    prepareRuntimeResult: { workspaceRemoteDir?: string | null; assetDirs?: Record<string, string> } | null;
-  } = { isRemote: false, prepareRuntimeResult: null };
+    prepareRuntimeResult: {
+      workspaceRemoteDir?: string | null;
+      assetDirs?: Record<string, string>;
+      runtimeRootDir?: string | null;
+    } | null;
+    events: string[];
+  } = { isRemote: false, prepareRuntimeResult: null, events: [] };
+
+  const bridgeStopMock = vi.fn(async () => {
+    state.events.push("bridge-stop");
+  });
+  const restoreWorkspaceMock = vi.fn(async () => {
+    state.events.push("workspace-restore");
+  });
+  const bridgeHandle = {
+    env: {
+      PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+      PAPERCLIP_API_KEY: "bridge-token",
+    },
+    runLogTail: vi.fn(),
+    settleRunDisposition: vi.fn(() => ({ ok: true })),
+    stop: bridgeStopMock,
+  };
+  const startBridgeMock = vi.fn(async () => bridgeHandle);
   return {
     state,
+    bridgeHandle,
+    bridgeStopMock,
+    restoreWorkspaceMock,
+    startBridgeMock,
     ensureRuntimeInstalledMock: vi.fn(async () => {}),
     ensureCommandMock: vi.fn(async () => {}),
     resolveCommandForLogsMock: vi.fn(async () => "grok"),
@@ -34,7 +60,19 @@ const mocks = vi.hoisted(() => {
         const workspaceRemoteDir = override && "workspaceRemoteDir" in override
           ? override.workspaceRemoteDir
           : "/remote/workspace";
-        return { workspaceRemoteDir, assetDirs, restoreWorkspace: async () => {} };
+        return {
+          workspaceRemoteDir,
+          assetDirs,
+          runtimeRootDir: override?.runtimeRootDir ?? "/remote/runtime",
+          restoreWorkspace: async () => {
+            await restoreWorkspaceMock();
+          },
+        } as {
+          workspaceRemoteDir: string | null | undefined;
+          assetDirs: Record<string, string>;
+          runtimeRootDir?: string;
+          restoreWorkspace: () => Promise<void>;
+        };
       },
     ),
   };
@@ -42,6 +80,10 @@ const mocks = vi.hoisted(() => {
 
 const {
   state: remoteState,
+  bridgeHandle,
+  bridgeStopMock,
+  restoreWorkspaceMock,
+  startBridgeMock,
   ensureRuntimeInstalledMock,
   ensureCommandMock,
   resolveCommandForLogsMock,
@@ -51,6 +93,12 @@ const {
 
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   adapterExecutionTargetIsRemote: () => mocks.state.isRemote,
+  adapterExecutionTargetUsesPaperclipBridge: (target: unknown) =>
+    Boolean(target && typeof target === "object" && (target as { kind?: string }).kind === "remote"),
+  adapterExecutionTargetEnablesSandboxDuplexBridge: () => false,
+  adapterExecutionTargetDuplexObservabilityRecorder: () => null,
+  startAdapterExecutionTargetPaperclipBridge: (...args: unknown[]) =>
+    (mocks.startBridgeMock as (...args: unknown[]) => unknown)(...args),
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) =>
     mocks.state.isRemote ? "/remote/workspace" : cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
@@ -221,6 +269,11 @@ describe("grok_local execute", () => {
   beforeEach(() => {
     mocks.state.isRemote = false;
     mocks.state.prepareRuntimeResult = null;
+    mocks.state.events.length = 0;
+    mocks.startBridgeMock.mockReset();
+    mocks.startBridgeMock.mockResolvedValue(mocks.bridgeHandle);
+    mocks.bridgeStopMock.mockClear();
+    mocks.restoreWorkspaceMock.mockClear();
     ensureRuntimeInstalledMock.mockClear();
     ensureCommandMock.mockClear();
     prepareRuntimeMock.mockClear();
@@ -1134,4 +1187,101 @@ describe("grok_local execute", () => {
       expect(prompts[1]).toContain("comment-scope");
     });
   });
+
+  it("starts the Paperclip bridge for remote execution and passes bridge hooks", async () => {
+    const root = await makeTempRoot();
+    remoteState.isRemote = true;
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(await makeCtx("bridge-remote", root));
+
+    expect(mocks.startBridgeMock).toHaveBeenCalledTimes(1);
+    expect(mocks.startBridgeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "bridge-remote",
+        adapterKey: "grok",
+        runtimeRootDir: "/remote/runtime",
+        hostApiToken: "run-token",
+      }),
+    );
+
+    const options = runProcessMock.mock.calls[0][4] as {
+      env: Record<string, string>;
+      runLogTail?: unknown;
+      settleRunDisposition?: unknown;
+    };
+
+    expect(options.env.PAPERCLIP_API_KEY).toBe("bridge-token");
+    expect(options.env.PAPERCLIP_API_KEY).not.toBe("run-token");
+    expect(options.runLogTail).toBe(mocks.bridgeHandle.runLogTail);
+    expect(options.settleRunDisposition).toBe(mocks.bridgeHandle.settleRunDisposition);
+    expect(mocks.bridgeStopMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.events).toEqual(["bridge-stop", "workspace-restore"]);
+  });
+
+  it("does not start the Paperclip bridge for local execution", async () => {
+    const root = await makeTempRoot();
+    remoteState.isRemote = false;
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await execute(await makeCtx("bridge-local", root));
+
+    expect(mocks.startBridgeMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses one Paperclip bridge across stale-session retry", async () => {
+    const root = await makeTempRoot();
+    remoteState.isRemote = true;
+
+    const ctx = await makeCtx("bridge-retry", root);
+    ctx.runtime = {
+      sessionId: "sess-stale",
+      sessionParams: { sessionId: "sess-stale", cwd: "/remote/workspace" },
+      sessionDisplayId: "sess-stale",
+      taskKey: null,
+    };
+
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "unknown session sess-stale",
+      })
+      .mockResolvedValueOnce(makeSuccessfulRunResult());
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
+    expect(mocks.startBridgeMock).toHaveBeenCalledTimes(1);
+    expect(mocks.bridgeStopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the Paperclip bridge before restoring the workspace after provider failure", async () => {
+    const root = await makeTempRoot();
+    remoteState.isRemote = true;
+    runProcessMock.mockRejectedValue(new Error("provider failure"));
+
+    await expect(execute(await makeCtx("bridge-provider-failure", root)))
+      .rejects.toThrow("provider failure");
+
+    expect(mocks.bridgeStopMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.events).toEqual(["bridge-stop", "workspace-restore"]);
+  });
+
+  it("restores the workspace when Paperclip bridge startup fails", async () => {
+    const root = await makeTempRoot();
+    remoteState.isRemote = true;
+    mocks.startBridgeMock.mockRejectedValueOnce(new Error("bridge startup failure"));
+
+    await expect(execute(await makeCtx("bridge-startup-failure", root)))
+      .rejects.toThrow("bridge startup failure");
+
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(mocks.restoreWorkspaceMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.events).toEqual(["workspace-restore"]);
+  });
+
 });
