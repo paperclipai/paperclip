@@ -22,6 +22,7 @@ export function oracleSandboxProfile(input: { workspace: string; scratch: string
   const lines = ["(version 1)", "(allow default)", "(deny network*)", "(deny file-write*)",
     `(allow file-write* (subpath ${sbplString(input.scratch)}) (literal "/dev/null") (literal "/dev/tty"))`];
   for (const root of input.protectedRoots) lines.push(`(deny file-read* (subpath ${sbplString(root)}))`);
+  for (const root of input.protectedRoots) lines.push(`(allow file-read-metadata (subpath ${sbplString(root)}))`);
   // Later rules win: re-allow the workspace and scratch even if they sit under a protected root.
   lines.push(`(allow file-read* (subpath ${sbplString(input.workspace)}) (subpath ${sbplString(input.scratch)}))`);
   for (const file of input.readableFiles ?? []) lines.push(`(allow file-read* (literal ${sbplString(file)}))`);
