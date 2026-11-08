@@ -75,7 +75,10 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
     // Keep the row's updatedAt, so the pending_cleanup sweep accepts it in the
     // same tick instead of waiting out its own retry backoff.
     const flipped = await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
-      .set({ status: "pending_cleanup", failureReason: ORPHANED_RUN_LEASE_FAILURE_REASON })
+      .set({ status: "pending_cleanup", failureReason: ORPHANED_RUN_LEASE_FAILURE_REASON,
+        // When the first cleanup attempt became due (the row keeps updatedAt).
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          pendingCleanupRecoveredAtMs: context.now.getTime() })}::jsonb` })
       .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
         eq(environmentLeases.heartbeatRunId, runId),
         sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`))

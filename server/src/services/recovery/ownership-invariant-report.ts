@@ -165,6 +165,10 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
     case "operator": return { verdict: "alive", reason: "operator_owned" };
+    // A queue is not a process: it is never proven gone. A deadline long past
+    // means the queue is not acting, which is a gap to report, not a release.
+    case "queue": return now.getTime() - owner.dueAt.getTime() > owner.graceMs
+      ? { verdict: "unprovable", reason: "queue_overdue" } : { verdict: "alive", reason: "queue_scheduled" };
     case "none": return { verdict: "unprovable", reason: "no_owner_stamp" };
   }
 }
@@ -462,6 +466,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const kindReports: KindReport[] = [];
   const violations: InvariantViolation[] = [];
   const goneThisPass = new Set<string>();
+  let queueDueAt: Date | null = null;
   const settleRecords = options.settle ?? options.record !== false;
   let retryNeeded = false;
 
@@ -501,6 +506,16 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       if (kind.invariantChecks.includes(1) && record.owner.kind === "none") {
         violations.push({ ...base, rule: "I1_owned", reason: "no_owner_stamp" });
       }
+      if (kind.invariantChecks.includes(7) && record.owner.kind === "queue") {
+        if (proof.reason === "queue_overdue") {
+          violations.push({ ...base, rule: "I7_visible_next_action", reason: "queue_overdue" });
+        } else {
+          // Re-check when this item would become overdue, so a queue that stops
+          // acting without another write is still reported.
+          const overdueAt = new Date(record.owner.dueAt.getTime() + record.owner.graceMs + 1);
+          if (!queueDueAt || overdueAt < queueDueAt) queueDueAt = overdueAt;
+        }
+      }
       if (settleRecords && kind.settle) {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
         if (outcome === "settled") { report.settled += 1; continue; }
@@ -517,7 +532,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     }
   }
 
-  let nextDueAt: Date | null = null;
+  let nextDueAt: Date | null = queueDueAt;
   for (const check of [
     () => checkAdmissionIndependence(db, state, now, limit),
     () => checkExactlyOnceIntents(db, state, now, limit),
