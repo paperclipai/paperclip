@@ -194,6 +194,38 @@ suite("controller instance lease: a replaced container's records are provable", 
     } finally { vi.useRealTimers(); }
   });
 
+  it("never loses a stamp taken while a renewal is in flight", async () => {
+    const wake = vi.fn();
+    const capturing = { register: () => ({ ready: Promise.resolve(), wake, stop: async () => {} }) } as unknown as
+      ReturnType<typeof createDeliveryWorkCoordinator>;
+    registerControllerInstanceDb(db);
+    registerControllerInstanceLeaseWork(db, capturing, { renew: async () => { currentControllerProcessStamp(); return "idle" as const; } });
+    currentControllerProcessStamp();
+    wake.mockClear();
+    await tickControllerInstanceLease();
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a cleanup claim as held only while its attempt is in flight", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere();
+      vi.setSystemTime(Date.now() + 60_000);
+      const leaseId = randomUUID();
+      const claim = { bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null };
+      await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: null, status: "pending_cleanup", leasePolicy: "ephemeral",
+        metadata: { pendingCleanupController: claim, pendingCleanupInFlight: false } });
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 60_000);
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
+      await db.update(environmentLeases).set({ metadata: { pendingCleanupController: claim, pendingCleanupInFlight: true } });
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 60_000);
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("rides out a 45 s database outage: quiesces dispatch, never exits, and resumes", async () => {
     let now = 0, down = true;
     const renew = vi.fn(async () => { if (down) throw new Error("connection refused"); return "holding" as const; });

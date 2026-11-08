@@ -40,6 +40,8 @@ type LeaseState = {
   lastStampWallAt: number;
   lastTickAt: number;
   ignoreNextSettle: boolean;
+  /** Counts stamps, so a stamp taken while a renewal is in flight is never lost. */
+  stampSeq: number;
   unsubscribe: () => void;
   wake: () => void;
 };
@@ -61,8 +63,10 @@ function exitOnLostLease(reason: "fenced" | "lease_lost") {
 /** In-progress records stamped with this boot id: the process-owned kinds of the ownership registry. */
 function holdsStampedWorkSql(bootId: string) {
   return sql`(
-    exists (select 1 from environment_leases where status in ('active', 'pending_cleanup')
-      and (metadata->'leaseController'->>'bootId' = ${bootId} or metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
+    exists (select 1 from environment_leases where
+      (status = 'active' and metadata->'leaseController'->>'bootId' = ${bootId})
+      or (status = 'pending_cleanup' and metadata->>'pendingCleanupInFlight' = 'true'
+        and metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
     or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId}))`;
@@ -115,7 +119,7 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
     onLost: options.onLost ?? exitOnLostLease, now: options.now ?? (() => performance.now()),
     renew: options.renew ?? renewInDatabase(db), lastStampAt: Number.NEGATIVE_INFINITY, failingSince: null,
     active: false, epoch: null, stopped: false, unsubscribe: () => {}, wake: () => {},
-    lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, ignoreNextSettle: false,
+    lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, ignoreNextSettle: false, stampSeq: 0,
   };
   state = current;
   const worker = coordinator.register(DELIVERY_QUEUES.controllerInstanceLease, {
@@ -130,6 +134,7 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
     const wasActive = current.active;
     current.lastStampAt = current.now();
     current.lastStampWallAt = Date.now();
+    current.stampSeq += 1;
     current.active = true;
     // The first stamp after an idle lapse renews at once, without delaying the stamping write.
     if (!wasActive && !current.stopped) worker.wake();
@@ -161,6 +166,7 @@ export async function tickControllerInstanceLease(): Promise<void> {
   const current = state;
   if (!current || current.stopped || (!current.active && current.failingSince === null)) return;
   const attemptStartedAt = current.now();
+  const stampSeqAtStart = current.stampSeq;
   current.lastTickAt = Date.now();
   // The coordinator's own work token settles right after this run; that is not other work.
   current.ignoreNextSettle = true;
@@ -173,7 +179,10 @@ export async function tickControllerInstanceLease(): Promise<void> {
   if (result === "holding" || result === "idle") {
     current.failingSince = null;
     // Idle: the lease lapses with no further statements until the next stamp wakes it.
-    current.active = result === "holding";
+    // A stamp taken during this attempt was not seen by its snapshot: check again now.
+    const stampedDuringAttempt = current.stampSeq !== stampSeqAtStart;
+    current.active = result === "holding" || stampedDuringAttempt;
+    if (result === "idle" && stampedDuringAttempt) current.wake();
     setControllerLeaseQuiesce(false);
     return;
   }
