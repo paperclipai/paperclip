@@ -21,7 +21,7 @@
  * (a new action after a Retry or another failure) wakes again.
  */
 import { and, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, type IssueBlockerStalledWakeContext, type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
 import { parseHeartbeatPolicy } from "../heartbeat/timer-policy.js";
@@ -217,6 +217,15 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES),
             gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
       if (existing) { result.alreadyWoken += 1; continue; }
+      // A resource wait cancels the stall wake's run and schedules a retry
+      // with no idempotency key; the retry keeps the stall in its context.
+      const [carried] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, stall.companyId), eq(heartbeatRuns.agentId, waiter.assigneeAgentId!),
+          ne(heartbeatRuns.status, "cancelled"),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${waiter.id}`,
+          sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`)).limit(1);
+      if (carried) { result.alreadyWoken += 1; continue; }
       if (!(await acceptsWakes(waiter.assigneeAgentId!))) { result.deferred += 1; continue; }
       // A private stalled issue's details never reach an agent that cannot read it.
       const readable = await agentCanRead(waiter.assigneeAgentId!, waiter.responsibleUserId, stall);

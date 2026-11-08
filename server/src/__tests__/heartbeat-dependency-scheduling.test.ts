@@ -870,10 +870,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
         status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
         retryOfRunId: stalledWake!.id, contextSnapshot }).returning();
-      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id, now: new Date() });
+      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id,
+        retryReasonOverride: "transient_failure", now: new Date() });
     };
-    const replacement = { ...(run!.contextSnapshot as Record<string, unknown>), wakeReason: "bounded_transient_heartbeat_retry",
-      retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
+    const replacement: Record<string, unknown> = { ...(run!.contextSnapshot as Record<string, unknown>),
+      wakeReason: "bounded_transient_heartbeat_retry", retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
     expect(await retryGate(replacement)).toMatchObject({ allowed: true });
     const { blockerStall: _stall, ...withoutStall } = replacement;
     expect(await retryGate(withoutStall)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });

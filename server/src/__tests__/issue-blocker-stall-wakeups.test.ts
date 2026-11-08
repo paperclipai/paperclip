@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog, agents, agentWakeupRequests, companies, createDb, issueRecoveryActions, issueRelations, issues, type Db,
+  activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db,
 } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON } from "@paperclipai/shared";
 import { recoveryService } from "../services/recovery/service.js";
@@ -186,6 +186,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(agentWakeupRequests.id, refused.id));
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(1);
+  });
+
+  it("does not wake again while a resource-wait retry carries the stall", async () => {
+    const f = await fixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    // A workspace-busy deferral cancels the wake and schedules a keyless retry
+    // that keeps the stall context.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", requestedAt: new Date(Date.now() - 11 * 60_000) })
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.parentAgent,
+      invocationSource: "automation", status: "scheduled_retry", scheduledRetryAt: new Date(),
+      contextSnapshot: { ...calls[0]!.input.contextSnapshot, wakeReason: "workspace_busy_retry", retryOfRunId: randomUUID() } }).returning();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    // A retry chain that was itself cancelled no longer counts.
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(2);
   });
 
   it("reaches a waiter through its own sweep when the stalled blocker is unassigned", async () => {
