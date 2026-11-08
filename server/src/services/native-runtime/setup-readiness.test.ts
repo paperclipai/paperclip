@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
@@ -30,6 +30,11 @@ const context = {
 };
 describe("Codex selected native account verification", () => {
   const receipt = (provider: "codex", model: string | null) => ({ provider, effectiveModel: model, providerDriver: "codex_app_server", helloProbePassed: true, cleanupConfirmed: true });
+  beforeAll(async () => {
+    // Cold Windows transforms of the native executor belong to suite setup,
+    // outside the credential checks' timeout and temporary-home lifetime.
+    if (process.platform === "win32") await import("./native-session-executor.js");
+  }, 120_000);
   beforeEach(() => {
     execute.mockReset(); nativeProbe.mockReset(); nativeProbeRuntimeDirectories.splice(0);
     sshExecute.mockReset().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
