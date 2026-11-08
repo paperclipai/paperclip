@@ -948,6 +948,9 @@ async function executeProcess(input: {
     // After a deadline the group is signalled; do not wait for pipes a straggler may hold.
     child.on("exit", (code) => {
       if (!timedOut) return;
+      // Git can exit while a helper that ignores SIGTERM keeps running; stop
+      // the whole group now so nothing still writes when the queue moves on.
+      signal("SIGKILL");
       child.stdout?.destroy();
       child.stderr?.destroy();
       finish(code);

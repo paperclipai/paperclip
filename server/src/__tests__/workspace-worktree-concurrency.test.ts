@@ -96,6 +96,25 @@ describe("concurrent git worktree creation", () => {
     }
   }, 60_000);
 
+  it("stops a checkout helper that ignores SIGTERM before the next create runs", async () => {
+    const repoRoot = await clonedRepository();
+    const hooks = path.join(path.dirname(repoRoot), "hooks");
+    const pidFile = path.join(path.dirname(repoRoot), "hook.pid");
+    await fs.mkdir(hooks);
+    await fs.writeFile(path.join(hooks, "post-checkout"), `#!/bin/sh\ntrap '' TERM\necho $$ > '${pidFile}'\nsleep 30\n`, { mode: 0o755 });
+    await git(repoRoot, ["config", "core.hooksPath", hooks]);
+    const original = worktreeCreateLimits.timeoutMs;
+    worktreeCreateLimits.timeoutMs = 1_000;
+    try {
+      await expect(realize(repoRoot, "PAP-930")).rejects.toThrow(/timed out/);
+      const pid = Number((await fs.readFile(pidFile, "utf8")).trim());
+      const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      expect(alive()).toBe(false);
+    } finally {
+      worktreeCreateLimits.timeoutMs = original;
+    }
+  }, 60_000);
+
   async function createConcurrently(repoRoot: string, round: number) {
     const tasks = Array.from({ length: 10 }, (_, index) => round * 10 + index + 1);
     const workspaces = await Promise.all(tasks.map(index => realizeExecutionWorkspace({
