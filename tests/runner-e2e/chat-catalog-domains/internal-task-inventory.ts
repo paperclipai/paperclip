@@ -52,7 +52,9 @@ const statesCount = (text: string, count: number) => new RegExp(`(?<![\\w-]|,\\s
 function groupContext(text: string, at: number) {
   const lineStart = text.lastIndexOf("\n", at) + 1; const lineEnd = text.indexOf("\n", at);
   const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
-  const prior = text.slice(0, lineStart).split("\n").reverse().find(line => /^\s*(?:#{1,6}\s+|\*\*)/.test(line)) ?? "";
+  const label = (candidate: string) => /^\s*(?:#{1,6}\s+|\*\*)/.test(candidate);
+  // A line that opens with its own group label ("**Unassigned — 18 blocked:** RUN-18, …") is its own group.
+  const prior = label(line) ? "" : text.slice(0, lineStart).split("\n").reverse().find(label) ?? "";
   return `${line} ${prior}`.toLowerCase();
 }
 export function gradeOpenInventory(value: unknown) {
@@ -192,7 +194,7 @@ function openInventory(): ChatCatalogCase {
     if ((await ctx.allRuns()).length) throw new Error("Seeding the paused-owner inventory unexpectedly admitted work");
     return { project: p, originalTasks, workerIds: [worker.id, secondWorker.id], ownerPauseReceipts, ownerLabels: { [worker.id]: "Morgan", [secondWorker.id]: "Riley", unassigned: "Unassigned" } };
   }, gradeOpenInventory);
-  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v4",
+  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v5",
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"], attemptTimeoutMs: 600_000,
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["inventory-owners-paused", "lead-ready", "inventory-settled"] },
     async verifySetup(ctx, state) {
