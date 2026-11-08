@@ -67949,10 +67949,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]).toEqual(action);
         expect(await readHeartbeatRunsByCompanyId(companyId)).toEqual(beforeRuns);
         expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual(beforeWakes);
-        const click = await request(app).post(`/api/issues/${issueId}/retry`)
-          .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
-        expect(click.status).toBe(409);
-        expect(click.body?.code ?? click.body?.details?.code).toBe("chat_failed_run_retry_not_authorized");
+        // A deliberate click may persist an intent; only the REAL normal
+        // queue may decide admission. The transport fixture's receipt stub is
+        // not sufficient evidence that an uncontained source cannot execute.
+        const unexpectedBackend = vi.fn((): NativeSessionBackend => {
+          throw new Error("An uncontained foreign owner must never create a new provider backend");
+        });
+        await settings.updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+        heartbeat = heartbeatService(db, { nativeSessionBackendFactory: unexpectedBackend });
+        f.wakeup.mockImplementation(heartbeat.wakeup);
+        const idempotencyKey = randomUUID();
+        const retryInput = { observedRunId: f.runId, idempotencyKey };
+        const click = await request(app).post(`/api/issues/${issueId}/retry`).send(retryInput);
+        expect(click.status).toBe(202);
+        expect(click.body.requestId).toEqual(expect.any(String));
+        expect(click.body.chatActionId).toEqual(expect.any(String));
+        const deniedRetry = await f.service.processFailedChatRunRetry(click.body.chatActionId);
+        expect(deniedRetry).toMatchObject({ status: "failed", runId: null });
+        const [deniedAction] = await db.select().from(chatActions).where(eq(chatActions.id, click.body.chatActionId));
+        expect(deniedAction).toMatchObject({ status: "failed", result: { code: "failed_chat_retry_not_authorized" } });
+        await reconcileTaskChatRetryReceipts(db, { companyId, requestId: click.body.requestId });
+        const [intent] = await readAgentWakeupRequestsById(click.body.requestId);
+        expect(intent).toMatchObject({ status: "failed", runId: null, payload: { taskRetry: {
+          sourceRunId: f.runId, actorId: "owner-user", actorSource: "session", chatActionId: click.body.chatActionId,
+        } } });
+        // A lost HTTP response may be retried with the same key. It replays
+        // this exact denied intent, never creates another execution authority.
+        const replay = await request(app).post(`/api/issues/${issueId}/retry`).send(retryInput);
+        expect(replay.status).toBe(202);
+        expect(replay.body).toMatchObject({ requestId: click.body.requestId, chatActionId: click.body.chatActionId });
+        expect(await f.service.processFailedChatRunRetry(replay.body.chatActionId)).toMatchObject({ status: "failed", runId: null });
+        expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.idempotencyKey, `task-retry:${idempotencyKey}`)))).toHaveLength(1);
+        await heartbeat.resumeTaskRetry(companyId, click.body.requestId);
+        expect(unexpectedBackend).not.toHaveBeenCalled();
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(beforeOwner);
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]).toEqual(action);
+        expect(await readHeartbeatRunsByCompanyId(companyId)).toEqual(beforeRuns);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(0);
         expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         return;
       }
@@ -68045,8 +68079,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(click.body.chatActionId).toBeTruthy();
       const outcome = await f.service.processFailedChatRunRetry(click.body.chatActionId);
       const [retryAction] = await db.select().from(chatActions).where(eq(chatActions.id, click.body.chatActionId));
-      expect(outcome.status, JSON.stringify({ phase: "durable_chat_retry", status: outcome.status,
-        code: classifyDenial(retryAction?.result?.code) })).toBe("queued");
+      const outcomeDiagnostic = JSON.stringify({ phase: "durable_chat_retry", status: outcome.status,
+        code: classifyDenial(retryAction?.result?.code) });
+      if (useful) expect(["queued", "running", "succeeded"], outcomeDiagnostic).toContain(outcome.status);
+      else expect(outcome.status, outcomeDiagnostic).toBe("queued");
       const [wake] = await readAgentWakeupRequestsById(click.body.chatActionId);
       expect(wake).toMatchObject({ ...(!useful ? { status: "queued" } : {}), runId: expect.any(String) });
       const [successor] = await readHeartbeatRunsById(wake.runId!);
@@ -68072,7 +68108,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await heartbeat.resumeQueuedRuns();
         await vi.waitFor(async () => {
           const [completed] = await readHeartbeatRunsById(successor.id);
-          expect(completed.status).toBe("succeeded");
+          expect(completed.status, JSON.stringify({ phase: "useful_successor", status: completed.status,
+            errorCode: completed.errorCode, nativePhase: completed.nativePhase })).toBe("succeeded");
         }, { timeout: 10_000, interval: 25 });
         const [completed] = await readHeartbeatRunsById(successor.id);
         expect(completed.resultJson?.nativeResult).toMatchObject({ summary: answer });
@@ -68087,7 +68124,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     } finally {
       await f.service.shutdown(); if (heartbeat) await heartbeat.drainActiveRunExecutions();
-      if (useful) await settings.updateExperimental(previousSettings);
+      if (useful || denied) await settings.updateExperimental(previousSettings);
       if (workingDirectory) rmSync(workingDirectory, { recursive: true, force: true });
     }
   });
