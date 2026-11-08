@@ -68,17 +68,20 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(grade.signature).toBe("R1:rested_not_done:A1:K1");
   });
 
-  it("passes R3 when one Retry starts a run that completes the task", () => {
+  it("fails R3 when the task needed a Retry, even one that completed it, and names a second click", () => {
     const samples = [
       sample(60_000, "blocked", [run("r1", "failed", 1_000, 30_000)], { interruption: { state: "failed", canRetry: true, retryWait: false, workspaceFailure: null, observedRunId: "r1", userAction: null } }),
       sample(80_000, "in_progress", [run("r1", "failed", 1_000, 30_000), run("r2", "running", 75_000, null, { retryOfRunId: "r1" })]),
       sample(140_000, "done", [run("r1", "failed", 1_000, 30_000), run("r2", "succeeded", 75_000, 130_000)]),
     ];
     const retried = record(samples, { retry: { at: T0 + 74_000, observedRunId: "r1", httpStatus: 200, accepted: true, error: null }, restAt: T0 + 140_000 });
-    expect(gradeR3(retried)).toMatchObject({ verdict: "pass" });
+    expect(gradeR3(retried)).toEqual({ verdict: "fail", detail: "retry_needed (failed)" });
     const grade = gradeTask(retried, [fault], workloadDefinitions.A1.budgetMs, oracle());
     expect(grade.rules.R1.verdict).toBe("n/a");
-    expect(grade.pass).toBe(true);
+    expect(grade.pass).toBe(false);
+    const twice = record(samples, { retry: { at: T0 + 74_000, observedRunId: "r1", httpStatus: 200, accepted: true, error: null },
+      priorRetries: [{ at: T0 + 50_000, observedRunId: "r0", httpStatus: 200, accepted: true, error: null }], restAt: T0 + 140_000 });
+    expect(gradeR3(twice).detail).toBe("retry_needed_2_clicks (failed)");
   });
 
   it("fails R3 for a dead Retry (accepted but no new run)", () => {
