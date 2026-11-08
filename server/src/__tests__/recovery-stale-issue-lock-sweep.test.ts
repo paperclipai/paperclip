@@ -537,6 +537,66 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(settled?.status).toBe("failed");
   });
 
+  it("finishes a claimed wake on a historical issue-terminal orphan that left errorCode null", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const wakeId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      reason: "issue_assigned",
+      status: "claimed",
+      claimedAt: new Date(),
+      finishedAt: null,
+      runId: runningRunId,
+      payload: { issueId },
+    });
+    // Older builds terminalized issue-done orphans as succeeded without writing
+    // errorCode; only the recovery lifecycle event recorded the authority.
+    await db.update(heartbeatRuns).set({
+      status: "succeeded",
+      errorCode: null,
+      error: null,
+      finishedAt: new Date(),
+      wakeupRequestId: wakeId,
+      contextSnapshot: { issueId },
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId: runningRunId,
+      agentId,
+      seq: 0,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "run terminalized by recovery backstop: issue reached a terminal status while heartbeat_runs.status stayed live",
+      payload: {
+        source: "recovery.sweep_stale_issue_locks",
+        authority: "issue_terminal",
+        previousStatus: "running",
+        terminalStatus: "succeeded",
+        issueId,
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("completed");
+    expect(wake?.finishedAt).toBeInstanceOf(Date);
+  });
+
   it.each(["in_progress", "done"])("preserves a live legacy controller lease when the issue is %s", async (status) => {
     const { companyId, agentId, runningRunId } = await seed();
     await db.update(heartbeatRuns).set({

@@ -71,6 +71,7 @@ import {
   chatConversations,
   caseHandoffs,
   companies,
+  heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -6087,6 +6088,10 @@ export function recoveryService(
     "orphaned_running_run",
     "orphaned_running_run_issue_terminal",
   ] as const;
+  // Historical wake repair is startup reconstruction, not a permanent sweep
+  // duty. Latch quiet after the first empty scan so idle ticks do not keep
+  // querying; unresolved rows keep the latch open until a scan finds none.
+  let orphanedWakeHistoricalRepairQuiet = false;
 
   function wakeStatusForTerminalRun(status: string) {
     if (status === "succeeded") return "completed";
@@ -6095,7 +6100,7 @@ export function recoveryService(
   }
 
   async function finishOpenWakesForTerminalRun(
-    tx: Db,
+    tx: DbTransaction,
     run: {
       id: string;
       companyId: string;
@@ -6139,6 +6144,8 @@ export function recoveryService(
   // lock without finishing the wake. Those issues no longer appear in the lock
   // scan, so a later assignment still sees status=claimed and finishedAt=null.
   async function finishOpenWakesForTerminalOrphanedRuns() {
+    if (orphanedWakeHistoricalRepairQuiet) return;
+
     const stuckRuns = await db
       .select({
         id: heartbeatRuns.id,
@@ -6164,9 +6171,6 @@ export function recoveryService(
       )
       .where(
         and(
-          inArray(heartbeatRuns.errorCode, [
-            ...ORPHANED_RUNNING_RUN_ERROR_CODES,
-          ]),
           inArray(heartbeatRuns.status, [
             "succeeded",
             "interrupted",
@@ -6174,8 +6178,27 @@ export function recoveryService(
             "cancelled",
             "timed_out",
           ]),
+          or(
+            inArray(heartbeatRuns.errorCode, [
+              ...ORPHANED_RUNNING_RUN_ERROR_CODES,
+            ]),
+            // Older issue_terminal writes left errorCode null but still
+            // appended the recovery lifecycle event.
+            sql`exists (
+              select 1
+              from ${heartbeatRunEvents}
+              where ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+                and ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+                and ${heartbeatRunEvents.payload} ->> 'source' = 'recovery.sweep_stale_issue_locks'
+            )`,
+          ),
         ),
       );
+
+    if (stuckRuns.length === 0) {
+      orphanedWakeHistoricalRepairQuiet = true;
+      return;
+    }
 
     const seen = new Set<string>();
     for (const run of stuckRuns) {
@@ -6392,9 +6415,9 @@ export function recoveryService(
           status: terminalStatus,
           finishedAt: run.finishedAt ?? now,
           error: run.error ?? (terminalStatus === "interrupted" ? message : null),
-          errorCode:
-            run.errorCode ??
-            (terminalStatus === "interrupted" ? errorCode : null),
+          // Persist the orphan authority for both process-gone and
+          // issue-terminal outcomes so historical wake repair can find them.
+          errorCode: run.errorCode ?? errorCode,
           updatedAt: now,
         })
         .where(eligible)
