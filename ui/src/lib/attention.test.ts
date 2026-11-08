@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
 import {
   ATTENTION_GROUP_BY_KEY,
-  ATTENTION_GROUP_BY_OPTIONS,
+  attentionGroupByOptions,
   attentionBadgeCount,
   attentionDateBucket,
   attentionDetailLine,
@@ -73,7 +73,7 @@ describe("attention group preference persistence", () => {
 
   it("defaults to None and lists it as the first group option", () => {
     expect(loadAttentionGroupBy()).toBe("none");
-    expect(ATTENTION_GROUP_BY_OPTIONS[0]).toEqual(["none", "None"]);
+    expect(attentionGroupByOptions()[0]).toEqual(["none", "None"]);
   });
 
   it("round-trips explicit grouped choices and treats stale values as None", () => {

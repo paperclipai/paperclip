@@ -47,6 +47,7 @@ import {
   lowTrustBoundaryHasScope,
 } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
+import { t, useTranslation } from "@/i18n";
 import type {
   AgentPermissions,
   EmailEndpointSummary,
@@ -87,7 +88,7 @@ function readEmailSetupDraft(key: string): Partial<EmailSetupDraft> {
 export function EmailEndpointSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
-  if (!selectedCompanyId) return <p role="status" className="p-6 text-sm text-muted-foreground">Loading email setup…</p>;
+  if (!selectedCompanyId) return <p role="status" className="p-6 text-sm text-muted-foreground">{t("apps.emailSetup.loading", "Loading email setup…")}</p>;
   return <EmailEndpointSetupForm key={`${selectedCompanyId}:${params.get("resume") ?? params.get("setupId") ?? params.get("connectionId") ?? "new"}:${params.get("agentId") ?? "choose"}`} companyId={selectedCompanyId} />;
 }
 
@@ -310,7 +311,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
     : inspectedView.kind === "error" ? inspectedView
     : agentsView.kind === "error" ? agentsView : null;
   const setupError = writeError ? <p role="alert" className="text-sm text-destructive">{describeError(writeError).body}</p>
-    : readFailure ? <QueryErrorState size="inline" error={readFailure.error} action="load email setup" onRetry={readFailure.retry} retrying={readFailure.isFetching} />
+    : readFailure ? <QueryErrorState size="inline" error={readFailure.error} action={t("apps.emailSetup.loadSetupAction", "load email setup")} onRetry={readFailure.retry} retrying={readFailure.isFetching} />
     : null;
   const busy = connect.isPending || setup.isPending;
   const identityReady = inboxesLoaded && (!resumeId || requestId !== resumeId || !!pendingEndpoint) && (!pendingEndpoint || pendingEndpoint.assignedAgentId === agentId);
@@ -339,18 +340,18 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
   };
   return <div className="mx-auto max-w-xl space-y-6 p-6">
     <header className="space-y-2">
-      <h1 className="text-xl font-bold">{step === 2 ? "Your agent’s email is ready" : "Give an agent an email address"}</h1>
+      <h1 className="text-xl font-bold">{step === 2 ? t("apps.emailSetup.readyTitle", "Your agent’s email is ready") : t("apps.emailSetup.giveAgentEmailTitle", "Give an agent an email address")}</h1>
     </header>
-    {step < 2 && inboxesView.kind === "error" && <QueryErrorState error={inboxes.error} action="load email setup progress"
+    {step < 2 && inboxesView.kind === "error" && <QueryErrorState error={inboxes.error} action={t("apps.emailSetup.loadProgressAction", "load email setup progress")}
       onRetry={inboxesView.retry} retrying={inboxesView.isFetching} />}
-    {step < 2 && resumeId === requestId && inboxesLoaded && !pendingEndpoint && <p role="alert" className="text-sm text-destructive">This email setup could not be found. Return to Connectors and start a new connection.</p>}
-    {step < 2 && <ChatSetupNavigation labels={["Agent", "Email address"]} step={step}
+    {step < 2 && resumeId === requestId && inboxesLoaded && !pendingEndpoint && <p role="alert" className="text-sm text-destructive">{t("apps.emailSetup.notFound", "This email setup could not be found. Return to Connectors and start a new connection.")}</p>}
+    {step < 2 && <ChatSetupNavigation labels={[t("apps.emailSetup.agentStep", "Agent"), t("apps.emailSetup.emailAddressStep", "Email address")]} step={step}
       availableStep={step} disabled={busy} onSelect={index => { setup.reset(); setStep(index as 0 | 1); }} />}
     {step === 0 && <form className="space-y-6" onSubmit={event => { event.preventDefault(); if (canContinue) connect.mutate(); }}>
       <div className="space-y-2">
-        <Label htmlFor="email-agent">Agent</Label>
+        <Label htmlFor="email-agent">{t("apps.emailSetup.agentLabel", "Agent")}</Label>
         <AgentSelect id="email-agent" value={agentId} disabled={busy || agents.isPending || !inboxesLoaded || !!pendingEndpoint}
-          placeholder="Choose an agent" emptyMessage="No agents found." triggerClassName="h-10"
+          placeholder={t("apps.emailSetup.chooseAgent", "Choose an agent")} emptyMessage={t("apps.emailSetup.noAgentsFound", "No agents found.")} triggerClassName="h-10"
           agents={(agents.data ?? []).filter(a => !["terminated", "pending_approval"].includes(a.status))}
           onChange={id => { setAgentId(id); setUsername((agents.data?.find(a => a.id === id)?.name ?? "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 64)); }} />
       </div>
@@ -373,7 +374,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
     </form>}
     {step === 1 && <form className="space-y-6" onSubmit={event => { event.preventDefault(); if (canCreate) setup.mutate(); }}>
       <div className="space-y-2">
-        <Label htmlFor={addressMode === "new" ? "email-name" : "email-existing"}>{chosen?.name}’s email address</Label>
+        <Label htmlFor={addressMode === "new" ? "email-name" : "email-existing"}>{t("apps.emailSetup.emailAddressLabel", "{{name}}’s email address", { name: chosen?.name })}</Label>
         {pendingAddress ? <>
           <p className="text-sm font-medium">{pendingAddress}</p>
           <p className="text-sm text-muted-foreground">This address was created in AgentMail. Finish connecting it to {chosen?.name}{scopedKey ? "." : ", or choose a different address. The original inbox will stay in AgentMail."}</p>
@@ -383,7 +384,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
             <Input id="email-name" className="min-w-0" value={username} maxLength={64} autoComplete="off" spellCheck={false} disabled={busy}
               aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : "email-address-status"}
               onChange={event => { setUsername(event.target.value.toLowerCase()); setup.reset(); }} />
-            <select id="email-domain" aria-label="Email domain" className={`${selectClass} max-w-1/2 shrink-0`} value={domain}
+            <select id="email-domain" aria-label={t("apps.emailSetup.emailDomainAria", "Email domain")} className={`${selectClass} max-w-1/2 shrink-0`} value={domain}
               disabled={busy || !inspected.data} onChange={event => { setDomainSelected(true); setDomain(event.target.value); setup.reset(); }}>
               {[...new Set([...customDomains, "agentmail.to", domain])]
                 .map(value => <option key={value} value={value}>@{value}</option>)}
@@ -392,10 +393,10 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
         </> : <select id="email-existing" className={selectClass} value={pendingAddress ?? inboxId} disabled={busy || scopedKey || !!pendingAddress}
           aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : undefined}
           onChange={event => { setInboxId(event.target.value); setup.reset(); }}>
-          <option value="">Choose an inbox</option>
+          <option value="">{t("apps.emailSetup.chooseInbox", "Choose an inbox")}</option>
           {inspected.data?.inboxes.map(i => {
             const assigned = inboxes.data?.some(e => e.id !== requestId && e.address === i.inbox_id && e.status !== "archived");
-            return <option key={i.inbox_id} value={i.inbox_id} disabled={assigned}>{i.inbox_id}{assigned ? " — already assigned" : ""}</option>;
+            return <option key={i.inbox_id} value={i.inbox_id} disabled={assigned}>{i.inbox_id}{assigned ? ` — ${t("apps.emailSetup.alreadyAssigned", "already assigned")}` : ""}</option>;
           })}
         </select>}
         {scopedKey && !pendingAddress && <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={busy}
@@ -412,7 +413,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
         </div>}
         {!scopedKey && !pendingAddress && <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={busy}
           onClick={() => { setAddressMode(addressMode === "new" ? "existing" : "new"); setup.reset(); }}>
-          {addressMode === "new" ? "Use an existing inbox" : "Create a new address"}
+          {addressMode === "new" ? t("apps.emailSetup.useExistingInbox", "Use an existing inbox") : t("apps.emailSetup.createNewAddress", "Create a new address")}
         </Button>}
       </div>
       <Card className="py-4">
@@ -422,10 +423,10 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
         </CardHeader>
       </Card>
       <details className="space-y-4">
-        <summary className="cursor-pointer text-sm text-muted-foreground">Advanced options</summary>
+        <summary className="cursor-pointer text-sm text-muted-foreground">{t("apps.emailSetup.advancedOptions", "Advanced options")}</summary>
         <div className="space-y-4">
           {addressMode === "new" && <div className="space-y-2">
-            <a className="text-sm underline" href="https://docs.agentmail.to/custom-domains" target="_blank" rel="noreferrer">Set up a custom domain ↗</a>
+            <a className="text-sm underline" href="https://docs.agentmail.to/custom-domains" target="_blank" rel="noreferrer">{t("apps.emailSetup.setupCustomDomain", "Set up a custom domain ↗")}</a>
           </div>}
           <div className="space-y-2">
             <Label htmlFor="email-mode">Receiving</Label>
@@ -441,7 +442,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
         </div>
       </details>
       {setupError}
-      {inspected.isPending && <p role="status" className="text-sm text-muted-foreground">Loading email options…</p>}
+      {inspected.isPending && <p role="status" className="text-sm text-muted-foreground">{t("apps.emailSetup.loadingOptions", "Loading email options…")}</p>}
       <div className="flex items-center justify-between gap-3 border-t border-border pt-5">
         <Button type="button" variant="ghost" disabled={busy} onClick={() => { setup.reset(); setStep(0); }}><ArrowLeft className="size-4" />Back</Button>
         <Button disabled={!canCreate}>
@@ -493,7 +494,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
             <QueryErrorState
               size="inline"
               error={projectsView.kind === "error" ? projects.error : boundaryIssues.error}
-              action="load work boundary options"
+              action={t("apps.emailSetup.loadWorkBoundaryAction", "load work boundary options")}
               onRetry={() => { projectsView.retry(); boundaryIssuesView.retry(); }}
               retrying={projects.isFetching || boundaryIssues.isFetching}
             />
@@ -587,7 +588,7 @@ export function EmailConnectionInboxes({
       ))}
       {!!inboxes.length && <EmailSafetyNotice />}
       {view.kind === "error" && (
-        <QueryErrorState error={query.error} action="load the inboxes" onRetry={view.retry} retrying={view.isFetching} />
+        <QueryErrorState error={query.error} action={t("apps.emailSetup.loadInboxesAction", "load the inboxes")} onRetry={view.retry} retrying={view.isFetching} />
       )}
     </section>
   );
@@ -646,28 +647,28 @@ export function EmailEndpointSettings({
     return <p>Inbox disconnected. Email history remains in its tasks.</p>;
   if (!inbox) {
     if (view.kind === "error")
-      return <QueryErrorState error={query.error} action="load the email inbox" onRetry={view.retry} retrying={view.isFetching} />;
-    return <p role="status">Loading email inbox…</p>;
+      return <QueryErrorState error={query.error} action={t("apps.emailSetup.loadInboxAction", "load the email inbox")} onRetry={view.retry} retrying={view.isFetching} />;
+    return <p role="status">{t("apps.emailSetup.loadingInbox", "Loading email inbox…")}</p>;
   }
   return (
     <div className="max-w-2xl space-y-8 pb-8">
       <header className="space-y-2">
-        <p className="text-sm text-muted-foreground">{assignedAgentName}’s email address</p>
+        <p className="text-sm text-muted-foreground">{t("apps.emailSetup.agentEmailAddress", "{{name}}’s email address", { name: assignedAgentName })}</p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h1 aria-label={inbox.address ?? undefined} className="min-w-0 break-all text-xl font-bold">
             {inbox.address ? (
-              <CopyText text={inbox.address} ariaLabel="Copy email address" title="Copy email address"
+              <CopyText text={inbox.address} ariaLabel={t("apps.emailSetup.copyEmailAddress", "Copy email address")} title={t("apps.emailSetup.copyEmailAddress", "Copy email address")}
                 containerClassName="max-w-full" className="flex min-w-0 items-center gap-2 rounded-md text-left">
                 <span className="min-w-0 break-all">{inbox.address}</span>
                 <Copy aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
               </CopyText>
-            ) : "Email inbox"}
+            ) : t("apps.emailSetup.emailInboxFallback", "Email inbox")}
           </h1>
           {inbox.address && (
             <a href={`https://console.agentmail.to/dashboard/inboxes/${encodeURIComponent(inbox.address)}`}
               target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground">
-              View inbox <ExternalLink aria-hidden="true" className="size-3" />
+              {t("apps.emailSetup.viewInbox", "View inbox")} <ExternalLink aria-hidden="true" className="size-3" />
             </a>
           )}
         </div>
@@ -698,12 +699,12 @@ export function EmailEndpointSettings({
           {["active", "paused"].includes(inbox.status) && (
             <Button variant="outline" size="sm" disabled={control.isPending}
               onClick={() => control.mutate(inbox.status === "active" ? "pause" : "resume")}>
-              {inbox.status === "active" ? "Pause" : "Resume"}
+              {inbox.status === "active" ? t("common.pause", "Pause") : t("common.resume", "Resume")}
             </Button>
           )}
         </div>
         {inbox.status === "paused" && (
-          <p className="text-sm text-muted-foreground">Receiving is paused. Resume to receive new email.</p>
+          <p className="text-sm text-muted-foreground">{t("apps.emailSetup.receivingPausedNotice", "Receiving is paused. Resume to receive new email.")}</p>
         )}
         <dl className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
@@ -738,10 +739,10 @@ export function EmailEndpointSettings({
             </select>
           </div>
           {reconnect.error && <p role="alert" className="text-sm text-destructive">{describeError(reconnect.error).body}</p>}
-          {reconnect.isSuccess && <p role="status" className="text-sm">Inbox reconnected.</p>}
+          {reconnect.isSuccess && <p role="status" className="text-sm">{t("apps.emailSetup.inboxReconnectedStatus", "Inbox reconnected.")}</p>}
           <div className="flex justify-end">
             <Button variant="outline" disabled={!replacementKey || reconnect.isPending} onClick={() => reconnect.mutate()}>
-              {reconnect.isPending ? "Reconnecting…" : "Reconnect inbox"}
+              {reconnect.isPending ? t("apps.emailSetup.reconnecting", "Reconnecting…") : t("apps.emailSetup.reconnectInboxButton", "Reconnect inbox")}
             </Button>
           </div>
         </div>

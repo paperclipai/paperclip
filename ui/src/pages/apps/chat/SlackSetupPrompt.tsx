@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { buildSetupPrompt, SetupPrompt } from "./SetupPrompt";
 
 export const slackSetupPrompt = `Help me completely set up a Slack chat bot in Paperclip. Use your browser or computer-use tools to operate the real Paperclip app, Slack app settings, and Slack workspace in the browser. Complete the work through their normal UI, not a shell script, direct API calls, or a simulated demo. If you cannot operate these interfaces, tell me before starting.
@@ -37,5 +38,6 @@ export function buildSlackSetupPrompt(instanceUrl: string) {
 }
 
 export function SlackSetupPrompt({ instanceUrl = window.location.origin }: { instanceUrl?: string }) {
-  return <SetupPrompt prompt={buildSlackSetupPrompt(instanceUrl)} description="Paste this into your agent to configure your Slack bot." />;
+  const { t } = useTranslation();
+  return <SetupPrompt prompt={buildSlackSetupPrompt(instanceUrl)} description={t("apps.SlackSetupPrompt.description")} />;
 }

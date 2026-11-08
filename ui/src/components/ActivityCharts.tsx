@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
 /* ---- Utilities ---- */
 
@@ -28,15 +29,15 @@ const runSegmentColors = {
 
 // Compact per-day tooltip that also attributes failures to their error class.
 function runDayTooltip(entry: DashboardRunActivityDay): string {
-  const lines = [`${entry.date}: ${entry.total} run${entry.total === 1 ? "" : "s"}`];
-  if (entry.succeeded > 0) lines.push(`  succeeded: ${entry.succeeded}`);
-  if (entry.recovered > 0) lines.push(`  recovered: ${entry.recovered} (retry succeeded)`);
+  const lines = [t("dashboard.ActivityCharts.runsOnDay", { count: entry.total, date: entry.date })];
+  if (entry.succeeded > 0) lines.push(`  ${t("dashboard.ActivityCharts.succeeded", { count: entry.succeeded })}`);
+  if (entry.recovered > 0) lines.push(`  ${t("dashboard.ActivityCharts.recovered", { count: entry.recovered })}`);
   if (entry.failed > 0) {
-    lines.push(`  failed: ${entry.failed}`);
+    lines.push(`  ${t("dashboard.ActivityCharts.failed", { count: entry.failed })}`);
     const codes = Object.entries(entry.failedByErrorCode ?? {}).sort((a, b) => b[1] - a[1]);
     for (const [code, count] of codes) lines.push(`    ${code}: ${count}`);
   }
-  if (entry.other > 0) lines.push(`  other: ${entry.other}`);
+  if (entry.other > 0) lines.push(`  ${t("dashboard.ActivityCharts.other", { count: entry.other })}`);
   return lines.join("\n");
 }
 
@@ -119,6 +120,7 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
 }
 
 export function RunActivityChart(props: RunChartProps) {
+  const { t } = useTranslation();
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
@@ -127,13 +129,13 @@ export function RunActivityChart(props: RunChartProps) {
   const hasData = activity.some(v => v.total > 0);
   const hasRecovered = activity.some(v => v.recovered > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard.ActivityCharts.noRuns")}</p>;
 
   const legendItems = [
-    { color: runSegmentColors.succeeded, label: "Succeeded" },
-    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: "Recovered" }] : []),
-    { color: runSegmentColors.failed, label: "Failed" },
-    { color: runSegmentColors.other, label: "Other" },
+    { color: runSegmentColors.succeeded, label: t("dashboard.ActivityCharts.legendSucceeded") },
+    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: t("dashboard.ActivityCharts.legendRecovered") }] : []),
+    { color: runSegmentColors.failed, label: t("dashboard.ActivityCharts.legendFailed") },
+    { color: runSegmentColors.other, label: t("dashboard.ActivityCharts.legendOther") },
   ];
 
   return (
@@ -175,6 +177,13 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  const { t } = useTranslation();
+  const priorityLabels: Record<string, string> = {
+    critical: t("dashboard.ActivityCharts.priorityCritical"),
+    high: t("dashboard.ActivityCharts.priorityHigh"),
+    medium: t("dashboard.ActivityCharts.priorityMedium"),
+    low: t("dashboard.ActivityCharts.priorityLow"),
+  };
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -188,7 +197,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard.ActivityCharts.noTasks")}</p>;
 
   return (
     <div>
@@ -198,7 +207,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard.ActivityCharts.dayIssues", { day, total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -213,7 +222,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: priorityLabels[p] }))} />
     </div>
   );
 }
@@ -236,17 +245,17 @@ const statusColors: Record<string, string> = {
   backlog: "var(--project-none)",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
-
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  const { t } = useTranslation();
+  const statusLabels: Record<string, string> = {
+    todo: t("dashboard.ActivityCharts.statusTodo"),
+    in_progress: t("dashboard.ActivityCharts.statusInProgress"),
+    in_review: t("dashboard.ActivityCharts.statusInReview"),
+    done: t("dashboard.ActivityCharts.statusDone"),
+    blocked: t("dashboard.ActivityCharts.statusBlocked"),
+    cancelled: t("dashboard.ActivityCharts.statusCancelled"),
+    backlog: t("dashboard.ActivityCharts.statusBacklog"),
+  };
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -263,7 +272,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard.ActivityCharts.noTasks")}</p>;
 
   return (
     <div>
@@ -273,7 +282,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard.ActivityCharts.dayIssues", { day, total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -294,12 +303,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
 }
 
 export function SuccessRateChart(props: RunChartProps) {
+  const { t } = useTranslation();
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard.ActivityCharts.noRuns")}</p>;
 
   return (
     <div>
@@ -312,7 +322,7 @@ export function SuccessRateChart(props: RunChartProps) {
           const rate = entry.total > 0 ? effectiveSucceeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--status-task-icon-done)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--status-task-icon-blocked)";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard.ActivityCharts.successRateTooltip", { day, percent: entry.total > 0 ? Math.round(rate * 100) : 0, succeeded: effectiveSucceeded, total: entry.total })}>
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (

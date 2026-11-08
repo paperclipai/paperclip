@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/context/ToastContext";
+import { useTranslation } from "@/i18n";
 import { EffectiveAgentPanel } from "../ProfilesTab";
 import { LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
 import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
@@ -53,6 +54,7 @@ export function ProfilesIndex({
   initialStatusFilter?: "active" | "archived";
   initialResolverOpen?: boolean;
 }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -123,17 +125,19 @@ export function ProfilesIndex({
 
   const header = (
     <ToolsPageHeader
-      title="Access profiles"
-      description="Decide which tools your agents can use. Build a profile once, then assign it to the agents that need it."
+      title={t("tools.profiles.index.title", { defaultValue: "Access profiles" })}
+      description={t("tools.profiles.index.description", {
+        defaultValue: "Decide which tools your agents can use. Build a profile once, then assign it to the agents that need it.",
+      })}
       actions={
         <>
           <Button variant="outline" onClick={() => setResolverOpen(true)}>
             <ShieldCheck className="mr-1.5 h-4 w-4" />
-            Check an agent's access
+            {t("tools.profiles.index.checkAgentAccess", { defaultValue: "Check an agent's access" })}
           </Button>
           <Button onClick={() => navigate(newProfileHref())}>
             <Plus className="mr-1.5 h-4 w-4" />
-            New profile
+            {t("tools.profiles.index.newProfile", { defaultValue: "New profile" })}
           </Button>
         </>
       }
@@ -144,7 +148,7 @@ export function ProfilesIndex({
     <Sheet open={resolverOpen} onOpenChange={setResolverOpen}>
       <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">
         <SheetHeader className="border-b border-border">
-          <SheetTitle>Check an agent's access</SheetTitle>
+          <SheetTitle>{t("tools.profiles.index.checkAgentAccess", { defaultValue: "Check an agent's access" })}</SheetTitle>
           <SheetDescription>
             See exactly which tools an agent can use right now, and which profile allows each one.
           </SheetDescription>
@@ -160,7 +164,7 @@ export function ProfilesIndex({
     return (
       <div className="space-y-5">
         {header}
-        <LoadingState label="Loading profiles…" />
+        <LoadingState label={t("tools.shared.loading", { defaultValue: "Loading profiles…" })} />
       </div>
     );
   }
@@ -170,7 +174,7 @@ export function ProfilesIndex({
         {header}
         <QueryErrorState
           error={profiles.error}
-          action="load profiles"
+          action={t("errorActions.loadProfiles")}
           onRetry={profilesView.retry}
           retrying={profilesView.isFetching}
         />
@@ -196,7 +200,9 @@ export function ProfilesIndex({
               statusFilter === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {key === "active" ? "Active" : "Archived"}
+            {key === "active"
+              ? t("tools.profiles.index.activeTab", { defaultValue: "Active" })
+              : t("tools.profiles.index.archivedTab", { defaultValue: "Archived" })}
           </button>
         ))}
       </div>
@@ -204,7 +210,7 @@ export function ProfilesIndex({
       {rows.length === 0 ? (
         statusFilter === "archived" ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-            No archived profiles.
+            {t("tools.profiles.index.emptyArchived", { defaultValue: "No archived profiles." })}
           </div>
         ) : (
           <EmptyTemplatePicker onPick={(key) => navigate(newProfileHref(key))} />
@@ -222,11 +228,11 @@ export function ProfilesIndex({
             </colgroup>
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Profile</th>
-                <th className="px-3 py-2 font-medium">Allows</th>
-                <th className="px-3 py-2 font-medium">Assigned to</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Updated</th>
+                <th className="px-3 py-2 font-medium">{t("tools.profiles.index.thProfile", { defaultValue: "Profile" })}</th>
+                <th className="px-3 py-2 font-medium">{t("tools.profiles.index.thAllows", { defaultValue: "Allows" })}</th>
+                <th className="px-3 py-2 font-medium">{t("tools.profiles.index.thAssignedTo", { defaultValue: "Assigned to" })}</th>
+                <th className="px-3 py-2 font-medium">{t("tools.profiles.index.thStatus", { defaultValue: "Status" })}</th>
+                <th className="px-3 py-2 font-medium">{t("tools.profiles.index.thUpdated", { defaultValue: "Updated" })}</th>
                 <th className="w-10 px-3 py-2" />
               </tr>
             </thead>
@@ -264,7 +270,7 @@ export function ProfilesIndex({
                       {assigned.unassigned ? (
                         <span className="text-muted-foreground">
                           {assigned.text}
-                          <span className="ml-1 text-xs text-muted-foreground/70">— does not change access</span>
+                          <span className="ml-1 text-xs text-muted-foreground/70">— {t("tools.profiles.index.doesNotChangeAccess", { defaultValue: "does not change access" })}</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-foreground">
@@ -284,7 +290,7 @@ export function ProfilesIndex({
                             onClick={open}
                             className="text-xs font-medium text-primary hover:underline"
                           >
-                            Resume
+                            {t("tools.profiles.index.resume", { defaultValue: "Resume" })}
                           </button>
                         ) : null}
                       </span>
@@ -345,6 +351,7 @@ function RowMenu({
   onRestore?: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -357,19 +364,19 @@ function RowMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={onEdit}>Edit</DropdownMenuItem>
-        <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onEdit}>{t("tools.profiles.index.edit", { defaultValue: "Edit" })}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onDuplicate}>{t("tools.profiles.index.duplicate", { defaultValue: "Duplicate" })}</DropdownMenuItem>
         {onRestore ? (
           <DropdownMenuItem onSelect={onRestore}>
             <ArchiveRestore className="mr-1.5 h-4 w-4" />
-            Restore
+            {t("tools.profiles.index.restore", { defaultValue: "Restore" })}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem onSelect={onArchive}>Archive</DropdownMenuItem>
+          <DropdownMenuItem onSelect={onArchive}>{t("tools.profiles.index.archive", { defaultValue: "Archive" })}</DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onDelete} className="text-destructive focus:text-destructive">
-          Delete
+          {t("tools.profiles.index.delete", { defaultValue: "Delete" })}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -378,12 +385,17 @@ function RowMenu({
 
 /** Empty state (AP2): the same five step-1 template cards the wizard opens with. */
 function EmptyTemplatePicker({ onPick }: { onPick: (key: TemplateKey) => void }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-lg border border-dashed border-border p-6">
       <div className="mb-4 max-w-2xl">
-        <h3 className="text-base font-semibold text-foreground">Create your first access profile</h3>
+        <h3 className="text-base font-semibold text-foreground">
+          {t("tools.profiles.index.createFirstTitle", { defaultValue: "Create your first access profile" })}
+        </h3>
         <p className="text-sm text-muted-foreground">
-          Pick a starting point. You can fine-tune exactly which tools it allows in the next step.
+          {t("tools.profiles.index.createFirstSubtitle", {
+            defaultValue: "Pick a starting point. You can fine-tune exactly which tools it allows in the next step.",
+          })}
         </p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -397,8 +409,12 @@ function EmptyTemplatePicker({ onPick }: { onPick: (key: TemplateKey) => void })
               "hover:border-primary hover:bg-primary/5",
             )}
           >
-            <span className="text-sm font-medium text-foreground">{template.title}</span>
-            <span className="text-xs text-muted-foreground">{template.description}</span>
+            <span className="text-sm font-medium text-foreground">
+              {t(`tools.profiles.wizard.templates.${template.key}.title`, { defaultValue: template.title })}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {t(`tools.profiles.wizard.templates.${template.key}.description`, { defaultValue: template.description })}
+            </span>
           </button>
         ))}
       </div>

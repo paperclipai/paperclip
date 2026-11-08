@@ -4,6 +4,7 @@ import { CheckCircle2, Loader2, RotateCcw, Undo2 } from "lucide-react";
 import type { IssueReviewPolicy, StalledReviewDecisionAction } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
+import { useTranslation } from "@/i18n";
 import { queryKeys } from "../lib/queryKeys";
 import { issueReviewPolicyBadge } from "../lib/review-policy";
 import { cn } from "../lib/utils";
@@ -29,12 +30,6 @@ interface StalledReviewActionsProps {
   className?: string;
 }
 
-const ACTION_PAST_TENSE: Record<StalledReviewDecisionAction, string> = {
-  approve: "Review approved — issue marked done.",
-  request_changes: "Changes requested — issue returned to the assignee.",
-  send_back: "Sent back to work — issue returned to the assignee.",
-};
-
 /**
  * The three review verbs an operator can take on a *stalled* in-review issue —
  * one with no reviewer, interaction, approval, or monitor path left (PAP-16080
@@ -51,9 +46,15 @@ export function StalledReviewActions({
   footerSlot,
   onResolved,
   reviewPolicy,
-  approveLabel = "Approve",
+  approveLabel,
   className,
 }: StalledReviewActionsProps) {
+  const { t } = useTranslation();
+  const ACTION_PAST_TENSE: Record<StalledReviewDecisionAction, string> = {
+    approve: t("issues.StalledReviewActions.approvedToast"),
+    request_changes: t("issues.StalledReviewActions.changesRequestedToast"),
+    send_back: t("issues.StalledReviewActions.sentBackToast"),
+  };
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [note, setNote] = useState("");
@@ -74,8 +75,8 @@ export function StalledReviewActions({
     },
     onError: (error) => {
       pushToast({
-        title: "Could not record the review decision",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("issues.StalledReviewActions.recordFailedTitle"),
+        body: error instanceof Error ? error.message : t("issues.StalledReviewActions.pleaseTryAgain"),
         tone: "error",
       });
     },
@@ -107,7 +108,7 @@ export function StalledReviewActions({
       <Textarea
         value={note}
         onChange={(event) => setNote(event.target.value)}
-        placeholder="Add a note — required to request changes, optional otherwise…"
+        placeholder={t("issues.StalledReviewActions.notePlaceholder")}
         className="min-h-16 text-sm"
         data-testid="stalled-review-note"
         disabled={pending}
@@ -129,7 +130,7 @@ export function StalledReviewActions({
             ) : (
               <Undo2 className="h-3.5 w-3.5" aria-hidden />
             )}
-            Send back to work
+            {t("issues.StalledReviewActions.sendBack")}
           </Button>
           <Button
             type="button"
@@ -137,7 +138,7 @@ export function StalledReviewActions({
             size="sm"
             className="w-full border-amber-400/70 text-amber-900 hover:bg-amber-100 dark:border-amber-500/50 dark:text-amber-100 dark:hover:bg-amber-500/15 sm:w-auto sm:flex-1 @xl:flex-none"
             disabled={pending || noteEmpty}
-            title={noteEmpty ? "Add a note to request changes" : undefined}
+            title={noteEmpty ? t("issues.StalledReviewActions.noteRequiredTitle") : undefined}
             onClick={() => decide.mutate("request_changes")}
             data-testid="stalled-review-request-changes"
           >
@@ -146,7 +147,7 @@ export function StalledReviewActions({
             ) : (
               <RotateCcw className="h-3.5 w-3.5" aria-hidden />
             )}
-            Request changes
+            {t("issues.StalledReviewActions.requestChanges")}
           </Button>
           <Button
             type="button"
@@ -161,7 +162,7 @@ export function StalledReviewActions({
             ) : (
               <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
             )}
-            {approveLabel}
+            {approveLabel ?? t("issues.StalledReviewActions.approve")}
           </Button>
         </div>
       </div>

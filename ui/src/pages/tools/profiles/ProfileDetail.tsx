@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/context/ToastContext";
+import { t, useTranslation } from "@/i18n";
 import { LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
 import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { allowsLabel, STATUS_LABEL } from "./profile-summary";
@@ -171,7 +172,7 @@ export function ProfileDetail({
       <QueryErrorState
         size="page"
         error={data.profiles.error}
-        action="load the profile"
+        action={t("errorActions.loadTheProfile")}
         onRetry={profilesView.retry}
         retrying={profilesView.isFetching}
       />
@@ -287,7 +288,7 @@ export function ProfileDetail({
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-base font-semibold text-foreground">New tools that appear later</h2>
+        <h2 className="text-base font-semibold text-foreground">{t("tools.profiles.detail.newToolsLater", { defaultValue: "New tools that appear later" })}</h2>
         <NewToolsSetting
           value={profile.defaultAction}
           disabled={archived || updateProfile.isPending}
@@ -403,7 +404,7 @@ function NewToolsReviewDialog({
         {loading ? (
           <LoadingState label="Loading new tools..." />
         ) : error ? (
-          <QueryErrorState error={error} action="load new tools" onRetry={onRetry} retrying={retrying} />
+          <QueryErrorState error={error} action={t("errorActions.loadNewTools")} onRetry={onRetry} retrying={retrying} />
         ) : tools.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
             There are no new tools waiting for review.

@@ -6,6 +6,7 @@ import { Navigate, Outlet, useLocation, useParams } from "@/lib/router";
 import { PaperclipLoading } from "./AnimatedPaperclipIcon";
 import { QueryErrorState, useQueryView, type QueryViewState } from "./QueryView";
 import { NotFoundPage } from "../pages/NotFound";
+import { t } from "@/i18n";
 
 /**
  * A workspace lookup decides where a URL goes. An outage must not look like a
@@ -32,7 +33,7 @@ function workspaceLookupGate(view: QueryViewState<unknown>, companiesLoading: bo
       <QueryErrorState
         size="page"
         error={view.error}
-        action="open this workspace"
+        action={t("errorActions.openThisWorkspace")}
         onRetry={view.retry}
         retrying={view.isFetching}
       />

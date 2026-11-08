@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import type { HeartbeatRun, RoutineRunSummary } from "@paperclipai/shared";
 import { Activity, CircleDotDashed } from "lucide-react";
@@ -54,6 +55,7 @@ function RoutineScopedRuns({
   runs: RoutineRunSummary[];
   view: QueryViewState<RoutineRunSummary[]>;
 }) {
+  const { t } = useTranslation();
   // A loaded list stays on screen through a failed refetch; an outage before
   // the first load reads as loading, and only a real failure shows copy.
   if (view.kind === "loading" || view.kind === "reconnecting") {
@@ -68,7 +70,7 @@ function RoutineScopedRuns({
     return (
       <QueryErrorState
         error={view.error}
-        action="load routine runs"
+        action={t("audit.runs.loadRoutineRunsAction")}
         onRetry={view.retry}
         retrying={view.isFetching}
       />
@@ -76,7 +78,7 @@ function RoutineScopedRuns({
   }
 
   if (runs.length === 0) {
-    return <EmptyState icon={Activity} message="No routine runs yet." />;
+    return <EmptyState icon={Activity} message={t("audit.runs.noRoutineRuns")} />;
   }
 
   return (
@@ -87,7 +89,7 @@ function RoutineScopedRuns({
           Executions created by this routine, newest first.
         </p>
       </div>
-      <ul className="divide-y divide-border border-y border-border" aria-label="Routine runs">
+      <ul className="divide-y divide-border border-y border-border" aria-label={t("audit.runs.routineRunsAria")}>
         {runs.map((run) => {
           const content = (
             <>
@@ -122,7 +124,7 @@ function RoutineScopedRuns({
           );
         })}
       </ul>
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent routine runs.</p>
+      <p className="text-xs text-muted-foreground">{t("audit.runs.showingRecentRoutineRuns", { limit: RUN_LIMIT })}</p>
     </div>
   );
 }
@@ -139,6 +141,7 @@ export function AuditRuns({
   lockedAgentId?: string;
   hideHeader?: boolean;
 }) {
+  const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = lockedAgentId ?? searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
@@ -269,17 +272,17 @@ export function AuditRuns({
       ) : runsView.kind === "error" ? (
         <QueryErrorState
           error={runsView.error}
-          action="load runs"
+          action={t("audit.runs.loadRunsAction")}
           onRetry={runsView.retry}
           retrying={runsView.isFetching}
         />
       ) : visibleRuns.length === 0 ? (
         <EmptyState
           icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}
-          message={agentId !== ALL || status !== ALL ? "No runs match these filters." : "No runs yet."}
+          message={agentId !== ALL || status !== ALL ? t("audit.runs.noRunsFiltered") : t("audit.runs.noRunsYet")}
         />
       ) : (
-        <ul className="divide-y divide-border border-y border-border" aria-label="Recent runs">
+        <ul className="divide-y divide-border border-y border-border" aria-label={t("audit.runs.recentRunsAria")}>
           {visibleRuns.map((run) => {
             const agent = agentById.get(run.agentId);
             const summary = runSummary(run);
@@ -293,7 +296,7 @@ export function AuditRuns({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium text-foreground">
-                        {agent?.name ?? "Unknown agent"}
+                        {agent?.name ?? t("audit.runs.unknownAgent")}
                       </span>
                       <span className="font-mono text-(length:--text-micro) text-muted-foreground">
                         {run.id.slice(0, 8)}
@@ -301,7 +304,7 @@ export function AuditRuns({
                       <StatusBadge status={run.status} />
                     </div>
                     <p className="mt-1 truncate text-sm text-muted-foreground">
-                      {summary ?? `${readableSource(run.invocationSource)} run`}
+                      {summary ?? t("audit.runs.runDefaultSummary", { source: readableSource(run.invocationSource) })}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground sm:justify-end">
@@ -318,7 +321,7 @@ export function AuditRuns({
         </ul>
       )}
 
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent runs.</p>
+      <p className="text-xs text-muted-foreground">{t("audit.runs.showingRecentRuns", { limit: RUN_LIMIT })}</p>
     </div>
   );
 }

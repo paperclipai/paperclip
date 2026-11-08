@@ -56,6 +56,7 @@ import {
   readGitHubPrivateKeyFile,
 } from "./github-private-key-file";
 import { describeError } from "@/api/errors";
+import { t, useTranslation } from "@/i18n";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -118,14 +119,15 @@ export function ChatConnectionPurpose({ provider, onChat, onTools, slackLabels }
   onTools: () => void;
   slackLabels?: string[];
 }) {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Choose connection" }]);
+    setBreadcrumbs([{ label: t("apps.chatSetup.connectors", "Connectors"), href: "/apps" }, { label: t("apps.chatSetup.chooseConnection", "Choose connection") }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   return (
       <div className="max-w-2xl space-y-6">
-        <ChatSetupNavigation labels={provider === "slack" ? slackLabels ?? ["Choose agent", "Connect"] : undefined} step={0} availableStep={0} onSelect={onChat} />
+        <ChatSetupNavigation labels={provider === "slack" ? slackLabels ?? [t("apps.chatSetup.chooseActiveAgent", "Choose agent"), t("common.connect", "Connect")] : undefined} step={0} availableStep={0} onSelect={onChat} />
         <div>
           <h1 className="text-xl font-bold">Choose how to connect</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -179,6 +181,7 @@ export function ChatEndpointSetup() {
 }
 
 function ChatSdkEndpointSetup() {
+  const { t } = useTranslation();
   const { userId, settled: identitySettled } = useAccountIdentity();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -327,7 +330,7 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't start setup",
+        title: t("apps.chatSetup.cantStartSetupTitle", "Couldn't start setup"),
         body: describeError(error).body,
         tone: "error",
       }),
@@ -360,7 +363,7 @@ function ChatSdkEndpointSetup() {
       return chatEndpointsApi.update(endpoint.id, { slackSetupMethod: "automatic" });
     },
     onSuccess: next => { setManagedAutoStart(false); syncEndpointSnapshot(next); setViewedStep(1); },
-    onError: () => pushToast({ title: "Couldn't switch Slack setup", body: "Try again.", tone: "error" }),
+    onError: () => pushToast({ title: t("apps.chatSetup.cantSwitchSlackTitle", "Couldn't switch Slack setup"), body: t("apps.chatSetup.tryAgainBody", "Try again."), tone: "error" }),
   });
   const setupAction = useMutation({
     mutationFn: async ({
@@ -457,7 +460,7 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't generate webhook secret",
+        title: t("apps.chatSetup.cantGenerateWebhookSecretTitle", "Couldn't generate webhook secret"),
         body: describeError(error).body,
         tone: "error",
       }),
@@ -470,7 +473,7 @@ function ChatSdkEndpointSetup() {
     },
     onError: (error) =>
       pushToast({
-        title: provider === "slack" ? "Couldn't finish setup" : "Test not complete",
+        title: provider === "slack" ? t("apps.chatSetup.cantFinishSetupTitle", "Couldn't finish setup") : t("apps.chatSetup.testNotCompleteTitle", "Test not complete"),
         body: describeError(error).body,
         tone: "error",
       }),
@@ -561,7 +564,7 @@ function ChatSdkEndpointSetup() {
               </p>
             </div>
             {endpoint ? (
-              <Input aria-label="Assigned agent" value={endpoint.assignedAgentName ?? selectedAgent?.name ?? agentId} readOnly />
+              <Input aria-label={t("apps.chatSetup.assignedAgentAria", "Assigned agent")} value={endpoint.assignedAgentName ?? selectedAgent?.name ?? agentId} readOnly />
             ) : <AgentSelect
               agents={activeAgents}
               value={agentId}
@@ -578,7 +581,7 @@ function ChatSdkEndpointSetup() {
                 variant="link" className="h-auto p-0 text-muted-foreground"
                 disabled={agentStepBusy || !slackDetailsValidation.success}
                 onClick={() => useOwnSlackApp.mutate()}
-              >Use your own app</Button>}
+              >{t("apps.chatSetup.useYourOwnApp", "Use your own app")}</Button>}
             </SlackSetupAdvanced>}
             {isSlack && !endpoint && !slackChoices.data && ((slackChoicesView.kind === "error")
               ? <div role="alert" className="text-sm text-destructive">Couldn&apos;t load Slack setup. <Button variant="link" disabled={slackChoices.isFetching} onClick={() => void slackChoices.refetch()}>Retry</Button></div>
@@ -604,7 +607,7 @@ function ChatSdkEndpointSetup() {
                 role="alert"
                 className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
               >
-                <p className="font-medium">Connection failed</p>
+                <p className="font-medium">{t("apps.chatSetup.connectionFailed", "Connection failed")}</p>
                 <p className="mt-1">{setupError}</p>
               </div>
             ) : null}
@@ -658,7 +661,7 @@ function ChatSdkEndpointSetup() {
             <h1 className="text-xl font-bold">Test your Speko voice connection</h1>
             <p className="text-sm text-muted-foreground">Ask the agent to do some work, add a spoken follow-up, and listen for its result. Accepted work stays in Paperclip when you end the call.</p>
             <NativeVoiceConversation companyId={endpoint.companyId} endpointId={endpoint.id} agentName={selectedAgent?.name ?? endpoint.assignedAgentName} />
-            <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button></SetupWizardFooter>
+            <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>{t("apps.chatSetup.verifyTestConversation", "Verify test conversation")}</Button></SetupWizardFooter>
           </div>
         )}
         {endpoint && step === tryStep && provider !== "speko" && (!automaticSlack || automaticSlackComplete) && (
@@ -677,7 +680,7 @@ function ChatSdkEndpointSetup() {
                 <span>You can now talk to {selectedAgent?.name ?? endpoint.assignedAgentName} in Slack</span>
                 <img src="/brands/apps/slack.svg" alt="" aria-hidden="true" className="size-6" />
               </p>
-              <Button asChild variant="link"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>
+              <Button asChild variant="link"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">{t("apps.chatSetup.openSlack", "Open Slack")} <ExternalLink className="size-4" /></a></Button>
             </div>
             <Button disabled={testConnection.isPending} onClick={finishSetup}>
               {testConnection.isPending && <Loader2 className="size-4 animate-spin" />}Done

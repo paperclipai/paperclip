@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQueryView } from "@/components/QueryView";
 import { Download, ExternalLink } from "lucide-react";
 import { useContext, useState, type ReactNode } from "react";
@@ -41,6 +42,7 @@ export function ArtifactFileRow({
   now?: Date;
   testId?: string;
 }) {
+  const { t } = useTranslation();
   const { id, attachmentId, filename, contentType, contentPath, openPath, downloadPath, byteSize } = source;
   const openGallery = useContext(IssueGalleryContext);
   const openTextAttachment = useContext(TextAttachmentContext);
@@ -64,16 +66,16 @@ export function ArtifactFileRow({
       {statusBadge}
       {localCsv && !tooLarge && !data.data && !(dataView.kind === "error") ? (
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={data.isFetching} onClick={() => setCsvRequested(true)}>
-          {data.isFetching ? "Loading preview…" : "Preview data"}
+          {data.isFetching ? t("artifacts.ArtifactFileRow.loadingPreview") : t("artifacts.ArtifactFileRow.previewData")}
         </Button>
       ) : null}
       {openPath ? (
-        <a href={openPath} target="_blank" rel="noreferrer" aria-label={`Open raw ${filename}`} title="Open raw" className={ROW_ACTION_CLASS}>
+        <a href={openPath} target="_blank" rel="noreferrer" aria-label={t("artifacts.ArtifactFileRow.openRawAria", { filename })} title={t("artifacts.ArtifactFileRow.openRaw")} className={ROW_ACTION_CLASS}>
           <ExternalLink className="h-3 w-3" aria-hidden />
         </a>
       ) : null}
       {downloadPath ? (
-        <a href={downloadPath} download={filename} aria-label={`Download ${filename}`} title="Download" className={ROW_ACTION_CLASS}>
+        <a href={downloadPath} download={filename} aria-label={t("artifacts.ArtifactFileRow.downloadAria", { filename })} title={t("artifacts.ArtifactFileRow.download")} className={ROW_ACTION_CLASS}>
           <Download className="h-3 w-3" aria-hidden />
         </a>
       ) : null}
@@ -99,10 +101,10 @@ export function ArtifactFileRow({
       ) : null}
       {csv && (tooLarge || (dataView.kind === "error")) ? (
         <div className="px-2 text-xs text-muted-foreground" role="status">
-          {tooLarge ? "CSV is too large to preview. Download the file to view it." : data.error?.message}
+          {tooLarge ? t("artifacts.ArtifactFileRow.csvTooLarge") : data.error?.message}
           {(dataView.kind === "error") ? (
             <Button variant="ghost" size="sm" onClick={() => void data.refetch()}>
-              Retry preview
+              {t("artifacts.ArtifactFileRow.retryPreview")}
             </Button>
           ) : null}
         </div>

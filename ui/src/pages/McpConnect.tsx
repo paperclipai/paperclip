@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, Paperclip } from "lucide-react";
 import { Link, useParams } from "@/lib/router";
@@ -39,18 +40,20 @@ export function McpConnectPage({ agentPairingOnly = false }: { agentPairingOnly?
 }
 
 export function McpDevicePage({ initialCode }: { initialCode?: string } = {}) {
+  const { t } = useTranslation();
   const [code, setCode] = useState(initialCode ?? new URLSearchParams(window.location.search).get("user_code") ?? "");
   const [submitted, setSubmitted] = useState(code);
   if (submitted) return <McpConnectRequest key={submitted} id={submitted} device onEditCode={() => setSubmitted("")} />;
-  return <div className="mx-auto max-w-xl py-10"><Card className="space-y-4 p-6"><div className="flex items-center gap-3"><Paperclip className="size-8 shrink-0" /><h1 className="min-w-0 text-xl font-semibold">Connect your assistant to Paperclip</h1></div>
+  return <div className="mx-auto max-w-xl py-10"><Card className="space-y-4 p-6"><div className="flex items-center gap-3"><Paperclip className="size-8 shrink-0" /><h1 className="min-w-0 text-xl font-semibold">{t("apps.mcp.deviceTitle", { defaultValue: "Connect your assistant to Paperclip" })}</h1></div>
     <form className="space-y-4" onSubmit={event => { event.preventDefault(); setSubmitted(code.trim()); }}>
-      <label htmlFor="device-code" className="text-sm">Enter the code shown by your assistant</label>
+      <label htmlFor="device-code" className="text-sm">{t("apps.mcp.deviceEnterCode", { defaultValue: "Enter the code shown by your assistant" })}</label>
       <Input id="device-code" autoComplete="off" value={code} onChange={event => setCode(event.target.value)} required maxLength={12} />
-      <div className="flex justify-end"><Button type="submit">Continue</Button></div>
+      <div className="flex justify-end"><Button type="submit">{t("apps.mcp.deviceContinue", { defaultValue: "Continue" })}</Button></div>
     </form></Card></div>;
 }
 
 function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEditCode }: { id: string; device?: boolean; agentPairingOnly?: boolean; onEditCode?: () => void }) {
+  const { t } = useTranslation();
   const requestPrefix = agentPairingOnly ? "/dot-mcp/requests" : "/mcp/requests";
   const [companyId, setCompanyId] = useState("");
   const [pairingCode, setPairingCode] = useState("");
@@ -92,26 +95,26 @@ function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEdi
     mutationFn: () => api.post<{ redirectUrl: string }>(`${requestPrefix}/${encodeURIComponent(id)}/dot-pairing`, { pairingCode: pairingCode.trim() }),
     onSuccess: ({ redirectUrl }) => { setPairingCode(""); window.location.assign(redirectUrl); },
   });
-  if (deviceResult) return <div className="mx-auto max-w-xl py-10"><Card className="block space-y-4 p-6"><Paperclip className="size-8" /><h1 className="text-xl font-semibold">{deviceResult === "approved" ? "Access approved" : "Connection declined"}</h1><p className="text-sm">{deviceResult === "approved" ? "Return to your assistant. It will finish connecting automatically." : "No access was granted. You can start a new connection from your assistant."}</p><Button variant="outline" asChild><Link to="/">Back to Paperclip</Link></Button></Card></div>;
+  if (deviceResult) return <div className="mx-auto max-w-xl py-10"><Card className="block space-y-4 p-6"><Paperclip className="size-8" /><h1 className="text-xl font-semibold">{deviceResult === "approved" ? t("apps.mcp.accessApproved", { defaultValue: "Access approved" }) : t("apps.mcp.connectionDeclined", { defaultValue: "Connection declined" })}</h1><p className="text-sm">{deviceResult === "approved" ? t("apps.mcp.approvedBody", { defaultValue: "Return to your assistant. It will finish connecting automatically." }) : t("apps.mcp.declinedBody", { defaultValue: "No access was granted. You can start a new connection from your assistant." })}</p><Button variant="outline" asChild><Link to="/">{t("apps.mcp.backToPaperclip", { defaultValue: "Back to Paperclip" })}</Link></Button></Card></div>;
   const returnPath = device ? `/mcp-device?user_code=${encodeURIComponent(id)}` : `${agentPairingOnly ? "/dot-connect" : "/mcp-connect"}/${id}`;
   return <div className="mx-auto max-w-xl py-10">
     <Card className="block space-y-4 p-6">
       <div className="flex items-center gap-3">
         <Paperclip className="size-8 shrink-0 text-foreground" role="img" aria-label="Paperclip" />
-        <h1 className="min-w-0 break-words text-xl font-semibold">Connect <bdi>{assistantName}</bdi> to Paperclip</h1>
+        <h1 className="min-w-0 break-words text-xl font-semibold">{t("apps.mcp.connectAssistantTitle", { assistantName, defaultValue: `Connect ${assistantName} to Paperclip` })}</h1>
       </div>
       {clientOrigin && <ClientOrigin key={clientOrigin} origin={clientOrigin} />}
       {!device && data?.redirectOrigin && data.redirectOrigin !== clientOrigin && <ClientOrigin key={data.redirectOrigin} origin={data.redirectOrigin} />}
-      {device && <p className="text-sm">Confirm this matches the code shown by your assistant: <strong className="font-mono">{id.toUpperCase()}</strong></p>}
-      {(requestView.kind === "loading" || requestView.kind === "reconnecting") && <p role="status" className="text-sm text-muted-foreground">Loading connection request…</p>}
-      {requestView.kind === "error" && <QueryErrorState error={requestView.error} action="load this connection request" onRetry={requestView.retry} retrying={requestView.isFetching} />}
-      {requestView.kind === "error" && <p className="text-sm text-muted-foreground">Start a new connection from your assistant.</p>}
-      {device && requestView.kind === "error" && <Button variant="outline" onClick={onEditCode}>Enter a different code</Button>}
+      {device && <p className="text-sm">{t("apps.mcp.confirmMatch", { defaultValue: "Confirm this matches the code shown by your assistant:" })}{" "}<strong className="font-mono">{id.toUpperCase()}</strong></p>}
+      {(requestView.kind === "loading" || requestView.kind === "reconnecting") && <p role="status" className="text-sm text-muted-foreground">{t("apps.mcp.loadingRequest", { defaultValue: "Loading connection request…" })}</p>}
+      {requestView.kind === "error" && <QueryErrorState error={requestView.error} action={t("errorActions.loadThisConnectionRequest")} onRetry={requestView.retry} retrying={requestView.isFetching} />}
+      {requestView.kind === "error" && <p className="text-sm text-muted-foreground">{t("apps.mcp.startNewAssistant", { defaultValue: "Start a new connection from your assistant." })}</p>}
+      {device && requestView.kind === "error" && <Button variant="outline" onClick={onEditCode}>{t("apps.mcp.enterDifferentCode", { defaultValue: "Enter a different code" })}</Button>}
       {data?.agentConnection && !device && <form className="space-y-3" onSubmit={event => { event.preventDefault(); pairDot.mutate(); }}>
-        <p className="text-sm">Enter the one-use code from Paperclip’s agent setup to review this connection’s access. Keep the code out of Bot chat. Access is granted only when you approve the named agent below.</p>
-        <label htmlFor="dot-pairing-code" className="text-sm">Pairing code</label>
+        <p className="text-sm">{t("apps.mcp.pairingCodePrompt", { defaultValue: "Enter the one-use code from Paperclip’s agent setup to review this connection’s access. Keep the code out of Bot chat. Access is granted only when you approve the named agent below." })}</p>
+        <label htmlFor="dot-pairing-code" className="text-sm">{t("apps.mcp.pairingCodeLabel", { defaultValue: "Pairing code" })}</label>
         <Input id="dot-pairing-code" type="password" autoComplete="off" value={pairingCode} onChange={event => setPairingCode(event.target.value)} required maxLength={32} />
-        {previewPending && <p role="status" className="text-sm text-muted-foreground">Checking pairing code…</p>}
+        {previewPending && <p role="status" className="text-sm text-muted-foreground">{t("apps.mcp.checkingPairingCode", { defaultValue: "Checking pairing code…" })}</p>}
         {pairingPreview?.providerKind === "grok_bot" && <p className="text-sm font-medium">Allow this connection to work as {pairingPreview.agent.name} in {pairingPreview.company.name}.</p>}
         {pairingPreview && <dl className="space-y-2 rounded-md border border-border p-3 text-sm">
           <div><dt className="text-muted-foreground">Company</dt><dd>{pairingPreview.company.name} <span className="text-xs text-muted-foreground">({pairingPreview.company.id})</span></dd></div>
@@ -120,9 +123,9 @@ function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEdi
           {pairingPreview.authorizingPerson && <div><dt className="text-muted-foreground">Authorized by</dt><dd>{pairingPreview.authorizingPerson}</dd></div>}
           <div><dt className="text-muted-foreground">Access duration</dt><dd>{pairingPreview.accessDuration}</dd></div>
         </dl>}
-        {previewEnabled && preview.view.kind === "error" && <QueryErrorState size="inline" error={preview.error} action="check this pairing code" onRetry={preview.view.retry} retrying={preview.view.isFetching} />}
-        {pairDot.error && <p role="alert" className="text-sm text-destructive">{describeError(pairDot.error, { action: "connect Dot" }).body}</p>}
-        <div className="flex justify-end"><Button type="submit" disabled={!pairingPreview || !PAIRING_CODE_PATTERN.test(trimmedPairingCode) || pairDot.isPending}>{pairDot.isPending ? "Connecting…" : "Allow agent connection"}</Button></div>
+        {previewEnabled && preview.view.kind === "error" && <QueryErrorState size="inline" error={preview.error} action={t("errorActions.checkThisPairingCode")} onRetry={preview.view.retry} retrying={preview.view.isFetching} />}
+        {pairDot.error && <p role="alert" className="text-sm text-destructive">{describeError(pairDot.error, { action: t("errorActions.connectDot") }).body}</p>}
+        <div className="flex justify-end"><Button type="submit" disabled={!pairingPreview || !PAIRING_CODE_PATTERN.test(trimmedPairingCode) || pairDot.isPending}>{pairDot.isPending ? t("apps.connecting", { defaultValue: "Connecting…" }) : t("apps.mcp.allowAgentConnection", { defaultValue: "Allow agent connection" })}</Button></div>
       </form>}
       {data && <>
         {data.requiresSignIn ? <Button asChild><Link to={`/auth?next=${encodeURIComponent(returnPath)}`}>Sign in / Create account</Link></Button> : <>
@@ -148,11 +151,11 @@ function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEdi
             </span>
             <span>Write all of your Paperclip data</span>
           </label>}
-          {company && !company.canWrite && <p className="text-sm text-muted-foreground">Your role in this organization is read-only.</p>}
+          {company && !company.canWrite && <p className="text-sm text-muted-foreground">{t("apps.mcp.readOnlyRoleNotice", { defaultValue: "Your role in this organization is read-only." })}</p>}
           {consent.error && <p role="alert" className="text-sm text-destructive">{describeError(consent.error).body}</p>}
           <div className="flex items-center justify-between gap-3">
-            <Button variant="outline" disabled={consent.isPending} onClick={() => consent.mutate("deny")}>Cancel</Button>
-            <Button className="h-auto min-h-10 min-w-0 shrink whitespace-normal" disabled={!company || (data.agentConnection && !company.canWrite) || consent.isPending} onClick={() => consent.mutate("approve")}>{consent.isPending ? "Connecting…" : data.agentConnection ? "Connect Dot agent" : "Connect organization"}</Button>
+            <Button variant="outline" disabled={consent.isPending} onClick={() => consent.mutate("deny")}>{t("apps.cancel", { defaultValue: "Cancel" })}</Button>
+            <Button className="h-auto min-h-10 min-w-0 shrink whitespace-normal" disabled={!company || (data.agentConnection && !company.canWrite) || consent.isPending} onClick={() => consent.mutate("approve")}>{consent.isPending ? t("apps.connecting", { defaultValue: "Connecting…" }) : data.agentConnection ? t("apps.mcp.connectDotAgent", { defaultValue: "Connect Dot agent" }) : t("apps.mcp.connectOrg", { defaultValue: "Connect organization" })}</Button>
           </div>
         </>}
       </>}
@@ -161,6 +164,7 @@ function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEdi
 }
 
 export function AssistantConnectionsPage() {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const connections = useQuery({ queryKey: ["mcp-connections"], queryFn: () => api.get<McpConnection[]>("/mcp/connections") });
   const connectionsView = useQueryView(connections);
@@ -170,20 +174,20 @@ export function AssistantConnectionsPage() {
     return client.invalidateQueries({ queryKey: ["mcp-connections"] });
   } });
   return <div className="mx-auto max-w-xl space-y-4 py-10">
-    <h1 className="text-xl font-semibold">Assistant connections</h1>
-    <p className="text-sm text-muted-foreground">Revoking a connection stops its future tool calls. Work already delegated continues under your organization’s normal controls.</p>
+    <h1 className="text-xl font-semibold">{t("apps.mcp.assistantConnectionsTitle", { defaultValue: "Assistant connections" })}</h1>
+    <p className="text-sm text-muted-foreground">{t("apps.mcp.revokeWarning", { defaultValue: "Revoking a connection stops its future tool calls. Work already delegated continues under your organization’s normal controls." })}</p>
     {(connectionsView.kind === "loading" || connectionsView.kind === "reconnecting") && <p role="status" className="text-sm text-muted-foreground">Loading connections…</p>}
-    {connectionsView.kind === "error" && <QueryErrorState error={connectionsView.error} action="load assistant connections" onRetry={connectionsView.retry} retrying={connectionsView.isFetching} />}
-    {revoke.error && <p role="alert" className="text-sm text-destructive">{describeError(revoke.error, { action: "revoke the connection" }).body}</p>}
-    {active?.length === 0 && <p className="text-sm">No assistant connections.</p>}
+    {connectionsView.kind === "error" && <QueryErrorState error={connectionsView.error} action={t("errorActions.loadAssistantConnections")} onRetry={connectionsView.retry} retrying={connectionsView.isFetching} />}
+    {revoke.error && <p role="alert" className="text-sm text-destructive">{describeError(revoke.error, { action: t("errorActions.revokeTheConnection") }).body}</p>}
+    {active?.length === 0 && <p className="text-sm">{t("apps.mcp.noAssistantConnections", { defaultValue: "No assistant connections." })}</p>}
     {active?.map((connection) => <Card key={connection.id} className="block space-y-2 p-4">
       <h2 className="font-medium"><Identity name={assistantConnectionDisplayName(connection)} avatarUrl={connection.user?.image} initials={deriveInitials(connection.user?.name ?? "You")} /></h2>
       <p className="text-sm text-muted-foreground">Organization: {connection.companyName}</p>
       {connection.agent && <p className="text-sm">Works as <Link className="underline" to={`/${connection.companyPrefix ?? connection.companyId}/agents/${connection.agent.id}/runtime`}>{connection.agent.name}</Link>{connection.user ? ` · Authorized by ${connection.user.name}` : ""}</p>}
       <p className="text-sm">{connection.scopes.includes("paperclip:agent") ? "Agent connection" : connection.scopes.includes("paperclip:write") ? "Read and edit work" : "Read only"}</p>
       {connection.scopes.includes("paperclip:configure") && <p className="text-sm">Configure agents, projects and skills</p>}
-      <Button variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate(connection.id)}>Revoke connection</Button>
+      <Button variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate(connection.id)}>{t("apps.mcp.revokeConnection", { defaultValue: "Revoke connection" })}</Button>
     </Card>)}
-    <Link className="text-sm underline" to="/">Back to Paperclip</Link>
+    <Link className="text-sm underline" to="/">{t("apps.mcp.backToPaperclip", { defaultValue: "Back to Paperclip" })}</Link>
   </div>;
 }

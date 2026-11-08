@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import { PauseCircle, PlayCircle, Repeat, XCircle } from "lucide-react";
 import { Button } from "./ui/button";
 import {
@@ -35,6 +36,7 @@ export function TaskTreeControlMenuItems({
   onCancel: () => void;
   onRestore: () => void;
 }) {
+  const { t } = useTranslation();
   const itemClass =
     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 disabled:opacity-50 disabled:pointer-events-none";
   return (
@@ -42,13 +44,13 @@ export function TaskTreeControlMenuItems({
       {canPause ? (
         <button disabled={pending} className={itemClass} onClick={onPause}>
           <PauseCircle className="h-3 w-3" />
-          {scope === "leaf" ? "Pause work" : "Pause subtree"}
+          {scope === "leaf" ? t("issues.TaskTreeControlMenuItems.pauseWork") : t("issues.TaskTreeControlMenuItems.pauseSubtree")}
         </button>
       ) : null}
       {canResume ? (
         <button disabled={pending} className={itemClass} onClick={onResume}>
           <PlayCircle className="h-3 w-3" />
-          {scope === "leaf" ? "Resume work" : "Resume subtree"}
+          {scope === "leaf" ? t("issues.TaskTreeControlMenuItems.resumeWork") : t("issues.TaskTreeControlMenuItems.resumeSubtree")}
         </button>
       ) : null}
       {canCancel ? (
@@ -58,13 +60,13 @@ export function TaskTreeControlMenuItems({
           onClick={onCancel}
         >
           <XCircle className="h-3 w-3" />
-          Cancel subtree...
+          {t("issues.TaskTreeControlMenuItems.cancelSubtree")}
         </button>
       ) : null}
       {canRestore ? (
         <button disabled={pending} className={itemClass} onClick={onRestore}>
           <Repeat className="h-3 w-3" />
-          Restore subtree...
+          {t("issues.TaskTreeControlMenuItems.restoreSubtree")}
         </button>
       ) : null}
     </>
@@ -104,15 +106,15 @@ export function TaskTreeControlDialog({
   onRetry: () => void;
   onApply: () => void;
 }) {
+  const { t } = useTranslation();
   const cancel = mode === "cancel";
-  const tasks = `${affectedCount} task${affectedCount === 1 ? "" : "s"}`;
-  const title = cancel
-    ? "Cancel subtree?"
+    const title = cancel
+    ? t("issues.TaskTreeControlDialog.cancelTitle")
     : mode === "restore"
-      ? "Restore subtree"
+      ? t("issues.TaskTreeControlDialog.restoreTitle")
       : scope === "leaf"
-        ? "Resume work"
-        : "Resume subtree";
+        ? t("issues.TaskTreeControlDialog.resumeWorkTitle")
+        : t("issues.TaskTreeControlDialog.resumeSubtreeTitle");
   return (
     <Dialog
       open={open}
@@ -128,12 +130,12 @@ export function TaskTreeControlDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             {loading
-              ? "Loading…"
+              ? t("issues.TaskTreeControlDialog.loading")
               : cancel
-                ? `${tasks} will be cancelled.`
+                ? t("issues.TaskTreeControlDialog.cancelledMessage", { count: affectedCount })
                 : mode === "restore"
-                  ? `${tasks} will be restored.`
-                  : `The pause will be removed from ${tasks}.`}
+                  ? t("issues.TaskTreeControlDialog.restoredMessage", { count: affectedCount })
+                  : t("issues.TaskTreeControlDialog.pausedMessage", { count: affectedCount })}
           </DialogDescription>
         </DialogHeader>
         {error ? (
@@ -147,7 +149,7 @@ export function TaskTreeControlDialog({
               disabled={pending}
               onClick={onRetry}
             >
-              Retry preview
+              {t("issues.TaskTreeControlDialog.retryPreview")}
             </Button>
           </div>
         ) : null}
@@ -159,7 +161,7 @@ export function TaskTreeControlDialog({
               disabled={pending || loading || affectedAgentCount === 0}
               onChange={(event) => onWakeAgentsChange(event.target.checked)}
             />
-            Wake affected agents ({affectedAgentCount})
+            {t("issues.TaskTreeControlDialog.wakeAgents", { affectedAgentCount })}
           </label>
         ) : null}
         {!loading ? warnings.map((warning) => (
@@ -171,7 +173,7 @@ export function TaskTreeControlDialog({
             disabled={pending}
             onClick={() => onOpenChange(false)}
           >
-            {cancel ? "Keep tasks" : "Close"}
+            {cancel ? t("issues.TaskTreeControlDialog.keepTasks") : t("issues.TaskTreeControlDialog.close")}
           </Button>
           <Button
             variant={cancel ? "destructive" : "default"}
@@ -179,11 +181,11 @@ export function TaskTreeControlDialog({
             onClick={onApply}
           >
             {pending
-              ? "Applying…"
+              ? t("issues.TaskTreeControlDialog.applying")
               : cancel
-                ? `Cancel ${tasks}`
+                ? t("issues.TaskTreeControlDialog.applyCancel", { count: affectedCount })
                 : mode === "restore"
-                  ? `Restore ${tasks}`
+                  ? t("issues.TaskTreeControlDialog.applyRestore", { count: affectedCount })
                   : title}
           </Button>
         </DialogFooter>
@@ -206,6 +208,7 @@ export function TaskPauseNotice({
   className?: string;
   resumeLink?: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
@@ -215,7 +218,7 @@ export function TaskPauseNotice({
       )}
     >
       <span>
-        {scope === "subtree" ? "Subtree is paused." : "Task is paused."}
+        {scope === "subtree" ? t("issues.TaskPauseNotice.subtreePaused") : t("issues.TaskPauseNotice.taskPaused")}
       </span>
       {resumeLink ??
         (onResume ? (
@@ -225,7 +228,7 @@ export function TaskPauseNotice({
             disabled={pending}
             onClick={onResume}
           >
-            {scope === "subtree" ? "Resume subtree" : "Resume work"}
+            {scope === "subtree" ? t("issues.TaskPauseNotice.resumeSubtree") : t("issues.TaskPauseNotice.resumeWork")}
           </Button>
         ) : null)}
     </div>

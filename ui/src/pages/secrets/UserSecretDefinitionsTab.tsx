@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SecretStatus, UserSecretDefinition } from "@paperclipai/shared";
 import { Pencil, Plus, Trash2, UserRound, Users } from "lucide-react";
@@ -65,6 +66,7 @@ const emptyForm: DefinitionForm = {
  * only — never values — per the UX terminology decisions.
  */
 export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -125,7 +127,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
     onSuccess: (definition) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });
       pushToast({
-        title: editing ? "Definition updated" : "Definition created",
+        title: editing ? t("secrets.userDefinitions.toastUpdated") : t("secrets.userDefinitions.toastCreated"),
         body: definition.name,
         tone: "success",
       });
@@ -140,12 +142,12 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
       secretsApi.removeUserSecretDefinition(companyId, definition.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });
-      pushToast({ title: "Definition removed", tone: "info" });
+      pushToast({ title: t("secrets.userDefinitions.toastRemoved"), tone: "info" });
       setDeleteTarget(null);
     },
     onError: (err) =>
       pushToast({
-        title: "Could not remove definition",
+        title: t("secrets.userDefinitions.toastRemoveFailed"),
         body: describeError(err).body,
         tone: "error",
       }),
@@ -166,7 +168,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
 
       <div className="flex items-center justify-end">
         <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-1 h-3.5 w-3.5" /> New user secret
+          <Plus className="mr-1 h-3.5 w-3.5" /> {t("secrets.userDefinitions.newSecret")}
         </Button>
       </div>
 
@@ -175,7 +177,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
           <div className="py-4">
             <QueryErrorState
               error={definitionsQuery.error}
-              action="load definitions"
+              action={t("secrets.userDefinitions.loadAction")}
               onRetry={definitionsView.retry}
               retrying={definitionsView.isFetching}
             />

@@ -1,7 +1,7 @@
 import { cloneElement, isValidElement, useState } from "react";
 import { CalendarRange } from "lucide-react";
 import {
-  ATTENTION_DATE_RANGE_OPTIONS,
+  attentionDateRangeOptions,
   type AttentionDateRangeId,
 } from "../lib/attention";
 import { cn } from "../lib/utils";
@@ -30,7 +30,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
 
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-decision-date-chips>
-      {ATTENTION_DATE_RANGE_OPTIONS.map(([id, label]) => (
+      {attentionDateRangeOptions().map(([id, label]) => (
         <ChipButton key={id} active={value === id} onClick={() => onChange(id, custom)}>
           {label}
         </ChipButton>

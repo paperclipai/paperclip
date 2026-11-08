@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { t, useTranslation } from "@/i18n";
 import { Bot, Clock3, Coins, GanttChartSquare, Minus, Plus, RotateCcw, type LucideIcon } from "lucide-react";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { workTimelineApi, type WorkTimelineParams } from "@/api/workTimeline";
@@ -130,8 +131,8 @@ function rangeWindow(range: DateRangeState): Pick<WorkTimelineParams, "from" | "
 }
 
 function rangeError(range: DateRangeState): string | null {
-  if (!range.fromDate || !range.toDate) return "Choose a start and end date.";
-  if (!rangeWindow(range)) return "Start date must be before end date.";
+  if (!range.fromDate || !range.toDate) return t("timeline.errors.chooseDates", { defaultValue: "Choose a start and end date." });
+  if (!rangeWindow(range)) return t("timeline.errors.startBeforeEnd", { defaultValue: "Start date must be before end date." });
   return null;
 }
 
@@ -245,6 +246,7 @@ function Segmented<T extends string>({
 
 /** Encoding key for the "Signal" timeline: colour = how each run started. */
 function TimelineLegend() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-3.5 py-2 text-xs text-muted-foreground">
       <span className="flex items-center gap-1.5">
@@ -276,9 +278,9 @@ function TimelineSummaryStats({
   summary: ReturnType<typeof timelineSummary>;
 }) {
   const stats: { label: string; value: string; icon: LucideIcon }[] = [
-    { label: "Runs", value: formatInteger(summary.runs), icon: GanttChartSquare },
-    { label: "Agents", value: formatInteger(summary.agents), icon: Bot },
-    { label: "Run time", value: formatDuration(0, summary.activeMs), icon: Clock3 },
+    { label: t("timeline.stats.runs", { defaultValue: "Runs" }), value: formatInteger(summary.runs), icon: GanttChartSquare },
+    { label: t("timeline.stats.agents", { defaultValue: "Agents" }), value: formatInteger(summary.agents), icon: Bot },
+    { label: t("timeline.stats.runtime", { defaultValue: "Run time" }), value: formatDuration(0, summary.activeMs), icon: Clock3 },
     {
       label: "Tokens used",
       value: summary.totalTokens > 0 ? formatCompactInteger(summary.totalTokens) : "Not tracked",
@@ -305,6 +307,7 @@ function TimelineSummaryStats({
 }
 
 export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
@@ -322,7 +325,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     if (!embedded) {
-      setBreadcrumbs([{ label: scopedProjectId ? "Project Timeline" : "Timeline" }]);
+      setBreadcrumbs([{ label: scopedProjectId ? t("timeline.breadcrumbs.projectTimeline", { defaultValue: "Project Timeline" }) : t("timeline.breadcrumbs.timeline", { defaultValue: "Timeline" }) }]);
     }
   }, [embedded, scopedProjectId, setBreadcrumbs]);
 
@@ -362,7 +365,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
     return (
       <>
         {!embedded && <RequestCollapsedSidebar />}
-        <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
+        <EmptyState icon={GanttChartSquare} message={t("timeline.noCompany", { defaultValue: "Select an organization to view its work timeline." })} />
       </>
     );
   }
@@ -371,7 +374,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
     <div className="flex items-center gap-2">
       <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
       <h1 className="text-3xl font-semibold tracking-tight">
-        {scopedProjectId ? "Project Timeline" : "Work Timeline"}
+        {scopedProjectId ? t("timeline.projectTimeline", { defaultValue: "Project Timeline" }) : t("timeline.workTimeline", { defaultValue: "Work Timeline" })}
       </h1>
     </div>
   );
@@ -419,9 +422,9 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           setDateRange((prev) => ({ ...prev, fromDate: event.target.value }));
         }}
         className="h-8 w-(--sz-150px) text-xs"
-        aria-label="Timeline start date"
+        aria-label={t("timeline.startDate", { defaultValue: "Timeline start date" })}
       />
-      <span>to</span>
+      <span>{t("timeline.to", { defaultValue: "to" })}</span>
       <Input
         type="date"
         value={dateRange.toDate}
@@ -430,7 +433,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           setDateRange((prev) => ({ ...prev, toDate: event.target.value }));
         }}
         className="h-8 w-(--sz-150px) text-xs"
-        aria-label="Timeline end date"
+        aria-label={t("timeline.endDate", { defaultValue: "Timeline end date" })}
       />
     </label>
   );
@@ -438,7 +441,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const toolbar = (
     <div className="flex flex-wrap items-start gap-3">
       {summary && <TimelineSummaryStats summary={summary} />}
-      <div data-canonical-toolbar="timeline-zoom" role="toolbar" className="ml-auto flex items-center gap-1 pt-3" aria-label="Timeline zoom controls">
+      <div data-canonical-toolbar="timeline-zoom" role="toolbar" className="ml-auto flex items-center gap-1 pt-3" aria-label={t("timeline.zoomControls", { defaultValue: "Timeline zoom controls" })}>
         <Button
           type="button"
           variant="outline"
@@ -505,7 +508,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
           <div className="space-y-3">
             <EmptyState
               icon={GanttChartSquare}
-              message={scopedProjectId ? "No project activity in this window." : "No activity in this window."}
+              message={scopedProjectId ? t("timeline.noProjectActivity", { defaultValue: "No project activity in this window." }) : t("timeline.noActivity", { defaultValue: "No activity in this window." })}
             />
             <div className="flex flex-wrap items-center justify-end gap-3">
               {rangeControls}

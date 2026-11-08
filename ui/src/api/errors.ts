@@ -12,6 +12,8 @@
  * by hand-rolled fetches (health, uploads) classify the same way.
  */
 
+import { t } from "@/i18n";
+
 export type ErrorKind =
   | "transient"
   | "auth"
@@ -110,9 +112,24 @@ const KIND_COPY: Record<ErrorKind, { title: string; body: string }> = {
   unknown: { title: "Something went wrong", body: "An unexpected error occurred. Please try again." },
 };
 
+type Copy = { title: string; body: string };
+
+function localizedCopy(group: "codes" | "kinds", key: string, entry: Copy): Copy {
+  return {
+    title: t(`common.errors.${group}.${key}.title`, entry.title),
+    body: t(`common.errors.${group}.${key}.body`, entry.body),
+  };
+}
+
+function kindCopy(kind: ErrorKind): Copy {
+  return localizedCopy("kinds", kind, KIND_COPY[kind]);
+}
+
 /** Copy for a specific code or kind, for callers that build their own messages. */
-export function errorCopy(key: string): { title: string; body: string } {
-  return CODE_COPY[key] ?? KIND_COPY[key as ErrorKind] ?? KIND_COPY.unknown;
+export function errorCopy(key: string): Copy {
+  if (CODE_COPY[key]) return localizedCopy("codes", key, CODE_COPY[key]);
+  if (KIND_COPY[key as ErrorKind]) return kindCopy(key as ErrorKind);
+  return kindCopy("unknown");
 }
 
 // --- Field extraction -------------------------------------------------------------
@@ -172,7 +189,7 @@ function readableServerMessage(err: unknown): string | null {
     if (!candidate) continue;
     if (isRawErrorCode(candidate)) continue;
     if (/^Request failed: \d+$/.test(candidate)) continue;
-    if (candidate === UNAVAILABLE_BODY) continue;
+    if (candidate === UNAVAILABLE_BODY || candidate === kindCopy("transient").body) continue;
     return candidate;
   }
   return null;
@@ -269,8 +286,9 @@ export function errorRetryAfterMs(err: unknown): number | null {
 export function describeError(err: unknown, options: DescribeErrorOptions = {}): ErrorDescription {
   const kind = classifyError(err);
   const retryable = kind === "transient" || kind === "unknown";
-  const coded = errorCodes(err).map((code) => CODE_COPY[code]).find(Boolean);
-  const fallback = KIND_COPY[kind];
+  const codedKey = errorCodes(err).find((code) => CODE_COPY[code]);
+  const coded = codedKey ? localizedCopy("codes", codedKey, CODE_COPY[codedKey]!) : undefined;
+  const fallback = kindCopy(kind);
 
   let body: string;
   if (coded) body = coded.body;
@@ -278,7 +296,7 @@ export function describeError(err: unknown, options: DescribeErrorOptions = {}):
   else body = readableServerMessage(err) ?? fallback.body;
 
   const title = options.action && kind !== "transient"
-    ? `Couldn't ${options.action}`
+    ? t("common.errors.couldNot", "Couldn't {{action}}", { action: options.action })
     : (coded?.title ?? fallback.title);
   return { title, body, retryable };
 }

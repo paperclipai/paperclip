@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import type { SidePanelLauncherItem, SidePanelLauncherSection } from "./types";
 
 export interface SidePanelLauncherProps {
@@ -35,6 +36,7 @@ function LauncherContent({
   emptyMessage,
   panel,
 }: Pick<SidePanelLauncherProps, "sections" | "onSelect" | "placeholder" | "emptyMessage"> & { panel: boolean }) {
+  const { t } = useTranslation();
   return (
     <Command className={cn(panel && "border border-border shadow-sm")}>
       <CommandInput placeholder={placeholder} aria-label={placeholder} />
@@ -47,7 +49,7 @@ function LauncherContent({
               {section.loading ? (
                 <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground" role="status">
                   <Loader2 className="size-4 animate-spin" aria-hidden />
-                  Loading…
+                  {t("sidePanel.launcher.loading")}
                 </div>
               ) : null}
               {section.error ? (
@@ -74,7 +76,7 @@ function LauncherContent({
                       </span>
                     ) : null}
                   </span>
-                  {item.alreadyOpen ? <Check className="size-4 text-muted-foreground" aria-label="Already open" /> : null}
+                  {item.alreadyOpen ? <Check className="size-4 text-muted-foreground" aria-label={t("sidePanel.launcher.alreadyOpen")} /> : null}
                   {item.shortcut ? <CommandShortcut>{item.shortcut}</CommandShortcut> : null}
                 </CommandItem>
               ))}
@@ -93,15 +95,20 @@ export function SidePanelLauncher({
   trigger,
   open: controlledOpen,
   onOpenChange,
-  title = "Open a side panel tab",
-  description = "Choose a view or resource to open.",
-  placeholder = "Search tabs and resources…",
-  emptyMessage = "No matching tabs or resources.",
+  title,
+  description,
+  placeholder,
+  emptyMessage,
   className,
 }: SidePanelLauncherProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
+  const { t } = useTranslation();
+  const heading = title ?? t("sidePanel.launcher.title");
+  const subtitle = description ?? t("sidePanel.launcher.description");
+  const searchPlaceholder = placeholder ?? t("sidePanel.launcher.placeholder");
+  const emptyText = emptyMessage ?? t("sidePanel.launcher.emptyMessage");
   const content = (
     <LauncherContent
       sections={sections}
@@ -109,8 +116,8 @@ export function SidePanelLauncher({
         onSelect(item);
         if (presentation === "popover") setOpen(false);
       }}
-      placeholder={placeholder}
-      emptyMessage={emptyMessage}
+      placeholder={searchPlaceholder}
+      emptyMessage={emptyText}
       panel={presentation === "panel"}
     />
   );
@@ -122,8 +129,8 @@ export function SidePanelLauncher({
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
         <PopoverContent align="start" className={cn("w-(--side-panel-launcher-width) overflow-hidden p-0", className)}>
           <div className="sr-only">
-            <h2>{title}</h2>
-            <p>{description}</p>
+            <h2>{heading}</h2>
+            <p>{subtitle}</p>
           </div>
           {content}
         </PopoverContent>
@@ -134,8 +141,8 @@ export function SidePanelLauncher({
   return (
     <div className={cn("mx-auto flex h-full w-full max-w-xl flex-col justify-center gap-4 p-4", className)}>
       <div className="space-y-1 text-center">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <h2 className="text-sm font-semibold">{heading}</h2>
+        <p className="text-sm text-muted-foreground">{subtitle}</p>
       </div>
       {content}
     </div>

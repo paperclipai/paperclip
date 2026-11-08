@@ -1,4 +1,5 @@
 import { cn } from "../../lib/utils";
+import { useTranslation } from "@/i18n";
 
 /**
  * The agent arc — create the agent, connect it, review — is the part of the
@@ -14,9 +15,9 @@ export const AGENT_ARC_TOTAL_STEPS = 3;
  * than no number at all. The strip's own "Step N of 3" line carries the count.
  */
 export const AGENT_ARC_STEP_LABELS = [
-  "Create your first agent",
-  "Connect a model",
-  "Review",
+  "onboarding.stepper.createFirstAgent",
+  "onboarding.stepper.connectModel",
+  "onboarding.stepper.review",
 ] as const;
 
 /** Wizard step numbers that make up the arc, in order. */
@@ -35,10 +36,10 @@ export const ONBOARDING_WIZARD_STEPS = [1, 3, 4, 5] as const;
 
 /** Destinations for the full walk, in the same order. */
 export const ONBOARDING_STEP_LABELS = [
-  "Name your organization",
-  "Create your first agent",
-  "Connect a model",
-  "Review",
+  "onboarding.stepper.nameOrganization",
+  "onboarding.stepper.createFirstAgent",
+  "onboarding.stepper.connectModel",
+  "onboarding.stepper.review",
 ] as const;
 
 /**
@@ -107,6 +108,7 @@ export function Stepper({
   canJumpToStep?: (target: number) => boolean;
   onJumpToStep?: (target: number) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mb-11 flex items-center justify-center gap-2">
       {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
@@ -115,7 +117,7 @@ export function Stepper({
           <button
             key={segment}
             type="button"
-            aria-label={labels[segment - 1] ?? `Step ${segment}`}
+            aria-label={t(labels[segment - 1] ?? "onboarding.stepper.stepFallback", { step: segment })}
             aria-current={segment === step ? "step" : undefined}
             disabled={!jumpable}
             onClick={() => jumpable && onJumpToStep?.(segment)}
@@ -134,7 +136,7 @@ export function Stepper({
       })}
       {/* Out of flow, so it neither takes a row nor picks up the gap. */}
       <span className="sr-only">
-        Step {step} of {total}
+        {t("onboarding.stepper.progress", { step, total })}
       </span>
     </div>
   );

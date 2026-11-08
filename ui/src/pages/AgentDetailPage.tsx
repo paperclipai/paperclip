@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect } from "react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +15,7 @@ export function AgentDetailPage() {
 }
 
 function AgentPluginDetail() {
+  const { t } = useTranslation();
   const { agentId = "", companyPrefix, tab } = useParams<{ agentId: string; companyPrefix?: string; tab: string }>();
   const { companies, selectedCompanyId } = useCompany();
   const companyId = companies.find(company => company.issuePrefix.toUpperCase() === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
@@ -27,16 +29,16 @@ function AgentPluginDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Agents", href: "/agents" },
+      { label: t("agents.list.breadcrumb"), href: "/agents" },
       { label: agent?.name ?? agentId, href: `/agents/${encodeURIComponent(agentId)}/overview` },
-      { label: slot?.displayName ?? "Plugin view" },
+      { label: slot?.displayName ?? t("agents.pluginDetail.pluginView") },
     ]);
   }, [setBreadcrumbs, agent?.name, agentId, slot?.displayName]);
-  if (error) return <p role="alert">Agent unavailable</p>;
-  if (!agent || isLoading || slotsLoading) return <p role="status">Loading agent view…</p>;
+  if (error) return <p role="alert">{t("agents.pluginDetail.agentUnavailable")}</p>;
+  if (!agent || isLoading || slotsLoading) return <p role="status">{t("agents.pluginDetail.loadingView")}</p>;
   return <div className="mx-auto max-w-5xl space-y-4">
     <Link to={`/agents/${encodeURIComponent(agentId)}/overview`} className="text-sm text-muted-foreground">{agent.name}</Link>
     {slot ? <PluginSlotMount slot={slot} context={{ companyId: agent.companyId, companyPrefix: companyPrefix ?? null, entityId: agent.id, entityType: "agent" }} missingBehavior="placeholder" />
-      : <p role="status">{errorMessage ? "Agent view unavailable" : "This plugin view is unavailable"}</p>}
+      : <p role="status">{errorMessage ? t("agents.pluginDetail.viewUnavailable") : t("agents.pluginDetail.pluginViewUnavailable")}</p>}
   </div>;
 }

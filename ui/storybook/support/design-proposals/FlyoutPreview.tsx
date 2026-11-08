@@ -6,7 +6,7 @@ import { DesignProposalAccess } from "./DesignProposalAccess";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Flyout, FlyoutAppearanceProvider, FlyoutContent, FlyoutHeader, FlyoutOptions, FlyoutTrigger } from "@/components/ui/flyout";
-import { allTaskListColumns, defaultTaskListColumns, taskListColumns, type TaskListColumnId } from "@/lib/task-list";
+import { allTaskListColumns, defaultTaskListColumns, taskListColumnLabels, type TaskListColumnId } from "@/lib/task-list";
 import { taskListViews, type TaskListView } from "@/lib/task-list-views";
 
 export type FlyoutPreviewProps = { mode: "columns" | "views" | "account-menu"; shadow?: string };
@@ -38,7 +38,7 @@ export function FlyoutPreview({ mode, shadow }: FlyoutPreviewProps) {
               <DropdownMenuContent align="start" className="w-(--flyout-width)" style={shadow ? { "--shadow-flyout": shadow } as CSSProperties : undefined}>
                 <DropdownMenuLabel asChild><FlyoutHeader>Views</FlyoutHeader></DropdownMenuLabel>
                 <DropdownMenuRadioGroup asChild value={view} onValueChange={value => setView(value as TaskListView)}><FlyoutOptions>
-                  {taskListViews.map(({ value, label }) => <DropdownMenuRadioItem key={value} value={value}>{label}</DropdownMenuRadioItem>)}
+                  {taskListViews().map(({ value, label }) => <DropdownMenuRadioItem key={value} value={value}>{label}</DropdownMenuRadioItem>)}
                 </FlyoutOptions></DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu></FlyoutAppearanceProvider>
@@ -49,7 +49,7 @@ export function FlyoutPreview({ mode, shadow }: FlyoutPreviewProps) {
                 <FlyoutHeader>Columns</FlyoutHeader>
                 <FlyoutOptions>
                   <>
-                    {allTaskListColumns.map(id => <Button key={id} variant="ghost" className="justify-start" aria-pressed={columns.includes(id)} onClick={() => setColumns(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])}>{taskListColumns.find(column => column.id === id)!.label}{columns.includes(id) ? <Check className="ml-auto size-3.5" aria-hidden /> : null}</Button>)}
+                    {allTaskListColumns.map(id => <Button key={id} variant="ghost" className="justify-start" aria-pressed={columns.includes(id)} onClick={() => setColumns(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])}>{taskListColumnLabels()[id]}{columns.includes(id) ? <Check className="ml-auto size-3.5" aria-hidden /> : null}</Button>)}
                     <Button variant="ghost" className="task-list-options-reset" onClick={() => setColumns(defaultTaskListColumns)}>Reset defaults</Button>
                   </>
                 </FlyoutOptions>

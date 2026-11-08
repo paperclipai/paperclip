@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 export interface FileKind {
   icon: LucideIcon;
@@ -36,49 +37,49 @@ const IMAGE_EXTENSIONS = new Set([
   "heic",
 ]);
 
-const KIND_BY_EXTENSION: Record<string, FileKind> = {
-  pdf: { icon: FileText, label: "PDF" },
-  doc: { icon: FileText, label: "Doc" },
-  docx: { icon: FileText, label: "Doc" },
-  txt: { icon: FileText, label: "Text" },
-  md: { icon: FileText, label: "Markdown" },
-  rtf: { icon: FileText, label: "Text" },
-  csv: { icon: FileSpreadsheet, label: "CSV" },
-  tsv: { icon: FileSpreadsheet, label: "TSV" },
-  xls: { icon: FileSpreadsheet, label: "Sheet" },
-  xlsx: { icon: FileSpreadsheet, label: "Sheet" },
-  zip: { icon: FileArchive, label: "ZIP" },
-  gz: { icon: FileArchive, label: "Archive" },
-  tar: { icon: FileArchive, label: "Archive" },
-  tgz: { icon: FileArchive, label: "Archive" },
-  rar: { icon: FileArchive, label: "Archive" },
-  "7z": { icon: FileArchive, label: "Archive" },
-  mp3: { icon: FileAudio, label: "Audio" },
-  wav: { icon: FileAudio, label: "Audio" },
-  m4a: { icon: FileAudio, label: "Audio" },
-  ogg: { icon: FileAudio, label: "Audio" },
-  mp4: { icon: FileVideo, label: "Video" },
-  mov: { icon: FileVideo, label: "Video" },
-  webm: { icon: FileVideo, label: "Video" },
-  json: { icon: FileCode, label: "JSON" },
-  yaml: { icon: FileCode, label: "YAML" },
-  yml: { icon: FileCode, label: "YAML" },
-  xml: { icon: FileCode, label: "XML" },
-  html: { icon: FileCode, label: "HTML" },
-  css: { icon: FileCode, label: "CSS" },
-  js: { icon: FileCode, label: "Code" },
-  jsx: { icon: FileCode, label: "Code" },
-  ts: { icon: FileCode, label: "Code" },
-  tsx: { icon: FileCode, label: "Code" },
-  py: { icon: FileCode, label: "Code" },
-  rb: { icon: FileCode, label: "Code" },
-  go: { icon: FileCode, label: "Code" },
-  rs: { icon: FileCode, label: "Code" },
-  sh: { icon: FileCode, label: "Code" },
-  sql: { icon: FileCode, label: "SQL" },
-  log: { icon: FileText, label: "Log" },
-  patch: { icon: FileCode, label: "Patch" },
-  diff: { icon: FileCode, label: "Patch" },
+const KIND_BY_EXTENSION: Record<string, { icon: LucideIcon; labelKey: string }> = {
+  pdf: { icon: FileText, labelKey: "common.fileKind.pdf" },
+  doc: { icon: FileText, labelKey: "common.fileKind.doc" },
+  docx: { icon: FileText, labelKey: "common.fileKind.doc" },
+  txt: { icon: FileText, labelKey: "common.fileKind.text" },
+  md: { icon: FileText, labelKey: "common.fileKind.markdown" },
+  rtf: { icon: FileText, labelKey: "common.fileKind.text" },
+  csv: { icon: FileSpreadsheet, labelKey: "common.fileKind.csv" },
+  tsv: { icon: FileSpreadsheet, labelKey: "common.fileKind.tsv" },
+  xls: { icon: FileSpreadsheet, labelKey: "common.fileKind.sheet" },
+  xlsx: { icon: FileSpreadsheet, labelKey: "common.fileKind.sheet" },
+  zip: { icon: FileArchive, labelKey: "common.fileKind.zip" },
+  gz: { icon: FileArchive, labelKey: "common.fileKind.archive" },
+  tar: { icon: FileArchive, labelKey: "common.fileKind.archive" },
+  tgz: { icon: FileArchive, labelKey: "common.fileKind.archive" },
+  rar: { icon: FileArchive, labelKey: "common.fileKind.archive" },
+  "7z": { icon: FileArchive, labelKey: "common.fileKind.archive" },
+  mp3: { icon: FileAudio, labelKey: "common.fileKind.audio" },
+  wav: { icon: FileAudio, labelKey: "common.fileKind.audio" },
+  m4a: { icon: FileAudio, labelKey: "common.fileKind.audio" },
+  ogg: { icon: FileAudio, labelKey: "common.fileKind.audio" },
+  mp4: { icon: FileVideo, labelKey: "common.fileKind.video" },
+  mov: { icon: FileVideo, labelKey: "common.fileKind.video" },
+  webm: { icon: FileVideo, labelKey: "common.fileKind.video" },
+  json: { icon: FileCode, labelKey: "common.fileKind.json" },
+  yaml: { icon: FileCode, labelKey: "common.fileKind.yaml" },
+  yml: { icon: FileCode, labelKey: "common.fileKind.yaml" },
+  xml: { icon: FileCode, labelKey: "common.fileKind.xml" },
+  html: { icon: FileCode, labelKey: "common.fileKind.html" },
+  css: { icon: FileCode, labelKey: "common.fileKind.css" },
+  js: { icon: FileCode, labelKey: "common.fileKind.code" },
+  jsx: { icon: FileCode, labelKey: "common.fileKind.code" },
+  ts: { icon: FileCode, labelKey: "common.fileKind.code" },
+  tsx: { icon: FileCode, labelKey: "common.fileKind.code" },
+  py: { icon: FileCode, labelKey: "common.fileKind.code" },
+  rb: { icon: FileCode, labelKey: "common.fileKind.code" },
+  go: { icon: FileCode, labelKey: "common.fileKind.code" },
+  rs: { icon: FileCode, labelKey: "common.fileKind.code" },
+  sh: { icon: FileCode, labelKey: "common.fileKind.code" },
+  sql: { icon: FileCode, labelKey: "common.fileKind.sql" },
+  log: { icon: FileText, labelKey: "common.fileKind.log" },
+  patch: { icon: FileCode, labelKey: "common.fileKind.patch" },
+  diff: { icon: FileCode, labelKey: "common.fileKind.patch" },
 };
 
 function extensionOf(name: string): string {
@@ -115,28 +116,28 @@ export function isImageAttachment(ref: AttachmentRef): boolean {
 
 /** Kind icon + short label for a filename; unknown extensions get File/"File". */
 export function fileKindForName(name: string): FileKind {
-  return KIND_BY_EXTENSION[extensionOf(name)] ?? { icon: FileIcon, label: "File" };
+  const kind = KIND_BY_EXTENSION[extensionOf(name)] ?? { icon: FileIcon, labelKey: "common.fileKind.file" };
+  return { icon: kind.icon, label: t(kind.labelKey) };
 }
 
 export function fileKindForAttachment(ref: AttachmentRef): FileKind {
-  const byName = fileKindForName(ref.name);
-  if (byName.label !== "File") return byName;
+  if (KIND_BY_EXTENSION[extensionOf(ref.name)]) return fileKindForName(ref.name);
 
   const contentType = normalizedContentType(ref.contentType);
-  if (contentType === "application/pdf") return { icon: FileText, label: "PDF" };
+  if (contentType === "application/pdf") return { icon: FileText, label: t("common.fileKind.pdf") };
   if (contentType === "application/json" || contentType.endsWith("+json")) {
-    return { icon: FileCode, label: "JSON" };
+    return { icon: FileCode, label: t("common.fileKind.json") };
   }
   if (contentType === "text/csv" || contentType === "application/csv") {
-    return { icon: FileSpreadsheet, label: "CSV" };
+    return { icon: FileSpreadsheet, label: t("common.fileKind.csv") };
   }
-  if (contentType.startsWith("text/")) return { icon: FileText, label: "Text" };
-  if (contentType.startsWith("audio/")) return { icon: FileAudio, label: "Audio" };
-  if (contentType.startsWith("video/")) return { icon: FileVideo, label: "Video" };
+  if (contentType.startsWith("text/")) return { icon: FileText, label: t("common.fileKind.text") };
+  if (contentType.startsWith("audio/")) return { icon: FileAudio, label: t("common.fileKind.audio") };
+  if (contentType.startsWith("video/")) return { icon: FileVideo, label: t("common.fileKind.video") };
   if (contentType.includes("zip") || contentType.includes("archive")) {
-    return { icon: FileArchive, label: "Archive" };
+    return { icon: FileArchive, label: t("common.fileKind.archive") };
   }
-  return byName;
+  return fileKindForName(ref.name);
 }
 
 /** "2.4 MB"-style size for chip descriptions (same tiers as IssueChatThread). */

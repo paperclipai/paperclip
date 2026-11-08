@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Layers, Plus, Pencil, Trash2, Link2, ShieldCheck } from "lucide-react";
 import type {
@@ -472,6 +473,7 @@ function EntryFields({
 }
 
 export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: string; agentOptions: Array<{ id: string; name: string }> }) {
+  const { t } = useTranslation();
   const [agentId, setAgentId] = useState("");
   const effective = useQuery({
     queryKey: agentId
@@ -485,19 +487,19 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="space-y-1.5">
-        <Label>Agent</Label>
+        <Label>{t("tools.profiles.tab.effective.agent")}</Label>
         <AgentSelect agents={agentOptions} value={agentId} onChange={setAgentId} />
       </div>
       {!agentId ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
-          Pick an agent to see what it can use right now.
+          {t("tools.profiles.tab.effective.pickPrompt")}
         </div>
       ) : effective.isLoading || effectiveView.kind === "reconnecting" ? (
-        <LoadingState label="Checking access..." />
+        <LoadingState label={t("tools.profiles.tab.effective.checking")} />
       ) : effectiveView.kind === "error" ? (
         <QueryErrorState
           error={effective.error}
-          action="check this agent's access"
+          action={t("tools.profiles.tab.effective.checkAction")}
           onRetry={effectiveView.retry}
           retrying={effectiveView.isFetching}
         />
@@ -505,14 +507,14 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
         <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-foreground">Can use</h3>
+              <h3 className="text-sm font-semibold text-foreground">{t("tools.profiles.tab.effective.canUse")}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {(effective.data?.allowedToolNames ?? []).length} tools
+                {t("tools.profiles.tab.effective.toolCount", { count: (effective.data?.allowedToolNames ?? []).length })}
               </span>
             </div>
             {(effective.data?.allowedToolNames ?? []).length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-                This agent cannot use any app tools right now.
+                {t("tools.profiles.tab.effective.emptyTools")}
               </div>
             ) : (
               <div className="flex flex-wrap gap-2">
@@ -523,10 +525,10 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
             )}
           </div>
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-foreground">Access profiles</h3>
+            <h3 className="text-sm font-semibold text-foreground">{t("tools.profiles.tab.effective.accessProfiles")}</h3>
             {(effective.data?.profiles ?? []).length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-                No active profile applies to this agent.
+                {t("tools.profiles.tab.effective.noActiveProfiles")}
               </div>
             ) : (
               <div className="divide-y divide-border rounded-lg border border-border">
@@ -534,7 +536,7 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
                   <div key={profile.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                     <span className="min-w-0 truncate text-sm font-medium text-foreground">{profile.name}</span>
                     {profile.summary.isCompanyDefault ? (
-                      <Badge variant="secondary">Organization default</Badge>
+                      <Badge variant="secondary">{t("tools.profiles.tab.effective.orgDefault")}</Badge>
                     ) : null}
                   </div>
                 ))}
@@ -549,21 +551,25 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
 
 /** The Source column — the key v2 addition. Patterns are flagged as a foot-gun. */
 function SourceBadge({ source }: { source: AllowSource }) {
+  const { t } = useTranslation();
   if (source.kind === "explicit") {
-    return <Badge variant="secondary">explicit</Badge>;
+    return <Badge variant="secondary">{t("tools.profiles.tab.sourceBadge.explicit")}</Badge>;
   }
   if (source.kind === "default") {
-    return <Badge variant="outline">default allow</Badge>;
+    return <Badge variant="outline">{t("tools.profiles.tab.sourceBadge.defaultAllow")}</Badge>;
   }
   return (
     <Badge variant="outline" className="gap-1 border-amber-500/50 text-amber-700 dark:text-amber-400">
       <AlertTriangle className="h-3 w-3" />
-      <span className="font-mono text-(length:--text-micro)">pattern {source.label}</span>
+      <span className="font-mono text-(length:--text-micro)">
+        {t("tools.profiles.tab.sourceBadge.pattern", { label: source.label })}
+      </span>
     </Badge>
   );
 }
 
 function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoading: boolean }) {
+  const { t } = useTranslation();
   const patternCount = rows.filter((r) => r.source.kind === "pattern").length;
   const explicitCount = rows.filter((r) => r.source.kind === "explicit").length;
   const defaultCount = rows.filter((r) => r.source.kind === "default").length;
@@ -571,19 +577,19 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-foreground">Allow list</h4>
+        <h4 className="text-sm font-semibold text-foreground">{t("tools.profiles.tab.allowList.title")}</h4>
         <p className="text-xs text-muted-foreground">
-          {rows.length} tool{rows.length === 1 ? "" : "s"}
-          {explicitCount > 0 ? ` · ${explicitCount} explicit` : ""}
-          {patternCount > 0 ? ` · ${patternCount} via pattern` : ""}
-          {defaultCount > 0 ? ` · ${defaultCount} via default` : ""}
+          {t("tools.profiles.tab.allowList.toolsCount", { count: rows.length })}
+          {explicitCount > 0 ? t("tools.profiles.tab.allowList.explicitCount", { count: explicitCount }) : ""}
+          {patternCount > 0 ? t("tools.profiles.tab.allowList.patternCount", { count: patternCount }) : ""}
+          {defaultCount > 0 ? t("tools.profiles.tab.allowList.defaultCount", { count: defaultCount }) : ""}
         </p>
       </div>
       {rows.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
           {catalogLoading
-            ? "Resolving allowed tools…"
-            : "No tools resolved for this profile. Add an include selector or refresh the tool catalog."}
+            ? t("tools.profiles.tab.allowList.resolving")
+            : t("tools.profiles.tab.allowList.empty")}
         </div>
       ) : (
         <Card>
@@ -591,11 +597,11 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2.5 font-medium">Tool</th>
-                  <th className="px-3 py-2.5 font-medium">Application</th>
-                  <th className="px-3 py-2.5 font-medium">Capabilities</th>
-                  <th className="px-3 py-2.5 font-medium">Risk</th>
-                  <th className="px-3 py-2.5 font-medium">Source</th>
+                  <th className="px-3 py-2.5 font-medium">{t("tools.profiles.tab.allowList.thTool")}</th>
+                  <th className="px-3 py-2.5 font-medium">{t("tools.profiles.tab.allowList.thApplication")}</th>
+                  <th className="px-3 py-2.5 font-medium">{t("tools.profiles.tab.allowList.thCapabilities")}</th>
+                  <th className="px-3 py-2.5 font-medium">{t("tools.profiles.tab.allowList.thRisk")}</th>
+                  <th className="px-3 py-2.5 font-medium">{t("tools.profiles.tab.allowList.thSource")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -634,8 +640,7 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
       {patternCount > 0 ? (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />
-          Tools marked <span className="font-medium">pattern</span> were pulled in by a wildcard, application,
-          connection, or risk selector rather than named explicitly — review them when the catalog changes.
+          {t("tools.profiles.tab.allowList.patternWarning")}
         </p>
       ) : null}
     </div>
@@ -643,6 +648,7 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
 }
 
 export function ProfilesTab({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { pushToast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
@@ -734,10 +740,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       setSelectedId(created.id);
       resetProfileForm();
       resetEntryForm();
-      pushToast({ title: "Profile created", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.profileCreated"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not create profile",
+      title: t("tools.profiles.tab.toasts.createFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -750,10 +756,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       invalidateProfiles();
       setEditProfile(null);
       resetProfileForm();
-      pushToast({ title: "Profile updated", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.profileUpdated"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not update profile",
+      title: t("tools.profiles.tab.toasts.updateFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -766,10 +772,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       invalidateProfiles();
       setEntryProfile(null);
       resetEntryForm();
-      pushToast({ title: "Entry added", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.entryAdded"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not add entry",
+      title: t("tools.profiles.tab.toasts.entryAddFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -779,10 +785,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     mutationFn: (entryId: string) => toolsApi.deleteProfileEntry(entryId),
     onSuccess: () => {
       invalidateProfiles();
-      pushToast({ title: "Entry removed", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.entryRemoved"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not remove entry",
+      title: t("tools.profiles.tab.toasts.entryRemoveFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -796,10 +802,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       setBindProfileFor(null);
       setTargetType("agent");
       setPriority("100");
-      pushToast({ title: "Profile bound", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.profileBound"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not bind profile",
+      title: t("tools.profiles.tab.toasts.bindFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -813,10 +819,10 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     }) => toolsApi.unbindProfile(companyId, profileId, { targetType, targetId }),
     onSuccess: () => {
       invalidateProfiles();
-      pushToast({ title: "Binding removed", tone: "success" });
+      pushToast({ title: t("tools.profiles.tab.toasts.bindingRemoved"), tone: "success" });
     },
     onError: (error) => pushToast({
-      title: "Could not remove binding",
+      title: t("tools.profiles.tab.toasts.unbindFailed"),
       body: describeError(error).body,
       tone: "error",
     }),
@@ -827,7 +833,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     return (
       <QueryErrorState
         error={profiles.error}
-        action="load profiles"
+        action={t("tools.profiles.tab.toasts.loadProfiles")}
         onRetry={profilesView.retry}
         retrying={profilesView.isFetching}
       />
@@ -926,12 +932,12 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-4">
       <ToolsPageHeader
-        title="Access profiles"
-        description="Reusable bundles of allowed applications, connections, and tools, assignable to agents, projects, routines, or issues."
+        title={t("tools.profiles.tab.header.title")}
+        description={t("tools.profiles.tab.header.description")}
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="mr-1 h-4 w-4" />
-            New profile
+            {t("tools.profiles.tab.header.newProfile")}
           </Button>
         }
       />
@@ -941,9 +947,9 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
       {list.length === 0 ? (
         <EmptyState
           icon={Layers}
-          message="No access profiles yet"
-          description="Create a profile to group tool selectors, then bind it to the organization or a specific agent."
-          action="New profile"
+          message={t("tools.profiles.tab.empty.title")}
+          description={t("tools.profiles.tab.empty.description")}
+          action={t("tools.profiles.tab.header.newProfile")}
           onAction={() => setCreateOpen(true)}
         />
       ) : (

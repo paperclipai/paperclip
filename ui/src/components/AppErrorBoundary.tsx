@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { describeError } from "@/api/errors";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { onChunkLoadReloadAbandoned, reloadForChunkLoadError } from "@/lib/chunk-load-recovery";
@@ -58,7 +59,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
     if (reloading) {
       return (
         <div role="status" className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
-          Reloading Paperclip…
+          {t("app.AppErrorBoundary.reloading")}
         </div>
       );
     }
@@ -66,9 +67,9 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
     return (
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center space-y-4 px-4 py-10">
         <div>
-          <h1 className="text-lg font-semibold">Paperclip hit an error</h1>
+          <h1 className="text-lg font-semibold">{t("app.AppErrorBoundary.errorTitle")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Something went wrong while running the app. Reloading usually fixes this.
+            {t("app.AppErrorBoundary.errorBody")}
           </p>
         </div>
         <pre className="overflow-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive whitespace-pre-wrap">
@@ -80,7 +81,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
             className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground"
             onClick={() => window.location.reload()}
           >
-            Reload page
+            {t("app.AppErrorBoundary.reloadPage")}
           </button>
         </div>
       </div>

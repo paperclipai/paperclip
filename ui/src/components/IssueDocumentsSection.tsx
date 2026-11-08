@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type {
@@ -137,9 +138,9 @@ function isPlanKey(key: string) {
 
 function generalDocumentKeyError(key: string): string | null {
   if (isGeneralTaskDocumentKey(key)) return null;
-  if (isPlanKey(key)) return "Create and revise Plans in the task conversation.";
-  if (isArtifactReviewDocumentKey(key)) return "Review this document through its work product.";
-  return "This document key is reserved for task state.";
+  if (isPlanKey(key)) return t("issues.generalDocumentKeyError.planInTask");
+  if (isArtifactReviewDocumentKey(key)) return t("issues.generalDocumentKeyError.reviewWork");
+  return t("issues.generalDocumentKeyError.reserved");
 }
 
 function titlesMatchKey(title: string | null | undefined, key: string) {
@@ -244,7 +245,7 @@ function getRevisionActor(
       imageUrl: profile?.image ?? null,
     };
   }
-  return { kind: "system", name: "System" };
+  return { kind: "system", name: t("issues.getRevisionActor.system") };
 }
 
 function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
@@ -366,6 +367,7 @@ function AccountIssueDocumentsSection({
   forceEditDocumentKey?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const location = useLocation();
   const documentSubject = useMemo(() => {
@@ -411,7 +413,7 @@ function AccountIssueDocumentsSection({
     sourceId: `issue-documents:${documentSubject.id}`,
     targetKey: `${draftScope}:${draft?.key ?? ""}`,
     save: async () => undefined,
-    action: "save the document",
+    action: t("errorActions.saveTheDocument"),
   });
   const { markDirty, reset, run: runAutosave } = autosave;
   const autosaveState = autosave.status;
@@ -480,14 +482,14 @@ function AccountIssueDocumentsSection({
   const deleteDocument = useMutation({
     mutationFn: (key: string) => documentSubject.deleteDocument
       ? documentSubject.deleteDocument(key)
-      : Promise.reject(new Error("Document deletion is not available")),
+      : Promise.reject(new Error(t("issues.AccountIssueDocumentsSection.deleteUnavailable"))),
     onSuccess: () => {
       setError(null);
       setConfirmDeleteKey(null);
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : t("issues.AccountIssueDocumentsSection.failedDeleteDocument"));
     },
   });
 
@@ -495,7 +497,7 @@ function AccountIssueDocumentsSection({
     mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
       documentSubject.restoreDocumentRevision
         ? documentSubject.restoreDocumentRevision(key, revisionId)
-        : Promise.reject(new Error("Document revision restore is not available")),
+        : Promise.reject(new Error(t("issues.AccountIssueDocumentsSection.restoreUnavailable"))),
     onSuccess: (document, variables) => {
       syncDocumentCaches(document);
       setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
@@ -506,7 +508,7 @@ function AccountIssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+      setError(err instanceof Error ? err.message : t("issues.AccountIssueDocumentsSection.failedRestoreRevision"));
     },
   });
 
@@ -514,7 +516,7 @@ function AccountIssueDocumentsSection({
     mutationFn: ({ key, locked }: { key: string; locked: boolean }) =>
       documentSubject.setDocumentLock
         ? documentSubject.setDocumentLock(key, locked)
-        : Promise.reject(new Error("Document locking is not available")),
+        : Promise.reject(new Error(t("issues.AccountIssueDocumentsSection.lockUnavailable"))),
     onSuccess: (document) => {
       syncDocumentCaches(document);
       setDraft((current) => current?.key === document.key ? null : current);
@@ -524,7 +526,7 @@ function AccountIssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to update document lock");
+      setError(err instanceof Error ? err.message : t("issues.AccountIssueDocumentsSection.failedUpdateLock"));
     },
   });
 
@@ -556,7 +558,7 @@ function AccountIssueDocumentsSection({
   const newGeneralDocumentKeyError = draft?.isNew && generalDocumentsOnly ? generalDocumentKeyError(draft.key) : null;
   const newDocumentKeyError = newGeneralDocumentKeyError
     ?? (draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? t("issues.AccountIssueDocumentsSection.keyFormatHint")
       : null);
 
   const resetAutosaveState = useCallback(() => {
@@ -655,9 +657,9 @@ function AccountIssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError("Document key and body are required");
+        setError(t("issues.AccountIssueDocumentsSection.keyAndBodyRequired"));
       } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
+        setError(t("issues.AccountIssueDocumentsSection.bodyEmpty"));
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -666,7 +668,7 @@ function AccountIssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+      setError(t("issues.AccountIssueDocumentsSection.keyFormatError"));
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -746,7 +748,7 @@ function AccountIssueDocumentsSection({
 
     const handleSaveFailure = async (err: unknown): Promise<false> => {
       if (isLockedDocumentError(err)) {
-        setError("Document is locked. Unlock it before editing.");
+        setError(t("issues.AccountIssueDocumentsSection.documentLocked"));
         resetAutosaveState();
         invalidateIssueDocuments();
         return false;
@@ -771,11 +773,11 @@ function AccountIssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
+          setError(t("issues.AccountIssueDocumentsSection.remoteChangedLoadFailed"));
           return false;
         }
       }
-      setError(describeError(err, { action: "save the document" }).body);
+      setError(describeError(err, { action: t("errorActions.saveTheDocument") }).body);
       return false;
     };
 
@@ -849,7 +851,7 @@ function AccountIssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError("Could not copy document");
+      setError(t("issues.AccountIssueDocumentsSection.copyFailed"));
     }
   }, []);
 
@@ -870,7 +872,7 @@ function AccountIssueDocumentsSection({
     const selectedRevision = revisionState.revisions.find((revision) => revision.id === revisionId);
     if (!selectedRevision) return false;
     if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
-      setError("Save or cancel your local changes before viewing an older revision.");
+      setError(t("issues.AccountIssueDocumentsSection.saveOrCancelBeforeRevision"));
       return false;
     }
     if (selectedRevision.id === revisionState.currentRevision.id) {
@@ -889,7 +891,7 @@ function AccountIssueDocumentsSection({
   const toggleDocumentLock = useCallback((doc: IssueDocument, locked: boolean) => {
     if (!canManageDocumentLocks || setDocumentLock.isPending) return;
     if (locked && (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft))) {
-      setError("Save or cancel local changes before changing the document lock.");
+      setError(t("issues.AccountIssueDocumentsSection.saveOrCancelBeforeLock"));
       return;
     }
     setDocumentLock.mutate({ key: doc.key, locked });
@@ -976,13 +978,13 @@ function AccountIssueDocumentsSection({
     if (!doc) return;
     if (handledRevisionHash?.target === revisionTarget && handledRevisionHash.latestRevisionId === doc.latestRevisionId) return;
     if (revisionsQueryFailed) {
-      setError("Could not load the reviewed revision. Try opening the link again.");
+      setError(t("issues.AccountIssueDocumentsSection.reviewedRevisionLoadFailed"));
       return;
     }
     if (!getDocumentRevisions(doc.key).some((revision) => revision.id === documentHashTarget.revisionId)
       && doc.latestRevisionId !== documentHashTarget.revisionId) {
       if (!isFetchingDocumentRevisions && activeDocumentRevisions !== undefined) {
-        setError("The reviewed revision is unavailable.");
+        setError(t("issues.AccountIssueDocumentsSection.reviewedRevisionUnavailable"));
       }
       return;
     }
@@ -1124,19 +1126,19 @@ function AccountIssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{t("issues.AccountIssueDocumentsSection.newDocument")}</span>
+            <span className="sm:hidden">{t("issues.AccountIssueDocumentsSection.newShort")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">{t("issues.AccountIssueDocumentsSection.documents")}</h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{t("issues.AccountIssueDocumentsSection.newDocument")}</span>
+              <span className="sm:hidden">{t("issues.AccountIssueDocumentsSection.newShort")}</span>
             </Button>
           </div>
         </div>
@@ -1156,7 +1158,7 @@ function AccountIssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={t("issues.AccountIssueDocumentsSection.documentKey")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -1167,7 +1169,7 @@ function AccountIssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={t("issues.AccountIssueDocumentsSection.optionalTitle")}
             />
           )}
           <MarkdownEditor
@@ -1175,7 +1177,7 @@ function AccountIssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={t("issues.AccountIssueDocumentsSection.markdownBody")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-(--sz-220px) text-sm leading-7"
@@ -1186,14 +1188,14 @@ function AccountIssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {t("issues.AccountIssueDocumentsSection.cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? t("issues.AccountIssueDocumentsSection.saving") : t("issues.AccountIssueDocumentsSection.createDocument")}
             </Button>
           </div>
         </div>
@@ -1210,7 +1212,7 @@ function AccountIssueDocumentsSection({
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
             <Badge variant="outline" className="border-amber-500/30 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
-              PLAN
+              {t("issues.AccountIssueDocumentsSection.planBadge")}
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
@@ -1302,15 +1304,15 @@ function AccountIssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         isLocked && "text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200",
                       )}
-                      title={isLocked ? "Unlock document" : "Lock document"}
-                      aria-label={isLocked ? `Unlock ${doc.key} document` : `Lock ${doc.key} document`}
+                      title={isLocked ? t("issues.AccountIssueDocumentsSection.unlockDocument") : t("issues.AccountIssueDocumentsSection.lockDocument")}
+                      aria-label={isLocked ? t("issues.AccountIssueDocumentsSection.unlockDocumentKey", { key: doc.key }) : t("issues.AccountIssueDocumentsSection.lockDocumentKey", { key: doc.key })}
                       onClick={() => toggleDocumentLock(doc, !isLocked)}
                       disabled={lockActionPending}
                     >
                       {isLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
                     </Button>
                     ) : isLocked ? (
-                      <span title="Locked document" aria-label="Locked document" className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
+                      <span title={t("issues.AccountIssueDocumentsSection.lockedDocument")} aria-label={t("issues.AccountIssueDocumentsSection.lockedDocument")} className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
                         <Lock className="h-3.5 w-3.5" />
                       </span>
                     ) : null}
@@ -1321,7 +1323,7 @@ function AccountIssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         copiedDocumentKey === doc.key && "text-foreground",
                       )}
-                      title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                      title={copiedDocumentKey === doc.key ? t("issues.AccountIssueDocumentsSection.copied") : t("issues.AccountIssueDocumentsSection.copyDocument")}
                       onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                     >
                       {copiedDocumentKey === doc.key ? (
@@ -1336,7 +1338,7 @@ function AccountIssueDocumentsSection({
                           variant="ghost"
                           size="icon-xs"
                           className="text-muted-foreground"
-                          title="Document actions"
+                          title={t("issues.AccountIssueDocumentsSection.documentActions")}
                         >
                           <MoreHorizontal className="h-3.5 w-3.5" />
                         </Button>
@@ -1345,7 +1347,7 @@ function AccountIssueDocumentsSection({
                         {!isHistoricalPreview && !isLocked ? (
                           <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                             <FilePenLine className="h-3.5 w-3.5" />
-                            Edit document
+                            {t("issues.AccountIssueDocumentsSection.editDocument")}
                           </DropdownMenuItem>
                         ) : null}
                         {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1353,12 +1355,12 @@ function AccountIssueDocumentsSection({
                           onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                         >
                           <Download className="h-3.5 w-3.5" />
-                          Download document
+                          {t("issues.AccountIssueDocumentsSection.downloadDocument")}
                         </DropdownMenuItem>
                         {doc.latestRevisionNumber > 1 ? (
                           <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
                             <Diff className="h-3.5 w-3.5" />
-                            View diff
+                            {t("issues.AccountIssueDocumentsSection.viewDiff")}
                           </DropdownMenuItem>
                         ) : null}
                         {canDeleteDocuments && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1368,7 +1370,7 @@ function AccountIssueDocumentsSection({
                             onClick={() => setConfirmDeleteKey(doc.key)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            Delete document
+                            {t("issues.AccountIssueDocumentsSection.deleteDocument")}
                           </DropdownMenuItem>
                         ) : null}
                       </DropdownMenuContent>
@@ -1397,7 +1399,7 @@ function AccountIssueDocumentsSection({
                 >
                   {waitingForLinkedRevision ? (
                     <p role="status" className="text-sm text-muted-foreground">
-                      {error ?? "Loading reviewed revision…"}
+                      {error ?? t("issues.AccountIssueDocumentsSection.loadingReviewed")}
                     </p>
                   ) : null}
                   {isHistoricalPreview && selectedHistoricalRevision && (
@@ -1405,10 +1407,10 @@ function AccountIssueDocumentsSection({
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                            Viewing revision {selectedHistoricalRevision.revisionNumber}
+                            {t("issues.AccountIssueDocumentsSection.viewingRevision", { number: selectedHistoricalRevision.revisionNumber })}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
+                            {t("issues.AccountIssueDocumentsSection.historicalPreview")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1417,7 +1419,7 @@ function AccountIssueDocumentsSection({
                             size="sm"
                             onClick={() => returnToLatestRevision(doc.key)}
                           >
-                            Return to latest
+                            {t("issues.AccountIssueDocumentsSection.returnToLatest")}
                           </Button>
                           {!isLocked ? (
                             <Button
@@ -1429,8 +1431,8 @@ function AccountIssueDocumentsSection({
                               disabled={restoreDocumentRevision.isPending}
                             >
                               {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
-                                ? "Restoring..."
-                                : "Restore this revision"}
+                                ? t("issues.AccountIssueDocumentsSection.restoring")
+                                : t("issues.AccountIssueDocumentsSection.restoreThisRevision")}
                             </Button>
                           ) : null}
                         </div>
@@ -1441,9 +1443,9 @@ function AccountIssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">{t("issues.AccountIssueDocumentsSection.outOfDate")}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            {t("issues.AccountIssueDocumentsSection.documentChangedWhileEditing")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1458,37 +1460,37 @@ function AccountIssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? t("issues.AccountIssueDocumentsSection.hideRemote") : t("issues.AccountIssueDocumentsSection.reviewRemote")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            Keep my draft
+                            {t("issues.AccountIssueDocumentsSection.keepMyDraft")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            Reload remote
+                            {t("issues.AccountIssueDocumentsSection.reloadRemote")}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? t("issues.AccountIssueDocumentsSection.saving") : t("issues.AccountIssueDocumentsSection.overwriteRemote")}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-                            <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
+                            <span>{t("issues.AccountIssueDocumentsSection.remoteRevision", { number: activeConflict.serverDocument.latestRevisionNumber })}</span>
                             <span>•</span>
-                            <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
+                            <span>{t("issues.AccountIssueDocumentsSection.updatedAt", { time: relativeTime(activeConflict.serverDocument.updatedAt) })}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -1505,7 +1507,7 @@ function AccountIssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={t("issues.AccountIssueDocumentsSection.optionalTitle")}
                     />
                   )}
                   <div
@@ -1530,7 +1532,7 @@ function AccountIssueDocumentsSection({
                               return current;
                             });
                           }}
-                          placeholder="Markdown body"
+                          placeholder={t("issues.AccountIssueDocumentsSection.markdownBody")}
                           bordered={false}
                           className="bg-transparent"
                           contentClassName={documentBodyContentClassName}
@@ -1579,16 +1581,16 @@ function AccountIssueDocumentsSection({
                       } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
                       {isHistoricalPreview
-                        ? "Viewing historical revision"
+                        ? t("issues.AccountIssueDocumentsSection.viewingHistoricalRevision")
                         : activeDraft
                           ? activeConflict
-                          ? "Out of date"
+                          ? t("issues.AccountIssueDocumentsSection.outOfDate")
                           : autosaveDocumentKey === doc.key
                             ? autosave.label ?? ""
                             : ""
                           : ""}
                     </span>
-                    {activeDraft && autosaveDocumentKey === doc.key && autosaveState === "stalled" ? <Button type="button" size="sm" variant="ghost" onClick={autosave.resendNow}>Retry saving</Button> : null}
+                    {activeDraft && autosaveDocumentKey === doc.key && autosaveState === "stalled" ? <Button type="button" size="sm" variant="ghost" onClick={autosave.resendNow}>{t("issues.AccountIssueDocumentsSection.retrySaving")}</Button> : null}
                   </div>
                   {canVoteOnDocument && doc.latestRevisionId ? (
                     <OutputFeedbackButtons
@@ -1606,7 +1608,7 @@ function AccountIssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {t("issues.AccountIssueDocumentsSection.deleteConfirm")}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -1615,7 +1617,7 @@ function AccountIssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      Cancel
+                      {t("issues.AccountIssueDocumentsSection.cancel")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -1623,7 +1625,7 @@ function AccountIssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? t("issues.AccountIssueDocumentsSection.deleting") : t("issues.AccountIssueDocumentsSection.delete")}
                     </Button>
                   </div>
                 </div>

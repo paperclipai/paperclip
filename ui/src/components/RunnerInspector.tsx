@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
+import { t } from "@/i18n";
 
 type TraceEntry = Record<string, unknown>;
 type InspectorView = "overview" | "pipeline" | "trace";
@@ -1062,13 +1063,13 @@ export function RunnerInspector({
             <QueryErrorState
               className="m-4"
               error={loadError}
-              action="load the runner inspection"
+              action={t("errorActions.loadTheRunnerInspection")}
               onRetry={load.view.retry}
               retrying={load.view.isFetching}
             />
           ) : null}
           {actionError !== null && actionError !== undefined ? (
-            <QueryErrorState className="m-4" error={actionError} action="delete the raw trace" />
+            <QueryErrorState className="m-4" error={actionError} action={t("errorActions.deleteTheRawTrace")} />
           ) : null}
           {!loading && !loadError && canInspectRaw === false ? (
             <div className="m-4 rounded-md border border-border bg-muted/20 p-4">

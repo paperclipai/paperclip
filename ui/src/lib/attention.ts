@@ -9,6 +9,7 @@ import type {
   AttentionSourceKind,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 export type AttentionListOptions = AttentionFeedQuery;
 
@@ -47,23 +48,25 @@ interface SourceMeta {
   label: string;
 }
 
-const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
-  approval: { label: "Approval" },
-  decision: { label: "Decision" },
-  issue_thread_interaction: { label: "Decision requested" },
-  join_request: { label: "Join request" },
-  recovery_action: { label: "Recovery" },
-  // Read compatibility for persisted decisions from the retired feature.
-  productivity_review: { label: "Task" },
-  blocker_attention: { label: "Blocked dependency" },
-  review: { label: "Review" },
-  failed_run: { label: "Failed run" },
-  budget_alert: { label: "Budget" },
-  agent_error_alert: { label: "Agent error" },
-};
+function sourceLabels(): Record<AttentionSourceKind, string> {
+  return {
+    approval: t("inbox.attention.source.approval"),
+    decision: t("inbox.attention.source.decision"),
+    issue_thread_interaction: t("inbox.attention.source.issueThreadInteraction"),
+    join_request: t("inbox.attention.source.joinRequest"),
+    recovery_action: t("inbox.attention.source.recoveryAction"),
+    // Read compatibility for persisted decisions from the retired feature.
+    productivity_review: t("inbox.attention.source.productivityReview"),
+    blocker_attention: t("inbox.attention.source.blockerAttention"),
+    review: t("inbox.attention.source.review"),
+    failed_run: t("inbox.attention.source.failedRun"),
+    budget_alert: t("inbox.attention.source.budgetAlert"),
+    agent_error_alert: t("inbox.attention.source.agentErrorAlert"),
+  };
+}
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
-  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " ") };
+  return { label: sourceLabels()[kind] ?? kind.replaceAll("_", " ") };
 }
 
 interface SeverityStyle {
@@ -73,15 +76,25 @@ interface SeverityStyle {
   label: string;
 }
 
-const SEVERITY_STYLE: Record<AttentionSeverity, SeverityStyle> = {
-  critical: { accent: "bg-red-500", dot: "bg-red-500", label: "Critical" },
-  high: { accent: "bg-orange-500", dot: "bg-orange-500", label: "High" },
-  medium: { accent: "bg-yellow-500", dot: "bg-yellow-500", label: "Medium" },
-  low: { accent: "bg-blue-500", dot: "bg-blue-500", label: "Low" },
+const SEVERITY_COLOR: Record<AttentionSeverity, Omit<SeverityStyle, "label">> = {
+  critical: { accent: "bg-red-500", dot: "bg-red-500" },
+  high: { accent: "bg-orange-500", dot: "bg-orange-500" },
+  medium: { accent: "bg-yellow-500", dot: "bg-yellow-500" },
+  low: { accent: "bg-blue-500", dot: "bg-blue-500" },
 };
 
+function severityLabels(): Record<AttentionSeverity, string> {
+  return {
+    critical: t("inbox.attention.severity.critical"),
+    high: t("inbox.attention.severity.high"),
+    medium: t("inbox.attention.severity.medium"),
+    low: t("inbox.attention.severity.low"),
+  };
+}
+
 export function severityStyle(severity: AttentionSeverity): SeverityStyle {
-  return SEVERITY_STYLE[severity] ?? SEVERITY_STYLE.low;
+  const labels = severityLabels();
+  return { ...(SEVERITY_COLOR[severity] ?? SEVERITY_COLOR.low), label: labels[severity] ?? labels.low };
 }
 
 // ---------------------------------------------------------------------------
@@ -187,10 +200,6 @@ function quote(text: string | null | undefined): string | null {
   return `“${trimmed}”`;
 }
 
-function countNoun(count: number, singular: string): string {
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
-}
-
 /**
  * A concise human-readable detail line for a row, e.g.
  *   "2 questions — “Which auth provider…”"
@@ -210,21 +219,22 @@ export function attentionDetailLine(item: AttentionItem): string | null {
       return quote(detail.promptExcerpt);
     case "checkbox_confirmation": {
       const q = quote(detail.promptExcerpt);
-      return q ? `${countNoun(detail.optionCount, "option")} — ${q}` : countNoun(detail.optionCount, "option");
+      const label = t("inbox.attention.detail.optionCount", { count: detail.optionCount });
+      return q ? `${label} — ${q}` : label;
     }
     case "questions": {
       const q = quote(detail.firstQuestionText);
-      const label = countNoun(detail.questionCount, "question");
+      const label = t("inbox.attention.detail.questionCount", { count: detail.questionCount });
       return q ? `${label} — ${q}` : label;
     }
     case "suggested_tasks": {
       const q = quote(detail.firstTaskTitle);
-      const label = countNoun(detail.taskCount, "suggested task");
+      const label = t("inbox.attention.detail.suggestedTaskCount", { count: detail.taskCount });
       return q ? `${label} — ${q}` : label;
     }
     case "item_verdicts": {
       const q = quote(detail.promptExcerpt);
-      const label = `${countNoun(detail.itemCount, "item")} to verdict`;
+      const label = t("inbox.attention.detail.itemsToVerdict", { count: detail.itemCount });
       return q ? `${label} — ${q}` : label;
     }
     case "failed_run":
@@ -237,10 +247,15 @@ export function attentionDetailLine(item: AttentionItem): string | null {
       const b = detail.blockingIssue;
       if (!b) return null;
       const id = b.identifier ? `${b.identifier} ` : "";
-      return b.title ? `Blocked by ${id}${b.title}` : b.identifier ? `Blocked by ${b.identifier}` : null;
+      if (b.title) return t("inbox.attention.detail.blockedByTitle", { id, title: b.title });
+      return b.identifier ? t("inbox.attention.detail.blockedBy", { identifier: b.identifier }) : null;
     }
     case "budget":
-      return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
+      return t("inbox.attention.detail.budgetUsed", {
+        percent: Math.round(detail.observedPercent),
+        observed: detail.amountObserved,
+        limit: detail.amountLimit,
+      });
     case "generic":
       return quote(detail.summaryExcerpt);
     default:
@@ -371,9 +386,13 @@ export function buildDeskShelves(items: AttentionItem[], now: number): DeskShelf
   const earlier = rest.filter((item) => !attentionIsNewToday(item, now));
 
   const shelves: DeskShelf[] = [];
-  if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
-  if (newToday.length > 0) shelves.push({ key: "desk:new-today", label: "New today", items: newToday });
-  if (earlier.length > 0) shelves.push({ key: "desk:earlier", label: "Earlier", items: earlier });
+  if (decideNow.length > 0) {
+    shelves.push({ key: "desk:decide-now", label: t("inbox.attention.desk.decideNow"), items: decideNow });
+  }
+  if (newToday.length > 0) {
+    shelves.push({ key: "desk:new-today", label: t("inbox.attention.desk.newToday"), items: newToday });
+  }
+  if (earlier.length > 0) shelves.push({ key: "desk:earlier", label: t("inbox.attention.desk.earlier"), items: earlier });
   return shelves;
 }
 
@@ -412,18 +431,20 @@ export function attentionIdleDays(item: AttentionItem, now: number): number {
 
 export type DecideByPreset = "today" | "this_week" | "whenever";
 
-export const DECIDE_BY_OPTIONS: ReadonlyArray<[DecideByPreset, string]> = [
-  ["today", "Today"],
-  ["this_week", "This week"],
-  ["whenever", "Whenever"],
-];
+export function decideByOptions(): ReadonlyArray<[DecideByPreset, string]> {
+  return [
+    ["today", t("inbox.attention.decideBy.today")],
+    ["this_week", t("inbox.attention.decideBy.thisWeek")],
+    ["whenever", t("inbox.attention.decideBy.whenever")],
+  ];
+}
 
 /** Human label for any stored `decideBy` value (preset or `YYYY-MM-DD`). */
 export function decideByLabel(decideBy: string | null): string {
-  if (!decideBy) return "Not set";
-  if (decideBy === "today") return "Today";
-  if (decideBy === "this_week") return "This week";
-  if (decideBy === "whenever") return "Whenever";
+  if (!decideBy) return t("inbox.attention.decideBy.notSet");
+  if (decideBy === "today") return t("inbox.attention.decideBy.today");
+  if (decideBy === "this_week") return t("inbox.attention.decideBy.thisWeek");
+  if (decideBy === "whenever") return t("inbox.attention.decideBy.whenever");
   if (/^\d{4}-\d{2}-\d{2}$/.test(decideBy)) {
     const parsed = new Date(`${decideBy}T00:00:00.000Z`);
     return Number.isFinite(parsed.getTime())
@@ -441,13 +462,15 @@ export function decideByLabel(decideBy: string | null): string {
 
 export type AttentionDateRangeId = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "custom";
 
-export const ATTENTION_DATE_RANGE_OPTIONS: ReadonlyArray<[AttentionDateRangeId, string]> = [
-  ["all", "All"],
-  ["today", "Today"],
-  ["yesterday", "Yesterday"],
-  ["last_7_days", "Last 7 days"],
-  ["this_month", "This month"],
-];
+export function attentionDateRangeOptions(): ReadonlyArray<[AttentionDateRangeId, string]> {
+  return [
+    ["all", t("inbox.attention.dateRange.all")],
+    ["today", t("inbox.attention.dateRange.today")],
+    ["yesterday", t("inbox.attention.dateRange.yesterday")],
+    ["last_7_days", t("inbox.attention.dateRange.last7Days")],
+    ["this_month", t("inbox.attention.dateRange.thisMonth")],
+  ];
+}
 
 export interface AttentionActivityBounds {
   activitySince?: string;
@@ -521,18 +544,22 @@ export type AttentionGroupBy = "none" | "date" | "type" | "project" | "severity"
 export type AttentionSortOrder = "newest" | "oldest";
 
 /** Ordered list used to render the group-by picker (label + value). */
-export const ATTENTION_GROUP_BY_OPTIONS: ReadonlyArray<[AttentionGroupBy, string]> = [
-  ["none", "None"],
-  ["date", "Date"],
-  ["type", "Type"],
-  ["project", "Project"],
-  ["severity", "Severity"],
-];
+export function attentionGroupByOptions(): ReadonlyArray<[AttentionGroupBy, string]> {
+  return [
+    ["none", t("inbox.attention.groupBy.none")],
+    ["date", t("inbox.attention.groupBy.date")],
+    ["type", t("inbox.attention.groupBy.type")],
+    ["project", t("inbox.attention.groupBy.project")],
+    ["severity", t("inbox.attention.groupBy.severity")],
+  ];
+}
 
-export const ATTENTION_SORT_OPTIONS: ReadonlyArray<[AttentionSortOrder, string]> = [
-  ["newest", "Newest first"],
-  ["oldest", "Oldest first"],
-];
+export function attentionSortOptions(): ReadonlyArray<[AttentionSortOrder, string]> {
+  return [
+    ["newest", t("inbox.attention.sort.newest")],
+    ["oldest", t("inbox.attention.sort.oldest")],
+  ];
+}
 
 /**
  * Filter selections. Empty arrays mean "no filter" (show everything). The
@@ -818,12 +845,14 @@ export function planAttentionRenderRows(options: {
 const DATE_BUCKET_ORDER = ["today", "yesterday", "this_week", "earlier"] as const;
 type DateBucket = (typeof DATE_BUCKET_ORDER)[number];
 
-const DATE_BUCKET_LABELS: Record<DateBucket, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  this_week: "This week",
-  earlier: "Earlier",
-};
+function dateBucketLabels(): Record<DateBucket, string> {
+  return {
+    today: t("inbox.attention.dateBucket.today"),
+    yesterday: t("inbox.attention.dateBucket.yesterday"),
+    this_week: t("inbox.attention.dateBucket.thisWeek"),
+    earlier: t("inbox.attention.dateBucket.earlier"),
+  };
+}
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -840,13 +869,6 @@ export function attentionDateBucket(activityAt: string, now: number): DateBucket
   if (ts >= todayStart - 6 * MS_PER_DAY) return "this_week";
   return "earlier";
 }
-
-const SEVERITY_LABEL: Record<AttentionSeverity, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
 
 /**
  * Bucket items into ordered sections. Item order *within* each group is
@@ -876,7 +898,7 @@ export function groupAttentionItems(
     }
     return DATE_BUCKET_ORDER.filter((bucket) => buckets.has(bucket)).map((bucket) => ({
       key: `date:${bucket}`,
-      label: DATE_BUCKET_LABELS[bucket],
+      label: dateBucketLabels()[bucket],
       items: buckets.get(bucket)!,
     }));
   }
@@ -890,7 +912,7 @@ export function groupAttentionItems(
     }
     return ALL_SEVERITIES.filter((s) => buckets.has(s)).map((severity) => ({
       key: `severity:${severity}`,
-      label: SEVERITY_LABEL[severity],
+      label: severityLabels()[severity],
       items: buckets.get(severity)!,
     }));
   }
@@ -904,7 +926,7 @@ export function groupAttentionItems(
         ? { key: `type:${item.sourceKind}`, label: sourceMeta(item.sourceKind).label }
         : item.project
           ? { key: `project:${item.project.id}`, label: item.project.name }
-          : { key: `project:${NO_GROUP_SENTINEL}`, label: "No project" };
+          : { key: `project:${NO_GROUP_SENTINEL}`, label: t("inbox.attention.group.noProject") };
     const existing = groups.get(resolved.key);
     const ts = attentionActivityTimestamp(item);
     if (existing) {

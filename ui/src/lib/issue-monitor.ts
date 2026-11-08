@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -74,27 +75,37 @@ function toTimestamp(value: MonitorDate): number {
 
 function formatDuration(durationMs: number): string {
   if (durationMs < MINUTE_MS) {
-    return `${Math.max(1, Math.ceil(durationMs / SECOND_MS))}s`;
+    return t("common.time.secondsShort", { count: Math.max(1, Math.ceil(durationMs / SECOND_MS)) });
   }
   if (durationMs < HOUR_MS) {
-    return `${Math.floor(durationMs / MINUTE_MS)}m`;
+    return t("common.time.minutesShort", { count: Math.floor(durationMs / MINUTE_MS) });
   }
   if (durationMs < DAY_MS) {
     const hours = Math.floor(durationMs / HOUR_MS);
     const minutes = Math.floor((durationMs % HOUR_MS) / MINUTE_MS);
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    return minutes > 0
+      ? t("common.time.hoursMinutesShort", { hours, minutes })
+      : t("common.time.hoursShort", { count: hours });
   }
 
   const days = Math.floor(durationMs / DAY_MS);
   const hours = Math.floor((durationMs % DAY_MS) / HOUR_MS);
-  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  return hours > 0
+    ? t("common.time.daysHoursShort", { days, hours })
+    : t("common.time.daysShort", { count: days });
 }
 
 export function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
   const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
-  if (deltaMs > 0) return `in ${formatDuration(deltaMs)}`;
-  if (deltaMs > -DUE_NOW_GRACE_MS) return "due now";
-  return `overdue by ${formatDuration(Math.abs(deltaMs))}`;
+  if (deltaMs > 0) return t("issues.monitor.inDuration", { duration: formatDuration(deltaMs) });
+  if (deltaMs > -DUE_NOW_GRACE_MS) return t("issues.monitor.dueNow");
+  return t("issues.monitor.overdueBy", { duration: formatDuration(Math.abs(deltaMs)) });
+}
+
+export function monitorEtaState(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): "upcoming" | "due-now" | "overdue" {
+  const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
+  if (deltaMs > 0) return "upcoming";
+  return deltaMs > -DUE_NOW_GRACE_MS ? "due-now" : "overdue";
 }
 
 export function formatMonitorEtaLabel(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
@@ -145,7 +156,7 @@ export function formatMonitorAbsolute(
     targetYmd.year === referenceYmd.year &&
     targetYmd.month === referenceYmd.month &&
     targetYmd.day === referenceYmd.day;
-  if (isToday) return `Today, ${time}`;
+  if (isToday) return t("issues.monitor.today", { time });
 
   const weekday = new Intl.DateTimeFormat(options.locale, {
     weekday: "short",
@@ -269,12 +280,17 @@ export function useMonitorCountdown(nextCheckAt: MonitorDate | null | undefined)
   return now;
 }
 
+function isNowOffset(deltaMs: number): boolean {
+  return Math.round(Math.abs(deltaMs) / MINUTE_MS) === 0 || (deltaMs <= 0 && deltaMs > -DUE_NOW_GRACE_MS);
+}
+
+export function isMonitorOffsetNow(nextCheckAt: MonitorDate): boolean {
+  return isNowOffset(toTimestamp(nextCheckAt) - Date.now());
+}
+
 export function formatMonitorOffset(nextCheckAt: MonitorDate): string {
-  const now = new Date(Date.now());
-  const deltaMs = toTimestamp(nextCheckAt) - now.getTime();
-  if (Math.round(Math.abs(deltaMs) / MINUTE_MS) === 0) return "now";
-  const eta = formatMonitorEta(nextCheckAt, now);
-  if (eta === "due now") return "now";
-  if (eta.startsWith("overdue by ")) return `${eta.slice("overdue by ".length)} ago`;
-  return eta;
+  const deltaMs = toTimestamp(nextCheckAt) - Date.now();
+  if (isNowOffset(deltaMs)) return t("issues.monitor.offsetNow");
+  if (deltaMs > 0) return t("issues.monitor.inDuration", { duration: formatDuration(deltaMs) });
+  return t("issues.monitor.offsetAgo", { duration: formatDuration(-deltaMs) });
 }

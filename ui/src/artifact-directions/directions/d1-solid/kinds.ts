@@ -1,5 +1,6 @@
 import { Archive, CodeXml, File, FilePenLine, FileText, Film, Globe, Image, NotebookText, Presentation, Table2, type LucideIcon } from "lucide-react";
 import { fileKindForName } from "@/components/task-chat/task-chat-attachments";
+import { t } from "@/i18n";
 import type { LabArtifact, LabKind } from "../../kit";
 
 /**
@@ -59,8 +60,9 @@ export function metaLabel(a: LabArtifact): string {
   if (isTaskDocument(a)) return "Document";
   if (a.kind === "link") return KINDS.link.meta;
   if (a.kind === "image" || a.kind === "video") return KINDS[a.kind].meta;
-  const shipped = a.filename ? fileKindForName(a.filename).label : "File";
-  return shipped === "File" ? KINDS[a.kind].meta : shipped;
+  const generic = t("common.fileKind.file");
+  const shipped = a.filename ? fileKindForName(a.filename).label : generic;
+  return shipped === generic ? KINDS[a.kind].meta : shipped;
 }
 
 export const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;

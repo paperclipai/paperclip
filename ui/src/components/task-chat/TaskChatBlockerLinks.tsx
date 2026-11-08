@@ -7,6 +7,7 @@ import { useQueries } from "@tanstack/react-query";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useTranslation } from "@/i18n";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { queryKeys } from "@/lib/queryKeys";
 import { taskStatusIconProps, type TaskStatusPresentationInput } from "@/lib/task-status-presentation";
@@ -214,14 +215,15 @@ export function TaskChatBlockerLinks({
   ultimateBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary | null;
   placement: "top" | "bottom";
 }) {
+  const { t } = useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
-  const directLabel = streamlined && placement === "bottom" ? "Still blocked by" : "Blocked by";
+  const directLabel = streamlined && placement === "bottom" ? t("issues.TaskChatBlockerLinks.stillBlockedBy") : t("issues.TaskChatBlockerLinks.blockedBy");
   const rootLabel = streamlined
-    ? placement === "bottom" ? "Root blocker remains" : "Root blocker"
-    : "Ultimately blocked by";
+    ? placement === "bottom" ? t("issues.TaskChatBlockerLinks.rootRemains") : t("issues.TaskChatBlockerLinks.rootBlocker")
+    : t("issues.TaskChatBlockerLinks.ultimatelyBlockedBy");
   return (
     <div
-      aria-label="Task blockers"
+      aria-label={t("issues.TaskChatBlockerLinks.blockersLabel")}
       data-placement={placement}
       data-testid="task-chat-blocker-links"
       className="flex min-w-0 flex-col gap-1 overflow-hidden text-(length:--text-micro) leading-4 text-amber-700 dark:text-amber-300"
@@ -243,6 +245,7 @@ export function TaskChatLiveWorkLinks({
   placement: "top" | "bottom";
   companyId?: string | null;
 }) {
+  const { t } = useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const listedBlockers = useMemo(
     () => [...liveWork.steps.map((step) => step.blocker), ...liveWork.nowRunning],
@@ -252,7 +255,7 @@ export function TaskChatLiveWorkLinks({
   const heading = streamlined && placement === "bottom" ? "Still waiting on live work" : "Waiting on live work";
   return (
     <div
-      aria-label="Tasks waiting on live work"
+      aria-label={t("issues.TaskChatBlockerLinks.liveWorkLabel")}
       data-placement={placement}
       data-testid="task-chat-live-work-links"
       className="flex min-w-0 flex-col gap-1.5 overflow-hidden text-(length:--text-micro) leading-4 text-blue-700 dark:text-blue-300"
@@ -283,10 +286,10 @@ export function TaskChatLiveWorkLinks({
         ))}
       </ol>
       {liveWork.nowRunning.map((blocker) => streamlined ? (
-        <LiveWorkLink key={blocker.id} blocker={blocker} presentation={presentationFor(blocker)} label="Now running" />
+        <LiveWorkLink key={blocker.id} blocker={blocker} presentation={presentationFor(blocker)} label={t("issues.TaskChatBlockerLinks.nowRunning")} />
       ) : (
         <div key={blocker.id} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
-          <span className="shrink-0 font-medium">Now running</span>
+          <span className="shrink-0 font-medium">{t("issues.TaskChatBlockerLinks.nowRunning")}</span>
           <LiveWorkGlyph presentation={presentationFor(blocker)} />
           <LiveWorkLink blocker={blocker} presentation={presentationFor(blocker)} />
         </div>

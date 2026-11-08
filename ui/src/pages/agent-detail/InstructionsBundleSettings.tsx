@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "@/i18n";
 import { ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
@@ -16,9 +17,9 @@ type LoadState =
   | { kind: "error"; field: Field | null; message: string };
 
 export function checkExternalProfile(root: string, entry: string): { field: Field; message: string } | null {
-  if (!root.startsWith("/") && !root.startsWith("~")) return { field: "root", message: "Use an absolute path that starts with / or ~." };
+  if (!root.startsWith("/") && !root.startsWith("~")) return { field: "root", message: t("agents.detail.instructionsBundle.invalidRoot", { defaultValue: "Use an absolute path that starts with / or ~." }) };
   if (entry.startsWith("/") || entry.split(/[\\/]/).includes("..")) {
-    return { field: "entry", message: "The entry file has to sit inside the root path." };
+    return { field: "entry", message: t("agents.detail.instructionsBundle.invalidEntry", { defaultValue: "The entry file has to sit inside the root path." }) };
   }
   return null;
 }
@@ -75,7 +76,7 @@ export function InstructionsBundleSettings({
         companyId,
       );
     } catch (error) {
-      setLoad({ kind: "error", field: null, message: errorMessage(error, `Couldn’t read ${trimmedEntry} in ${trimmedRoot}.`) });
+      setLoad({ kind: "error", field: null, message: errorMessage(error, t("agents.detail.instructionsBundle.readError", { entry: trimmedEntry, root: trimmedRoot, defaultValue: `Couldn’t read ${trimmedEntry} in ${trimmedRoot}.` })) });
       return;
     }
     await refresh();
@@ -91,7 +92,7 @@ export function InstructionsBundleSettings({
       onSwitched();
       setLoad({ kind: "idle" });
     } catch (error) {
-      setLoad({ kind: "error", field: null, message: errorMessage(error, "Couldn’t switch back to the managed bundle.") });
+      setLoad({ kind: "error", field: null, message: errorMessage(error, t("agents.detail.instructionsBundle.switchError", { defaultValue: "Couldn’t switch back to the managed bundle." })) });
     }
   };
 
@@ -112,7 +113,7 @@ export function InstructionsBundleSettings({
           </div>
           <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-xs text-muted-foreground">Root path</span>
+              <span className="text-xs text-muted-foreground">{t("agents.detail.instructionsBundle.rootPathLabel", { defaultValue: "Root path" })}</span>
               <Input
                 value={root}
                 onChange={(event) => edit(setRoot)(event.target.value)}
@@ -137,22 +138,22 @@ export function InstructionsBundleSettings({
           <div className="flex flex-wrap items-center justify-end gap-3">
             {mode === "external" ? (
               <Button variant="ghost" size="sm" className="mr-auto -ml-3" onClick={() => void switchToManaged()} disabled={busy || blocked}>
-                Use managed bundle
+                {t("agents.detail.instructionsBundle.useManagedBundle", { defaultValue: "Use managed bundle" })}
               </Button>
             ) : null}
             <p role="status" aria-live="polite" className="flex min-w-0 items-center gap-2 text-xs">
-              {blocked ? <span className="text-muted-foreground">Save or discard your file changes first.</span> : null}
+              {blocked ? <span className="text-muted-foreground">{t("agents.detail.instructionsBundle.saveFirst", { defaultValue: "Save or discard your file changes first." })}</span> : null}
               {!blocked && load.kind === "error" ? <span className="text-destructive">{load.message}</span> : null}
               {!blocked && load.kind === "loaded" ? (
                 <span className="flex items-center gap-2 text-muted-foreground">
                   <span className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" aria-hidden />
-                  Loaded {load.entry} from {load.root}
+                  {t("agents.detail.instructionsBundle.loaded", { entry: load.entry, root: load.root, defaultValue: `Loaded ${load.entry} from ${load.root}` })}
                 </span>
               ) : null}
             </p>
             <Button size="sm" onClick={() => void loadProfile()} disabled={!trimmedRoot || !trimmedEntry || busy || blocked || unchanged}>
               {busy ? <Loader2 className="animate-spin motion-reduce:animate-none" /> : null}
-              {busy ? "Loading…" : "Load profile"}
+              {busy ? t("agents.detail.instructionsBundle.loading", { defaultValue: "Loading…" }) : t("agents.detail.instructionsBundle.loadProfile", { defaultValue: "Load profile" })}
             </Button>
           </div>
         </AgentPanel>

@@ -1,5 +1,6 @@
 import type { IssueRecoveryAction, IssueRecoveryActionKind } from "@paperclipai/shared";
 import { Eye, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
+import { t } from "@/i18n";
 import {
   readRecoveryRetryLineage,
   type RecoveryLivenessContext,
@@ -23,23 +24,31 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
     className:
       "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
     icon: TriangleAlert,
-    label: "Recovery needed",
+    get label() {
+      return t("issues.recovery.chip.needed");
+    },
   },
   in_progress: {
     className:
       "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300",
     icon: RefreshCw,
-    label: "Recovery in progress",
+    get label() {
+      return t("issues.recovery.chip.inProgress");
+    },
   },
   observe_only: {
     className: "border-border bg-muted text-muted-foreground",
     icon: Eye,
-    label: "Observing active run",
+    get label() {
+      return t("issues.recovery.chip.observeOnly");
+    },
   },
   escalated: {
     className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
     icon: OctagonAlert,
-    label: "Recovery escalated",
+    get label() {
+      return t("issues.recovery.chip.escalated");
+    },
   },
 };
 
@@ -122,7 +131,7 @@ export function recoveryChipLabel(
   lineage?: RecoveryRetryLineage | null,
 ): string {
   if (kind === "workspace_validation" && state === "needed") {
-    return "Workspace recovery needed";
+    return t("issues.recovery.chip.workspaceNeeded");
   }
   if (
     state === "in_progress" &&
@@ -130,7 +139,10 @@ export function recoveryChipLabel(
     lineage.maxAttempts !== null &&
     lineage.attempt > 0
   ) {
-    return `Recovery in progress · ${Math.min(lineage.attempt, lineage.maxAttempts)}/${lineage.maxAttempts}`;
+    return t("issues.recovery.chip.inProgressAttempt", {
+      attempt: Math.min(lineage.attempt, lineage.maxAttempts),
+      maxAttempts: lineage.maxAttempts,
+    });
   }
   return RECOVERY_CHIP_DEFAULT_TONE[state].label;
 }

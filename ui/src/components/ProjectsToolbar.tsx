@@ -1,5 +1,6 @@
 import { ArrowUpDown, Check, Plus } from "lucide-react";
 import { ToolbarSearch } from "./ToolbarSearch";
+import { useTranslation } from "@/i18n";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
@@ -22,14 +23,15 @@ export function ProjectsToolbar({ query, onQueryChange, sortField, sortDir, onSo
   onSortChange: (field: ProjectSortField, direction: ProjectSortDir) => void;
   onNewProject: () => void;
 }) {
+  const { t } = useTranslation();
   const sortLabel = PROJECT_SORT_OPTIONS.find(option => option.field === sortField)?.label ?? "Name";
-  return <div data-canonical-toolbar="projects" role="toolbar" aria-label="Projects controls" className="flex flex-wrap items-center gap-4">
-    <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search projects" placeholder="Search projects…" />
+  return <div data-canonical-toolbar="projects" role="toolbar" aria-label={t("projects.toolbar.ariaLabel")} className="flex flex-wrap items-center gap-4">
+    <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("projects.toolbar.searchLabel")} placeholder={t("projects.toolbar.searchPlaceholder")} />
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" title="Sort">
+        <Button variant="outline" size="sm" title={t("common.sort")}>
           <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span>Sort: {sortLabel}</span>
+          <span>{t("projects.toolbar.sortWithLabel", { label: optionLabel(t, sortField) })}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-44 p-0">
@@ -49,11 +51,11 @@ export function ProjectsToolbar({ query, onQueryChange, sortField, sortDir, onSo
                   : (option.field === "name" || option.field === "targetDate" ? "asc" : "desc"));
               }}
             >
-              <span>{option.label}</span>
+              <span>{optionLabel(t, option.field)}</span>
               {sortField === option.field ? (
                 <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Check className="h-3 w-3" />
-                  {sortDir === "asc" ? "Asc" : "Desc"}
+                  {sortDir === "asc" ? t("projects.toolbar.asc") : t("projects.toolbar.desc")}
                 </span>
               ) : null}
             </button>
@@ -68,4 +70,14 @@ export function ProjectsToolbar({ query, onQueryChange, sortField, sortDir, onSo
       </Button>
     </div>
   </div>;
+}
+
+
+function optionLabel(t: any, field: ProjectSortField): string {
+  switch (field) {
+    case "name": return t("common.name");
+    case "updated": return t("projects.toolbar.sortUpdated");
+    case "created": return t("projects.toolbar.sortCreated");
+    case "targetDate": return t("projects.toolbar.sortTargetDate");
+  }
 }
