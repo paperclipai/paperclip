@@ -34,7 +34,8 @@ export function paperclipRunnerSupportsPlatform(harness: string, platform: strin
     && (harness !== "grok_local" || (platform === "linux" && architecture === "x64") || (platform === "darwin" && architecture === "arm64"))
     && !(["opencode_local", "pi_local"].includes(harness) && platform === "linux" && architecture === "arm64")
     && ((platform === "linux" && supportsLinuxLibc(libc, glibcVersion) && (architecture === "x64" || architecture === "arm64"))
-      || (platform === "darwin" && (architecture === "arm64" || architecture === "x64")));
+      || (platform === "darwin" && (architecture === "arm64" || architecture === "x64"))
+      || (harness === "codex_local" && platform === "win32" && architecture === "x64"));
 }
 
 export function agentHarnessType(adapterType: string, config: Record<string, unknown> = {}): string {
