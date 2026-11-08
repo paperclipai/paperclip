@@ -1222,13 +1222,18 @@ describe("durable, authorized connection routing", () => {
       expect(captureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id, runStatus: "failed", errorCode: "configuration_incomplete" }));
     } finally { proposal.mockReset(); proposal.mockImplementation(defaultProposal); unregisterServerAdapter("claude_local"); await heartbeat.drainActiveRunExecutions(); }
   }, 30_000);
-  it("repairs the failed pool account without replacing the pool or adopting the configured provider", async () => {
-    const pool = await makePool({ members: [members[1]!] });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Pool repair", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).returning();
+  it.each([false, true])("repairs the failed pool account without replacing the pool or adopting the configured provider (harnessPool=%s)", async native => {
+    const routingEnabled = (await instanceSettingsService(db).getExperimental()).enableAiConnectionRouters;
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const pool = native
+      ? await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { schemaVersion: 2, kind: "harness_pool", name: "Repair pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!] } }, "alice")
+      : await makePool({ members: [members[1]!] });
+    const poolBinding = native ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } };
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pool repair", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" }, runtimeConfig: poolBinding }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Pool repair", status: "in_progress", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     const selection = await resolve(pool.id, issue!.id, { agentId: agent!.id });
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: agent!.id, responsibleUserId: "alice", adapterType: "paperclip_runner", config: selection.runtimeConfig, binding: selection.binding });
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "failed", runtimeMode: "native", nativeIssueId: issue!.id, errorCode: "acpx_auth_required", responsibleUserId: "alice", startedAt: new Date(), contextSnapshot: { issueId: issue!.id, aiRouterTaskKey: issue!.id, aiRouterSelection: selection, aiConnection: { ...runtime!.attribution, identity: runtime!.identity } } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "failed", runtimeMode: "native", nativeIssueId: issue!.id, errorCode: native ? "native_provider_auth_failed" : "acpx_auth_required", responsibleUserId: "alice", startedAt: new Date(), contextSnapshot: { issueId: issue!.id, aiRouterTaskKey: issue!.id, aiRouterSelection: selection, aiConnection: { ...runtime!.attribution, identity: runtime!.identity } } }).returning();
     try {
       const intents = connectionIntentService(db);
       const card = await intents.requestForRunAuthFailure(run!.id);
@@ -1239,14 +1244,15 @@ describe("durable, authorized connection routing", () => {
       await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, members[1]!.binding.grantId));
       await db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, members[1]!.binding.connectionId));
       expect(await intents.complete(card!.interactionId!, members[1]!.binding.connectionId, "alice")).toMatchObject({ status: "accepted" });
-      const [savedAgent] = await db.select().from(agents).where(eq(agents.id, agent!.id)); expect(savedAgent?.runtimeConfig.aiConnection).toEqual({ mode: "router", connectionId: pool.id });
+      const [savedAgent] = await db.select().from(agents).where(eq(agents.id, agent!.id)); expect(savedAgent?.runtimeConfig).toEqual(poolBinding);
       expect((await resolve(pool.id, issue!.id, { agentId: agent!.id })).binding).toEqual(selection.binding);
-      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: randomUUID() } } }).where(eq(agents.id, agent!.id));
+      await db.update(agents).set({ runtimeConfig: native ? { harnessPool: { poolId: randomUUID() } } : { aiConnection: { mode: "router", connectionId: randomUUID() } } }).where(eq(agents.id, agent!.id));
       await expect(intents.setupOptions(card!.interactionId!)).rejects.toThrow("configuration changed");
     } finally {
       await runtime?.cleanup();
       await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, members[1]!.binding.grantId));
       await db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, members[1]!.binding.connectionId));
+      await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: routingEnabled });
     }
   });
   it("rejects disabled routing but recovers server-owned native evidence after disable/uninstall", async () => {
