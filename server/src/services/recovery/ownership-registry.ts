@@ -34,6 +34,7 @@ import {
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -108,7 +109,13 @@ export type InProgressRecord = {
 
 export type ListResult = { records: InProgressRecord[]; truncated: boolean };
 
-export type SettleOutcome = { settled: boolean; reason: string };
+export type SettleOutcome = {
+  settled: boolean; reason: string;
+  /** False when the settle has nothing left to do for this record (the
+   * record waits on another owner, such as the board). The reconciler still
+   * lists and reports it, but keeps no settle watch on it. */
+  watch?: boolean;
+};
 
 /** Moves one record whose owner was just proven gone to its next state. It must
  * compare-and-swap on the exact owner that was proven, so a record taken over
@@ -842,16 +849,37 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   recoveryActionKind("system_recovery_attempt", "System recovery attempt for retained work", "workspace_preservation",
     sql`${issueRecoveryActions.evidence}->'systemRecovery'->>'state' in ('scheduled', 'running', 'awaiting_evidence')`,
     () => ({ kind: "none" })),
-  recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
-    sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
-    row => {
-      const owner = json(json(json(row.evidence).workspaceOwnerRecovery).owner);
-      const pid = int(owner.pid);
-      // The receipt records a hostname but no PID space: unprovable by design.
-      return pid ? { kind: "process", stamp: { kind: "local", scope: "copyback_owner_hold", generation: null,
-        host: str(owner.hostname), processSpace: null, bootId: str(owner.controllerBootId), pid,
-        processStartedAt: str(owner.processStartedAt), processGroupId: null } } : { kind: "none" };
-    }),
+  {
+    // Shared path since Phase 2: receipts record their PID space, so the shared
+    // prover judges the owner (older receipts name none and stay unprovable).
+    // A proven-gone owner wakes the waiting recheck; the worker still proves the
+    // copyback process group before it takes ownership, so this never settles
+    // the hold itself.
+    ...recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
+      sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
+      row => {
+        const owner = json(json(json(row.evidence).workspaceOwnerRecovery).owner);
+        const pid = int(owner.pid);
+        const hostname = str(owner.hostname);
+        const processStartedAt = str(owner.processStartedAt);
+        if (!pid || !hostname || !processStartedAt) return { kind: "none" };
+        return { kind: "process", stamp: { ...copybackOwnerStamp({ hostname, pid, processStartedAt,
+          ...(str(owner.controllerBootId) ? { controllerBootId: str(owner.controllerBootId)! } : {}),
+          ...(str(owner.hostHash) ? { hostHash: str(owner.hostHash)! } : {}) }), scope: "copyback_owner_hold" } };
+      }),
+    settle: async (db, record, context) => {
+      if (record.owner.kind !== "process" || !record.companyId) return { settled: false, reason: "owner_not_provable" };
+      const { wakeCopybackOwnerRecheck } = await import("../workspace-recovery.js");
+      const stamp = record.owner.stamp;
+      const woke = await wakeCopybackOwnerRecheck(db, { companyId: record.companyId, actionId: record.recordId,
+        now: context.now, owner: { pid: stamp.pid, processStartedAt: stamp.processStartedAt, bootId: stamp.bootId,
+          processSpace: stamp.processSpace } });
+      // A hold whose recheck is not waiting (exhausted, past its deadline or
+      // moved on) is the board's: keep it visible, but stop watching it.
+      return woke ? { settled: false, reason: "copyback_recheck_woken" }
+        : { settled: false, reason: "copyback_recheck_not_waiting", watch: false };
+    },
+  },
   recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
     sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
     row => {

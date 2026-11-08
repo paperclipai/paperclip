@@ -194,11 +194,11 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 /** Settles a proven-gone record, or surfaces the operator action for an
  * unprovable one. A failure is logged and retried on a later pass. */
 async function settleOrSurface(db: Db, kind: OwnableKind, record: InProgressRecord, proof: Classification,
-  now: Date): Promise<"settled" | "kept" | "failed"> {
+  now: Date): Promise<"settled" | "kept" | "unwatched" | "failed"> {
   try {
     if (proof.verdict === "gone" && kind.settle) {
       const outcome = await kind.settle(db, record, { now, proof: proof as OwnerProof });
-      return outcome.settled ? "settled" : "kept";
+      return outcome.settled ? "settled" : outcome.watch === false ? "unwatched" : "kept";
     }
     if (proof.verdict === "unprovable" && kind.onUnprovable) await kind.onUnprovable(db, record, { now, proof: proof as OwnerProof });
     return "kept";
@@ -280,7 +280,7 @@ async function settleKind(db: Db, kindId: string, options: {
     const outcome = await settleOrSurface(db, kind, record, proof, now);
     if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });
-    } else if (proof.verdict !== "unprovable") {
+    } else if (outcome !== "unwatched" && proof.verdict !== "unprovable") {
       watched += 1;
     }
   }
@@ -629,8 +629,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
         if (outcome === "settled") { report.settled += 1; continue; }
         if (outcome === "failed") retryNeeded = true;
-        // An unprovable owner changes only by operator action, which signals.
-        if (proof.verdict !== "unprovable") report.watched += 1;
+        // An unprovable owner changes only by operator action, which signals;
+        // so does a record whose settle has nothing left to do.
+        if (outcome !== "unwatched" && proof.verdict !== "unprovable") report.watched += 1;
       }
       if (kind.invariantChecks.includes(2) && proof.verdict === "gone") {
         const key = `${kind.id}:${record.recordId}`;
