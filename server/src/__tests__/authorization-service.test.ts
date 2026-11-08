@@ -2065,6 +2065,26 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("honors an explicit hiring denial on a CEO instead of the CEO title", async () => {
+    const company = await createCompany(db, "CeoHireDenied");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canCreateAgents: false, canCreateSkills: true },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:create.",
+    });
+  });
+
   it("grants hire authority through the persisted new-agent default", async () => {
     const company = await createCompany(db, "DefaultHire");
     // The service create path persists the create-context default

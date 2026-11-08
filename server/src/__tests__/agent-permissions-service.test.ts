@@ -29,6 +29,14 @@ describe("agent permissions service", () => {
     expect(normalizeAgentPermissions([]).canCreateAgents).toBe(false);
   });
 
+  it("reports a legacy CEO row's hiring authority until an explicit value is saved", () => {
+    expect(normalizeAgentPermissions({}, { role: "ceo" }).canCreateAgents).toBe(true);
+    expect(normalizeAgentPermissions(undefined, { role: "ceo" }).canCreateAgents).toBe(true);
+    expect(normalizeAgentPermissions({ canCreateAgents: false }, { role: "ceo" }).canCreateAgents).toBe(false);
+    expect(normalizeAgentPermissions({ trustPreset: LOW_TRUST_REVIEW_PRESET }, { role: "ceo" }).canCreateAgents).toBe(false);
+    expect(normalizeAgentPermissions({}, { role: "engineer" }).canCreateAgents).toBe(false);
+  });
+
   it("withholds agent-creation authority from new low-trust agents", () => {
     expect(defaultAgentPermissions({ lowTrust: true, context: "create" }).canCreateAgents).toBe(false);
     expect(

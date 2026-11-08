@@ -1277,6 +1277,26 @@ describe("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it.each(["agents", "agent-hires"])("tells a denied agent that its hiring denial is final and where a person can act via %s", async (route) => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "agents:create",
+      action: input.action,
+      reason: input.action === "agents:create" ? "deny_missing_grant" : "allow_test",
+      explanation: input.action === "agents:create" ? "Missing permission: agents:create." : "Allowed in test.",
+    }));
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_jwt" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/${route}`)
+      .send({ name: "Morgan", role: "qa", adapterType: "process", adapterConfig: {} }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Missing permission: agents:create.");
+    expect(res.body.error).toContain("no other route overrides this denial");
+    expect(res.body.error).toContain("A board user can hire the agent directly");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
   it.each(["agents", "agent-hires"])("rejects agent-supplied Codex host commands before resolving the runner via %s", async (route) => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockInstanceSettingsService.get.mockRejectedValue(new Error("Denied requests must not inspect execution targets"));

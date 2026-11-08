@@ -1425,7 +1425,12 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (!decision.allowed) {
-      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      // An agent denied hiring otherwise searches other routes for an override.
+      // Say the denial is final and where a person can act instead.
+      const explanation = req.actor.type === "agent" && decision.reason === "deny_missing_grant"
+        ? `${decision.explanation} This agent cannot hire or create agents, and no other route overrides this denial. A board user can hire the agent directly, or turn on hiring for this agent on its permissions page.`
+        : decision.explanation;
+      throw forbidden(explanation, authorizationDeniedDetails(decision));
     }
     if (req.actor.type !== "agent") return null;
     const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
