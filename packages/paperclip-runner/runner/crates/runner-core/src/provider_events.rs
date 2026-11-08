@@ -1475,6 +1475,10 @@ pub fn normalize_codex_notification_in(
                     "itemId": item_id,
                     "kind": bounded_text(item_type, 160),
                     "status": provider_status(string(provider_item.get("status")), completed),
+                    // Only an explicit `final_answer` phase marks the reply. Legacy
+                    // builds omit `phase` on every agentMessage, commentary included,
+                    // so an empty phase stays a progress preview. (The plan-proposal
+                    // branch above accepts an empty phase because it matches content.)
                     "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
                         "final"
                     } else if item_type == "agentMessage" {
@@ -2984,6 +2988,15 @@ mod tests {
             assert_eq!(text.chars().count(), MAX_TEXT_CHARS, "{method} {phase}");
             assert!(text.ends_with("…[truncated]"));
         }
+        // A legacy agentMessage without a phase is never treated as the final answer.
+        let legacy = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-3", "type": "agentMessage", "text": answer}}),
+        );
+        assert_eq!(legacy[0].payload["channel"], "progress");
+        let text = legacy[0].payload["text"].as_str().unwrap();
+        assert_eq!(text.chars().count(), MAX_TEXT_CHARS);
+        assert!(text.ends_with("…[truncated]"));
         let oversized = "x".repeat(MAX_FINAL_AGENT_MESSAGE_CHARS + 1);
         let bounded = final_agent_message_text(&oversized);
         assert_eq!(bounded.chars().count(), MAX_FINAL_AGENT_MESSAGE_CHARS);
