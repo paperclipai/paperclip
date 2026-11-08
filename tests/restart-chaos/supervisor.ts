@@ -15,7 +15,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createWriteStream, statSync, type WriteStream } from "node:fs";
+import { createWriteStream, readFileSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { mkdir, readFile, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -36,7 +36,11 @@ import type { MatrixExecution } from "../runner-e2e/types.js";
 import type { Timeline } from "./timeline.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
-const HEALTH_TIMEOUT_MS = 180_000;
+/** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
+const HEALTH_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.RESTART_CHAOS_HEALTH_TIMEOUT_MS);
+  return Number.isInteger(raw) && raw >= 30_000 && raw <= 1_800_000 ? raw : 180_000;
+})();
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
@@ -51,6 +55,24 @@ export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number],
 }
 
 export interface SupervisorPaths { temporaryRoot: string; home: string; configPath: string; serverLogPath: string }
+
+/** Crash-point suite arming: the next server spawn gets these, and only that one. */
+export interface CrashPointArming { spec: string; receiptPath: string; gatePath: string }
+
+/** The receipt line the crash-point helper appended for this pid, if any. */
+export function readCrashPointReceipt(receiptPath: string, pid: number | undefined): { name: string; hit: number; pid: number } | null {
+  let text: string;
+  try { text = readFileSync(receiptPath, "utf8"); } catch { return null; }
+  for (const line of text.split("\n").reverse()) {
+    try {
+      const parsed = JSON.parse(line) as { point?: unknown; hit?: unknown; pid?: unknown };
+      if (pid !== undefined && parsed.pid === pid && typeof parsed.point === "string" && typeof parsed.hit === "number") {
+        return { name: parsed.point, hit: parsed.hit, pid };
+      }
+    } catch { /* partial or blank line */ }
+  }
+  return null;
+}
 
 const secret = () => randomBytes(48).toString("base64url");
 
@@ -84,6 +106,10 @@ export class ChaosSupervisor {
   serverReady = false;
   faultInProgress = false;
   unexpectedExits = 0;
+  private crashPointArming: CrashPointArming | null = null;
+  private crashPointChild: ChildProcess | null = null;
+  /** Called with the receipt of a crash-point self-kill once the replacement is ready (or failed). */
+  onCrashPoint: ((receipt: FaultReceipt) => void) | null = null;
 
   private constructor(readonly repositoryRoot: string, readonly port: number, readonly paths: SupervisorPaths,
     private readonly timeline: Timeline) {
@@ -139,6 +165,10 @@ export class ChaosSupervisor {
       PAPERCLIP_STORAGE_LOCAL_DIR: path.join(temporaryRoot, "storage"), PAPERCLIP_SECRETS_PROVIDER: "local_encrypted",
       PAPERCLIP_SECRETS_STRICT_MODE: "true", PAPERCLIP_DB_BACKUP_ENABLED: "false",
       PAPERCLIP_DB_BACKUP_DIR: path.join(temporaryRoot, "backups"), PAPERCLIP_OPEN_ON_LISTEN: "false",
+      // The server loads a .paperclip/.env found above its cwd without overriding
+      // set values. A worktree-initialized checkout's file sets
+      // PAPERCLIP_IN_WORKTREE=true, which suppresses all scheduling: no run starts.
+      PAPERCLIP_IN_WORKTREE: "false",
       ...extraEnvironment,
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
@@ -154,14 +184,25 @@ export class ChaosSupervisor {
   private async spawnServer(): Promise<ChildProcess> {
     if (this.shuttingDown) throw new Error("Refusing to start Paperclip during harness shutdown");
     const entry = path.join(this.repositoryRoot, "tests/runner-e2e/server-entry.ts");
+    // A crash point is armed for one server only: the replacement must not crash again.
+    const arming = this.crashPointArming;
+    this.crashPointArming = null;
+    const env = arming ? { ...this.environment, PAPERCLIP_CRASH_POINT: arming.spec,
+      PAPERCLIP_CRASH_POINT_RECEIPT: arming.receiptPath, PAPERCLIP_CRASH_POINT_GATE: arming.gatePath } : this.environment;
     const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(this.repositoryRoot, entry, ["onboard", "--yes", "--run"]),
-      { cwd: this.repositoryRoot, env: this.environment, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
+      { cwd: this.repositoryRoot, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     this.child = child;
+    if (arming) { this.crashPointChild = child; this.timeline.add("crash_point_armed", { spec: arming.spec, pid: child.pid }); }
     child.stdout?.on("data", chunk => this.log.write(chunk));
     child.stderr?.on("data", chunk => this.log.write(chunk));
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
       this.log.write(`\n[restart-chaos] server pid=${child.pid} exited code=${code} signal=${signal}\n`);
+      if (arming && this.crashPointChild === child && !this.expectedStops.has(child) && !this.shuttingDown) {
+        this.crashPointChild = null;
+        const hit = signal === "SIGKILL" ? readCrashPointReceipt(arming.receiptPath, child.pid) : null;
+        if (hit) { this.restartAfterCrashPoint(child, hit); return; }
+      }
       if (!this.expectedStops.has(child) && !this.shuttingDown) {
         this.unexpectedExits += 1;
         this.serverReady = false;
@@ -227,6 +268,67 @@ export class ChaosSupervisor {
       await delay(250);
     }
     throw new Error(`Paperclip did not report ready within ${READY_TIMEOUT_MS}ms`);
+  }
+
+  /**
+   * Crash-point suite: arm the next server spawn (normally the first, from
+   * `start`) with its gate closed, so seeding and probes cannot fire the
+   * point. Call `openCrashPointGate` once the tasks are launched.
+   */
+  armCrashPoint(arming: CrashPointArming): void {
+    this.crashPointArming = arming;
+  }
+
+  openCrashPointGate(gatePath: string): void {
+    writeFileSync(gatePath, `${Date.now()}\n`, { mode: 0o600 });
+    this.timeline.add("crash_point_gate_opened", {});
+  }
+
+  /** True while the armed server has not yet killed itself. */
+  get crashPointPending(): boolean { return this.crashPointChild !== null; }
+
+  /**
+   * The armed server killed itself at its crash point. Treat it like K1: kill
+   * what is left of its owned process tree (local runners), start a
+   * replacement without the point armed, and wait for ready.
+   */
+  private restartAfterCrashPoint(previous: ChildProcess, hit: { name: string; hit: number; pid: number }): void {
+    this.faultInProgress = true;
+    this.serverReady = false;
+    this.faultCount += 1;
+    const now = Date.now();
+    const receipt: FaultReceipt = {
+      faultId: `f${String(this.faultCount).padStart(2, "0")}`, kind: "K1", requestedBy: "crash-point", signal: "SIGKILL", holdMs: 0,
+      loadAvg1m: Math.round(os.loadavg()[0]! * 100) / 100, crashPoint: hit,
+      requestedAt: now, startedAt: now, stoppedAt: null, restartedAt: null, healthyAt: null, readyAt: null,
+      phases: [], serverLogOffsetAtStart: this.serverLogOffset(), serverLogOffsetAtReady: null, error: null,
+    };
+    this.timeline.add("crash_point_fired", { faultId: receipt.faultId, point: hit.name, hit: hit.hit, pid: hit.pid });
+    this.log.write(`\n[restart-chaos] ${receipt.faultId} crash point ${hit.name} hit ${hit.hit} killed pid=${hit.pid}\n`);
+    const run = this.faultChain.then(async () => {
+      try {
+        // The leader is already dead; this kills its owned descendants, as K1 does.
+        await this.stopper.crashForRestart(previous).catch(error => {
+          this.log.write(`[restart-chaos] crash-point tree cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+        });
+        if (this.child === previous) this.child = null;
+        await this.waitForHealthToStop();
+        receipt.stoppedAt = Date.now();
+        receipt.restartedAt = Date.now();
+        const child = await this.spawnServer();
+        receipt.healthyAt = await this.waitForHealth(child, receipt.phases);
+        receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
+        receipt.serverLogOffsetAtReady = this.serverLogOffset();
+        this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: child.pid, readyAfterMs: receipt.readyAt - receipt.startedAt });
+      } catch (error) {
+        receipt.error = error instanceof Error ? error.message : String(error);
+        this.timeline.add("fault_failed", { faultId: receipt.faultId, error: receipt.error });
+      } finally {
+        this.faultInProgress = false;
+        this.onCrashPoint?.(receipt);
+      }
+    });
+    this.faultChain = run.catch(() => undefined);
   }
 
   /** Faults are serialized: one control plane, one outage at a time. */

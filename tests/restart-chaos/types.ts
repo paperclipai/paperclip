@@ -53,6 +53,12 @@ export interface WaveOptions {
    * keeps the catalog profile's own setting.
    */
   lifecycle?: "per_turn" | "warm" | "default";
+  /**
+   * Crash-point suite (`--crash-point <name>[:<nth>]`): no external fault is
+   * scheduled. The server is armed to SIGKILL itself at the nth hit of this
+   * named point, after every task has launched, and is restarted like K1.
+   */
+  crashPoint?: string;
 }
 
 export interface StormFault {
@@ -182,6 +188,8 @@ export interface FaultReceipt {
   triggerDelayMs?: number;
   loadAvg1m?: number;
   crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
+  /** Crash-point suite: the server killed itself at this named point (no external signal). */
+  crashPoint?: { name: string; hit: number; pid: number };
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;

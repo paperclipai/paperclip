@@ -206,3 +206,76 @@ re-arms the task's own triggered faults instead of using their offsets.
 - The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
 - `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.
+
+## Crash-point suite (`scripts/crash-points.mjs`)
+
+Plan: [durable ownership, "Testing: enumerate crash points"](../../doc/plans/2026-11-07-durable-ownership-and-reconciliation.md).
+Random waves find a 20 ms–1 s window between two durable writes by luck. The
+crash-point suite kills the control plane at each named window on purpose.
+
+```sh
+set -a; source ~/.secrets; set +a           # provider keys, process env only
+node scripts/crash-points.mjs --list                                   # selected points, kinds, invariants
+node scripts/crash-points.mjs --points 'runner.*,native.*' --adapters codex --workloads A1
+node scripts/crash-points.mjs --kinds wake_request_claimed --nth 2
+```
+
+Options: `--points <glob,...>` (`*`, `?`), `--kinds <ownable kind id,...>`
+(ids from `server/src/services/recovery/ownership-registry.ts`), `--adapters`
+(default `codex`), `--workloads` (default `A1`), `--nth` (fire at the nth hit,
+default 1), `--env local|daytona` (a point runs only in the environments its
+registry entry lists), plus `--daytona-image`, `--daytona-cpu`, `--budget-cents`,
+`--poll-ms`, `--lifecycle` and `--keep`, passed to each wave.
+
+For each selected point the suite runs one wave of `main.ts --crash-point <name>:<nth>`:
+
+1. A fresh isolated control plane starts with `PAPERCLIP_CRASH_POINT` set and
+   the gate file (`PAPERCLIP_CRASH_POINT_GATE`) absent, so seeding and probes
+   cannot fire the point.
+2. One task per adapter × workload launches. No fault is scheduled. Once every
+   task launched the harness opens the gate.
+3. At the nth hit the server appends a receipt and SIGKILLs itself. The
+   supervisor treats it as K1: it kills what is left of the server's process
+   tree, starts a replacement **without** the point armed, and waits for ready.
+4. The tasks run to rest and are graded R1–R6 and T as in any wave.
+5. `invariants.ts` runs the Phase 1 report-only reconciler against the wave's
+   database (`record: false`): two passes at the real clock for I1 (owned) and
+   I2 (settled), and one pass with the clock moved 15 minutes ahead for I3
+   (admission), I4 (exactly-once intents) and I7 (visible next action). I5, I6
+   and I8 are reported as not measured, with the reconciler's reasons; R3 and
+   R1 cover part of I5 and I8.
+
+Results: `results/crash-points/<run>/SUMMARY.md` and `summary.json`, plus one
+wave directory per point with `crash-point.json` (receipt, task grades,
+violations). Outcomes: `pass`, `fail` (a task failed R1–R6/T or an invariant was
+violated), `not_reached` (the chosen workloads never crossed the point: pick a
+workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
+
+**CI.** `.github/workflows/crash-points.yml` runs the same command on demand
+(`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).
+It is not a required PR check. It runs only from the default branch, for
+allowlisted actors, in the `runner-e2e-paid` environment, and uploads summaries
+and grades only (no server logs).
+
+### Add a crash point
+
+1. Add an entry to `packages/shared/src/crash-point-registry.ts`. Name it
+   `<subsystem>.<record>.<before|after>_<step>` after the gap it marks, for
+   example `sandbox.create.after_provider_before_lease`. Give a description of
+   what is durable and what is not at that instant, the environments that reach
+   it, the ownable kind ids it affects and the invariants at risk.
+2. Call `crashPoint("<name>")` at the gap: after the first durable write (or
+   outside effect) returns and before the next one starts. Server code imports
+   `crashPoint` from `@paperclipai/shared/crash-points`. Controller code in
+   `packages/paperclip-runner` uses `src/crash-point.ts` (add the name to its
+   union too). Do not put a point inside a transaction; the gap is between
+   commits.
+3. `server/src/__tests__/crash-point-call-sites.test.ts` fails until every
+   registered point has a call site and every kind id exists.
+4. Run the point: `node scripts/crash-points.mjs --points <name>`. A
+   `not_reached` result means the workload never crosses it.
+
+Disarmed, a point costs one comparison (about 4 ns) and is ignored under
+`NODE_ENV=production`, so points may sit on the path before `turn.start`.
+In-process tests use `armCrashPointForTest("<name>:<nth>")`, which throws
+`CrashPointReached` at the hit instead of killing the test runner.

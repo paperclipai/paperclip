@@ -7,7 +7,7 @@
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay <wave>/<task>
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
+import { checkPlanInvariants, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
@@ -140,6 +141,15 @@ async function main(): Promise<number> {
   startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
+  // Crash-point suite: the server kills itself at the named point once every task launched.
+  const crashPoint = plan.options.crashPoint ?? null;
+  const crashPointGate = path.join(supervisor.paths.temporaryRoot, "crash-point.gate");
+  let crashPointGateOpen = false;
+  let crashPointReceipt: FaultReceipt | null = null;
+  let invariantCheck: InvariantCheck | null = null;
+  if (crashPoint) {
+    supervisor.armCrashPoint({ spec: crashPoint, receiptPath: path.join(waveDir, "crash-point-receipts.jsonl"), gatePath: crashPointGate });
+  }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
   let interrupted = false;
@@ -231,6 +241,19 @@ async function main(): Promise<number> {
       }));
     };
 
+    supervisor.onCrashPoint = receipt => {
+      crashPointReceipt = receipt;
+      faults.push(receipt);
+      if (receipt.error) { faultFailures += 1; timeline.add("fault_error", { taskId: "crash-point", error: receipt.error }); }
+      for (const candidate of active.filter(observer => !observer.done)) {
+        candidate.noteFault(receipt.faultId, receipt.startedAt);
+        candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
+        taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+      }
+      checkWorktree(receipt.faultId);
+      void persistFaultLog();
+    };
+
     while (!interrupted && (pending.length || active.length)) {
       const now = Date.now();
       if (storm?.endIfDue(now)) {
@@ -249,11 +272,17 @@ async function main(): Promise<number> {
         await next.launch();
         if (!next.done) active.push(next);
       }
+      if (crashPoint && !crashPointGateOpen && !pending.length && supervisor.serverReady) {
+        supervisor.openCrashPointGate(crashPointGate);
+        crashPointGateOpen = true;
+      }
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
         lastPoll.set(observer, now);
         await observer.poll(now);
       }));
       for (const observer of active) {
+        // A crash-point wave has no scheduled faults: the armed point is the fault.
+        if (crashPoint) break;
         if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
         // A storm's drain gets no new fault; an unfired trigger is recorded as missed at rest.
         if (storm && !storm.mayLaunch(Date.now())) break;
@@ -340,6 +369,24 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
+    if (crashPoint) {
+      // I1–I8 against the wave's own database, after every task rested (invariants.ts).
+      const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+      const connectionString = config.database?.connectionString;
+      if (!connectionString) throw new Error("Crash-point wave: the instance config has no database connection string");
+      invariantCheck = await checkPlanInvariants({ connectionString, companyId: lab.companyId });
+      timeline.add("plan_invariants", { byInvariant: invariantCheck.byInvariant, errors: invariantCheck.errors });
+      if (invariantCheck.violations.length) anyFailure = true;
+      if (invariantCheck.errors.length) harnessError ??= new Error(`Invariant check incomplete: ${invariantCheck.errors.join("; ")}`);
+      const receipt = crashPointReceipt as FaultReceipt | null;
+      await writeFile(path.join(waveDir, "crash-point.json"), `${JSON.stringify({
+        schema: "paperclip.restart-chaos.crash-point/v1", point: crashPoint, gitSha, gitDirty,
+        reached: receipt?.crashPoint ?? null, fault: receipt, gateOpened: crashPointGateOpen,
+        tasks: lines.map(line => ({ taskId: line.taskId, adapter: line.adapter, workload: line.workload, pass: line.pass,
+          signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T })),
+        invariants: invariantCheck,
+      }, null, 2)}\n`, { mode: 0o600 });
+    }
     // R6 at wave level: a leak no task's runs account for (e.g. the setup probe) still fails the wave.
     if (sandboxSweep) {
       const unattributed = unattributedLeaks(sandboxSweep, attributed);

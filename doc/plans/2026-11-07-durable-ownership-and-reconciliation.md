@@ -223,6 +223,12 @@ The runner stamps `generation` and `turnId` on every event. Driver and session c
 - Keep the chaos harness as a soak test for timing interactions the enumeration misses. Its R1–R6 graders should map onto I1–I7.
 - The random waves found 20 ms–1 s windows by luck. Enumeration finds them on purpose, and it finds the windows we haven't hit yet.
 
+**Built (Phase 5).**
+- `crashPoint(name)` in `packages/shared/src/crash-points.ts`, with the named points in `crash-point-registry.ts`. `PAPERCLIP_CRASH_POINT=<name>[:<nth>]` arms one point; `NODE_ENV=production` ignores it. Disarmed, a call costs about 4 ns. In-process tests use `armCrashPointForTest`.
+- 20 points at the boundaries in the inventory's write-ahead table, from `sandbox.create.after_provider_before_lease` to `accounting.closure.after_commit_before_spool_unlink`. `server/src/__tests__/crash-point-call-sites.test.ts` requires a call site for each one.
+- `node scripts/crash-points.mjs [--points <glob>] [--kinds <id>] [--adapters …]` runs one restart-chaos wave per point and asserts R1–R6 plus I1–I4 and I7 from the Phase 1 reconciler. I5, I6 and I8 are reported as not measured until sections F and G land. The manual CI run is `.github/workflows/crash-points.yml`.
+- How to add a point and how to read the results: `tests/restart-chaos/README.md`, "Crash-point suite".
+
 ## Phases
 
 | Phase | Scope | Exit criteria |
