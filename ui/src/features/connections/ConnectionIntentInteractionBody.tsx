@@ -14,6 +14,7 @@ import { connectionIntentsApi } from "@/api/connection-intents";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
 import { describeError } from "@/api/errors";
+import { ApiError } from "@/api/client";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
@@ -515,13 +516,13 @@ export function ConnectionIntentInteractionBody({
           declining={declineMutation.isPending}
         /> : <DecisionCardFooter leading={footerSlot} className="mt-4">
           <div className={footerSlot ? "flex flex-wrap items-center justify-end gap-2" : "mt-4 flex flex-wrap justify-end gap-2"}>
-            {!isAi && <Button
+            {(!isAi || (setupQuery.error instanceof ApiError && setupQuery.error.status === 409)) && <Button
               type="button"
               variant="ghost"
               disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
               onClick={() => declineMutation.mutate()}
             >
-              Not now
+              {isAi ? "Dismiss request" : "Not now"}
             </Button>}
             {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
               <Plug className="h-4 w-4" />{open ? "Close setup" : readyForAdoption ? "Continue setup" : needsOwnAiConnection ? `Connect ${aiProviderName}` : "Fix connection"}
