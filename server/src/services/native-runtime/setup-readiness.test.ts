@@ -68,6 +68,22 @@ describe("Codex selected native account verification", () => {
     await expect(stat(input.runtimeDirectory)).rejects.toThrow();
     expect(execute).not.toHaveBeenCalled();
   });
+  it.runIf(process.platform === "win32").each([false, true])("accepts a regular Windows credential source only from a managed home (managed=%s)", async managed => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "windows-managed-codex-probe-")));
+    const auth = '{"tokens":{"account_id":"fixture-account","access_token":"fixture-token"}}';
+    await writeFile(join(home, "auth.json"), auth, { mode: 0o600 });
+    nativeProbe.mockImplementation(async input => { await input.onCleanupConfirmed(); return receipt("codex", "gpt-6.1-sol"); });
+    try {
+      const result = await testNativeRunnerAuthentication({ companyId: "company", adapterType: "paperclip_runner",
+        ...(managed ? { managedAiCredentialHome: home } : {}), config: { env: { CODEX_HOME: home } },
+      }, "codex", "gpt-6.1-sol");
+      expect(result.status, JSON.stringify(result.checks)).toBe(managed ? "pass" : "fail");
+      if (managed) expect(nativeProbe).toHaveBeenCalledOnce();
+      else { expect(nativeProbe).not.toHaveBeenCalled(); expect(result.checks[0].message).toContain("credential owner"); }
+      expect(await readFile(join(home, "auth.json"), "utf8")).toBe(auth);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("rejects a missing local daemon before creating private credential staging", async () => {
     const home = await realpath(await mkdtemp(join(tmpdir(), "native-preflight-daemon-")));
     const auth = '{"tokens":{"account_id":"fixture-account","access_token":"fixture-access"}}';
