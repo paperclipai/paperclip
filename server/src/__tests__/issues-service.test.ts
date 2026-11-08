@@ -3381,11 +3381,11 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const issue = await svc.create(companyId, { projectId: oldProjectId,
       assigneeAgentId, title: "Move into Git project", status: "todo" });
     expect(issue.projectWorkspaceId).toBeNull();
-    expect(issue.executionWorkspaceSettings).toEqual({ mode: "agent_default" });
+    expect(issue.executionWorkspaceSettings).toEqual({ mode: "agent_default", projectDefault: true });
 
     const moved = await svc.update(issue.id, { projectId: newProjectId });
     expect(moved).toMatchObject({ projectId: newProjectId, projectWorkspaceId });
-    expect(moved!.executionWorkspaceSettings).toEqual({ mode: "isolated_workspace" });
+    expect(moved!.executionWorkspaceSettings).toEqual({ mode: "isolated_workspace", projectDefault: true });
     expect(moved!.workspaceBindingRevision).toBe(issue.workspaceBindingRevision + 1);
   });
 
@@ -3398,7 +3398,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await seedCodexCoder(db, companyId, assigneeAgentId);
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     await db.insert(projects).values([
-      { id: oldProjectId, companyId, name: "Plain project", status: "in_progress" },
+      { id: oldProjectId, companyId, name: "Plain project", status: "in_progress",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } },
       { id: newProjectId, companyId, name: "Git project", status: "in_progress",
         executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } },
     ]);
@@ -3409,6 +3410,32 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     const moved = await svc.update(issue.id, { projectId: newProjectId });
     expect(moved!.executionWorkspaceSettings).toEqual({ mode: "agent_default" });
     expect(moved!.workspaceBindingRevision).toBe(issue.workspaceBindingRevision);
+  });
+
+  it("preserves an explicit mode set after a project default", async () => {
+    const companyId = randomUUID();
+    const oldProjectId = randomUUID();
+    const newProjectId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, assigneeAgentId);
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(projects).values([
+      { id: oldProjectId, companyId, name: "Plain project", status: "in_progress",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } },
+      { id: newProjectId, companyId, name: "Git project", status: "in_progress",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } },
+    ]);
+    const created = await svc.create(companyId, { projectId: oldProjectId,
+      assigneeAgentId, title: "Change default mode explicitly", status: "todo" });
+    expect(created.executionWorkspaceSettings).toEqual({ mode: "agent_default", projectDefault: true });
+
+    const explicit = await svc.update(created.id, {
+      executionWorkspaceSettings: { mode: "agent_default", projectDefault: true },
+    });
+    expect(explicit!.executionWorkspaceSettings).toEqual({ mode: "agent_default" });
+    const moved = await svc.update(created.id, { projectId: newProjectId });
+    expect(moved!.executionWorkspaceSettings).toEqual({ mode: "agent_default" });
   });
 
   it("does not stamp the assignee default environment onto new issues", async () => {
@@ -3476,6 +3503,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(issue.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      projectDefault: true,
     });
   });
 
@@ -3552,7 +3580,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
+    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace", projectDefault: true });
   });
 
   it("does not rewrite execution workspace settings on reassignment", async () => {
@@ -3644,6 +3672,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(created.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      projectDefault: true,
     });
 
     const reassigned = await svc.update(created.id, {
@@ -3653,6 +3682,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(reassigned).not.toBeNull();
     expect(reassigned!.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      projectDefault: true,
     });
   });
 
