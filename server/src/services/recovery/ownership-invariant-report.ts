@@ -327,8 +327,10 @@ const DEFERRED_PROMOTION_GRACE_MS = 5 * 60_000;
  * but that no release event promoted. The reconciliation worker promotes them
  * through `promoteDeferredWorkIntents` as a backstop. */
 async function checkDeferredIntentsPromoted(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
-  // Only refusals whose hold this check can read cheaply and exactly.
-  const pauseRefusal = sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`;
+  // Only messages the pause path saved, whose hold this check can read
+  // exactly. Each read is capped like every other check in this report.
+  const pauseRefusal = sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' = 'pause_lifted'
+    and ${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`;
   const holdCleared = sql`exists (select 1 from companies c where c.id = ${agentWakeupRequests.companyId} and c.status = 'active')
     and exists (select 1 from agents a where a.id = ${agentWakeupRequests.agentId} and a.status not in ('paused', 'terminated', 'pending_approval'))
     -- A message saved behind a live run or a held lock still has an owner.
@@ -347,9 +349,11 @@ async function checkDeferredIntentsPromoted(db: Db, now: Date, limit: number): P
   // A cleared hold inside its grace window is a saved deadline: the worker
   // checks again when it ends. A hold still in force needs no deadline; its
   // release (company or agent lifecycle change) wakes the worker.
-  const [due] = await db.select({ at: sql<Date | null>`min(${agentWakeupRequests.updatedAt})` }).from(agentWakeupRequests)
+  const pending = await db.select({ at: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
     .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"), pauseRefusal,
-      sql`${agentWakeupRequests.updatedAt} >= ${graceStart.toISOString()}::timestamptz`, holdCleared));
+      sql`${agentWakeupRequests.updatedAt} >= ${graceStart.toISOString()}::timestamptz`, holdCleared))
+    .limit(MAX_RECORDS_PER_KIND);
+  const due = pending.length ? { at: new Date(Math.min(...pending.map(row => new Date(row.at).getTime()))) } : null;
   return {
     violations: rows.map(row => ({ rule: "I4_exactly_once_intent" as const, kind: "wake_request_deferred", recordId: row.id,
       companyId: row.companyId, runId: null, issueId: row.issueId, reason: DEFERRED_INTENT_NOT_PROMOTED })),

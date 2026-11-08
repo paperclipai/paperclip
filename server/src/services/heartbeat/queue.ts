@@ -1775,9 +1775,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
         scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
-        // Only pauses this query can see lifted. A refusal by any other gate
-        // rewrites the receipt's reason, so it never retries in a loop here.
+        // Only messages the pause path saved (never a chat-inbound receipt,
+        // which resumes through its own live authorization), and only pauses
+        // this query can see lifted. A refusal by any other gate rewrites the
+        // receipt's reason, so it never retries in a loop here.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' = 'pause_lifted'`,
         sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`,
+        eq(agentWakeupRequests.requestedByActorType, "user"),
+        sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
         sql`exists (select 1 from agents pause_agent where pause_agent.id = ${agentWakeupRequests.agentId}
           and pause_agent.status not in ('paused', 'terminated', 'pending_approval'))`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
@@ -1792,21 +1797,30 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const issueKey = `${wake.companyId}:${String(wake.payload?.issueId)}`;
       if (pauseLiftedIssues.has(issueKey)) continue;
       pauseLiftedIssues.add(issueKey);
-      // Consumption is per comment: a completed run that already received a
-      // saved comment consumed it, so the replay delivers only the rest.
-      const savedCommentIds = queuedCommentIdsFromWakePayload(wake.payload);
-      const delivered = await deliveredQueuedCommentIds(db, { companyId: wake.companyId,
-        issueId: String(wake.payload?.issueId), agentId: wake.agentId, commentIds: savedCommentIds.filter(isUuidLike) });
-      if (delivered.size > 0) {
-        const remaining = savedCommentIds.filter(commentId => !delivered.has(commentId));
+      // Consumption is per comment. The wake adopts every saved message of
+      // the task for this agent, so each receipt drops the comments a
+      // completed run already received; a receipt left empty is consumed.
+      const issueKeyId = String(wake.payload?.issueId);
+      const saved = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.agentId, wake.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueKeyId}`));
+      for (const receipt of saved) {
+        const commentIds = queuedCommentIdsFromWakePayload(receipt.payload);
+        const delivered = await deliveredQueuedCommentIds(db, { companyId: wake.companyId, issueId: issueKeyId,
+          agentId: wake.agentId, commentIds: commentIds.filter(isUuidLike) });
+        if (delivered.size === 0) continue;
+        const remaining = commentIds.filter(commentId => !delivered.has(commentId));
         const now = new Date();
         await db.update(agentWakeupRequests).set(remaining.length === 0
           ? { status: "cancelled", finishedAt: now, updatedAt: now, error: "Queued messages were already delivered to a completed run" }
-          : { payload: withQueuedCommentIdsInWakePayload(parseObject(wake.payload), remaining), updatedAt: now })
-          .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
-        if (remaining.length === 0) continue;
-        wake.payload = withQueuedCommentIdsInWakePayload(parseObject(wake.payload), remaining);
+          : { payload: withQueuedCommentIdsInWakePayload(parseObject(receipt.payload), remaining), updatedAt: now })
+          .where(and(eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
       }
+      const [current] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wake.id),
+        eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      if (!current) continue;
+      wake.payload = current.payload;
       const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
       const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
       await enqueueWakeup(wake.agentId, {

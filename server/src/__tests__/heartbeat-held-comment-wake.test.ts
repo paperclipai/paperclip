@@ -323,7 +323,15 @@ describePostgres("saved intents while another run's accounting is pending", () =
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
       requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
-    // A retry of the source run read the whole thread, the comment included.
+    // A second message, posted later in the pause, that no run has read.
+    const [later] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Also posted during the pause." }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: later.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: later.id, wakeCommentId: later.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // A retry of the source run read the whole thread, the first comment included.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
       triggerDetail: "system", status: "succeeded", startedAt: new Date(), finishedAt: new Date(), retryOfRunId: f.sourceRunId,
       contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry",
@@ -336,6 +344,29 @@ describePostgres("saved intents while another run's accounting is pending", () =
       sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
     expect(saved).toEqual([expect.objectContaining({ status: "cancelled",
       error: "Queued messages were already delivered to a completed run" })]);
+    // The wake that adopts the task's saved messages delivers only the unread one.
+    expect(deliveries(later.id)).toHaveLength(1);
+  }, 180_000);
+
+  // External chat input resumes only through its live inbound authorization,
+  // never through the generic pause-lift wake.
+  it("never replays a chat-inbound receipt through the pause-lift path", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "From an external chat." }).returning();
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: `chat-inbound:${randomUUID()}`,
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment",
+        executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted", message: "Agent is paused." },
+        _paperclipWakeContext: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: comment.id, wakeCommentIds: [comment.id],
+          wakeReason: "issue_commented", source: "chat:slack" } } }).returning();
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    expect((await readWake(receipt.id)).runId).toBeNull();
   }, 180_000);
 
   // A task that never ran has no terminal run for the release drain to promote
