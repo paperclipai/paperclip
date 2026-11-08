@@ -970,6 +970,30 @@ const ISSUE_TOAST_ACTIONS = new Set([
   "issue.updated",
   "issue.comment_added",
 ]);
+/**
+ * The `@task` mention pool is the 100 most recently updated tasks (one large
+ * response) and only backs a client-side picker. Comments, run progress and
+ * status changes reorder it but do not change which tasks or titles it can
+ * offer, and a chat turn emits many such events. Those events only mark it
+ * stale; it refetches on its next mount or focus. Changes the picker can show
+ * (a new, removed or renamed task) refetch it immediately.
+ */
+function issueActivityChangesMentionPool(
+  action: string | null,
+  details: Record<string, unknown> | null,
+): boolean {
+  if (action === "issue.created" || action === "issue.deleted") return true;
+  if (action !== "issue.updated") return false;
+  if (!details) return true;
+  if ("title" in details) return true;
+  const changes = readRecord(details.changes);
+  return !!changes && "title" in changes;
+}
+
+function isIssueMentionPoolQuery(queryKey: readonly unknown[]): boolean {
+  return queryKey[0] === "issues" && queryKey[2] === "mention-pool";
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1500,6 +1524,13 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
+      predicate: (query) => !isIssueMentionPoolQuery(query.queryKey),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.mentionPool(companyId),
+      ...(issueActivityChangesMentionPool(action, details)
+        ? {}
+        : { refetchType: "none" as const }),
     });
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.listMineByMe(companyId),
