@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { HeartbeatRun } from "@paperclipai/shared";
 
 export type SourceResolvedFoldCleanupOutcome =
@@ -105,27 +106,27 @@ export function readSourceResolvedWatchdogFold(
 }
 
 const CLEANUP_OUTCOME_LABELS: Record<string, string> = {
-  terminated: "terminated",
-  termination_sent_still_running: "termination sent (still running)",
-  failed: "failed",
-  not_running: "not running",
-  no_process_metadata: "no process metadata",
-  skipped_non_local_adapter: "skipped (non-local adapter)",
+  get terminated() { return t("final-configuration:cleanup_terminated"); },
+  get termination_sent_still_running() { return t("final-configuration:cleanup_termination_sent_still_running"); },
+  get failed() { return t("final-configuration:cleanup_failed"); },
+  get not_running() { return t("final-configuration:cleanup_not_running"); },
+  get no_process_metadata() { return t("final-configuration:cleanup_no_process_metadata"); },
+  get skipped_non_local_adapter() { return t("final-configuration:cleanup_skipped_non_local_adapter"); },
 };
 
 export function formatCleanupOutcome(outcome: string): string {
-  return CLEANUP_OUTCOME_LABELS[outcome] ?? outcome.replace(/_/g, " ");
+  return Object.prototype.hasOwnProperty.call(CLEANUP_OUTCOME_LABELS, outcome) ? CLEANUP_OUTCOME_LABELS[outcome] : outcome;
 }
 
 export function formatSilenceAgeMs(ms: number | null | undefined): string | null {
   if (!ms || ms <= 0) return null;
   const totalMinutes = Math.floor(ms / 60_000);
-  if (totalMinutes < 1) return "under 1 minute";
-  if (totalMinutes < 60) return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  if (totalMinutes < 1) return t("final-configuration:age_underMinute");
+  if (totalMinutes < 60) return t("final-configuration:age_minute", { count: totalMinutes });
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (minutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${hours}h ${minutes}m`;
+  if (minutes === 0) return t("final-configuration:age_hour", { count: hours });
+  return t("final-configuration:age_hoursMinutes", { hours, minutes });
 }
 
 export function shortenEvidenceId(id: string): string {

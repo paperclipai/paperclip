@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
 import { IssueReferencePill } from "./IssueReferencePill";
 import { ExternalObjectPill } from "./ExternalObjectPill";
@@ -39,6 +40,7 @@ function Section({
   items: IssueRelatedWorkItem[];
   emptyLabel: string;
 }) {
+  useTranslation("task-components");
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
@@ -98,6 +100,7 @@ function ExternalObjectsSection({
   isError: boolean;
   onRetry?: () => void;
 }) {
+  useTranslation("task-components");
   // Severity-first sort with most-recently-changed as the secondary sort.
   const sorted = [...groups].sort((a, b) => {
     const aTone = externalObjectToneSeverity(a.pill.statusCategory ? a.group.object?.statusTone ?? null : null);
@@ -111,31 +114,24 @@ function ExternalObjectsSection({
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">External objects</h3>
-        <p className="text-xs text-muted-foreground">
-          Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more.
-        </p>
+        <h3 className="text-sm font-semibold">{t("task-components:externalObjects_9279c11d")}</h3>
+        <p className="text-xs text-muted-foreground">{t("task-components:remoteWorkReferencedFromThisIssuePull_3c65ef5c")}</p>
       </div>
 
       {isError ? ( // query-error-ok: set only for a real failure (useIssueExternalObjects keeps data through outages)
-        <p className="text-xs text-muted-foreground">
-          Couldn't load external objects.{" "}
+        <p className="text-xs text-muted-foreground">{t("task-components:couldnTLoadExternalObjects_42d33ac2")}{" "}
           {onRetry ? (
             <button
               type="button"
               onClick={onRetry}
               className="text-primary underline-offset-2 hover:underline"
-            >
-              Retry
-            </button>
+            >{t("task-components:retry_942087cc")}</button>
           ) : null}
         </p>
       ) : isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading external objects…</p>
+        <p className="text-xs text-muted-foreground">{t("task-components:loadingExternalObjects_d80d5f6c")}</p>
       ) : sorted.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          This issue does not reference any external objects yet.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("task-components:thisIssueDoesNotReferenceAnyExternal_e44c5d10")}</p>
       ) : (
         <ul className="-mx-1 flex flex-col">
           {sorted.map(({ pill, mentionCount, sourceLabels, group }) => {
@@ -185,16 +181,17 @@ export function IssueRelatedWorkPanel({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  useTranslation("task-components");
   const outbound = relatedWork?.outbound ?? [];
   const inbound = relatedWork?.inbound ?? [];
 
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this task currently points at in its title, description, comments, or documents."
+        title={t("task-components:references_69824d3b")}
+        description={t("task-components:otherTasksThisTaskCurrentlyPointsAt_2fd8c15a")}
         items={outbound}
-        emptyLabel="This task does not reference any other tasks yet."
+        emptyLabel={t("final-components-a:thisTaskDoesNotReference_4bb2fcaa")}
       />
       {externalObjectsEnabled ? (
         <ExternalObjectsSection
@@ -205,10 +202,10 @@ export function IssueRelatedWorkPanel({
         />
       ) : null}
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this task."
+        title={t("task-components:referencedBy_b65181bd")}
+        description={t("task-components:otherTasksThatCurrentlyPointAtThis_b7a48cc8")}
         items={inbound}
-        emptyLabel="No other tasks reference this task yet."
+        emptyLabel={t("final-components-a:noOtherTasksReferenceThis_e46da1d8")}
       />
     </div>
   );

@@ -8,6 +8,7 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { writePendingSend } from "../lib/pending-send";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
+import { i18n } from "@/i18n";
 
 const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn(), confirmController: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover,
@@ -64,6 +65,14 @@ describe("governed retained-file recovery", () => {
     const target = button(label); expect(target, `missing ${label}`).toBeDefined();
     await act(async () => target!.click()); await settle();
   }
+
+  it("updates retained-file copy without issuing recovery or repeating inspection", async () => {
+    await mount(); const inspections = api.inspect.mock.calls.length;
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("恢复已保存的文件"); expect(api.recover).not.toHaveBeenCalled(); expect(api.inspect).toHaveBeenCalledTimes(inspections); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    expect(button("Recover saved files")).toBeDefined();
+  });
 
   it("offers the existing preservation operation for a stopped, exhausted system-owned export", async () => {
     await mount();
@@ -198,6 +207,23 @@ describe("governed retained-file recovery", () => {
     expect(api.recover).not.toHaveBeenCalled();
     expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
     expect(container.textContent).not.toContain("File recovery changed");
+    expect(button("Recover saved files")).toBeUndefined();
+  });
+
+  it("relocalizes a source-verification rejection without retrying or losing its diagnostic code", async () => {
+    api.inspect.mockResolvedValueOnce(inspection()).mockResolvedValueOnce({ ...inspection(), sourceInspection: {
+      ...inspection().sourceInspection, status: "blocked", failureCode: "source_binding_invalid" } });
+    await mount(); await click("Recover saved files");
+    const inspections = api.inspect.mock.calls.length;
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("source_binding_invalid");
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try {
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Paperclip 无法验证已保存文件的记录来源（source_binding_invalid）。");
+      expect(container.textContent).toContain("Paperclip 不会应用无法验证的文件。");
+      expect(api.inspect).toHaveBeenCalledTimes(inspections);
+      expect(api.recover).not.toHaveBeenCalled();
+    } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Paperclip can’t verify the saved files’ recorded source (source_binding_invalid).");
     expect(button("Recover saved files")).toBeUndefined();
   });
 
@@ -424,6 +450,38 @@ describe("governed retained-file recovery", () => {
       evidence: { runId: "run-1", owner: { token: "owner-token", hostname: "secret-host", pid: 2 },
         workspaceOwnerRecovery: { state: "operator_required" } } } as unknown as IssueRecoveryAction;
 
+    it.each(["fallback", "server"])("localizes owner-stop controls without changing evidence, authority, or %s error provenance", async kind => {
+      const rawError = "The confirmation was not accepted. Refresh the task and try again.";
+      api.resume.mockRejectedValue(kind === "server" ? new Error(rawError) : { code: "rejected" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      await mount(ownerAction);
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      const evidence = "The old server process exited and was not restarted.";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, evidence);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      try {
+        expect(container.textContent).toContain("你如何确认先前的服务器及其文件复制操作已停止？");
+        expect(textarea.placeholder).toBe("例如：旧服务器进程已退出，且未重新启动。");
+        expect(container.querySelector("textarea")).toBe(textarea);
+        expect(textarea.value).toBe(evidence);
+        expect(api.resume).not.toHaveBeenCalled();
+        expect(api.inspect).not.toHaveBeenCalled();
+        await click("确认并继续");
+        expect(api.resume).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
+          ownerToken: "owner-token", controllerAndCopybackStopped: true, stopEvidence: evidence });
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(kind === "server"
+          ? rawError : "确认未被接受。请刷新任务后重试。");
+      } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(rawError);
+      expect(textarea.value).toBe(evidence);
+      expect(api.resume).toHaveBeenCalledTimes(1);
+    });
+
     it("offers one board action that resumes the saved result with the board's stop evidence", async () => {
       api.resume.mockResolvedValue({ runId: "run-1", resultId: "result-1", status: "queued" });
       client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
@@ -493,6 +551,37 @@ describe("governed retained-file recovery", () => {
         stopEvidence: "The old server container was replaced and is not running." });
       expect(api.resume).not.toHaveBeenCalled();
       expect(container.textContent).toContain("Resuming the run…");
+    });
+
+    it("localizes controller confirmation in place and preserves its distinct endpoint and evidence", async () => {
+      api.confirmController.mockResolvedValue({ runId: "run-1", status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      await mount({ ...action, cause: "native_controller_host_unverified", ownerType: "board",
+        evidence: { runId: "run-1", controller: { bootId: "boot", pid: 7 } } } as unknown as IssueRecoveryAction);
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      const evidence = "The old server container was replaced and is not running.";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, evidence);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        await i18n.changeLanguage("zh-CN");
+      });
+      try {
+        expect(container.textContent).toContain("你如何确认先前的服务器已停止？");
+        expect(textarea.placeholder).toBe("例如：旧服务器容器已被替换，且不再运行。");
+        expect(container.querySelector("textarea")).toBe(textarea);
+        expect(textarea.value).toBe(evidence);
+        expect(api.inspect).not.toHaveBeenCalled();
+        expect(api.confirmController).not.toHaveBeenCalled();
+        await click("确认并继续");
+        expect(api.confirmController).toHaveBeenCalledExactlyOnceWith("issue-1", {
+          actionId: "action-1", runId: "run-1", stopEvidence: evidence });
+        expect(api.resume).not.toHaveBeenCalled();
+        expect(container.textContent).toContain("正在恢复运行…");
+      } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+      expect(container.textContent).toContain("Resuming the run…");
+      expect(api.confirmController).toHaveBeenCalledTimes(1);
     });
 
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {

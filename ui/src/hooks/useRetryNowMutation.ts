@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback } from "react";
 import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
 import type { IssueRetryNowOutcome, IssueRetryNowResponse } from "@paperclipai/shared";
@@ -15,18 +16,18 @@ export type RetryNowError = {
 function readErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (typeof error.message === "string" && error.message.trim().length > 0) return error.message;
-    return `Request failed (${error.status})`;
+    return t("display:copy_a6d06c8a0914", { value0: error.status });
   }
   if (error instanceof Error && error.message) return error.message;
-  return "The request failed. Try again in a moment.";
+  return t("display:copy_f1a6e788ad5b");
 }
 
 export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = {
-  promoted: "Retry promoted",
-  already_promoted: "Retry already running",
-  waiting: "Retry waiting",
-  no_scheduled_retry: "No scheduled retry",
-  gate_suppressed: "Couldn't retry now",
+  get "promoted"() { return t("display:copy_14409ffab9dc"); },
+  get "already_promoted"() { return t("display:copy_59e7664344bf"); },
+  get "waiting"() { return t("display:copy_f92abbb89f33"); },
+  get "no_scheduled_retry"() { return t("display:copy_6a23eb60f0b3"); },
+  get "gate_suppressed"() { return t("display:copy_55cf6175d564"); },
 };
 
 export function useRetryNowMutation(
@@ -34,6 +35,7 @@ export function useRetryNowMutation(
 ): UseMutationResult<IssueRetryNowResponse, unknown, void, unknown> & {
   lastError: RetryNowError | null;
 } {
+  useTranslation("display");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -66,7 +68,7 @@ export function useRetryNowMutation(
     },
     onError: (error) => {
       pushToast({
-        title: "Couldn't retry now",
+        get "title"() { return t("display:copy_55cf6175d564"); },
         body: readErrorMessage(error),
         tone: "error",
       });

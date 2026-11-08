@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { describeUiError } from "@/lib/localized-ui-error";
 import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { usePageVisibility } from "../../lib/page-visibility";
@@ -231,7 +233,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
           if (previous.has(run.id)) return previous;
           const next = new Map(previous);
           next.set(run.id, {
-            message: error instanceof Error ? error.message : "Native run activity could not be loaded",
+            get message() { return error instanceof Error ? describeUiError(error).body : t("final-components-b:Native_run_activity_could_not_be_loaded_87c3b8"); },
             failedAt: new Date().toISOString(),
           });
           return next;

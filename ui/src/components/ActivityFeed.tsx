@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -113,10 +114,10 @@ type FilterValue = "all" | "in-progress" | "for-review" | "completed";
 type GroupMode = "flat" | "by-task";
 
 const FILTER_OPTIONS: Array<{ value: FilterValue; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "in-progress", label: "In Progress" },
-  { value: "for-review", label: "In Review" },
-  { value: "completed", label: "Done" },
+  { value: "all", get label() { return t("task-components:all_a52ace42"); } },
+  { value: "in-progress", get label() { return t("task-components:inProgress_b4cc4b07"); } },
+  { value: "for-review", get label() { return t("task-components:inReview_2677214a"); } },
+  { value: "completed", get label() { return t("task-components:done_11a6767d"); } },
 ];
 
 const FILTER_ACTIONS: Record<FilterValue, Set<string> | null> = {
@@ -253,14 +254,15 @@ function CollapsedFeedGroup({
   entityNameMap: Map<string, string>;
   entityTitleMap: Map<string, string>;
 }) {
+  useTranslation("task-components");
   const [expanded, setExpanded] = useState(false);
   const actor = group.latestEvent.actorType === "agent"
     ? agentMap.get(group.latestEvent.actorId)
     : null;
   const actorName = actor?.name
-    ?? (group.latestEvent.actorType === "system" ? "System"
-      : group.latestEvent.actorType === "user" ? "Board"
-      : "Unknown");
+    ?? (group.latestEvent.actorType === "system" ? t("final-components-b:ActivityFeed.System_6725e7")
+      : group.latestEvent.actorType === "user" ? t("final-components-b:ActivityFeed.Board_4816cb")
+      : t("final-components-b:ActivityFeed.Unknown_b764cd"));
   const entityName = entityNameMap.get(`${group.entityType}:${group.entityId}`);
 
   return (
@@ -286,9 +288,7 @@ function CollapsedFeedGroup({
             : <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         }
         <span className="flex-1 min-w-0 truncate">
-          <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white">{actorName}</span>
-          <span data-fc="verb" className="ml-1 text-(--hex-959596)">made {group.events.length} updates to</span>
-          <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white">{entityName ?? group.entityId}</span>
+          <Trans ns="final-components-b" i18nKey="activity.actor_updates_made_count_updates_to_updates_entity_f5f726" values={{ count: group.events.length }} components={{ actor: <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white">{actorName}</span>, updates: <span data-fc="verb" className="ml-1 text-(--hex-959596)" />, entity: <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white">{entityName ?? group.entityId}</span> }} />
         </span>
         <span data-fc="time" className="text-muted-foreground shrink-0">
           {timeAgo(group.latestEvent.createdAt)}
@@ -321,6 +321,7 @@ interface ActivityFeedProps {
 }
 
 export function ActivityFeed({ className }: ActivityFeedProps) {
+  const { i18n } = useTranslation("task-components");
   const { selectedCompanyId } = useCompany();
   const [filter, setFilter] = useState<FilterValue>("all");
   const [groupMode, setGroupMode] = useState<GroupMode>("flat");
@@ -485,9 +486,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
         separator = (
           <div className="flex items-center gap-2 px-4 py-1.5" key={`sep-${index}`}>
             <div className="h-px flex-1 bg-border" />
-            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">
-              Earlier
-            </span>
+            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">{t("task-components:earlier_e10ae990")}</span>
             <div className="h-px flex-1 bg-border" />
           </div>
         );
@@ -568,7 +567,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
       const issueName = entityNameMap.get(`issue:${groupKey}`);
       const issueTitle = entityTitleMap.get(`issue:${groupKey}`);
       const label = isOther
-        ? "Other activity"
+        ? t("final-components-b:ActivityFeed.Other_activity_a5af69")
         : `${issueName ?? groupKey}${issueTitle ? ` — ${issueTitle}` : ""}`;
 
       return (
@@ -590,19 +589,19 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     if (!agents) return null;
     if (agents.length === 0) {
       return {
-        text: "No agents set up yet. Add an agent to get started.",
+        get text() { return t("final-components-b:ActivityFeed.No_agents_set_up_yet_Add_an_agent_to_get_started_968ddb"); },
         showPulse: false,
       };
     }
     const allPaused = agents.every((a) => a.status === "paused");
     if (allPaused) {
       return {
-        text: "All agents are paused. Resume agents from the sidebar to see activity.",
+        get text() { return t("final-components-b:ActivityFeed.All_agents_are_paused_Resume_agents_from_the_sidebar_to_see_activ_470990"); },
         showPulse: false,
       };
     }
     return {
-      text: "Your agents are running — activity will appear here shortly.",
+      get text() { return t("final-components-b:ActivityFeed.Your_agents_are_running_activity_will_appear_here_shortly_d80caf"); },
       showPulse: true,
     };
   }, [agents]);
@@ -621,10 +620,8 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
           aria-hidden
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold">Agent Feed</h3>
-          <p className="text-xs text-muted-foreground">
-            Live activity from your agents
-          </p>
+          <h3 className="text-sm font-semibold">{t("task-components:agentFeed_24cf4294")}</h3>
+          <p className="text-xs text-muted-foreground">{t("task-components:liveActivityFromYourAgents_3525e6b1")}</p>
         </div>
         <div className="flex items-center gap-1">
           {/* Group toggle */}
@@ -635,14 +632,14 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 variant={groupMode === "by-task" ? "secondary" : "ghost"}
                 size="icon-sm"
                 className="shrink-0 text-muted-foreground"
-                aria-label="group by task"
+                aria-label={t("task-components:groupByTask_4bb285fa")}
                 onClick={() => setGroupMode((m) => (m === "flat" ? "by-task" : "flat"))}
               >
                 <Layers className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              {groupMode === "flat" ? "Group by task" : "Show flat"}
+              {groupMode === "flat" ? t("task-components:groupByTask_c9da3771") : t("task-components:showFlat_de6f6c1a")}
             </TooltipContent>
           </Tooltip>
 
@@ -656,13 +653,13 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                     variant={filter !== "all" || showAllActivity ? "secondary" : "ghost"}
                     size="icon-sm"
                     className="shrink-0 text-muted-foreground"
-                    aria-label="filter by"
+                    aria-label={t("task-components:filterBy_92a08271")}
                   >
                     <ListFilter className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Filter by</TooltipContent>
+              <TooltipContent side="bottom">{t("task-components:filterBy_d00f5245")}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuRadioGroup
@@ -679,9 +676,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
               <DropdownMenuCheckboxItem
                 checked={showAllActivity}
                 onCheckedChange={(v) => setShowAllActivity(!!v)}
-              >
-                Show all activity
-              </DropdownMenuCheckboxItem>
+              >{t("task-components:showAllActivity_376edbb2")}</DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -703,7 +698,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 </span>
               )}
               <p className="text-center text-sm text-muted-foreground">
-                {emptyMessage?.text ?? "Activity from your agents will appear here."}
+                {emptyMessage?.text ?? t("task-components:activityFromYourAgentsWillAppearHere_1e0c6807")}
               </p>
             </div>
           </div>

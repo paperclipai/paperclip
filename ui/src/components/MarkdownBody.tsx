@@ -1,3 +1,5 @@
+import { resolveUiMessage, type UiMessageDescriptor } from "@/lib/localized-ui-error";
+import { t, useTranslation, i18n, Trans } from "@/i18n";
 import { PatchLines } from "./PatchLines";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
@@ -61,6 +63,7 @@ function MarkdownAgentMention({ agentId, children, style }: {
   children: ReactNode;
   style?: React.CSSProperties;
 }) {
+  useTranslation("task-components");
   const companyId = useOptionalCompany()?.selectedCompanyId;
   // All mentions share the company list cache; never fetch one agent per chip.
   const { data: agents } = useQuery<Agent[]>({
@@ -156,6 +159,7 @@ function MarkdownIssueLink({
   children: ReactNode;
   documentLink?: boolean;
 }) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const chatReference = useCoordinatorChatReference(issuePathId);
   const [engaged, setEngaged] = useState(false);
@@ -198,7 +202,7 @@ function MarkdownIssueLink({
   // Same presentation inputs as every task view, so a covered blocked task is
   // the blue in-queue glyph here too, not the red blocked one (BUG-07).
   const statusIconProps = data && status ? taskStatusIconProps({ ...data, status }) : null;
-  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+  const issueLabel = title !== identifier ? t("final-components-a:issueIdentifierTitle_d7985502", { identifier: identifier, title: title }) : t("final-components-a:issueIdentifier_2a6ea444", { identifier: identifier });
 
   // Until the fetch settles we don't yet know whether this viewer can read the
   // issue. Keep the mention a plain link (clickable, styled as today) but hold
@@ -242,6 +246,7 @@ function MarkdownCaseLink({
   identifier: string;
   children: ReactNode;
 }) {
+  useTranslation("task-components");
   // Cases resolve via the get-by-identifier route; navigate there on click.
   // Kept boxless/underlined to match the issue mention treatment.
   const caseHref = useCaseHref();
@@ -250,7 +255,7 @@ function MarkdownCaseLink({
       to={caseHref(identifier)}
       data-mention-kind="case"
       className={cn("paperclip-markdown-case-ref", "font-normal underline")}
-      aria-label={`Case ${identifier}`}
+      aria-label={t("task-components:case_f868de0f", { value1: identifier })}
     >
       {children}
     </Link>
@@ -266,6 +271,7 @@ function MarkdownExternalLink({
   reference: MarkdownExternalReference;
   children: ReactNode;
 }) {
+  useTranslation("task-components");
   const provider = externalObjectProviderLabel(reference.providerKey);
   const displayKey = reference.displayKey?.trim() || provider;
   const statusLabel = externalObjectDisplayStatusLabel(reference);
@@ -584,6 +590,7 @@ function CodeBlock({
   children: ReactNode;
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
+  useTranslation("task-components");
   const code = Array.isArray(children) ? children.find(isValidElement) : children;
   const patchCode = isValidElement<{ className?: string; children?: ReactNode }>(code)
     && /\blanguage-(diff|patch)\b/i.test(code.props.className ?? "");
@@ -613,8 +620,8 @@ function CodeBlock({
     }, 1500);
   }, [children, patchText]);
 
-  const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
-  const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
+  const copyLabel = failed ? t("task-components:copyFailed_5b50e7a6") : copied ? t("task-components:copied_ea61bc15") : t("task-components:copy_e21f935f");
+  const wrapLabel = wrapLines ? t("final-components-a:unwrapLines_6de95a89") : t("final-components-a:wrapLines_6727132a");
 
   return (
     <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
@@ -661,7 +668,7 @@ function CodeBlock({
         <button
           type="button"
           onClick={handleCopy}
-          aria-label="Copy code"
+          aria-label={t("task-components:copyCode_49a0053f")}
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
           style={codeBlockActionStyle}
@@ -681,9 +688,10 @@ function CodeBlock({
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
+  useTranslation("task-components");
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | UiMessageDescriptor | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -708,7 +716,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         const message =
           err instanceof Error && err.message
             ? err.message
-            : "Failed to render Mermaid diagram.";
+            : { key: "final-components-a:failedToRenderMermaidDiagram_ce8bc46c" };
         setError(message);
       });
 
@@ -724,7 +732,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+            {error ? t("task-components:unableToRenderMermaidDiagram_c64fb7c0", { value1: typeof error === "string" ? error : resolveUiMessage(error) }) : t("task-components:renderingMermaidDiagram_1cecfea4")}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>
@@ -752,6 +760,7 @@ function MarkdownBodyImpl({
   mediaMode = "render",
   resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
+  useTranslation("task-components");
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
   const streamWords = useContext(MarkdownWordStreaming);
@@ -818,7 +827,7 @@ function MarkdownBodyImpl({
       </blockquote>
     ),
     table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <div className="paperclip-markdown-table-scroll" role="region" aria-label={t("task-components:scrollableTable_92d78d88")} tabIndex={0}>
         <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
           {tableChildren}
         </table>
@@ -955,9 +964,7 @@ function MarkdownBodyImpl({
     };
     if (mediaMode === "reference") {
       map.img = ({ src, alt, title }) => (
-        <span data-markdown-image-reference title={title}>
-          Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
-        </span>
+        <span data-markdown-image-reference title={title}><Trans ns="task-components" i18nKey="sentence_a93cc049cd58" components={{ part1: <>{alt || t("task-components:untitledImage_f0b95d1b")}</>, part2: <>{src ? ` (${src})` : ""}</> }} /></span>
       );
     } else if (resolveImageSrc || onImageClick) {
       map.img = ({ node: _node, src, alt, ...imgProps }) => {
@@ -970,7 +977,7 @@ function MarkdownBodyImpl({
             alt={alt ?? ""}
             role={onImageClick && finalSrc ? "button" : undefined}
             tabIndex={onImageClick && finalSrc ? 0 : undefined}
-            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            aria-label={onImageClick && finalSrc ? t("final-components-a:openImageName_67535003", { name: alt || t("final-components-a:untitledImage_f0b95d1b") }) : undefined}
             onClick={onImageClick && finalSrc ? (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -988,7 +995,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, i18n.language]);
 
   return (
     <div

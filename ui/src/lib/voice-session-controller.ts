@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import type { UiMessageDescriptor } from "./localized-ui-error";
 import { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION } from "@paperclipai/shared";
 export { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION } from "@paperclipai/shared";
 import type { VoiceControlState } from "../components/voice/VoiceControls";
@@ -33,7 +35,9 @@ export interface VoiceSessionSnapshot {
   canRepeat?: boolean;
   transcript: readonly VoiceTranscriptEntry[];
   announcement: string;
-  error?: string;
+  /** First-party copy is resolved by the view in its current locale. */
+  error?: UiMessageDescriptor & { showCause?: boolean };
+  errorCause?: unknown;
 }
 export interface VoiceSessionDependencies {
   /** Server authorizes endpoint, company, task and actor before minting. */
@@ -73,14 +77,17 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     const delay = Math.max(0, quietAfter - Date.now(), hintSentAt + 10_000 - Date.now());
     notificationTimer = setTimeout(() => { notificationTimer = undefined; flushNotifications(); }, delay);
   }
-  const change = (patch: Partial<VoiceSessionSnapshot>) => { snapshot = { ...snapshot, ...patch }; listeners.forEach((listener) => listener()); };
+  const change = (patch: Partial<VoiceSessionSnapshot>) => { snapshot = { ...snapshot, ...("error" in patch ? { errorCause: undefined } : {}), ...patch }; listeners.forEach((listener) => listener()); };
+  function clearError(key: string) {
+    if (snapshot.error?.key === key) change({ error: undefined });
+  }
   async function cleanup() {
     const ownedMedia = media, ownedCredentials = credentials, ownedSessionId = credentials?.sessionId ?? cleanupSessionId;
     const results = await Promise.allSettled([
       Promise.resolve().then(async () => { if (ownedMedia) { await ownedMedia.endSession(); if (media === ownedMedia) media = undefined; } }),
       Promise.resolve().then(async () => { if (ownedSessionId) { await dependencies.end(ownedSessionId); if (credentials === ownedCredentials) credentials = undefined; if (cleanupSessionId === ownedSessionId) cleanupSessionId = undefined; } }),
     ]);
-    return results.every((result) => result.status === "fulfilled");
+    return { closed: results.every((result) => result.status === "fulfilled"), cause: results.find((result) => result.status === "rejected")?.reason };
   }
   function stop() {
     if (stopping) return stopping;
@@ -92,9 +99,9 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     // connection still belongs to this call and must be closed too.
     const operation = (async () => {
       await startup;
-      const closed = await cleanup();
+      const { closed, cause } = await cleanup();
       change({ state: closed ? "ended" : "cleanup_failed", busy: false, playbackBlocked: false, muted: false,
-        error: closed ? undefined : "The call could not be fully closed. Retry ending it before starting another call." });
+        error: closed ? undefined : { key: "display:copy_1b9c4ba3ce67", showCause: true }, errorCause: cause });
     })();
     stopping = operation.finally(() => { stopping = undefined; });
     return stopping;
@@ -105,6 +112,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     notifications.clear(); queuedNotifications.clear(); unfinishedAgentSegments.clear(); interruptedAgentSegments.clear(); fallbackSegments.clear(); sequence = 0; hintSentAt = Number.NEGATIVE_INFINITY; hintSending = false; quietAfter = 0; clearNotificationTimer();
     change({ state: "connecting", busy: true, muted: false, canRepeat: false, error: undefined, playbackBlocked: false, transcript: [], announcement: "" });
     let failed = false, recovering = false, creditsRequired = false;
+    let failureCause: unknown;
     const operation = (async () => {
       try {
         credentials = await dependencies.mint();
@@ -143,7 +151,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
           change({ state: snapshot.state === "connecting" ? "listening" : snapshot.state, busy: false, canRepeat: true });
           flushNotifications();
         }
-      } catch (error) { if (error instanceof VoiceSessionStartError) { cleanupSessionId = error.sessionId; recovering = true; creditsRequired = error.reason === "credits_required"; } failed = true; }
+      } catch (error) { failureCause = error; if (error instanceof VoiceSessionStartError) { cleanupSessionId = error.sessionId; recovering = true; creditsRequired = error.reason === "credits_required"; } failed = true; }
     })();
     startup = operation;
     await operation;
@@ -151,7 +159,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     if (failed && epoch === ownedEpoch) {
       // Stop also retires callbacks from media that failed during creation.
       await stop();
-      if (snapshot.state === "ended") change({ state: "failed", error: creditsRequired ? "Speko needs credits before starting a call. Add credits in Speko, then try again." : recovering ? "The previous call was closed. Start voice again to reconnect; your task is preserved." : "Voice could not connect. Check microphone permissions and your connection, then try again." });
+      if (snapshot.state === "ended") change({ state: "failed", error: { key: creditsRequired ? "display:copy_3983c1d1558e" : recovering ? "display:copy_6bbc5f9e8ee9" : "display:copy_93e82d4eb614" }, errorCause: failureCause });
     }
   }
   async function mute() {
@@ -159,7 +167,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     const owned = media, ownedEpoch = epoch, target = !snapshot.muted;
     change({ busy: true });
     try { await owned.setMicMuted(target); if (epoch === ownedEpoch) change({ muted: target, error: undefined }); }
-    catch { if (epoch === ownedEpoch) change({ error: "Microphone state could not be changed. Try again or end the call." }); }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_674fed3c9c84" }, errorCause: error }); }
     finally { if (epoch === ownedEpoch) change({ busy: false }); }
   }
   function flushNotifications() {
@@ -182,10 +190,11 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     try {
       await media.sendChatMessage(VOICE_RESULT_NOTIFICATION);
       if (epoch !== ownedEpoch) return false;
+      clearError("display:copy_fe00e48cf30a");
       change({ canRepeat: true });
-      if (!snapshot.transcript.some((entry) => entry.id === `publication:${input.publicationId}`)) change({ transcript: [...snapshot.transcript, { id: `publication:${input.publicationId}`, source: "application", text: "A task update is available.", final: true }] });
+      if (!snapshot.transcript.some((entry) => entry.id === `publication:${input.publicationId}`)) change({ transcript: [...snapshot.transcript, { id: `publication:${input.publicationId}`, source: "application", get "text"() { return t("display:copy_f0ad76b73b37"); }, final: true }] });
       return true;
-    } catch { if (epoch === ownedEpoch) change({ error: "A task update could not be delivered to voice. Open the task to read it." }); return false; }
+    } catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_fe00e48cf30a" }, errorCause: error }); return false; }
     finally { if (epoch === ownedEpoch) { hintSending = false; scheduleNotifications(); } }
   }
   function clearPendingNotifications() { queuedNotifications.clear(); clearNotificationTimer(); }
@@ -195,15 +204,15 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     // A caller-initiated repeat may interrupt speech; background results may not.
     change({ busy: true });
     hintSentAt = Date.now(); hintSending = true;
-    try { await media.sendChatMessage(VOICE_REPEAT_NOTIFICATION); }
-    catch { if (epoch === ownedEpoch) change({ error: "The answer could not be repeated. Open the task to read it." }); }
+    try { await media.sendChatMessage(VOICE_REPEAT_NOTIFICATION); if (epoch === ownedEpoch) clearError("display:copy_0b6904308873"); }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_0b6904308873" }, errorCause: error }); }
     finally { if (epoch === ownedEpoch) { hintSending = false; change({ busy: false }); scheduleNotifications(); } }
   }
   async function resumeAudio() {
     if (!media || stopping) return;
     const ownedEpoch = epoch;
-    try { await media.startAudioPlayback(); if (epoch === ownedEpoch) { change({ playbackBlocked: false }); scheduleNotifications(); } }
-    catch { if (epoch === ownedEpoch) change({ error: "Audio playback is blocked. Check this browser’s sound settings." }); }
+    try { await media.startAudioPlayback(); if (epoch === ownedEpoch) { clearError("display:copy_7ec5e82f3664"); change({ playbackBlocked: false }); scheduleNotifications(); } }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_7ec5e82f3664", showCause: true }, errorCause: error }); }
   }
   return { start, stop, mute, notify, repeat, clearPendingNotifications, resumeAudio, getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };

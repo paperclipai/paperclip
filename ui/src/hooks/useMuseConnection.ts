@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MuseConnection, MuseBinding, MusePairing, MusePairingInput, MuseAttestStopInput, MuseDetectorCleanupAttestationInput } from "@paperclipai/shared";
@@ -72,7 +73,7 @@ export function useMuseConnection(companyId: string | undefined, agentId: string
     const requestScope = scope;
     const current = await state.refetch({ throwOnError: true });
     const b = current.data?.binding;
-    if (currentScope.current !== requestScope || !b || !b.cleanup.attestationEligible || b.id !== input.bindingId || b.generation !== input.generation || b.revision !== input.expectedRevision || (b.qualification?.id ?? null) !== input.qualificationId || b.cleanup.hookScript !== input.hookScript) throw new Error("Connection changed. Refresh before recording detector cleanup.");
+    if (currentScope.current !== requestScope || !b || !b.cleanup.attestationEligible || b.id !== input.bindingId || b.generation !== input.generation || b.revision !== input.expectedRevision || (b.qualification?.id ?? null) !== input.qualificationId || b.cleanup.hookScript !== input.hookScript) throw localizeUiError(new Error("Connection changed. Refresh before recording detector cleanup."), { key: "final-components-a:connectionChangedRefreshBeforeRecording_398d3e65" });
     await museInvitationsApi.attestDetectorCleanup(companyId!, agentId!, input);
     await state.refetch({ throwOnError: true });
   }, onError: () => { void state.refetch(); } });

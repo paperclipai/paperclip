@@ -1,3 +1,5 @@
+import { localizeUiError } from "./localized-ui-error";
+
 export function isCsvFile(filename: string, contentType = "") {
   return /\.csv$/i.test(filename) || contentType.split(";")[0].trim().toLowerCase() === "text/csv";
 }
@@ -23,7 +25,7 @@ export function parseCsv(text: string): string[][] {
       if (char === "\r" && source[i + 1] === "\n") i++;
     } else field += char;
   }
-  if (quoted) throw new Error("A quoted field is incomplete. Switch to raw view to inspect the file.");
+  if (quoted) throw localizeUiError(new Error("A quoted field is incomplete. Switch to raw view to inspect the file."), { key: "integration-errors:csvQuoted" });
   if (field !== "" || row.length || !/[\r\n]$/.test(source)) { row.push(field); rows.push(row); }
   return rows;
 }

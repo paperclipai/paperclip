@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type BrowserUseControl, type TaskBrowser } from "@paperclipai/shared";
@@ -25,6 +26,7 @@ export function TaskBrowserPanel({
   active?: boolean;
   onOpenActiveBrowser?: () => void;
 }) {
+  useTranslation("task-components");
   const cache = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -159,21 +161,21 @@ export function TaskBrowserPanel({
     onError: () => setActionError("The browser action failed. Try again."),
   });
   const message = accessError
-    ? "You no longer have access to this browser."
+    ? t("final-components-b:task-side-panel.TaskBrowserPanel.You_no_longer_have_access_to_this_browser_b63cf4")
     : (browser?.error ?? actionError);
   const heading = accessError
-    ? "Browser access unavailable"
+    ? t("final-components-b:task-side-panel.TaskBrowserPanel.Browser_access_unavailable_4f9ee7")
     : browser?.status === "starting"
-      ? "Starting browser…"
+      ? t("final-components-b:task-side-panel.TaskBrowserPanel.Starting_browser_293860")
       : browser?.status === "stopping"
-        ? "Closing browser…"
+        ? t("final-components-b:task-side-panel.TaskBrowserPanel.Closing_browser_64bf7d")
         : browser?.status === "closed"
-          ? "Browser closed"
+          ? t("final-components-b:task-side-panel.TaskBrowserPanel.Browser_closed_6a63c6")
           : browser?.status === "failed"
-            ? "Browser could not start"
+            ? t("final-components-b:task-side-panel.TaskBrowserPanel.Browser_could_not_start_141cdb")
             : viewable
-              ? "Connecting to browser…"
-              : "No browser open";
+              ? t("task-components:connectingToBrowser_7b883983")
+              : t("final-components-b:task-side-panel.TaskBrowserPanel.No_browser_open_b49f05");
   const waiting =
     !message &&
     (browser?.status === "starting" ||
@@ -198,7 +200,7 @@ export function TaskBrowserPanel({
           <iframe
             ref={frameRef}
             key={refresh}
-            title="Live Browser Use browser"
+            title={t("task-components:liveBrowserUseBrowser_2c93ae8a")}
             src={url}
             onLoad={() => setViewerLoad("loaded")}
             referrerPolicy="no-referrer"
@@ -216,24 +218,17 @@ export function TaskBrowserPanel({
                     className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none"
                     aria-hidden="true"
                   />
-                  <p className="text-sm">Connecting to browser…</p>
+                  <p className="text-sm">{t("task-components:connectingToBrowser_7b883983")}</p>
                 </>
               ) : (
                 <>
-                  <p className="text-sm font-medium">
-                    The live view did not load
-                  </p>
-                  <p className="max-w-sm text-sm text-muted-foreground">
-                    Reconnect the view or open this task in another browser. The
-                    remote browser is still running.
-                  </p>
+                  <p className="text-sm font-medium">{t("task-components:theLiveViewDidNotLoad_02bd7771")}</p>
+                  <p className="max-w-sm text-sm text-muted-foreground">{t("task-components:reconnectTheViewOrOpenThisTask_f6e862ca")}</p>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={reconnect}
-                  >
-                    Reconnect view
-                  </Button>
+                  >{t("task-components:reconnectView_96216c2c")}</Button>
                 </>
               )}
             </div>
@@ -261,21 +256,19 @@ export function TaskBrowserPanel({
               {message ??
                 (browser?.status === "closed"
                   ? onOpenActiveBrowser
-                    ? "Another browser is still open on this task."
-                    : "Send a task message to ask the agent to open another browser."
+                    ? t("task-components:anotherBrowserIsStillOpenOnThis_73bd1304")
+                    : t("task-components:sendATaskMessageToAskThe_0385e64c")
                   : browser?.status === "starting"
-                    ? "The live view will appear here when it is ready."
+                    ? t("task-components:theLiveViewWillAppearHereWhen_6b4a34e3")
                     : browser?.status === "stopping"
-                      ? "Waiting for Browser Use to confirm shutdown."
+                      ? t("task-components:waitingForBrowserUseToConfirmShutdown_5ecf9979")
                       : !viewable
-                        ? "Ask the agent to browse a website in a task message."
+                        ? t("task-components:askTheAgentToBrowseAWebsite_c87f7bdf")
                         : null)}
             </p>
           </div>
           {browser?.status === "closed" && !accessError && onOpenActiveBrowser && (
-            <Button variant="outline" size="sm" onClick={onOpenActiveBrowser}>
-              Open active browser
-            </Button>
+            <Button variant="outline" size="sm" onClick={onOpenActiveBrowser}>{t("task-components:openActiveBrowser_9ed9ca48")}</Button>
           )}
         </div>
       )}
@@ -288,10 +281,7 @@ export function TaskBrowserPanel({
         </p>
       )}
       {viewable && presenceError && (
-        <p role="alert" className="px-3 py-2 text-xs text-destructive">
-          Could not keep this browser open. Check your connection before the
-          timer runs out.
-        </p>
+        <p role="alert" className="px-3 py-2 text-xs text-destructive">{t("task-components:couldNotKeepThisBrowserOpenCheck_3cf45333")}</p>
       )}
       {viewable && viewport.error && (
         <p role="alert" className="px-3 py-2 text-xs text-destructive">

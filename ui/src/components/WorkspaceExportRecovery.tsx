@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { IssueRecoveryAction, WorkspaceSourceInspection } from "@paperclipai/shared";
@@ -38,6 +39,7 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   className?: string; action: IssueRecoveryAction | null; issueId?: string; companyId?: string; showStatus?: boolean;
   onRecoveryControlChange?: (owns: boolean) => void;
 }) {
+  useTranslation("task-components");
   // A restart killed the copyback owner of retained saved-work recovery. Recovery
   // and any accepted Retry wait on its receipt; the confirmation is the one action.
   const retainedOwnerToken = action && issueId && companyId && isRetainedExport(action, issueId, companyId)
@@ -60,10 +62,10 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
         action={action} issueId={issueId} companyId={companyId} className={className}
         confirmStop={stopEvidence => issuesApi.confirmControllerStopped(issueId, {
           actionId: action.id, runId: action.evidence.runId as string, stopEvidence })}
-        copy={{ waiting: "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
-          question: "How did you confirm that the previous server stopped?",
-          placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Resuming the run…" }} /></>;
+        copy={{ waiting: t("task-components:controllerStopRequired"),
+          question: t("task-components:controllerStopEvidenceLabel"),
+          placeholder: t("task-components:controllerStopEvidencePlaceholder"),
+          resuming: t("task-components:controllerStopResuming") }} /></>;
   }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.
@@ -81,7 +83,7 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
   const automatic = queued || (ownerRecovery && asObject(action.evidence.workspaceOwnerRecovery).state === "resuming");
   return <><ReportRecoveryControl owns={false} onChange={onRecoveryControlChange} />
     <p role="status" className={cn("text-sm text-muted-foreground", className)}>
-      {automatic ? "Restoring saved work…" : "Saved work is not recovered yet. The agent’s result is saved."}
+      {automatic ? t("task-components:restoringSavedWork_d6ea858b") : t("task-components:savedWorkNotRecovered")}
     </p></>;
 }
 
@@ -91,6 +93,17 @@ function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyI
     && ["board", "system"].includes(action.ownerType)
     && isRetainedWorkspaceExportCause(action.cause)
     && typeof action.evidence.runId === "string" && action.evidence.runId.length > 0;
+}
+
+type RecoveryFeedback = { key: string; values?: { code: string | null | undefined }; detail?: RecoveryFeedback } | { raw: string };
+class RecoveryUiError extends Error {
+  constructor(readonly key: string, readonly values?: { code: string | null | undefined }) { super(key); }
+}
+function recoveryFeedback(error: unknown, fallbackKey: string): RecoveryFeedback {
+  return error instanceof RecoveryUiError ? { key: error.key, values: error.values } : error instanceof Error ? { raw: error.message } : { key: fallbackKey };
+}
+function displayRecoveryFeedback(feedback: RecoveryFeedback): string {
+  return "raw" in feedback ? feedback.raw : t(feedback.key, { ...feedback.values, ...(feedback.detail ? { detail: displayRecoveryFeedback(feedback.detail) } : {}) });
 }
 
 function isControllerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
@@ -123,6 +136,7 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
   confirmStop?: (stopEvidence: string) => Promise<unknown>;
   copy?: { waiting: string; question: string; placeholder: string; resuming: string };
 }) {
+  useTranslation("task-components");
   const runId = action.evidence.runId as string;
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -143,46 +157,51 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
     } });
   const ready = evidence.trim().length >= 20;
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="previous-server-stop">
-    <p role="status">{confirm.isSuccess ? copy?.resuming ?? "Restoring saved work…"
-      : copy?.waiting ?? "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
+    <p role="status">{confirm.isSuccess ? copy?.resuming ?? t("task-components:restoringSavedWork_d6ea858b")
+      : copy?.waiting ?? t("task-components:previousServerStopRequired")}</p>
     {confirm.isSuccess ? null : !canConfirm
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
-        ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
+        ? t("task-components:previousServerStopCheckingAccess") : t("task-components:previousServerStopWaiting")}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
-        Confirm the previous server stopped</Button>
+        {t("task-components:previousServerStopConfirm")}</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
         <label htmlFor={`previous-server-stop-${action.id}`} className="text-xs text-muted-foreground">
-          {copy?.question ?? "How did you confirm that the previous server and its file copy stopped?"}</label>
+          {copy?.question ?? t("task-components:previousServerStopEvidenceLabel")}</label>
         <Textarea id={`previous-server-stop-${action.id}`} value={evidence} onChange={event => setEvidence(event.target.value)}
-          placeholder={copy?.placeholder ?? "For example: the old server process exited and was not restarted."} maxLength={12000} rows={3} />
+          placeholder={copy?.placeholder ?? t("task-components:previousServerStopEvidencePlaceholder")} maxLength={12000} rows={3} />
         <div className="flex items-center justify-between gap-2">
-          <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>Cancel</Button>
+          <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>{t("task-components:previousServerStopCancel")}</Button>
           <Button type="submit" size="sm" disabled={!ready || confirm.isPending}>
-            {confirm.isPending ? "Confirming…" : "Confirm and resume"}</Button>
+            {confirm.isPending ? t("task-components:previousServerStopConfirming") : t("task-components:previousServerStopResume")}</Button>
         </div>
       </form>}
     {confirm.error ? <p role="alert" className="text-sm text-destructive">
-      {confirm.error instanceof Error ? confirm.error.message : "The confirmation was not accepted. Refresh the task and try again."}</p> : null}
+      {confirm.error instanceof Error ? confirm.error.message : t("task-components:previousServerStopRejected")}</p> : null}
   </div>;
 }
 
 type RecoveryInput = { actionId: string; runId: string };
 
 /** Plain wording for a source inspection that did not verify. The code stays visible for support. */
-function unverifiedSourceText(inspected: WorkspaceSourceInspection | undefined): string {
-  if (!inspected || inspected.status === "verified") return "";
+function unverifiedSourceFeedback(inspected: WorkspaceSourceInspection | undefined): RecoveryFeedback | null {
+  if (!inspected || inspected.status === "verified") return null;
   if (inspected.status === "not_inspected")
-    return "Paperclip can’t check the saved files’ source here because the run recorded too many sources.";
+    return { key: "task-components:fileSourceInspectionLimit" };
   const code = inspected.sourceVerification?.reason ?? inspected.failureCode;
   return code === "allocation_ownership_ambiguous"
-    ? "Paperclip can’t confirm that this run alone used the sandbox that holds the saved files."
-    : `Paperclip can’t verify the saved files’ recorded source (${code}).`;
+    ? { key: "task-components:fileSourceOwnershipUnverified" }
+    : { key: "task-components:fileSourceUnverified", values: { code } };
+}
+function unverifiedSourceText(inspected: WorkspaceSourceInspection | undefined): string {
+  const feedback = unverifiedSourceFeedback(inspected);
+  return feedback ? displayRecoveryFeedback(feedback) : "";
 }
 
 function RetainedFilesRecovery({ action, issueId, companyId, className, onRecoveryControlChange }: {
   action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
   onRecoveryControlChange?: (owns: boolean) => void;
 }) {
+  useTranslation("task-components");
   const runId = action.evidence.runId as string;
   const owner = useDraftOwner();
   const readOwner = useDraftOwnerReader();
@@ -190,7 +209,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
   const busy = useRef(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [checkedUnconfirmed, setCheckedUnconfirmed] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<RecoveryFeedback | null>(null);
   const access = useQuery({ queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess() });
   const accessView = useQueryView(access);
@@ -247,38 +266,41 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
       const fresh = boundAction(observed.data);
       const state = asObject(fresh?.evidence.workspaceRecovery);
       if (observed.error || !fresh || state.status !== "blocked" || state.retryable !== true)
-        throw new Error("File recovery changed. Inspect its current status before requesting recovery.");
-      if (!sourceVerified(observed.data))
-        throw new Error(unverifiedSourceText(observed.data?.sourceInspection) || "The saved files’ source could not be verified.");
+        throw new RecoveryUiError("deep-ui:recovery_20a57f7e22");
+      if (!sourceVerified(observed.data)) {
+        const feedback = unverifiedSourceFeedback(observed.data?.sourceInspection);
+        throw new RecoveryUiError(feedback && "key" in feedback ? feedback.key : "task-components:fileSourceVerificationFailed",
+          feedback && "key" in feedback ? feedback.values : undefined);
+      }
       if (!canMutate || !owner || readOwner() !== owner || !storageKey)
-        throw new Error("Your account changed. Refresh before requesting file recovery.");
+        throw new RecoveryUiError("deep-ui:recovery_7d6e47bcf7");
       const previous = readPendingSend(storageKey, matchesInput);
       if (restartFailedAttempt && (!previous || !Array.isArray(state.requestIds)
         || !state.requestIds.includes(previous.idempotencyKey)
         || asObject(fresh.evidence.systemRecovery).state !== "exhausted"))
-        throw new Error("The previous failed recovery is not confirmed. Check its status before trying again.");
+        throw new RecoveryUiError("deep-ui:recovery_c8aaf22fa9");
       // Unknown acceptance reuses its identity. A new bounded request requires
       // an explicit operator click and a freshly confirmed exhausted attempt.
       const record = (!restartFailedAttempt && previous) || {
         idempotencyKey: createUuid(), payload: { actionId: action.id, runId }, createdAt: Date.now(),
       };
       if (!writePendingSend(storageKey, record))
-        throw new Error("The recovery request could not be saved in this browser. No request was sent.");
+        throw new RecoveryUiError("deep-ui:recovery_8aed336c3a");
       try {
         const result = await issuesApi.recoverWorkspace(issueId, { ...record.payload, idempotencyKey: record.idempotencyKey });
         if (result.actionId !== action.id || !["queued", "recovering", "blocked", "recovered"].includes(result.status))
-          throw new Error("The recovery acknowledgement could not be confirmed.");
+          throw new RecoveryUiError("deep-ui:recovery_f0e02b2af6");
         setAcknowledged(true);
         setCheckedUnconfirmed(false);
         invalidate();
         await source.refetch();
       } catch (error) {
         setNotice(classifySendFailure(error) === "rejected"
-          ? `Recovery request was not confirmed: ${error instanceof Error ? error.message : "Inspect its status."}`
-          : "The recovery request could not be confirmed. Check its status before trying again; the saved request will be reused.");
+          ? { key: "deep-ui:file_request_rejected", detail: recoveryFeedback(error, "deep-ui:file_inspect_status") }
+          : { key: "deep-ui:file_request_unknown" });
       }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to inspect file recovery.");
+      setNotice(recoveryFeedback(error, "deep-ui:file_inspect_failed"));
     } finally { busy.current = false; }
   } });
   const check = useMutation({ retry: false, mutationFn: async () => { // query-error-ok: operator checks run once; the source read uses the shared query retry policy.
@@ -286,16 +308,15 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
     if (observed.error) throw observed.error;
     const fresh = boundAction(observed.data);
     if (!fresh) {
-      // The task's current recovery replaced this record. Reload the task so it
-      // shows that recovery, instead of asking for a refresh that changes nothing.
+      // Reload the task when its current recovery replaced this record.
       invalidate();
-      throw new Error("This file recovery was replaced. Showing the task’s current recovery.");
+      throw new RecoveryUiError("task-components:fileRecoveryReplacedShowing");
     }
     const state = asObject(fresh.evidence.workspaceRecovery);
     const ids = state.requestIds;
     const unconfirmed = Boolean(pending && Array.isArray(ids) && !ids.includes(pending.idempotencyKey));
     setCheckedUnconfirmed(unconfirmed);
-    setNotice(unconfirmed ? "No recovery request is confirmed yet. Trying again will reuse the saved request." : null);
+    setNotice(unconfirmed ? { key: "deep-ui:file_unconfirmed" } : null);
     invalidate();
   } });
   const checkError = isTransientError(check.error) ? null : check.error;
@@ -312,32 +333,32 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
   const unverified = Boolean(current && !verified && !saved && !waiting);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
     <ReportRecoveryControl owns={ownsRecoveryControl} onChange={onRecoveryControlChange} />
-    <p role="status">{saved ? "Saved files recovered. Task recovery is still being checked."
-      : failedReceipt ? "File recovery has not finished. The saved source remains protected."
-      : restoring ? "Recovering saved files. Work remains paused until recovery is verified."
-        : waiting ? "File recovery is queued. Waiting for verified saved files."
-          : "The saved files need recovery before work can continue."}</p>
+    <p role="status">{saved ? t("deep-ui:saved_files_recovered_task_recovery_is_still_being_checked_23263f")
+      : failedReceipt ? t("deep-ui:file_recovery_has_not_finished_the_saved_source_remains_prot_5b9843")
+      : restoring ? t("deep-ui:recovering_saved_files_work_remains_paused_until_recovery_is_752bf9")
+        : waiting ? t("deep-ui:file_recovery_is_queued_waiting_for_verified_saved_files_f1167e")
+          : t("deep-ui:the_saved_files_need_recovery_before_work_can_continue_300875")}</p>
     {canMutate ? <>
       {current && verified && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
         className="self-start" disabled={request.isPending || check.isPending}
-        onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
-          : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}
+        onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? t("deep-ui:requesting_file_recovery_edd29e")
+          : confirmedFailedAttempt ? t("deep-ui:try_file_recovery_again_037552") : t("deep-ui:recover_saved_files_f38e40")}</Button> : null}
       {waiting || unconfirmed || failedReceipt || source.error || sourceReady && !current ? <Button variant="ghost" size="sm" className="self-start"
         disabled={request.isPending || check.isPending} onClick={() => check.mutate()}>
-        {check.isPending ? "Checking file recovery…" : "Check file recovery status"}
+        {check.isPending ? t("deep-ui:checking_file_recovery_0267be") : t("deep-ui:check_file_recovery_status_0561b3")}
       </Button> : null}
-      {sourceView.kind === "loading" || sourceView.kind === "reconnecting" ? <p className="text-xs text-muted-foreground">Inspecting the recorded file source…</p> : null}
+      {sourceView.kind === "loading" || sourceView.kind === "reconnecting" ? <p className="text-xs text-muted-foreground">{t("task-components:sentence_72d7b1bc06b7")}</p> : null}
       {sourceView.kind === "error" || checkError || notice ? <p role="alert" className="text-sm text-destructive">
-        {notice ?? (checkError instanceof Error ? checkError.message : "File recovery could not be inspected. Check its status again.")}
+        {notice ? displayRecoveryFeedback(notice) : displayRecoveryFeedback(recoveryFeedback(checkError, "deep-ui:file_check_failed"))}
       </p> : null}
       {current && recovery.status === "blocked" && (serverAcknowledged || recovery.retryable !== true)
-        ? <p role="alert">File recovery has not finished. The saved files remain protected and are not applied.</p> : null}
+        ? <p role="alert">{t("task-components:fileRecoveryNotApplied")}</p> : null}
       {unverified ? <p role="status" className="text-muted-foreground">
-        {unverifiedSourceText(source.data?.sourceInspection)} Paperclip does not apply files it can’t verify.
+        {unverifiedSourceText(source.data?.sourceInspection)} {t("task-components:fileSourceNotApplied")}
       </p> : null}
-      {sourceReady && !current ? <p role="alert">This file recovery was replaced. Check its status to show the task’s current recovery.</p> : null}
-    </> : accessView.kind === "error" ? <p role="alert" className="text-sm text-destructive">Task access could not be checked. Refresh before requesting file recovery.</p>
-      : accessView.kind === "loading" || accessView.kind === "reconnecting" || !owner ? <p role="status" className="text-xs text-muted-foreground">Checking file recovery access…</p>
-        : <p className="text-xs text-muted-foreground">A board member with task access can request file recovery.</p>}
+      {sourceReady && !current ? <p role="alert">{t("task-components:fileRecoveryReplacedCheck")}</p> : null}
+    </> : accessView.kind === "error" ? <p role="alert" className="text-sm text-destructive">{t("task-components:sentence_1db596b7d1c6")}</p>
+      : accessView.kind === "loading" || accessView.kind === "reconnecting" || !owner ? <p role="status" className="text-xs text-muted-foreground">{t("task-components:sentence_d12e084c0b1f")}</p>
+        : <p className="text-xs text-muted-foreground">{t("task-components:fileRecoveryBoardMember")}</p>}
   </div>;
 }

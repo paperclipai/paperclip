@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { api } from "./client";
 
@@ -116,7 +117,10 @@ export const auditApi = {
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, body);
       if (recovery) return recovery;
       const message = (body as { error?: string } | null)?.error ?? `Export failed: ${res.status}`;
-      throw new Error(message);
+      const error = new Error(message);
+      throw (body as { error?: string } | null)?.error != null
+        ? error
+        : localizeUiError(error, { key: "integration-errors:auditExport", values: { status: res.status } });
     }
     return res.blob();
   },

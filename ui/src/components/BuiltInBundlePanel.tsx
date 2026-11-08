@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import type { ReactNode } from "react";
 
 import { Link } from "@/lib/router";
@@ -75,26 +76,26 @@ function resourceActionCopy(
 ): ResourceActionCopy | null {
   if (resource.stockStatus === "stock_update_available") {
     return {
-      title: `Update ${label} to the newest default?`,
-      body: `You haven't edited this, so Paperclip will replace it with the newer shipped version. Nothing you customized is affected, and your adapter credentials and settings are not touched.`,
-      confirmLabel: "Update",
-      triggerLabel: "Update",
+      title: t("agent-config:updateValueToTheNewestDefault_2d0175a", { value1: label }),
+      body: t("agent-config:youHavenTEditedThisSoPaperclipWill_42a6a8d"),
+      confirmLabel: t("agent-config:update_fb91e24"),
+      triggerLabel: t("agent-config:update_fb91e24"),
     };
   }
   if (resource.stockStatus === "operator_modified") {
     return {
-      title: `Reset ${label} to the shipped default?`,
-      body: `This replaces your edited version with Paperclip's current default. Your edits can't be recovered. Adapter credentials and settings are not touched.`,
-      confirmLabel: `Reset ${label}`,
-      triggerLabel: "Reset",
+      title: t("agent-config:resetValueToTheShippedDefault_04542ca", { value1: label }),
+      body: t("agent-config:thisReplacesYourEditedVersionWithPaperclipS_e6b42f0"),
+      confirmLabel: t("agent-config:resetValue_92ad13c", { value1: label }),
+      triggerLabel: t("agent-config:reset_44c57ab"),
     };
   }
   if (resource.stockStatus === "missing") {
     return {
-      title: `Recreate ${label}?`,
-      body: `This resource is missing. Paperclip will recreate it from the shipped default. Adapter credentials and settings are not touched.`,
-      confirmLabel: "Recreate",
-      triggerLabel: "Recreate",
+      title: t("agent-config:recreateValue_05008b8", { value1: label }),
+      body: t("agent-config:thisResourceIsMissingPaperclipWillRecreateIt_08e5dad"),
+      confirmLabel: t("agent-config:recreate_aa64fcf"),
+      triggerLabel: t("agent-config:recreate_aa64fcf"),
     };
   }
   return null;
@@ -111,13 +112,14 @@ function ResourceActionButton({
   onConfirm: () => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation("agent-config");
   const copy = resourceActionCopy(resource, label);
   if (!copy) return null;
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="outline" size="sm" disabled={pending}>
-          {pending ? "Working…" : copy.triggerLabel}
+          {pending ? t("agent-config:working_13b7bfc") : copy.triggerLabel}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -126,7 +128,7 @@ function ResourceActionButton({
           <AlertDialogDescription>{copy.body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("agent-config:cancel_77dfd21")}</AlertDialogCancel>
           <AlertDialogAction onClick={onConfirm}>{copy.confirmLabel}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -149,11 +151,12 @@ function ConfirmActionButton({
   pending: boolean;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation("agent-config");
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="outline" size="sm" disabled={pending}>
-          {pending ? "Working…" : triggerLabel}
+          {pending ? t("agent-config:working_13b7bfc") : triggerLabel}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -162,7 +165,7 @@ function ConfirmActionButton({
           <AlertDialogDescription>{body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("agent-config:cancel_77dfd21")}</AlertDialogCancel>
           <AlertDialogAction onClick={onConfirm}>{confirmLabel}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -180,6 +183,7 @@ interface BundleRowProps {
 }
 
 function BundleRow({ label, secondary, chips, detail, detailTone = "muted", actions }: BundleRowProps) {
+  useTranslation("agent-config");
   return (
     <div className="flex flex-col gap-1 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
       <div className="min-w-0 space-y-1">
@@ -209,11 +213,11 @@ function BundleRow({ label, secondary, chips, detail, detailTone = "muted", acti
 function driftDetail(resource: BuiltInManagedResourceState): string | undefined {
   switch (resource.stockStatus) {
     case "operator_modified":
-      return "You've edited this. Your changes are kept until you reset.";
+      return t("agent-config:youVeEditedThisYourChangesAreKept_7203aa4");
     case "stock_update_available":
-      return "Paperclip shipped a newer default.";
+      return t("agent-config:paperclipShippedANewerDefault_cd7fe79");
     case "missing":
-      return "Not materialized yet — recreate it from the shipped default.";
+      return t("agent-config:notMaterializedYetRecreateItFromTheShipped_c6a5537");
     default:
       return undefined;
   }
@@ -251,6 +255,7 @@ export function BuiltInBundlePanel({
   routineActionPending = null,
   className,
 }: BuiltInBundlePanelProps) {
+  const { t } = useTranslation("agent-config");
   const { status, definition, resources } = state;
   const bundle = definition.bundle;
   if (!bundle) return null;
@@ -262,10 +267,10 @@ export function BuiltInBundlePanel({
   let adapterDetail: string | undefined;
   if (status === "pending_approval") {
     adapterChip = "pending_approval";
-    adapterDetail = "Waiting on board hire approval before this coach can run.";
+    adapterDetail = t("agent-config:waitingOnBoardHireApprovalBeforeThisCoach_c4eb555");
   } else if (!adapterReady) {
     adapterChip = "needs_setup";
-    adapterDetail = "Pick an adapter this coach can run on.";
+    adapterDetail = t("agent-config:pickAnAdapterThisCoachCanRunOn_b20b254");
   }
 
   const skill = findResource(resources, "skill");
@@ -273,7 +278,7 @@ export function BuiltInBundlePanel({
   const routine = findResource(resources, "routine");
   const scheduleEnabled = routine?.scheduleEnabled === true;
   const routineKey = bundle.routine.routineKey;
-  const scheduleLabel = bundle.routine.scheduleLabel ?? "Weekly schedule";
+  const scheduleLabel = bundle.routine.scheduleLabel ?? t("agent-config:weeklySchedule_7bfb611");
   const proposalIssueRef = routine?.pendingUpdateIssueIdentifier ?? routine?.pendingUpdateIssueId ?? null;
   const proposalHref = proposalIssueRef && routine?.pendingUpdateInteractionId
     ? `/issues/${proposalIssueRef}#interaction-${routine.pendingUpdateInteractionId}`
@@ -302,7 +307,7 @@ export function BuiltInBundlePanel({
         actions={
           <>
             <Button asChild variant="link" size="sm">
-              <Link to={viewHref}>View</Link>
+              <Link to={viewHref}>{t("agent-config:view_69bd4ef")}</Link>
             </Button>
             <ResourceActionButton
               resource={resource}
@@ -317,26 +322,24 @@ export function BuiltInBundlePanel({
   };
 
   return (
-    <section className={cn("space-y-2", className)} aria-label="Bundle status">
-      <h3 className="text-sm font-medium">Bundle status</h3>
+    <section className={cn("space-y-2", className)} aria-label={t("agent-config:bundleStatus_4e4cdc2")}>
+      <h3 className="text-sm font-medium">{t("agent-config:bundleStatus_4e4cdc2")}</h3>
 
       <div className="divide-y rounded-lg border px-4">
         {/* Adapter — no resource entry; readiness is the agent lifecycle. */}
         <BundleRow
-          label="Adapter"
+          label={t("agent-config:adapter_e6b4616")}
           chips={<ResourceStatusChip variant={adapterChip} />}
           detail={adapterDetail}
           actions={
-            <Button variant="outline" size="sm" onClick={onConfigure}>
-              Configure
-            </Button>
+            <Button variant="outline" size="sm" onClick={onConfigure}>{t("agent-config:configure_792c81a")}</Button>
           }
         />
 
         {skill &&
           renderResourceRow(
             "skill",
-            "Skill",
+            t("agent-config:skill_ec9f630"),
             bundle.skill.displayName || skill.resourceKey,
             `/agents/${agentRef}/skills`,
             skill,
@@ -345,7 +348,7 @@ export function BuiltInBundlePanel({
         {instructions &&
           renderResourceRow(
             "instructions",
-            "Instructions",
+            t("agent-config:instructions_ed58f29"),
             bundle.instructions.entryFile,
             `/agents/${agentRef}/instructions`,
             instructions,
@@ -353,7 +356,7 @@ export function BuiltInBundlePanel({
 
         {/* Routine — zero-token-by-default; the weekly schedule ships off. */}
         <BundleRow
-          label="Routine"
+          label={t("agent-config:routine_482273d")}
           secondary={bundle.routine.title}
           chips={
             <>
@@ -368,18 +371,18 @@ export function BuiltInBundlePanel({
           }
           detail={
             scheduleEnabled
-              ? "The weekly schedule is enabled and can create background work."
-              : "Nothing runs until you enable the weekly schedule — it costs zero tokens by default."
+              ? t("agent-config:theWeeklyScheduleIsEnabledAndCanCreate_1452f25")
+              : t("agent-config:nothingRunsUntilYouEnableTheWeeklySchedule_3803ce1")
           }
           actions={
             routine ? (
               <>
                 {onRunRoutine && (
                   <ConfirmActionButton
-                    title="Run Reflection Coach once?"
-                    body="Paperclip will create one routine task now. This does not enable the weekly schedule or turn on background work."
-                    triggerLabel="Run once"
-                    confirmLabel="Run once"
+                    title={t("agent-config:runReflectionCoachOnce_6883cbc")}
+                    body={t("agent-config:paperclipWillCreateOneRoutineTaskNowThis_fef912c")}
+                    triggerLabel={t("agent-config:runOnce_802aefa")}
+                    confirmLabel={t("agent-config:runOnce_802aefa")}
                     pending={routineActionPending === "run"}
                     onConfirm={() => onRunRoutine(routineKey)}
                   />
@@ -387,20 +390,20 @@ export function BuiltInBundlePanel({
                 {scheduleEnabled
                   ? onDisableSchedule && (
                     <ConfirmActionButton
-                      title="Disable the weekly schedule?"
-                      body="Paperclip will stop future scheduled Reflection Coach runs. Manual Run once remains available."
-                      triggerLabel="Disable schedule"
-                      confirmLabel="Disable schedule"
+                      title={t("agent-config:disableTheWeeklySchedule_015c9bb")}
+                      body={t("agent-config:paperclipWillStopFutureScheduledReflectionCoachRuns_125d1ba")}
+                      triggerLabel={t("agent-config:disableSchedule_40899d2")}
+                      confirmLabel={t("agent-config:disableSchedule_40899d2")}
                       pending={routineActionPending === "disable"}
                       onConfirm={() => onDisableSchedule(routineKey)}
                     />
                   )
                   : onEnableSchedule && (
                     <ConfirmActionButton
-                      title="Enable the weekly schedule?"
-                      body="Paperclip will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
-                      triggerLabel="Enable weekly"
-                      confirmLabel="Enable weekly"
+                      title={t("agent-config:enableTheWeeklySchedule_e4dffe9")}
+                      body={t("agent-config:paperclipWillAllowReflectionCoachToCreateRoutine_7b68edd")}
+                      triggerLabel={t("agent-config:enableWeekly_86568a0")}
+                      confirmLabel={t("agent-config:enableWeekly_86568a0")}
                       pending={routineActionPending === "enable"}
                       onConfirm={() => onEnableSchedule(routineKey)}
                     />
@@ -408,7 +411,7 @@ export function BuiltInBundlePanel({
                 {driftVariant(routine) && (
                   <ResourceActionButton
                     resource={routine}
-                    label="routine"
+                    label={t("agent-config:routine_012da8a")}
                     onConfirm={() => onResetResource("routine")}
                     pending={resettingResource === "routine"}
                   />
@@ -419,12 +422,12 @@ export function BuiltInBundlePanel({
         />
         {proposalHref && (
           <BundleRow
-            label="Proposal"
+            label={t("agent-config:proposal_929017a")}
             chips={<ResourceStatusChip variant="proposal_pending" />}
-            detail="A proposed Reflection Coach update is waiting for review."
+            detail={t("agent-config:aProposedReflectionCoachUpdateIsWaitingFor_c344c69")}
             actions={
               <Button asChild variant="link" size="sm">
-                <Link to={proposalHref}>Review proposal</Link>
+                <Link to={proposalHref}>{t("agent-config:reviewProposal_8339f09")}</Link>
               </Button>
             }
           />

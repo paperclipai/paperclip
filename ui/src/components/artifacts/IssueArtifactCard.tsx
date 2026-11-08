@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { isPatchFile } from "@/lib/patch";
 import { loadAttachmentText, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
 import { useContext, useState } from "react";
@@ -55,6 +56,7 @@ export interface IssueArtifactFileProps extends ArtifactIdentity {
 
 /** Shared by uploads and promoted uploads; both use the issue's existing gallery. */
 export function IssueArtifactFile(props: IssueArtifactFileProps) {
+  useTranslation("task-components");
   const { metadata = null, attachmentId } = props;
   const openGallery = useContext(IssueGalleryContext);
   const openTextAttachment = useContext(TextAttachmentContext);
@@ -65,11 +67,9 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
     <Button
       variant="outline"
       size="sm"
-      aria-label={`Open in tab: ${props.title}`}
+      aria-label={t("task-components:openInTab_5d58d268", { value1: props.title })}
       onClick={() => openTextAttachment(attachmentId, props.filename)}
-    >
-      Open in tab
-    </Button>
+    >{t("task-components:openInTab_0e5d9596")}</Button>
   ) : null;
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [csvRequested, setCsvRequested] = useState(false);
@@ -153,7 +153,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
   if (patchEligible && patchData.data !== undefined) {
     return <DocumentCard {...props} patch body={patchData.data} actions={<>
       {openTextAction}
-      {downloadPath ? <Button asChild size="sm" variant="outline"><a href={downloadPath} download={props.filename}>Download file</a></Button> : null}
+      {downloadPath ? <Button asChild size="sm" variant="outline"><a href={downloadPath} download={props.filename}>{t("task-components:downloadFile_9de4149f")}</a></Button> : null}
     </>} />;
   }
   if (localCsv && !tooLarge && data.data) {
@@ -167,9 +167,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
             {openTextAction}
             {downloadPath ? (
               <Button asChild size="sm" variant="outline">
-                <a href={downloadPath} download={props.filename}>
-                  Download file
-                </a>
+                <a href={downloadPath} download={props.filename}>{t("task-components:downloadFile_9de4149f")}</a>
               </Button>
             ) : null}
           </>
@@ -190,7 +188,7 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
             {openTextAction}
             {patchEligible && patchView.kind !== "error" ? (
               <Button variant="outline" size="sm" disabled={patchData.isFetching} onClick={() => setPatchRequested(true)}>
-                {patchData.isFetching ? "Loading preview…" : "Preview patch"}
+                {patchData.isFetching ? t("task-components:loadingPreview_c4cf2b2c") : t("task-components:previewPatch")}
               </Button>
             ) : null}
             {localCsv && !tooLarge && dataView.kind !== "error" ? (
@@ -200,22 +198,22 @@ export function IssueArtifactFile(props: IssueArtifactFileProps) {
                 disabled={data.isFetching}
                 onClick={() => setCsvRequested(true)}
               >
-                {data.isFetching ? "Loading preview…" : "Preview data"}
+                {data.isFetching ? t("task-components:loadingPreview_c4cf2b2c") : t("task-components:previewData_d526f2ae")}
               </Button>
             ) : null}
           </>
         }
       />
       {patchEligible && patchView.kind === "error" ? (
-        <QueryErrorState size="inline" error={patchView.error} action="load the patch preview" onRetry={patchView.retry} retrying={patchView.isFetching} />
-      ) : patchEligible && patchData.isFetching ? <p role="status" className="text-xs text-muted-foreground">Loading patch preview…</p> : null}
+        <QueryErrorState size="inline" error={patchView.error} action={t("task-components:loadPatchPreview")} onRetry={patchView.retry} retrying={patchView.isFetching} />
+      ) : patchEligible && patchData.isFetching ? <p role="status" className="text-xs text-muted-foreground">{t("task-components:loadingPatchPreview")}</p> : null}
       {csv && (tooLarge || dataView.kind === "error" || !localCsv) && (
         <div className="px-2 text-xs text-muted-foreground" role="status">
           {tooLarge
-            ? "CSV is too large to preview. Download the file to view it."
+            ? t("task-components:csvIsTooLargeToPreviewDownload_b22a2423")
             : dataView.kind === "error"
               ? <QueryErrorState size="inline" error={dataView.error} action="load the CSV preview" onRetry={dataView.retry} retrying={dataView.isFetching} />
-              : "CSV preview is unavailable. Download the file to view it."}
+              : t("task-components:csvPreviewIsUnavailableDownloadTheFile_1006f7fa")}
         </div>
       )}
     </div>
@@ -229,6 +227,7 @@ export function IssueWorkProductArtifactCard({
   workProduct: IssueWorkProduct;
   author: string;
 }) {
+  useTranslation("task-components");
   const m = wp.metadata;
   const href = artifactUrl(workProductHref(wp));
   const chip = stateChipFor(wp.type, wp.status, wp.reviewState);
@@ -239,7 +238,7 @@ export function IssueWorkProductArtifactCard({
     updatedAt: formatDateTime(wp.updatedAt),
     statusBadge:
       wp.healthStatus === "unhealthy" ? (
-        <Badge variant="destructive">Unhealthy</Badge>
+        <Badge variant="destructive">{t("task-components:unhealthy_317b1fbc")}</Badge>
       ) : chip ? (
         <Badge variant="outline">{chip.label}</Badge>
       ) : undefined,

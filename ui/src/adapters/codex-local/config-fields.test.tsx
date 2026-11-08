@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -194,6 +195,17 @@ describe("Paperclip Runner Codex configuration", () => {
       await selectField(container, "Runner lifecycle", "warm");
       expect(container.textContent).toContain("Warm idle timeout (ms)");
       expect(saved()).toMatchObject({ provider: "codex", lifecycleMode: "warm", idleTimeoutMs: 45_000, env: account });
+      await selectField(container, "Runner lifecycle", "automatic");
+      expect(container.querySelector('[aria-label="Runner lifecycle"]')?.textContent).toContain("Automatic");
+      expect(container.textContent).not.toContain("Warm idle timeout (ms)");
+      expect(saved().lifecycleMode).toBeUndefined();
+      expect(saved()).toMatchObject({ provider: "codex", env: account });
+      await selectField(container, "Runner lifecycle", "per_turn");
+      expect(saved().lifecycleMode).toBe("per_turn");
+      await selectField(container, "Runner lifecycle", "automatic");
+      expect(saved().lifecycleMode).toBeUndefined();
+      await selectField(container, "Runner lifecycle", "warm");
+      expect(saved()).toMatchObject({ lifecycleMode: "warm", idleTimeoutMs: 45_000 });
     });
   });
   it.each(["create", "edit"] as const)("changes Legacy ACP session and permissions without replacing the account in %s mode", async mode => {
@@ -376,6 +388,29 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain("cannot start or recover a Paperclip Runner run");
     expect(html).toContain("Select Automatic (isolated) to remediate it");
     expect(html).not.toContain("Full auto (never ask)");
+  });
+
+  it("localizes automatic lifecycle choices without changing saved identifiers", async () => {
+    await i18n.changeLanguage("zh-CN");
+    try {
+      await editFields("edit", "paperclip_runner", async (container, saved) => {
+        const label = i18n.t("agent-config:runnerLifecycle_dceecd2");
+        await selectField(container, label, "automatic");
+        expect(container.querySelector(`[aria-label="${label}"]`)?.textContent).toContain("自动");
+        expect(saved().lifecycleMode).toBeUndefined();
+        await selectField(container, label, "per_turn");
+        expect(saved().lifecycleMode).toBe("per_turn");
+      });
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("defaults an unset runner lifecycle to automatic", async () => {
+    await renderRunner({ provider: "codex" }, undefined, container => {
+      expect(container.querySelector('[aria-label="Runner lifecycle"]')?.textContent).toContain("Automatic");
+      expect(container.textContent).not.toContain("Warm idle timeout (ms)");
+    });
   });
 
   it("shows a bounded idle timeout only for warm sessions", async () => {

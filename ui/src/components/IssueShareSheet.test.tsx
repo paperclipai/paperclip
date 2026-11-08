@@ -42,6 +42,7 @@ vi.mock("@/context/ToastContext", () => ({
 
 import { IssueShareSheet } from "./IssueShareSheet";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n } from "@/i18n";
 
 function grant(overrides: Partial<IssueAccessGrant>): IssueAccessGrant {
   return {
@@ -118,6 +119,14 @@ describe("IssueShareSheet", () => {
     await settle();
     return client;
   }
+
+  it("updates the shared timestamp without granting or revoking access", async () => {
+    listAccessGrants.mockResolvedValue([grant({ id: "g1", source: "explicit", subjectDisplayName: "Raw / 用户" })]);
+    await renderSheet(true);
+    await act(async () => { await i18n.changeLanguage("zh-CN"); }); await settle();
+    try { expect(document.body.textContent).toContain("共享于"); expect(document.body.textContent).toContain("Raw / 用户"); expect(createAccessGrant).not.toHaveBeenCalled(); expect(revokeAccessGrant).not.toHaveBeenCalled(); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+  });
 
   it("renders a source badge per grant and gates Revoke by source", async () => {
     listAccessGrants.mockResolvedValue([

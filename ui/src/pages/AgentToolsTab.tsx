@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { HelpCircle, PackageCheck } from "lucide-react";
@@ -52,6 +54,7 @@ function GitHubIdentitySection({
   loadError: boolean;
   onRetry: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
   const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
 
@@ -63,34 +66,27 @@ function GitHubIdentitySection({
             <GithubIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-foreground">GitHub identity</h3>
+            <h3 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:github_identity")}</h3>
             {loading ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">Checking GitHub identity…</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:checking_github_identity")}</p>
             ) : loadError ? (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Could not load GitHub identity</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
-                </p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{translateAgentPage("agents:could_not_load_github_identity")}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:paperclip_could_not_verify_this_agent_s_current")}</p>
               </>
             ) : dedicatedIdentity ? (
               <>
                 <p className="mt-0.5 text-sm font-medium text-foreground">
-                  {dedicatedLogin ? `@${dedicatedLogin}` : "Dedicated GitHub account"}
+                  {dedicatedLogin ? `@${dedicatedLogin}` : translateAgentPage("agents:dedicated_github_account")}
                 </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.
-                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:used_only_by")}{" "}{agentName}{translateAgentPage("agents:this_dedicated_connection_takes_precedence_over_the_responsible")}</p>
               </>
             ) : (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Use responsible person&apos;s GitHub</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  At run start, Paperclip uses the personal GitHub connection of the person responsible for the task.
-                </p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{translateAgentPage("agents:use_responsible_person_s_github")}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:at_run_start_paperclip_uses_the_personal_github")}</p>
                 {personalIdentity ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Your account is connected{personalLogin ? ` as @${personalLogin}` : ""}.
+                  <p className="mt-1 text-xs text-muted-foreground">{translateAgentPage("agents:your_account_is_connected")}{personalLogin ? translateAgentPage("agents:as", { value1: personalLogin }) : ""}.
                   </p>
                 ) : null}
               </>
@@ -101,24 +97,24 @@ function GitHubIdentitySection({
         {!loading ? (
           <div className="flex flex-wrap items-center gap-2">
             {loadError ? (
-              <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+              <Button variant="outline" size="sm" onClick={onRetry}>{translateAgentPage("agents:retry")}</Button>
             ) : dedicatedIdentity ? (
               <Button variant="outline" size="sm" asChild>
-                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
+                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>{translateAgentPage("agents:manage_github_identity")}</Link>
               </Button>
             ) : (
               <>
                 {personalIdentity ? (
                   <Button variant="outline" size="sm" asChild>
-                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>Manage my GitHub</Link>
+                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>{translateAgentPage("agents:manage_my_github")}</Link>
                   </Button>
                 ) : (
                   <Button size="sm" asChild>
-                    <Link to="/apps/connect?source=github">Connect my GitHub</Link>
+                    <Link to="/apps/connect?source=github">{translateAgentPage("agents:connect_my_github")}</Link>
                   </Button>
                 )}
                 <Button variant="outline" size="sm" asChild>
-                  <Link to="/apps/connect?source=github">Use a dedicated account</Link>
+                  <Link to="/apps/connect?source=github">{translateAgentPage("agents:use_a_dedicated_account")}</Link>
                 </Button>
               </>
             )}
@@ -196,27 +192,22 @@ function InstalledAppsSection({
   error: boolean;
   onChange: (connectionId: string, installed: boolean) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <section className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Installed apps</h3>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Installed apps load tools into {agentName}'s context on every run. Permitted-only apps do not add context cost.
-          </p>
+          <h3 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:installed_apps")}</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:installed_apps_load_tools_into")}{" "}{agentName}{translateAgentPage("agents:s_context_on_every_run_permitted_only_apps")}</p>
         </div>
         <InstallSaveStatusChip pending={saving} unsaved={unsaved} error={error} />
       </div>
 
       <div className="space-y-3 p-3">
-        <InlineBanner tone="info" compact>
-          Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.
-        </InlineBanner>
+        <InlineBanner tone="info" compact>{translateAgentPage("agents:has_access_means_the_app_is_permitted_installed")}</InlineBanner>
 
         {connections.length === 0 ? (
-          <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-            No permitted apps yet. Bind an access profile to make apps available here.
-          </p>
+          <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">{translateAgentPage("agents:no_permitted_apps_yet_bind_an_access_profile")}</p>
         ) : (
           <div className="divide-y divide-border rounded-md border border-border">
             {connections.map((connection) => {
@@ -231,20 +222,20 @@ function InstalledAppsSection({
                     <Checkbox
                       checked={checked}
                       disabled={installedForAll || rowPending}
-                      aria-label={`Install ${connection.name} on ${agentName}`}
+                      aria-label={translateAgentPage("agents:install_on", { value1: connection.name, value2: agentName })}
                       onCheckedChange={(next) => onChange(connection.id, Boolean(next))}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
                         <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
-                        {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                        {rowPending ? <span className="text-xs text-muted-foreground">{translateAgentPage("agents:saving_ae7e88")}</span> : null}
                       </span>
                       <span className="mt-0.5 block text-xs text-muted-foreground">
                         {installedForAll
-                          ? "Installed from the app page for every agent. Remove the all-agents install there."
+                          ? translateAgentPage("agents:installed_from_the_app_page_for_every_agent")
                           : checked
-                            ? "Loaded into this agent's runtime context."
+                            ? translateAgentPage("agents:loaded_into_this_agent_s_runtime_context")
                             : INSTALLED_HINT}
                       </span>
                     </span>
@@ -258,13 +249,9 @@ function InstalledAppsSection({
                         <Link
                           to={`/apps/${connection.id}/permissions`}
                           className="text-xs font-medium text-primary hover:underline"
-                        >
-                          Open permissions
-                        </Link>
+                        >{translateAgentPage("agents:open_permissions")}</Link>
                       )}
-                    >
-                      Permitted but not installed — tools will not appear in runs.
-                    </InlineBanner>
+                    >{translateAgentPage("agents:permitted_but_not_installed_tools_will_not_appear")}</InlineBanner>
                   ) : null}
                 </div>
               );
@@ -285,7 +272,8 @@ function InstallBadge({
   installedForAll: boolean;
   permitted: boolean;
 }) {
-  const label = installed ? (installedForAll ? "Installed for all" : "Installed") : permitted ? "Permitted only" : "Not permitted";
+  const { t: translateAgentPage } = useTranslation("agents");
+  const label = installed ? (installedForAll ? translateAgentPage("agents:installed_for_all") : translateAgentPage("agents:installed")) : permitted ? translateAgentPage("agents:permitted_only") : translateAgentPage("agents:not_permitted");
   return (
     <span
       className={cn(
@@ -308,19 +296,20 @@ function InstallSaveStatusChip({
   unsaved: boolean;
   error: boolean;
 }) {
-  if (pending) return <span className="text-xs text-muted-foreground">Saving...</span>;
-  if (error) return <span className="text-xs text-destructive">Could not save</span>;
-  if (unsaved) return <span className="text-xs text-muted-foreground">Unsaved changes</span>;
-  return <span className="text-xs text-muted-foreground">Saved</span>;
+  const { t: translateAgentPage } = useTranslation("agents");
+  if (pending) return <span className="text-xs text-muted-foreground">{translateAgentPage("agents:saving_ae7e88")}</span>;
+  if (error) return <span className="text-xs text-destructive">{translateAgentPage("agents:could_not_save")}</span>;
+  if (unsaved) return <span className="text-xs text-muted-foreground">{translateAgentPage("agents:unsaved_changes")}</span>;
+  return <span className="text-xs text-muted-foreground">{translateAgentPage("agents:saved")}</span>;
 }
 
 const POLICY_EFFECT_LABEL: Record<string, string> = {
-  allow: "allow",
-  block: "block",
-  deny: "deny",
-  require_approval: "require approval",
-  redact: "redact",
-  rate_limit: "rate limit",
+  get allow() { return translateAgentPage("agents:allow_6452e7"); },
+  get block() { return translateAgentPage("agents:block_0214b4"); },
+  get deny() { return translateAgentPage("agents:deny"); },
+  get require_approval() { return translateAgentPage("agents:require_approval"); },
+  get redact() { return finalPagesT("final-pages:redact_18f125"); },
+  get rate_limit() { return finalPagesT("final-pages:rate_limit_a0f3a1"); },
 };
 
 const DENIED_TOOLS_DISPLAY_LIMIT = 30;
@@ -333,6 +322,7 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * which access profiles and rules shape the final list.
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
   const lastSavedInstallRef = useRef<Record<string, boolean>>({});
@@ -552,7 +542,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   const profiles = effective.data?.profiles ?? [];
   const catalogLoading = catalogQueries.some((q) => q.isLoading);
 
-  if (effective.isLoading) return <ToolsLoadingState label="Resolving effective access…" />;
+  if (effective.isLoading) return <ToolsLoadingState label={translateAgentPage("agents:resolving_effective_access")} />;
   if (effective.error) {
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
@@ -563,15 +553,11 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     <div className="space-y-4">
       <EnforcementBanner
         tone="info"
-        title="Effective access"
+        title={translateAgentPage("agents:effective_access")}
         body={
-          <>
-            This is exactly the tool set Paperclip will accept for{" "}
-            <span className="font-medium">{agent.name}</span>. Profile and policy edits are
-            reflected within ~5 seconds. The agent's prompt can narrow this list but{" "}
-            <span className="font-medium">cannot expand it</span> — everything else is blocked by
-            default.
-          </>
+          <>{translateAgentPage("agents:this_is_exactly_the_tool_set_paperclip_will")}{" "}
+            <span className="font-medium">{agent.name}</span>{translateAgentPage("agents:profile_and_policy_edits_are_reflected_within_5")}{" "}
+            <span className="font-medium">{translateAgentPage("agents:cannot_expand_it")}</span>{" "}{translateAgentPage("agents:everything_else_is_blocked_by_default")}</>
         }
       />
 
@@ -610,23 +596,21 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <div className="lg:col-span-2">
           <div className="rounded-lg border border-border">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-              <h3 className="text-sm font-semibold text-foreground">Allowed tools</h3>
+              <h3 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:allowed_tools")}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {allowedTools.length} {allowedTools.length === 1 ? "tool" : "tools"}
+                {translateAgentPage("agents:count_tool", { count: allowedTools.length })}
               </span>
             </div>
             {allowedTools.length === 0 ? (
-              <p className="px-3 py-6 text-sm text-muted-foreground">
-                No tools are allowed for this agent. Bind a tool profile to grant access.
-              </p>
+              <p className="px-3 py-6 text-sm text-muted-foreground">{translateAgentPage("agents:no_tools_are_allowed_for_this_agent_bind")}</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                    <th className="px-3 py-2 font-medium">Tool</th>
-                    <th className="px-3 py-2 font-medium">Capability</th>
-                    <th className="px-3 py-2 font-medium">Risk</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">{translateAgentPage("agents:tool_9a830c")}</th>
+                    <th className="px-3 py-2 font-medium">{translateAgentPage("agents:capability")}</th>
+                    <th className="px-3 py-2 font-medium">{translateAgentPage("agents:risk")}</th>
+                    <th className="px-3 py-2 font-medium">{translateAgentPage("agents:source")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -663,27 +647,19 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <aside className="space-y-4">
           <div className="rounded-lg border border-border bg-background/60 p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-              <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
-              Why these tools?
-            </h3>
+              <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />{translateAgentPage("agents:why_these_tools")}</h3>
 
             {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                  Access profiles
-                </div>
+                <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{translateAgentPage("agents:access_profiles")}</div>
                 <Link
                   to={`${profilesHref}?check=1`}
                   className="text-(length:--text-micro) font-medium text-primary hover:underline"
-                >
-                  Check access
-                </Link>
+                >{translateAgentPage("agents:check_access")}</Link>
               </div>
               {profiles.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No active profile applies to this agent, so it has no allowed tools.
-                </p>
+                <p className="text-xs text-muted-foreground">{translateAgentPage("agents:no_active_profile_applies_to_this_agent_so")}</p>
               ) : (
                 profiles.map((profile) => {
                   return (
@@ -696,9 +672,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       </Link>
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
-                          <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
-                            Organization default
-                          </span>
+                          <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">{translateAgentPage("agents:organization_default")}</span>
                         </div>
                       ) : null}
                     </div>
@@ -709,22 +683,18 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Policies mutating the allow list */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Active policies
-              </div>
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{translateAgentPage("agents:active_policies")}</div>
               {policiesQuery.isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading policies…</p>
+                <p className="text-xs text-muted-foreground">{translateAgentPage("agents:loading_policies")}</p>
               ) : governingPolicies.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No enabled policy currently mutates this agent's allow list.
-                </p>
+                <p className="text-xs text-muted-foreground">{translateAgentPage("agents:no_enabled_policy_currently_mutates_this_agent_s")}</p>
               ) : (
                 governingPolicies.map(({ policy, order }) => (
                   <div key={policy.id} className="rounded-md border border-border/70 px-2.5 py-2">
                     <div className="flex items-center justify-between gap-2">
                       <span
                         className="truncate text-xs font-medium text-foreground"
-                        title={`Policy #${order}: ${policy.name}`}
+                        title={translateAgentPage("agents:policy", { value1: order, value2: policy.name })}
                       >
                         #{order} {policy.name}
                       </span>
@@ -744,20 +714,14 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Unavailable tools
-              </div>
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{translateAgentPage("agents:unavailable_tools")}</div>
               {catalogLoading ? (
-                <p className="text-xs text-muted-foreground">Checking tools…</p>
+                <p className="text-xs text-muted-foreground">{translateAgentPage("agents:checking_tools")}</p>
               ) : deniedTools.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  Every known tool this agent could name is allowed.
-                </p>
+                <p className="text-xs text-muted-foreground">{translateAgentPage("agents:every_known_tool_this_agent_could_name_is")}</p>
               ) : (
                 <>
-                  <p className="text-(length:--text-micro) text-muted-foreground">
-                    Tools the agent could name but Paperclip would block:
-                  </p>
+                  <p className="text-(length:--text-micro) text-muted-foreground">{translateAgentPage("agents:tools_the_agent_could_name_but_paperclip_would")}</p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (
                       <span
@@ -771,8 +735,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                   </div>
                   {deniedTools.length > DENIED_TOOLS_DISPLAY_LIMIT ? (
                     <p className="text-(length:--text-micro) text-muted-foreground">
-                      +{deniedTools.length - DENIED_TOOLS_DISPLAY_LIMIT} more
-                    </p>
+                      +{deniedTools.length - DENIED_TOOLS_DISPLAY_LIMIT}{" "}{translateAgentPage("agents:more")}</p>
                   ) : null}
                 </>
               )}

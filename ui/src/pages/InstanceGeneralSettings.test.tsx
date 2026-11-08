@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
+import { i18n } from "../i18n";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -91,6 +93,31 @@ describe("InstanceGeneralSettings sign-out", () => {
     return Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Sign out");
   }
+
+  it("translates the deployment mode badge without saving on a locale round trip", async () => {
+    await i18n.changeLanguage("en");
+    await renderPage(SELF_HOSTED_HEALTH);
+    expect(container.textContent).toContain("Authenticated private");
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("身份验证 · 私有"); expect(mockInstanceSettingsApi.updateGeneral).not.toHaveBeenCalled(); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    expect(container.textContent).toContain("Authenticated private");
+  });
+
+  it("updates deep settings copy and accessible controls without writing preferences", async () => {
+    await i18n.changeLanguage("en");
+    await renderPage(SELF_HOSTED_HEALTH);
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.textContent).toContain("备份保留策略");
+    expect(container.textContent).toContain("AI 反馈共享");
+    expect(container.textContent).toContain("仅在本地保留已投票的 AI 输出。");
+    expect(container.querySelector('[aria-label="切换日志用户名隐藏功能"]')).not.toBeNull();
+    expect(mockInstanceSettingsApi.updateGeneral).not.toHaveBeenCalled();
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Backup retention");
+    expect(container.querySelector('[aria-label="Toggle username log censoring"]')).not.toBeNull();
+  });
 
   it("uses the Cloud-managed top-level logout without calling local auth", async () => {
     await renderPage(CLOUD_HEALTH);

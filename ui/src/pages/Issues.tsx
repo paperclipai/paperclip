@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
@@ -98,6 +99,7 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
  * get the same Views control in their toolbar, so the switch reads as one page.
  */
 export function Issues() {
+  const { t } = useTranslation("work");
   const designSandbox = useDesignSandbox();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
@@ -108,6 +110,7 @@ export function Issues() {
 }
 
 function StreamlinedTasks() {
+  const { t } = useTranslation("work");
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
@@ -141,7 +144,7 @@ function StreamlinedTasks() {
     // A view switch starts clean: the previous view's search and filters are
     // its own, not the new view's.
     navigate(`/issues?${TASK_VIEW_PARAM}=${next}`);
-  }, [navigate]);
+  }, [navigate, t]);
 
   const viewsMenu = (
     <TaskViewsMenu value={view} onChange={selectView} badgeCount={inboxBadge.inbox} />
@@ -151,13 +154,13 @@ function StreamlinedTasks() {
     return (
       <Inbox
         tab={definition.inboxTab}
-        surfaceLabel="Tasks"
+        surfaceLabel={t("work:copy.tasks_b3a60e")}
         toolbarContext={(
           <div className="flex min-w-0 items-center gap-2">
             {viewsMenu}
-            <Button size="sm" variant="outline" aria-label="New Task" onClick={() => openNewIssue()}>
+            <Button size="sm" variant="outline" aria-label={t("work:copy.newTask_718e58")} onClick={() => openNewIssue()}>
               <Plus className="h-4 w-4 sm:mr-1" />
-              <span className="hidden sm:inline">New Task</span>
+              <span className="hidden sm:inline">{t("work:copy.newTask_718e58")}</span>
             </Button>
           </div>
         )}
@@ -172,6 +175,7 @@ function OrganizationIssues({
   toolbarContext,
   initialStatuses,
 }: { toolbarContext?: ReactNode; initialStatuses?: string[] } = {}) {
+  const { t } = useTranslation("work");
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const issuesPresentation = resolveIssuesPresentation(streamlinedUiEnabled);
   const { selectedCompanyId } = useCompany();
@@ -187,9 +191,9 @@ function OrganizationIssues({
       return searchOverride.search;
     }
     return urlSearch;
-  }, [searchOverride, urlSearch, location.search]);
+  }, [searchOverride, urlSearch, location.search, t]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
-  const sort = useMemo(() => readIssueSortParams(searchParams), [searchParams]);
+  const sort = useMemo(() => readIssueSortParams(searchParams), [searchParams, t]);
   const includeBlockedBy = sort?.sortField === "workflow";
   const serverSortField = sort?.sortField === "created" ? "created" : "updated";
   const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
@@ -202,7 +206,7 @@ function OrganizationIssues({
       next.set("sortDir", nextSort.sortDir);
       return next;
     }, { replace: true });
-  }, [setSearchParams, syncedSearch]);
+  }, [setSearchParams, syncedSearch, t]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
@@ -215,7 +219,7 @@ function OrganizationIssues({
       else next.delete("originKind");
       return next;
     }, { replace: true });
-  }, [setSearchParams, syncedSearch]);
+  }, [setSearchParams, syncedSearch, t]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
@@ -227,7 +231,7 @@ function OrganizationIssues({
     }
     window.history.replaceState(window.history.state, "", nextUrl);
     setSearchOverride({ search, locationSearch: window.location.search });
-  }, []);
+  }, [t]);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -262,16 +266,16 @@ function OrganizationIssues({
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Tasks",
+        t("work:copy.tasks_b3a60e"),
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, t],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Tasks" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("work:copy.tasks_b3a60e") }]);
+  }, [setBreadcrumbs, t]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -314,8 +318,8 @@ function OrganizationIssues({
 
   const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
-  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages, t]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns, t]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
   const loadMoreServerIssues = useCallback(() => {
@@ -324,7 +328,7 @@ function OrganizationIssues({
     void fetchNextPage({ cancelRefetch: false }).finally(() => {
       fetchNextPageInFlightRef.current = false;
     });
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, t]);
 
   // Optimistic, rolls back with a readable toast, and resends after an outage.
   const updateIssue = useUpdateIssueMutation({ companyId: selectedCompanyId });
@@ -334,13 +338,13 @@ function OrganizationIssues({
       <EmptyState
         icon={CircleDot}
         message={streamlinedUiEnabled
-          ? "Select an organization to view tasks."
-          : "Select a company to view tasks."}
+          ? t("work:copy.selectAnOrganizationToViewTasks_93fc0c")
+          : t("work:copy.selectACompanyToViewTasks_7d3df2")}
       />
     );
   }
 
-  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
+  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action={t("work:copy.loadTasks_39dcf8")} onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList

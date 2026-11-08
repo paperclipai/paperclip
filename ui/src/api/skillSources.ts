@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { ProjectRepositoryOptions, ProjectSkillRepository, SkillSourceSettingsRequest, SkillSourceFilePreview, SkillSourcePreviewRequest, SkillSource, SkillSourceCreateRequest, SkillSourceDiscovery, SkillSourceDiscoveryRequest, SkillSourceRefreshResult, SkillSourceSelectionRequest, SkillSourceScanUpdate, SkillSourceDiscoveryEvent, SkillSourceDisconnectRequest, SkillSourceDisconnectResult } from '@paperclipai/shared';
 import { api, ApiError, requestResponse } from './client';
 import type { SkillSourceBranches, SkillSourceBranchesQuery } from '@paperclipai/shared';
@@ -14,7 +15,7 @@ export const skillSourcesApi = {
     const response = await requestResponse(`${base(companyId)}/discover`, {
       method: 'POST', body: JSON.stringify(input), headers: { Accept: 'application/x-ndjson' }, signal,
     });
-    if (!response.body || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) throw new Error('Live scan unavailable. Refresh the page and try again.');
+    if (!response.body || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) throw localizeUiError(new Error('Live scan unavailable. Refresh the page and try again.'), { key: "final-components-a:liveScanUnavailableRefreshThe_4da373cd" });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -33,9 +34,9 @@ export const skillSourcesApi = {
           if (event.type === 'error') throw new ApiError(event.error, event.status, event);
           if (event.type === 'complete') return event.discovery;
           if (event.type === 'progress' || event.type === 'candidate') onProgress(event);
-          else throw new Error('Unexpected repository scan response. Try again.');
+          else throw localizeUiError(new Error('Unexpected repository scan response. Try again.'), { key: "final-components-a:unexpectedRepositoryScanResponseTry_e1a28c66" });
         }
-        if (done) throw new Error('Repository scan interrupted. Try again.');
+        if (done) throw localizeUiError(new Error('Repository scan interrupted. Try again.'), { key: "final-components-a:repositoryScanInterruptedTryAgain_5d5e534b" });
       }
     } finally {
       await reader.cancel().catch(() => {});

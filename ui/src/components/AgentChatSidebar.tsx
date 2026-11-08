@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Star, SquarePen } from "lucide-react";
 import { SidebarNavItem } from "@/components/SidebarNavItem";
 import { AgentIcon } from "@/components/AgentIconPicker";
@@ -24,6 +25,7 @@ export function AgentChatSidebar({
   onToggleStar: (id: string) => void;
   onOpenChat: () => void;
 }) {
+  const { t } = useTranslation("agent-config");
   const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const ordered = orderChatAgents(agents, starredIds, recentIds);
@@ -45,9 +47,9 @@ export function AgentChatSidebar({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`${pinned ? "Unstar" : "Star"} ${agent.name}`}
+            aria-label={`${pinned ? t("agent-config:unstar_d033e36") : t("agent-config:star_85a7de6")} ${agent.name}`}
             aria-pressed={pinned}
-            title={pinned ? "Unstar agent" : "Star agent to pin"}
+            title={pinned ? t("agent-config:unstarAgent_06c923e") : t("agent-config:starAgentToPin_1dbb241")}
             onClick={(event) => {
               event.stopPropagation();
               onToggleStar(agent.id);
@@ -64,15 +66,15 @@ export function AgentChatSidebar({
     );
   };
   return (
-    <section aria-label="Chats" className="group/chats flex flex-col gap-0.5">
+    <section aria-label={t("agent-config:chats_6c9e84c")} className="group/chats flex flex-col gap-0.5">
       <div className="relative flex min-h-9 items-center px-4 py-1.5">
-        <span className={cn("font-mono text-(length:--text-nano) font-medium uppercase tracking-widest text-muted-foreground/60", rail && "sr-only")}>Chats</span>
+        <span className={cn("font-mono text-(length:--text-nano) font-medium uppercase tracking-widest text-muted-foreground/60", rail && "sr-only")}>{t("agent-config:chats_6c9e84c")}</span>
         <Button
           type="button"
           variant="ghost"
           size="icon-xs"
-          aria-label="Chat with an agent"
-          title="Chat with an agent"
+          aria-label={t("agent-config:chatWithAnAgent_b5e325e")}
+          title={t("agent-config:chatWithAnAgent_b5e325e")}
           onClick={onOpenChat}
           className="absolute right-2 top-(--pct-50) -translate-y-(--pct-50) text-muted-foreground opacity-0 group-hover/chats:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
         >

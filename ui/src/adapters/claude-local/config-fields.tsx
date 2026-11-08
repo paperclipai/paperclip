@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -14,7 +15,7 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
 const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+  () => t("agent-config:absolutePathToAMarkdownFileEG_62d9ce4");
 
 export function ClaudeLocalConfigFields({
   section,
@@ -29,10 +30,11 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("agent-config");
   return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={t("agent-config:agentInstructionsFile_9765d14")} hint={instructionsFileHint()}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -82,6 +84,7 @@ export function ClaudeLocalAdvancedFields({
   mark,
   managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("agent-config");
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -96,7 +99,7 @@ export function ClaudeLocalAdvancedFields({
         environment owns both, so the managed-sandbox-only policy hides them,
         the same way `runnerManaged` hides them for the Paperclip Runner.
       */}
-      {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
+      {!managedSandboxOnly && <Field label={t("agent-config:executionEngine_1f5a0b6")} hint={t("agent-config:defaultUsesAcpIfAcpIsUnavailableThe_b2b91a8")}>
         <select
           className={inputClass}
           value={engine}
@@ -107,17 +110,17 @@ export function ClaudeLocalAdvancedFields({
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
         >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
+          <option value="auto">{t("agent-config:defaultAcp_b0e3551")}</option>
+          <option value="cli">{t("agent-config:claudeCli_6c7b775")}</option>
+          <option value="acp">{t("agent-config:acp_2601cb8")}</option>
         </select>
       </Field>}
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
             <Field configSection="advanced"
-              label="ACP server command"
-              hint="Optional override for the Claude ACP server command. Defaults to the package-local claude-agent-acp binary."
+              label={t("agent-config:acpServerCommand_d6765f6")}
+              hint={t("agent-config:optionalOverrideForTheClaudeAcpServerCommand_36bc45d")}
             >
               <DraftInput
                 value={
@@ -136,7 +139,7 @@ export function ClaudeLocalAdvancedFields({
               />
             </Field>
           )}
-          <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
+          <Field configSection="runPolicy" label={t("agent-config:acpSessionMode_ceac164")} hint={t("agent-config:persistentKeepsAcpSessionStateBetweenRunsOne_360b5f3")}>
             <select
               className={inputClass}
               value={
@@ -151,13 +154,13 @@ export function ClaudeLocalAdvancedFields({
                   : mark("adapterConfig", "mode", value);
               }}
             >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
+              <option value="persistent">{t("agent-config:persistent_9260ffc")}</option>
+              <option value="oneshot">{t("agent-config:oneShot_d9d60df")}</option>
             </select>
           </Field>
           <Field
-            label="ACP non-interactive permissions"
-            hint="Fallback if the ACP agent asks for input outside an interactive session."
+            label={t("agent-config:acpNonInteractivePermissions_99ec060")}
+            hint={t("agent-config:fallbackIfTheAcpAgentAsksForInput_b707bad")}
           >
             <select
               className={inputClass}
@@ -173,14 +176,14 @@ export function ClaudeLocalAdvancedFields({
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
             >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
+              <option value="deny">{t("agent-config:deny_53577bb")}</option>
+              <option value="fail">{t("agent-config:fail_2758e32")}</option>
             </select>
           </Field>
           {!managedSandboxOnly && (
             <Field
-              label="ACP state directory"
-              hint="Optional ACP session state directory. Defaults to Paperclip-managed organization/agent scoped storage."
+              label={t("agent-config:acpStateDirectory_a828d34")}
+              hint={t("agent-config:optionalAcpSessionStateDirectoryDefaultsToPaperclip_57e9565")}
             >
               <div className="flex items-center gap-2">
                 <DraftInput
@@ -203,8 +206,8 @@ export function ClaudeLocalAdvancedFields({
             </Field>
           )}
           <Field configSection="runPolicy"
-            label="ACP warm process idle ms"
-            hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
+            label={t("agent-config:acpWarmProcessIdleMs_99fe6aa")}
+            hint={t("agent-config:defaultsTo0WhichClosesTheAcpProcess_5a6f61e")}
           >
             {isCreate ? (
               <input
@@ -229,7 +232,7 @@ export function ClaudeLocalAdvancedFields({
         </>
       )}
       <ToggleField
-        label="Enable Chrome"
+        label={t("agent-config:enableChrome_fcef4fb")}
         hint={help.chrome}
         checked={
           isCreate
@@ -243,7 +246,7 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       <ToggleField
-        label="Skip permissions"
+        label={t("agent-config:skipPermissions_d11982c")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate
@@ -260,7 +263,7 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
-      <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
+      <Field label={t("agent-config:maxTurnsPerRun_720fbaf")} hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input
             type="number"

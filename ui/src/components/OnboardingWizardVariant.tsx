@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { lazy, useEffect } from "react";
 import { useDialogActions, useDialogState } from "../context/DialogContext";
 import { useLocation } from "../lib/router";
@@ -12,6 +13,7 @@ const OnboardingWizard = lazy(() => import("./OnboardingWizard").then((module) =
  * experimental flag.
  */
 export function OnboardingWizardVariant() {
+  const { t: translateShell } = useTranslation("shell");
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { closeOnboarding, setOnboardingRouteDismissed } = useDialogActions();
   const { pathname } = useLocation();
@@ -19,7 +21,7 @@ export function OnboardingWizardVariant() {
     setOnboardingRouteDismissed(false);
   }, [pathname, setOnboardingRouteDismissed]);
   const requested = onboardingOpen || (isOnboardingPath(pathname) && !onboardingRouteDismissed);
-  return <DeferredOverlay requested={requested} title="Setup" onClose={() => {
+  return <DeferredOverlay requested={requested} title={translateShell("shell:setup")} onClose={() => {
     closeOnboarding();
     if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
   }}><OnboardingWizard /></DeferredOverlay>;

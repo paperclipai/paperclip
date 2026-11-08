@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentIdentityChipContent, agentIdentityChipClass } from "@/components/agents/AgentIdentityChip";
@@ -31,6 +32,7 @@ export function fitReports(widths: number[], available: number, gap: number, mor
 }
 
 export function AgentDirectReports({ reports }: { reports: Agent[] }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const listRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(reports.length);
@@ -72,13 +74,10 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
         ))}
         {hidden > 0 ? (
           <button type="button" className={toggleClass} onClick={() => setExpanded(true)}>
-            +{hidden} more
-          </button>
+            +{hidden}{" "}{translateAgentPage("agents:more")}</button>
         ) : null}
         {expanded && shown < reports.length ? (
-          <button type="button" className={toggleClass} onClick={() => setExpanded(false)}>
-            Show less
-          </button>
+          <button type="button" className={toggleClass} onClick={() => setExpanded(false)}>{translateAgentPage("agents:show_less")}</button>
         ) : null}
       </div>
       <div aria-hidden className="pointer-events-none invisible absolute inset-x-0 top-0 h-0 overflow-hidden">
@@ -88,7 +87,7 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
               <AgentIdentityChipContent agent={report} />
             </span>
           ))}
-          <span>+{reports.length} more</span>
+          <span>+{reports.length}{" "}{translateAgentPage("agents:more")}</span>
         </div>
       </div>
     </div>

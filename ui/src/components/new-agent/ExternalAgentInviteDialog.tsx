@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MuseInvitation } from "@paperclipai/shared";
@@ -27,6 +28,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack, initialP
   onClose: () => void;
   onBack: () => void;
 }) {
+  const { t } = useTranslation("final-configuration");
   const cache = useQueryClient();
   const { selectedCompany } = useCompany();
   const [preset, setPreset] = useState<ExternalAgentPreset | null>(initialPreset);
@@ -36,13 +38,13 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack, initialP
   const [genericPrompt, setGenericPrompt] = useState("");
   const attemptedAutomaticPairing = useRef(false);
   const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: instanceSettingsApi.getExperimental });
-  const dotDisabledReason = experimental.isPending ? "Loading available agents…"
-    : experimental.error ? "Unable to load experimental settings. Try again after refreshing."
+  const dotDisabledReason = experimental.isPending ? t("final-configuration:agentsLoading")
+    : experimental.error ? t("final-configuration:experimentalRetry")
     : !experimental.data?.enableOpenAiDot || !experimental.data.enablePublicMcp
-      ? "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings." : undefined;
-  const grokDisabledReason = experimental.isPending ? "Loading available agents…" : experimental.error ? "Unable to load experimental settings."
+      ? t("final-configuration:dotEnable") : undefined;
+  const grokDisabledReason = experimental.isPending ? t("final-configuration:agentsLoading") : experimental.error ? t("final-configuration:experimentalFailure")
     : !experimental.data?.enableGrokBot || !experimental.data.enablePublicMcp || !experimental.data.enableNativeRunner
-      ? "Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner in experimental settings." : undefined;
+      ? t("final-configuration:grokEnable") : undefined;
   const key = ["dot-binding", companyId, invitation?.agent.id];
   const state = useQuery({ queryKey: key,
     queryFn: ({ signal }) => dotInvitationsApi.connection(companyId, invitation!.agent.id, signal),
@@ -139,7 +141,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack, initialP
       preset === "grok_bot" ? <GrokBotSetup companyId={companyId} companyName={selectedCompany?.name ?? "your organization"} onClose={onClose} onBack={() => setPreset(null)} /> :
       <ExternalAgentInviteContent preset={preset === "muse" ? null : preset} prompt={prompt} companyName={selectedCompany?.name ?? "your organization"}
         connection={connection} museEnabled={experimental.data?.enableMuse === true && experimental.data?.enableNativeRunner === true} dotDisabledReason={dotDisabledReason} grokDisabledReason={grokDisabledReason} busy={busy}
-        error={preset === "muse" ? experimental.isPending ? undefined : "Enable Muse and Paperclip Runner in experimental settings to connect your personal Muse." : (error ? describeError(error).body : undefined) ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined)}
+        error={preset === "muse" ? experimental.isPending ? undefined : t("final-configuration:museEnable") : (error ? describeError(error).body : undefined) ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? t("final-configuration:dotTerminated") : t("final-configuration:dotResume") : undefined)}
         approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
         onSelect={kind => { setPreset(kind); if (kind !== "muse" && kind !== "grok_bot" && (kind === "dot" ? !invitation : !genericPrompt)) generate.mutate(kind); }}
         onBack={() => setPreset(null)} onClose={preset ? onClose : onBack} onCopied={() => { if (preset === "dot") void state.refetch(); }}
@@ -152,6 +154,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack, initialP
 function MuseInvitationController({ companyId, companyName, onClose, onBack, initialName }: {
   companyId: string; companyName: string; initialName: string; onClose: () => void; onBack: () => void;
 }) {
+  const { t } = useTranslation("final-configuration");
   const cache = useQueryClient();
   const identity = useAccountIdentity();
   const scopeKey = `${companyId}:${identity.userId}`;
@@ -224,9 +227,9 @@ function MuseInvitationController({ companyId, companyName, onClose, onBack, ini
   const operatorRequired = error instanceof ApiError && (error.status === 401 || error.status === 403)
     && !invitation;
   const missingPublicOrigin = !!invitation && muse.state.isSuccess && !muse.state.data.publicOrigin;
-  const errorMessage = missingPublicOrigin ? "This instance has no public HTTPS URL for Muse. Ask your instance administrator to configure a stable public HTTPS address, then refresh setup. Muse cannot connect through a local-only address." : operatorRequired ? "Use an authenticated Paperclip instance with a public HTTPS URL and a company operator account. Local trusted access alone cannot connect Muse." : error?.message;
+  const errorMessage = missingPublicOrigin ? t("final-configuration:museHttps") : operatorRequired ? t("final-configuration:museOperator") : error?.message;
   return <ExternalAgentInviteContent preset="muse" companyName={companyName} prompt={muse.pairing?.setupInstruction ?? ""}
-    connection={{ phase: "waiting" }} museConnection={invitation && !missingPublicOrigin && (muse.state.data || (muse.state.status === "error")) ? connection : undefined} busy={busy} error={identity.failed ? "Unable to confirm your account. Refresh to resume Muse setup." : errorMessage}
+    connection={{ phase: "waiting" }} museConnection={invitation && !missingPublicOrigin && (muse.state.data || (muse.state.status === "error")) ? connection : undefined} busy={busy} error={identity.failed ? t("final-configuration:museIdentity") : errorMessage}
     approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
     museDraft={!invitation && resume.isSuccess && identity.settled ? draft : undefined}
     onMuseDraftChange={value => { setDraftState({ scopeKey, value }); saveMuseInvitationDraft(companyId, identity.userId, value); }}

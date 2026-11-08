@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { describeError } from "@/api/errors";
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SkillSource } from '@paperclipai/shared';
@@ -10,6 +11,7 @@ export function SkillSourceBranchRepair({ companyId, source, connectionId, onSav
   companyId: string; source: SkillSource; connectionId?: string; onSaved: () => Promise<void>;
   onClose: () => void; onReturnFocus?: () => void;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const client = useQueryClient();
   const branches = useQuery({
     queryKey: ['skill-source-branches', companyId, source.id, connectionId ?? source.connectionId],
@@ -22,10 +24,10 @@ export function SkillSourceBranchRepair({ companyId, source, connectionId, onSav
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && (error.body as { code?: string } | null)?.code === 'skill_source_settings_changed') {
         await client.invalidateQueries({ queryKey: queryKeys.skillSources.all(companyId) });
-        throw new Error('This source is refreshing or changed. Your branch is still selected. Try saving again.');
+        throw new Error(translateShell("shell:this_source_is_refreshing_or_changed_your"));
       }
       if (error instanceof ApiError && (error.body as { code?: string } | null)?.code === 'skill_source_ref_unavailable') {
-        throw new Error('GitHub could not find that branch or revision. Check the name or choose another branch.');
+        throw new Error(translateShell("shell:github_could_not_find_that_branch_or"));
       }
       throw error;
     }

@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { useTranslation, t } from "@/i18n";
 import { isTransientError } from "@/api/errors";
 import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
@@ -299,11 +301,11 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function runFailureMessage(run: HeartbeatRun): string {
-  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? t("work:copy.runExitedWithAnError_b19756");
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
-  return status.replaceAll("_", " ");
+  return t(`work:approvalStatus.${status}`);
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -337,7 +339,7 @@ export function formatJoinRequestInboxLabel(
   },
 ) {
   if (joinRequest.requestType !== "human") {
-    return `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+    return t("work:copy.agentJoinRequest_e2198c", { value1: joinRequest.agentName ? `: ${joinRequest.agentName}` : "" });
   }
 
   const requesterName = nonEmptyLabel(joinRequest.requesterUser?.name);
@@ -350,7 +352,7 @@ export function formatJoinRequestInboxLabel(
   if (requesterEmail) return requesterEmail;
   if (requesterName) return requesterName;
   if (requesterId) return requesterId;
-  return "Human join request";
+  return t("work:copy.humanJoinRequest_2a0199");
 }
 
 
@@ -359,6 +361,7 @@ type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
 // Rows outside SwipeToArchive (non-archivable tabs/sections) still need the
 // hover-follows-selection band that SwipeToArchive's surface normally paints.
 function InboxRowSurface({ selected, children }: { selected: boolean; children: ReactNode }) {
+  const { t } = useTranslation("work");
   return <div className={cn(selected && "rounded-lg bg-accent/50")}>{children}</div>;
 }
 
@@ -391,19 +394,20 @@ export function FailedRunInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation("work");
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const interruption = issue?.interruption;
   useSecondTick(interruption?.state === "retry_scheduled");
   const retrySeconds = Math.max(0, Math.ceil((Date.parse(interruption?.nextRetryAt ?? "") - Date.now()) / 1000));
-  const displayError = isRetrying || interruption?.state === "working" ? "Thinking"
-    : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
-      : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
+  const displayError = isRetrying || interruption?.state === "working" ? t("work:copy.thinking_a20d12")
+    : interruption?.state === "retry_scheduled" ? t("work:copy.tryingAgainInS_662fc5", { value1: retrySeconds })
+      : interruption?.state === "failed" ? t("work:copy.couldnTFinishThisAttemptYourMessageIsSaved_c41c67")
         : interruption?.state === "waiting_for_user" ? ({
-          approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
-          resume: "Work is paused", budget: "Budget limit reached",
-          project_access: "Agent needs project access",
-          confirm_owner_stop: "Confirm the previous server stopped",
+          approval: t("work:copy.approvalRequired_ef677f"), reconnect: t("work:copy.reconnectAccount_8e44ff"), assign_agent: t("work:copy.assignAnAgent_6aa54d"), choose_model: t("work:copy.chooseASupportedModel_a4f702"),
+          resume: t("work:copy.workIsPaused_c01c4c"), budget: t("work:copy.budgetLimitReached_1c8ef7"),
+          project_access: t("work:copy.agentNeedsProjectAccess_a05899"),
+          confirm_owner_stop: t("task-components:previousServerStopConfirm"),
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
@@ -425,7 +429,7 @@ export function FailedRunInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("work:copy.markAsRead_50c8b8")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -460,7 +464,7 @@ export function FailedRunInboxRow({
                   {issue.title}
                 </>
               ) : (
-                <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
+                <>{t("work:copy.failedRun_3f23cd")}{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -484,14 +488,14 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Thinking" : "Retry"}
+            {isRetrying ? t("work:copy.thinking_a20d12") : t("work:copy.retry_942087")}
           </Button>}
           {!showUnreadSlot && (
             <button
               type="button"
               onClick={onDismiss}
               className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
-              aria-label="Dismiss"
+              aria-label={t("work:copy.dismiss_48845b")}
             >
               <X className="h-4 w-4" />
             </button>
@@ -508,14 +512,14 @@ export function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Thinking" : "Retry"}
+          {isRetrying ? t("work:copy.thinking_a20d12") : t("work:copy.retry_942087")}
         </Button>}
         {!showUnreadSlot && (
           <button
             type="button"
             onClick={onDismiss}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Dismiss"
+            aria-label={t("work:copy.dismiss_48845b")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -550,6 +554,7 @@ function ApprovalInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation("work");
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
@@ -574,7 +579,7 @@ function ApprovalInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("work:copy.markAsRead_50c8b8")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -605,8 +610,8 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              {requesterName ? <span>{t("work:messages.requestedBy", { name: requesterName })}</span> : null}
+              <span>{t("work:messages.updatedAt", { time: timeAgo(approval.updatedAt) })}</span>
             </span>
           </span>
         </Link>
@@ -622,18 +627,14 @@ function ApprovalInboxRow({
                   className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
                   onClick={onApprove}
                   disabled={isPending}
-                >
-                  Approve
-                </Button>
+                >{t("work:copy.approve_6007ac")}</Button>
                 <Button
                   variant="destructive"
                   size="sm"
                   className="h-8 min-w-(--sz-64px) justify-center px-3"
                   onClick={onReject}
                   disabled={isPending}
-                >
-                  Reject
-                </Button>
+                >{t("work:copy.reject_ab604a")}</Button>
               </>
             ) : null}
           </div>
@@ -646,18 +647,14 @@ function ApprovalInboxRow({
             className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
-          >
-            Approve
-          </Button>
+          >{t("work:copy.approve_6007ac")}</Button>
           <Button
             variant="destructive"
             size="sm"
             className="h-8 min-w-(--sz-64px) justify-center px-3"
             onClick={onReject}
             disabled={isPending}
-          >
-            Reject
-          </Button>
+          >{t("work:copy.reject_ab604a")}</Button>
         </div>
       ) : null}
     </div>
@@ -687,6 +684,7 @@ function JoinRequestInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation("work");
   const label = formatJoinRequestInboxLabel(joinRequest);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
@@ -707,7 +705,7 @@ function JoinRequestInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("work:copy.markAsRead_50c8b8")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -731,8 +729,8 @@ function JoinRequestInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
-              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+              <span>{t("work:messages.joinRequested", { time: timeAgo(joinRequest.createdAt), ip: joinRequest.requestIp })}</span>
+              {joinRequest.adapterType && <span>{t("work:messages.adapter", { adapter: joinRequest.adapterType })}</span>}
             </span>
           </span>
         </div>
@@ -745,18 +743,14 @@ function JoinRequestInboxRow({
             className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
-          >
-            Approve
-          </Button>
+          >{t("work:copy.approve_6007ac")}</Button>
           <Button
             variant="destructive"
             size="sm"
             className="h-8 px-3"
             onClick={onReject}
             disabled={isPending}
-          >
-            Reject
-          </Button>
+          >{t("work:copy.reject_ab604a")}</Button>
         </div>
       </div>
       <div className="mt-3 flex gap-2 sm:hidden">
@@ -765,18 +759,14 @@ function JoinRequestInboxRow({
           className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
           onClick={onApprove}
           disabled={isPending}
-        >
-          Approve
-        </Button>
+        >{t("work:copy.approve_6007ac")}</Button>
         <Button
           variant="destructive"
           size="sm"
           className="h-8 px-3"
           onClick={onReject}
           disabled={isPending}
-        >
-          Reject
-        </Button>
+        >{t("work:copy.reject_ab604a")}</Button>
       </div>
     </div>
   );
@@ -790,6 +780,7 @@ function InboxCollectionToolbar({
   feedback,
   ariaLabel,
 }: CollectionToolbarProps & { streamlined: boolean }) {
+  const { t } = useTranslation("work");
   if (streamlined) {
     return (
       <CollectionToolbar
@@ -837,6 +828,7 @@ export interface InboxSurfaceProps {
 }
 
 export function Inbox(props: InboxSurfaceProps = {}) {
+  const { t } = useTranslation("work");
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const coordinator = useCoordinatorPresentation();
   return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
@@ -845,8 +837,9 @@ export function Inbox(props: InboxSurfaceProps = {}) {
 function StreamlinedInbox({
   tab: tabOverride,
   toolbarContext,
-  surfaceLabel = "Inbox",
+  surfaceLabel = t("work:copy.inbox_94835e"),
 }: InboxSurfaceProps) {
+  const { t } = useTranslation("work");
   const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -896,7 +889,7 @@ function StreamlinedInbox({
         `${location.pathname}${location.search}${location.hash}`,
         "inbox",
       ),
-    [surfaceLabel, location.pathname, location.search, location.hash],
+    [surfaceLabel, location.pathname, location.search, location.hash, t],
   );
 
   const { data: session, isLoading: isSessionLoading } = useQuery({
@@ -1005,7 +998,7 @@ function StreamlinedInbox({
       const snapshot = await issuesApi.inboxMine(selectedCompanyId!, { signal });
       if (snapshot.userId !== currentUserId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-        throw new ApiError("Your account changed. Refresh the inbox.", 409, { error: "account_changed" });
+        throw new ApiError(t("work:copy.yourAccountChangedRefreshTheInbox_efba70"), 409, { error: "account_changed" });
       }
       queryClient.setQueryData(mineContextQueryKey, snapshot);
       return snapshot.issues as Issue[];
@@ -1071,7 +1064,7 @@ function StreamlinedInbox({
   const bundledContextIds = useMemo(() => new Set(tab === "mine" && mineSnapshot ? [
     ...mineSnapshot.issues.map((issue) => issue.parentId).filter((id): id is string => Boolean(id)),
     ...mineSnapshot.failureRuns.map(readIssueIdFromRun).filter((id): id is string => Boolean(id)),
-  ] : []), [tab, mineSnapshot]);
+  ] : []), [tab, mineSnapshot, t]);
   const { parentContextIds, failureContextIds, contextIssueIds } = useMemo(() => {
     const sourceIssues = tab === "mine" ? mineIssuesRaw : touchedIssuesRaw;
     const loadedIds = new Set(sourceIssues.map((issue) => issue.id));
@@ -1088,7 +1081,7 @@ function StreamlinedInbox({
       failureContextIds: [...failureIds].sort(),
       contextIssueIds: new Set([...parentIds, ...failureIds]),
     };
-  }, [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns, bundledContextIds]);
+  }, [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns, bundledContextIds, t]);
   const needsIssueContext = !!selectedCompanyId && contextIssueIds.size > 0 && tab !== "blocked"
     && (tab !== "mine" || !!mineSnapshot || !!mineIssuesError);
   const {
@@ -1138,11 +1131,11 @@ function StreamlinedInbox({
       ...mineSnapshot.contextIssues.filter((issue) => parentIds.has(issue.id) || mineSnapshot.failureIssueIds.includes(issue.id)),
       ...(issueContext?.issues ?? []),
     ] as Issue[];
-  }, [tab, mineSnapshot, mineIssuesRaw, issueContext]);
+  }, [tab, mineSnapshot, mineIssuesRaw, issueContext, t]);
   const knownFailureContextIds = useMemo(() => new Set([
     ...(tab === "mine" ? mineSnapshot?.failureIssueIds ?? [] : []), ...(issueContext?.failureIssueIds ?? []),
-  ]), [tab, mineSnapshot, issueContext]);
-  const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues]);
+  ]), [tab, mineSnapshot, issueContext, t]);
+  const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues, t]);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -1175,26 +1168,26 @@ function StreamlinedInbox({
     for (const issueId of archivingIssueIds) issueIds.add(issueId);
     for (const issueId of unarchivingIssueIds) issueIds.delete(issueId);
     return issueIds;
-  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
+  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds, t]);
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
-    [companyMembers?.users],
+    [companyMembers?.users, t],
   );
   const companyUserProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
-    [companyMembers?.users],
+    [companyMembers?.users, t],
   );
 
   const mineIssues = useMemo(
     () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, mineIssuesRaw],
+    [locallyArchivedIssueIds, mineIssuesRaw, t],
   );
   const touchedIssues = useMemo(
     () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, touchedIssuesRaw],
+    [locallyArchivedIssueIds, touchedIssuesRaw, t],
   );
-  const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
+  const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw, t]);
   const sourceSearchQuery = useQuery<Issue[]>({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "inbox-source-search", normalizedSearchQuery, sourceSearchIds],
     queryFn: async ({ signal }) => {
@@ -1211,7 +1204,7 @@ function StreamlinedInbox({
   });
   const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = sourceSearchQuery;
   const sourceSearchView = useQueryView(sourceSearchQuery);
-  const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches]);
+  const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches, t]);
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
@@ -1241,7 +1234,7 @@ function StreamlinedInbox({
       ...touchedIssuesRaw,
       ...remoteIssueSearchResults,
     ]),
-    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw, t],
   );
   const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
     const issueIds = new Set<string>();
@@ -1249,7 +1242,7 @@ function StreamlinedInbox({
     for (const issue of touchedIssues) issueIds.add(issue.id);
     for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
     return [...issueIds];
-  }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  }, [mineIssues, remoteIssueSearchResults, touchedIssues, t]);
   const {
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
@@ -1263,18 +1256,18 @@ function StreamlinedInbox({
   const issueFilterContext = useMemo(() => ({
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
-  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, t]);
   const visibleMineIssues = useMemo(
     () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, t],
   );
   const visibleTouchedIssues = useMemo(
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, t],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
-    [visibleTouchedIssues],
+    [visibleTouchedIssues, t],
   );
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -1283,7 +1276,7 @@ function StreamlinedInbox({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("work:copy.board_4816cb") : t("work:copy.me_d30af0"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -1335,34 +1328,34 @@ function StreamlinedInbox({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, mineIssues, touchedIssues]);
+  }, [agents, currentUserId, mineIssues, touchedIssues, t]);
   const issuesToRender = useMemo(
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
       return visibleTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues, t],
   );
 
   const agentById = useMemo(() => {
     const map = new Map<string, string>();
     for (const agent of agents ?? []) map.set(agent.id, agent.name);
     return map;
-  }, [agents]);
+  }, [agents, t]);
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
     for (const issue of issues ?? []) map.set(issue.id, issue);
     return map;
-  }, [issues]);
+  }, [issues, t]);
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
       map.set(project.id, { name: project.name, color: project.color });
     }
     return map;
-  }, [projects]);
+  }, [projects, t]);
   const projectWorkspaceById = useMemo(() => {
     const map = new Map<string, { name: string; projectId: string }>();
     for (const project of projects ?? []) {
@@ -1371,7 +1364,7 @@ function StreamlinedInbox({
       }
     }
     return map;
-  }, [projects]);
+  }, [projects, t]);
   const defaultProjectWorkspaceIdByProjectId = useMemo(() => {
     const map = new Map<string, string>();
     for (const project of projects ?? []) {
@@ -1382,7 +1375,7 @@ function StreamlinedInbox({
       if (defaultWorkspaceId) map.set(project.id, defaultWorkspaceId);
     }
     return map;
-  }, [projects]);
+  }, [projects, t]);
   const executionWorkspaceById = useMemo(() => {
     const map = new Map<string, {
       name: string;
@@ -1402,7 +1395,7 @@ function StreamlinedInbox({
       });
     }
     return map;
-  }, [executionWorkspaces, projectWorkspaceById]);
+  }, [executionWorkspaces, projectWorkspaceById, t]);
   const inboxWorkspaceGrouping = useMemo<InboxWorkspaceGroupingOptions>(
     () => ({
       agentById,
@@ -1421,21 +1414,21 @@ function StreamlinedInbox({
       executionWorkspaceById,
       projectById,
       projectWorkspaceById,
-    ],
+    , t],
   );
-  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
+  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns, t]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
-    [isolatedWorkspacesEnabled],
+    [isolatedWorkspacesEnabled, t],
   );
-  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns, t]);
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
-    [availableIssueColumnSet, visibleIssueColumnSet],
+    [availableIssueColumnSet, visibleIssueColumnSet, t],
   );
   const visibleTaskDataColumns = useMemo(
     () => visibleTrailingIssueColumns.filter((column) => column !== "updated"),
-    [visibleTrailingIssueColumns],
+    [visibleTrailingIssueColumns, t],
   );
   const showTaskTimestamp = visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated");
 
@@ -1447,7 +1440,7 @@ function StreamlinedInbox({
           && (!issueId || knownFailureContextIds.has(issueId) || !!contextIssuesError)
           && issueById.get(issueId ?? "")?.interruption?.state !== "resolved";
       }),
-    [heartbeatRuns, dismissedAtByKey, issueById, knownFailureContextIds, contextIssuesError],
+    [heartbeatRuns, dismissedAtByKey, issueById, knownFailureContextIds, contextIssuesError, t],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -1457,7 +1450,7 @@ function StreamlinedInbox({
       );
     }
     return filtered;
-  }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
+  }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey, t]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -1471,7 +1464,7 @@ function StreamlinedInbox({
     if (tab === "all" && !showFailedRunsCategory) return [];
     if (tab === "mine") return failedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId));
     return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory, currentUserId]);
+  }, [failedRuns, tab, showFailedRunsCategory, currentUserId, t]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -1481,7 +1474,7 @@ function StreamlinedInbox({
       );
     }
     return joinRequests;
-  }, [joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey]);
+  }, [joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey, t]);
 
   const workItemsToRender = useMemo(
     () =>
@@ -1491,7 +1484,7 @@ function StreamlinedInbox({
         failedRuns: failedRunsForTab,
         joinRequests: joinRequestsForTab,
       }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
+    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab, t],
   );
 
   const filteredWorkItems = useMemo(() => {
@@ -1546,7 +1539,7 @@ function StreamlinedInbox({
     normalizedSearchQuery,
     sourceSearchMatchIds,
     projectWorkspaceById,
-  ]);
+  , t]);
 
   const archivedSearchIssues = useMemo(
     () =>
@@ -1572,7 +1565,7 @@ function StreamlinedInbox({
       tab,
       visibleMineIssues,
       visibleTouchedIssues,
-    ],
+    , t],
   );
   const issueSearchSupplementResults = useMemo(
     () =>
@@ -1596,14 +1589,14 @@ function StreamlinedInbox({
       liveIssueIds,
       normalizedSearchQuery,
       remoteIssueSearchResults,
-    ],
+    , t],
   );
   const nonInboxSearchIssueIds = useMemo(
     () => new Set([
       ...archivedSearchIssues.map((issue) => issue.id),
       ...issueSearchSupplementResults.map((issue) => issue.id),
     ]),
-    [archivedSearchIssues, issueSearchSupplementResults],
+    [archivedSearchIssues, issueSearchSupplementResults, t],
   );
 
   // --- Parent-child nesting for inbox issues ---
@@ -1620,7 +1613,7 @@ function StreamlinedInbox({
       saveInboxNesting(next);
       return next;
     });
-  }, []);
+  }, [t]);
   const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(
     () => loadCollapsedInboxParentIds(selectedCompanyId),
   );
@@ -1633,7 +1626,7 @@ function StreamlinedInbox({
       saveCollapsedInboxGroupKeys(selectedCompanyId, next);
       return next;
     });
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, t]);
   const setGroupCollapsed = useCallback((groupKey: string, collapsed: boolean) => {
     setCollapsedGroupKeys((prev) => {
       if (collapsed ? prev.has(groupKey) : !prev.has(groupKey)) return prev;
@@ -1643,7 +1636,7 @@ function StreamlinedInbox({
       saveCollapsedInboxGroupKeys(selectedCompanyId, next);
       return next;
     });
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, t]);
   const freshGroupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
     ...buildGroupedInboxSections(
@@ -1665,7 +1658,7 @@ function StreamlinedInbox({
     inboxWorkspaceGrouping,
     issueSearchSupplementResults,
     nestingEnabled,
-  ]);
+  , t]);
 
   // --- Order pinning (PAP-16015) ---
   // The freshly computed sort is only *displayed* at attention boundaries. Between
@@ -1681,7 +1674,7 @@ function StreamlinedInbox({
   const commitInboxOrder = useCallback(() => {
     orderCommitRequestedRef.current = true;
     setOrderCommitToken((token) => token + 1);
-  }, []);
+  }, [t]);
 
   // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
   // held order so we never carry one view's layout into another.
@@ -1706,7 +1699,7 @@ function StreamlinedInbox({
       normalizedSearchQuery,
       selectedCompanyId,
       tab,
-    ],
+    , t],
   );
   // Adopt the fresh order in the SAME render the view identity changes, so a
   // section key shared between the two views never briefly shows the previous
@@ -1732,7 +1725,7 @@ function StreamlinedInbox({
     // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
     // forces it on a view change even when the fresh sections keep their identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken, t]);
 
   const inboxSortAttention = useInboxSortAttention({
     viewIdentity: inboxSortViewIdentity,
@@ -1749,10 +1742,10 @@ function StreamlinedInbox({
     );
     if (!defaults) return;
     openNewIssue(defaults);
-  }, [groupBy, inboxWorkspaceGrouping, openNewIssue]);
+  }, [groupBy, inboxWorkspaceGrouping, openNewIssue, t]);
   const totalVisibleWorkItems = useMemo(
     () => groupedSections.reduce((count, group) => count + group.displayItems.length, 0),
-    [groupedSections],
+    [groupedSections, t],
   );
   const toggleInboxParentCollapse = useCallback((parentId: string) => {
     setCollapsedInboxParents((prev) => {
@@ -1762,7 +1755,7 @@ function StreamlinedInbox({
       saveCollapsedInboxParentIds(selectedCompanyId, next);
       return next;
     });
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, t]);
   const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
     setCollapsedInboxParents((prev) => {
       if (prev.has(parentId) === collapsed) return prev;
@@ -1772,12 +1765,12 @@ function StreamlinedInbox({
       saveCollapsedInboxParentIds(selectedCompanyId, next);
       return next;
     });
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, t]);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
-  }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  }, [collapsedGroupKeys, collapsedInboxParents, groupedSections, t]);
   // Read the current nav list from event handlers without recreating them (and
   // without capturing a stale array), so hover can resolve the row's key.
   const flatNavItemsRef = useRef(flatNavItems);
@@ -1801,28 +1794,28 @@ function StreamlinedInbox({
       }
     }
     return collectSubtreeLiveCounts(nodes, liveIssueIds);
-  }, [groupedSections, liveIssueIds]);
+  }, [groupedSections, liveIssueIds, t]);
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "top") map.set(entry.itemKey, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [flatNavItems, t]);
   const childFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "child") map.set(entry.issueId, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [flatNavItems, t]);
   const groupFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "group") map.set(entry.groupKey, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [flatNavItems, t]);
 
   const agentName = (id: string | null) => {
     if (!id) return null;
@@ -1835,14 +1828,14 @@ function StreamlinedInbox({
       viewState: filterPreferences,
       columns: normalized,
     });
-  }, [filterPreferences, selectedCompanyId]);
+  }, [filterPreferences, selectedCompanyId, t]);
   const toggleIssueColumn = useCallback((column: InboxIssueColumn, enabled: boolean) => {
     if (enabled) {
       setIssueColumns([...visibleIssueColumns, column]);
       return;
     }
     setIssueColumns(visibleIssueColumns.filter((value) => value !== column));
-  }, [setIssueColumns, visibleIssueColumns]);
+  }, [setIssueColumns, visibleIssueColumns, t]);
   const updateFilterPreferences = useCallback(
     (updater: (previous: StreamlinedInboxViewState) => StreamlinedInboxViewState) => {
       setFilterPreferences((previous) => {
@@ -1854,14 +1847,14 @@ function StreamlinedInbox({
         return next;
       });
     },
-    [selectedCompanyId, visibleIssueColumns],
+    [selectedCompanyId, visibleIssueColumns, t],
   );
   const updateIssueFilters = useCallback((patch: Partial<IssueFilterState>) => {
     updateFilterPreferences((previous) => ({
       ...previous,
       issueFilters: { ...previous.issueFilters, ...patch },
     }));
-  }, [updateFilterPreferences]);
+  }, [updateFilterPreferences, t]);
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || issueFilters.externalObjectStatuses.length === 0) return;
     updateIssueFilters({ externalObjectStatuses: [] });
@@ -1873,14 +1866,14 @@ function StreamlinedInbox({
   ]);
   const updateAllCategoryFilter = useCallback((value: InboxCategoryFilter) => {
     updateFilterPreferences((previous) => ({ ...previous, allCategoryFilter: value }));
-  }, [updateFilterPreferences]);
+  }, [updateFilterPreferences, t]);
   const updateAllApprovalFilter = useCallback((value: InboxApprovalFilter) => {
     updateFilterPreferences((previous) => ({ ...previous, allApprovalFilter: value }));
-  }, [updateFilterPreferences]);
+  }, [updateFilterPreferences, t]);
   const updateGroupBy = useCallback((nextGroupBy: InboxWorkItemGroupBy) => {
     setGroupBy(nextGroupBy);
     saveInboxWorkItemGroupBy(nextGroupBy);
-  }, []);
+  }, [t]);
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.approve(id),
@@ -1890,7 +1883,7 @@ function StreamlinedInbox({
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "approve this request" }).body);
+      setActionError(describeError(err, { action: t("work:copy.approveThisRequest_2c094f") }).body);
     },
   });
 
@@ -1901,7 +1894,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "reject this request" }).body);
+      setActionError(describeError(err, { action: t("work:copy.rejectThisRequest_257c13") }).body);
     },
   });
 
@@ -1975,8 +1968,8 @@ function StreamlinedInbox({
     },
     onError: (error) => {
       pushToast({
-        title: "Run retry failed",
-        body: error instanceof Error ? error.message : "Unable to retry run",
+        title: t("work:copy.runRetryFailed_243efb"),
+        body: error instanceof Error ? error.message : t("work:copy.unableToRetryRun_537d0b"),
         tone: "error",
       });
     },
@@ -2024,7 +2017,7 @@ function StreamlinedInbox({
     // never show two identical highlights at once. React bails out when the
     // value is already -1, so continuous hovering triggers no re-render.
     setSelectedIndex((prev) => (prev < 0 ? prev : -1));
-  }, [noteInboxSortInteraction]);
+  }, [noteInboxSortInteraction, t]);
 
   const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
@@ -2173,7 +2166,7 @@ function StreamlinedInbox({
         return next;
       });
     }, 300);
-  }, [markItemRead]);
+  }, [markItemRead, t]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
     noteInboxSortInteraction();
@@ -2190,7 +2183,7 @@ function StreamlinedInbox({
         return next;
       });
     }, 200);
-  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction]);
+  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction, t]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -2571,7 +2564,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState icon={InboxIcon} message={t("work:copy.selectAnOrganizationToView_3ce423", { value1: surfaceLabel.toLowerCase() })} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2592,30 +2585,30 @@ function StreamlinedInbox({
       issueFilters.statuses.includes(status as IssueFilterState["statuses"][number]),
     );
   const issueFilterFeedback = issueFilters.liveOnly
-    ? "Live runs only — tasks currently connected to an agent run."
+    ? t("work:copy.liveRunsOnlyTasksCurrentlyConnectedToAnAgent_5511c5")
     : activeStatusFilterApplied
-      ? "Active statuses — open tasks, whether or not an agent is running."
+      ? t("work:copy.activeStatusesOpenTasksWhetherOrNotAnAgent_74d3d2")
       : null;
   return (
     <div className="space-y-6">
       <IssueRowDetailsNotice
         error={optionalSourceError ?? rowDetailsError}
-        message={optionalSourceError ? "Some inbox items couldn’t load. Showing available items." : undefined}
-        retryLabel={optionalSourceError ? "Retry missing items" : undefined}
+        message={optionalSourceError ? t("work:copy.someInboxItemsCouldnTLoadShowingAvailableItems_35eb8f") : undefined}
+        retryLabel={optionalSourceError ? t("work:copy.retryMissingItems_e0369d") : undefined}
         onRetry={optionalSourceError ? retryFailedSources : () => void retryRowDetails()}
       />
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
-        ariaLabel={`${surfaceLabel} controls`}
+        ariaLabel={t("work:extra.message_428be01b88", { value1: surfaceLabel })}
         context={toolbarContext ?? (
           <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
             <PageTabBar
               items={[
-                { value: "mine", label: "Mine" },
-                { value: "recent", label: "Recent" },
-                { value: "unread", label: "Unread" },
-                { value: "blocked", label: "Blocked" },
-                { value: "all", label: "All" },
+                { value: "mine", label: t("work:copy.mine_f57afb") },
+                { value: "recent", label: t("work:copy.recent_690dbe") },
+                { value: "unread", label: t("work:copy.unread_1b9f38") },
+                { value: "blocked", label: t("work:copy.blocked_18f2a0") },
+                { value: "all", label: t("work:copy.all_a52ace") },
               ]}
             />
           </Tabs>
@@ -2625,7 +2618,7 @@ function StreamlinedInbox({
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder={`Search ${surfaceLabel.toLowerCase()}…`}
+              placeholder={t("work:extra.message_dcb807edf4", { value1: surfaceLabel.toLowerCase() })}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2676,7 +2669,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("work:copy.group_34ca0e")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2712,7 +2705,7 @@ function StreamlinedInbox({
                   }));
                 }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which columns stay visible"
+                title={t("work:copy.chooseWhichColumnsStayVisible_e1c2ce")}
                 iconOnly
               />
               <Popover>
@@ -2722,7 +2715,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 shrink-0"
-                    title="Sort"
+                    title={t("work:copy.sort_bec690")}
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
@@ -2755,7 +2748,7 @@ function StreamlinedInbox({
                 size="icon"
                 className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
-                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+                title={nestingEnabled ? t("work:copy.disableParentChildNesting_8c5a4b") : t("work:copy.enableParentChildNesting_18cf6d")}
               >
                 <ListTree className="h-3.5 w-3.5" />
               </Button>
@@ -2795,7 +2788,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("work:copy.group_34ca0e")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2803,11 +2796,11 @@ function StreamlinedInbox({
                 <PopoverContent align="end" className="w-40 p-2">
                   <div className="space-y-0.5">
                     {([
-                      ["none", "None"],
-                      ["type", "Type"],
-                      ["assignee", "Responsible"],
-                      ["project", "Project"],
-                      ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                      ["none", t("work:copy.none_dc937b")],
+                      ["type", t("work:copy.type_baaddf")],
+                      ["assignee", t("work:copy.responsible_bc110a")],
+                      ["project", t("work:copy.project_985959")],
+                      ...(isolatedWorkspacesEnabled ? ([["workspace", t("work:copy.workspace_87bb59")]] as const) : []),
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -2837,7 +2830,7 @@ function StreamlinedInbox({
                   }));
                 }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which columns stay visible"
+                title={t("work:copy.chooseWhichColumnsStayVisible_e1c2ce")}
                 iconOnly
                 rowPresentation={streamlinedUiEnabled ? "task" : "legacy"}
               />
@@ -2851,28 +2844,22 @@ function StreamlinedInbox({
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    {markAllReadMutation.isPending ? t("work:extra.message_98a436e57b") : t("work:copy.markAllAsRead_d75926")}
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
-                        <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
-                        </DialogDescription>
+                        <DialogTitle>{t("work:copy.markAllAsRead_0bf166")}</DialogTitle>
+                        <DialogDescription>{t("work:messages.markRead", { count: unreadIssueIds.length })}</DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
-                        <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
-                        </Button>
+                        <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>{t("work:copy.cancel_19766e")}</Button>
                         <Button
                           onClick={() => {
                             setShowMarkAllReadConfirm(false);
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
-                        >
-                          Mark all as read
-                        </Button>
+                        >{t("work:copy.markAllAsRead_d75926")}</Button>
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
@@ -2891,8 +2878,8 @@ function StreamlinedInbox({
 
       {listError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
-          <p>Unable to load the inbox: {describeError(listError).body}</p>
-          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
+          <p>{t("work:messages.inboxLoadFailed", { error: describeError(listError).body })}</p>
+          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>{t("work:copy.retry_942087")}</Button>
         </div>
       )}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
@@ -2929,14 +2916,14 @@ function StreamlinedInbox({
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
-              ? "No inbox items match your search."
+              ? t("work:copy.noInboxItemsMatchYourSearch_035ac0")
               : tab === "mine"
-              ? "Inbox zero."
+              ? t("work:copy.inboxZero_9399b9")
               : tab === "unread"
-              ? "No new inbox items."
+              ? t("work:copy.noNewInboxItems_d2b837")
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? t("work:copy.noRecentInboxItems_7a612a")
+                : t("work:copy.noInboxItemsMatchTheseFilters_6215f5")
           }
         />
       )}
@@ -3019,7 +3006,7 @@ function StreamlinedInbox({
                           type="button"
                           data-slot="icon-button"
                           className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-                          aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                          aria-label={isExpanded ? t("work:copy.collapseSubTasks_b533f9") : t("work:copy.expandSubTasks_45dcdc")}
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
@@ -3078,7 +3065,7 @@ function StreamlinedInbox({
                       ) : undefined}
                       titleSuffix={hasChildren && !isExpanded ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
-                          ({childCount} sub-task{childCount !== 1 ? "s" : ""})
+                          ({t("work:counts.subtasks", { count: childCount })})
                         </span>
                       ) : undefined}
                       mobileTitleMeta={streamlinedUiEnabled ? issueActivityTimestamp(issue) : undefined}
@@ -3158,7 +3145,7 @@ function StreamlinedInbox({
                       >
                         <div className="h-px flex-1 bg-border/80" />
                         <span className="shrink-0 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.searchSection === "archived" ? "Archived" : "Other results"}
+                          {group.searchSection === "archived" ? t("work:copy.archived_bdb865") : t("work:copy.otherResults_d2fcaa")}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
                       </div>,
@@ -3195,8 +3182,8 @@ function StreamlinedInbox({
                               variant="ghost"
                               size="icon-xs"
                               className="-mr-2 text-muted-foreground"
-                              title={`New task in ${group.label}`}
-                              aria-label={`New task in ${group.label}`}
+                              title={t("work:copy.newTaskIn_46a6f7", { value1: group.label })}
+                              aria-label={t("work:copy.newTaskIn_46a6f7", { value1: group.label })}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openCreateIssueForGroup(group);
@@ -3265,9 +3252,7 @@ function StreamlinedInbox({
                           <span
                             className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-muted-foreground/70"
                             data-date-group-label=""
-                          >
-                            Earlier
-                          </span>
+                          >{t("work:copy.earlier_e10ae9")}</span>
                         </div>,
                       );
                     }
@@ -3480,9 +3465,7 @@ function StreamlinedInbox({
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
-            </h3>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{t("work:copy.alerts_f62e92")}</h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
                 <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
@@ -3492,15 +3475,13 @@ function StreamlinedInbox({
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
                     <span className="text-sm">
-                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
-                    </span>
+                      <Trans t={t} i18nKey="work:messages.agentErrors" count={dashboard!.agents.error} components={{ strong: <span className="font-medium" /> }} /></span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("work:copy.dismiss_48845b")}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -3513,17 +3494,13 @@ function StreamlinedInbox({
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
-                    <span className="text-sm">
-                      Budget at{" "}
-                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                      utilization this month
-                    </span>
+                    <span className="text-sm"><Trans t={t} i18nKey="work:messages.budgetUtilization" values={{ percent: dashboard!.costs.monthUtilizationPercent }} components={{ strong: <span className="font-medium" /> }} /></span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:budget")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("work:copy.dismiss_48845b")}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

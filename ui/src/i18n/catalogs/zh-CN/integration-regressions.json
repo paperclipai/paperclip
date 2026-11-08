@@ -1,0 +1,6 @@
+{
+  "envOneSecret_one": "{{count}} 个键（{{secretCount}} 个密钥引用）",
+  "envOneSecret_other": "{{count}} 个键（{{secretCount}} 个密钥引用）",
+  "envManySecrets_one": "{{count}} 个键（{{secretCount}} 个密钥引用）",
+  "envManySecrets_other": "{{count}} 个键（{{secretCount}} 个密钥引用）"
+}

@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation, Trans } from "@/i18n";
 import { useCallback, useEffect, useState } from "react";
 import {
   CalendarClock,
@@ -99,7 +100,8 @@ export function webhookAgentInstructions(
   ].join("\n");
 }
 export function describeSchedule(draft: TriggerDraft) {
-  return `${draft.frequency === "daily" ? "Every day" : draft.frequency === "weekly" ? `Every ${draft.weekday}` : "Every weekday"} at ${draft.time}`;
+  const weekdays: Record<string, string> = { "Monday": t("final-components-a:monday_6a00dfc1"), "Tuesday": t("final-components-a:tuesday_7d8af1de"), "Wednesday": t("final-components-a:wednesday_c0a6cc82"), "Thursday": t("final-components-a:thursday_fc266206"), "Friday": t("final-components-a:friday_e21f3f37"), "Saturday": t("final-components-a:saturday_dbe35c73"), "Sunday": t("final-components-a:sunday_873fef76") };
+  return draft.frequency === "daily" ? t("final-components-a:everyDayAtTime_25949eda", { time: draft.time }) : draft.frequency === "weekly" ? t("final-components-a:everyWeekdayAtTime_ef07a825", { weekday: weekdays[draft.weekday] ?? draft.weekday, time: draft.time }) : t("final-components-a:everyWeekdayAtTime_0d371b77", { time: draft.time });
 }
 export function RoutineTriggerWizard({
   initialDraft,
@@ -126,6 +128,7 @@ export function RoutineTriggerWizard({
   onFinish: (draft: TriggerDraft) => void | Promise<void>;
   checkResult?: "waiting" | "received" | "rejected" | "no_event";
 }) {
+  useTranslation("task-components");
   const [draft, setDraft] = useState(initialDraft);
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -170,14 +173,14 @@ export function RoutineTriggerWizard({
           saveAndExit();
         },
       },
-      { label: "Add trigger" },
+      { label: t("task-components:addTrigger_58fd3089") },
     ]);
-  }, [saveAndExit, setBreadcrumbs, routineTitle, routineId]);
+  }, [saveAndExit, setBreadcrumbs, routineTitle, routineId, i18n.language]);
   const schedule = draft.kind === "schedule";
   const github = draft.sender === "github";
   const labels = schedule
-    ? ["Choose trigger", "Set schedule", "Review schedule"]
-    : ["Choose trigger", "Connect your app", "Check connection"];
+    ? [t("final-components-a:chooseTrigger_c28f2212"), t("final-components-a:setSchedule_22185675"), t("final-components-a:reviewSchedule_98c00356")]
+    : [t("final-components-a:chooseTrigger_c28f2212"), t("final-components-a:connectYourApp_41db7f95"), t("final-components-a:checkConnection_be5dff52")];
   function patch(values: Partial<TriggerDraft>) {
     setDraft((current) => ({ ...current, ...values }));
   }
@@ -196,37 +199,35 @@ export function RoutineTriggerWizard({
   }
   const title =
     draft.step === 0
-      ? "When should this routine run?"
+      ? t("final-components-a:whenShouldThisRoutineRun_7725656f")
       : schedule
         ? draft.step === 1
-          ? "Set a schedule"
-          : "Review your schedule"
+          ? t("final-components-a:setASchedule_b967d9c5")
+          : t("final-components-a:reviewYourSchedule_6204c309")
         : draft.step === 1
-          ? `Connect ${github ? "GitHub" : "your app"}`
-          : "Check your connection";
+          ? t("task-components:connect_60c78691", { value1: github ? "GitHub" : t("final-components-a:yourApp_4696a335") })
+          : t("final-components-a:checkYourConnection_c2886bc3");
   const subtitle =
     draft.step === 0
-      ? `Choose how to start “${routineTitle}”. You can add another trigger later.`
+      ? t("final-components-a:chooseHowToStartRoutine_8515af74", { routine: routineTitle })
       : schedule
         ? draft.step === 1
-          ? "Choose when Paperclip should start this routine automatically."
-          : "This schedule starts the routine automatically. You can pause or change it later."
+          ? t("final-components-a:chooseWhenPaperclipShouldStart_3cca3d7f")
+          : t("final-components-a:thisScheduleStartsTheRoutine_b549efc6")
         : draft.step === 1
-          ? "Copy these details into the sending app, then save its webhook settings."
-          : "Test that events arrive and authentication works. This won’t start the routine.";
+          ? t("final-components-a:copyTheseDetailsIntoThe_7eaa5d90")
+          : t("final-components-a:testThatEventsArriveAnd_57926d6a");
   const selectClass =
     "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
   const goBack = (
-    <Button variant="outline" onClick={() => patch({ step: draft.step - 1 })}>
-      Back
-    </Button>
+    <Button variant="outline" onClick={() => patch({ step: draft.step - 1 })}>{t("task-components:back_76900f1b")}</Button>
   );
   return (
     <div className="min-w-0 w-full max-w-2xl space-y-6">
       <SetupWizardNavigation
         takeover
         disabled={busy}
-        ariaLabel="Trigger setup progress"
+        ariaLabel={t("final-components-a:triggerSetupProgress_0e99f6bb")}
         labels={labels}
         step={draft.step}
         availableStep={draft.availableStep}
@@ -240,20 +241,20 @@ export function RoutineTriggerWizard({
         {!schedule && draft.step > 0 && <WebhookUrlWarning url={webhookUrl} />}
         {draft.step === 0 && (
           <fieldset className="space-y-3">
-            <legend className="sr-only">Trigger type</legend>
+            <legend className="sr-only">{t("task-components:triggerType_31a9d2bd")}</legend>
             {(
               [
                 {
                   kind: "schedule",
-                  label: "On a schedule",
-                  detail: "Every day, on weekdays, or once a week.",
+                  label: t("task-components:onASchedule_8c4f3450"),
+                  detail: t("final-components-a:everyDayOnWeekdaysOr_0ae8852b"),
                   Icon: CalendarClock,
                 },
                 {
                   kind: "webhook",
-                  label: "When another app sends a webhook",
+                  label: t("task-components:whenAnotherAppSendsAWebhook_d7f97da1"),
                   detail:
-                    "When something happens in GitHub, another app, or a script.",
+                    t("final-components-a:whenSomethingHappensInGitHub_359218e1"),
                   Icon: Webhook,
                 },
               ] as const
@@ -297,20 +298,20 @@ export function RoutineTriggerWizard({
           <div className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="repeat">Repeat</Label>
+                <Label htmlFor="repeat">{t("task-components:repeat_b6b7a006")}</Label>
                 <select
                   id="repeat"
                   className={selectClass}
                   value={draft.frequency}
                   onChange={(event) => patch({ frequency: event.target.value })}
                 >
-                  <option value="daily">Every day</option>
-                  <option value="weekdays">Weekdays (Monday–Friday)</option>
-                  <option value="weekly">Every week</option>
+                  <option value="daily">{t("task-components:everyDay_c4e42b97")}</option>
+                  <option value="weekdays">{t("task-components:weekdaysMondayFriday_0ea2df5f")}</option>
+                  <option value="weekly">{t("task-components:everyWeek_1b7e1851")}</option>
                 </select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="run-time">Time</Label>
+                <Label htmlFor="run-time">{t("task-components:time_33b93476")}</Label>
                 <Input
                   id="run-time"
                   type="time"
@@ -321,7 +322,7 @@ export function RoutineTriggerWizard({
             </div>
             {draft.frequency === "weekly" && (
               <div className="space-y-2">
-                <Label htmlFor="run-day">Day</Label>
+                <Label htmlFor="run-day">{t("task-components:day_8f2364e1")}</Label>
                 <select
                   id="run-day"
                   className={selectClass}
@@ -337,13 +338,13 @@ export function RoutineTriggerWizard({
                     "Saturday",
                     "Sunday",
                   ].map((day) => (
-                    <option key={day}>{day}</option>
+                    <option key={day} value={day}>{t(`final-components-a:weekday_${day}`)}</option>
                   ))}
                 </select>
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="timezone">Time zone</Label>
+              <Label htmlFor="timezone">{t("task-components:timeZone_b9fe1464")}</Label>
               <select
                 id="timezone"
                 className={selectClass}
@@ -363,9 +364,7 @@ export function RoutineTriggerWizard({
                   <option key={zone}>{zone}</option>
                 ))}
               </select>
-              <p className="text-xs text-muted-foreground">
-                The time follows this zone, including daylight saving changes.
-              </p>
+              <p className="text-xs text-muted-foreground">{t("task-components:theTimeFollowsThisZoneIncludingDaylight_ea2bf434")}</p>
             </div>
           </div>
         )}
@@ -380,23 +379,18 @@ export function RoutineTriggerWizard({
                 </p>
               </div>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Each scheduled run creates a task for the routine’s assigned
-              agent. Any existing webhook triggers will continue to work.
-            </p>
+            <p className="text-sm text-muted-foreground">{t("task-components:eachScheduledRunCreatesATaskFor_ee4ebabb")}</p>
           </div>
         )}
         {draft.step === 0 && draft.kind === "webhook" && (
           <fieldset className="space-y-2">
-            <legend className="mb-2 text-sm font-medium">
-              What’s sending the webhook?
-            </legend>
+            <legend className="mb-2 text-sm font-medium">{t("task-components:whatSSendingTheWebhook_850bfd5b")}</legend>
             <div className="grid gap-2 sm:grid-cols-2">
               {(
                 [
                   {
                     sender: "custom",
-                    label: "Another app or script",
+                    label: t("task-components:anotherAppOrScript_33687214"),
                     Icon: Globe,
                   },
                   { sender: "github", label: "GitHub", Icon: GitBranch },
@@ -429,9 +423,7 @@ export function RoutineTriggerWizard({
           </fieldset>
         )}
         {draft.kind === "webhook" && draft.step === 0 && (
-          <p className="text-sm text-muted-foreground">
-            Public services need a publicly reachable HTTPS webhook URL.
-          </p>
+          <p className="text-sm text-muted-foreground">{t("task-components:publicServicesNeedAPubliclyReachableHttps_090e88c6")}</p>
         )}
         {!schedule && draft.step === 1 && (
           <div className="space-y-5">
@@ -448,35 +440,26 @@ export function RoutineTriggerWizard({
               />
             )}
             <CopyField
-              label={github ? "Payload URL" : "Webhook URL"}
+              label={github ? t("final-components-a:payloadURL_1de5cdcf") : t("final-components-a:webhookURL_84805a75")}
               value={webhookUrl}
             />
             {!github && draft.signingMode !== "bearer" && (
-              <p className="text-sm text-muted-foreground">
-                Paste this key into your app’s signing secret field.
-                {draft.signingMode !== "fireflies_hmac" && <>
-                  {" "}If your app uses custom headers instead, set Authorization to Bearer followed
-                  by a space and this key.
-                </>}
+              <p className="text-sm text-muted-foreground">{t("task-components:pasteThisKeyIntoYourAppS_3dd90f15")}{draft.signingMode !== "fireflies_hmac" && <>
+                  {" "}{t("task-components:ifYourAppUsesCustomHeadersInstead_4d7327f2")}</>}
               </p>
             )}
             {webhookSecret ? (
               <CopyField
-                label={github ? "Secret" : draft.signingMode === "bearer" ? "Authorization header value" : "Secret key"}
+                label={github ? t("task-components:secret_7e32a729") : draft.signingMode === "bearer" ? t("task-components:authorizationHeaderValue_39a91b3d") : t("task-components:secretKey_f47a99eb")}
                 value={!github && draft.signingMode === "bearer" ? `Bearer ${webhookSecret}` : webhookSecret}
               />
             ) : (
               <div className="space-y-2">
-                <p className="text-sm text-muted-foreground">
-                  The key is hidden after leaving setup. If you haven’t saved it
-                  in your app, generate a replacement.
-                </p>
+                <p className="text-sm text-muted-foreground">{t("task-components:theKeyIsHiddenAfterLeavingSetup_8e6e20d1")}</p>
                 <Button
                   variant="outline"
                   onClick={() => void perform(() => onRotateKey?.())}
-                >
-                  Generate new key
-                </Button>
+                >{t("task-components:generateNewKey_3a14b7bb")}</Button>
               </div>
             )}
           </div>
@@ -484,24 +467,17 @@ export function RoutineTriggerWizard({
         {!schedule && draft.step === 2 && (
           <div className="space-y-5">
             <div className="space-y-1 rounded-md border border-border p-4">
-              <p className="text-sm font-medium">Connection test only</p>
-              <p className="text-sm text-muted-foreground">
-                Events received during setup won’t start the routine or create
-                tasks.
-              </p>
+              <p className="text-sm font-medium">{t("task-components:connectionTestOnly_fd7045f1")}</p>
+              <p className="text-sm text-muted-foreground">{t("task-components:eventsReceivedDuringSetupWonTStart_ca8e4cd4")}</p>
             </div>
             <div className="space-y-2">
-              <p className="text-sm font-medium">
-                Send an event from {github ? "GitHub" : "your app"}
-              </p>
+              <p className="text-sm font-medium"><Trans ns="task-components" i18nKey="sentence_83373db0fc2b" components={{ part1: <>{github ? "GitHub" : t("task-components:yourApp_4696a335")}</> }} /></p>
               <p className="text-sm text-muted-foreground">
                 {github
-                  ? "Open this webhook in your repository settings. Under Recent Deliveries, choose Redeliver on an event."
-                  : "Look for “Send test” in your app’s webhook settings. If it doesn’t have one, do the action that should trigger the webhook—for example, complete a deployment."}
+                  ? t("task-components:openThisWebhookInYourRepositorySettings_e2c845a5")
+                  : t("task-components:lookForSendTestInYourApp_643e56b8")}
               </p>
-              <p className="text-xs text-muted-foreground">
-                Keep this page open to see the test result.
-              </p>
+              <p className="text-xs text-muted-foreground">{t("task-components:keepThisPageOpenToSeeThe_f5c74154")}</p>
             </div>
             <div
               role="status"
@@ -517,32 +493,27 @@ export function RoutineTriggerWizard({
               <div className="space-y-1">
                 <p className="text-sm font-medium">
                   {checkResult === "received"
-                    ? "Test event received · Connection working"
+                    ? t("task-components:testEventReceivedConnectionWorking_b57a6eee")
                     : checkResult === "rejected"
-                      ? "Event arrived, but the key was rejected"
+                      ? t("task-components:eventArrivedButTheKeyWasRejected_8ac7b7ed")
                       : checkResult === "no_event"
-                        ? "No event received yet"
-                        : "Waiting for an event from your app…"}
+                        ? t("task-components:noEventReceivedYet_4d6fd6a8")
+                        : t("task-components:waitingForAnEventFromYourApp_6da2e8bc")}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {checkResult === "received"
-                    ? "Authentication passed. No routine run or task was created."
+                    ? t("task-components:authenticationPassedNoRoutineRunOrTask_407050a5")
                     : checkResult === "rejected"
-                      ? "Go back to Connect your app, update the key in your sending app, and resend. No task was created."
-                      : "Waiting to verify delivery and authentication. The routine is not running."}
+                      ? t("task-components:goBackToConnectYourAppUpdate_d5b974d7")
+                      : t("task-components:waitingToVerifyDeliveryAndAuthenticationThe_f29bb26e")}
                 </p>
               </div>
             </div>
             <details>
-              <summary className="cursor-pointer text-xs text-muted-foreground">
-                Troubleshoot delivery
-              </summary>
+              <summary className="cursor-pointer text-xs text-muted-foreground">{t("task-components:troubleshootDelivery_f854de03")}</summary>
               <div className="space-y-3 pt-3">
-                <p className="text-xs text-muted-foreground">
-                  Check that the webhook is enabled in your sending app and that
-                  its URL matches. Scripts must send POST with a JSON body.
-                </p>
-                <CopyField label="Webhook URL" value={webhookUrl} />
+                <p className="text-xs text-muted-foreground">{t("task-components:checkThatTheWebhookIsEnabledIn_a4e5ad3d")}</p>
+                <CopyField label={t("final-components-a:webhookURL_84805a75")} value={webhookUrl} />
               </div>
             </details>
           </div>
@@ -550,15 +521,12 @@ export function RoutineTriggerWizard({
         {!schedule && draft.step === 2 && (
           <p className="text-xs text-muted-foreground">
             {routineActive
-              ? "Finish setup to enable this webhook. Future events will start the routine; this test event won’t be replayed."
-              : "Finish setup to save this webhook. The routine is paused; enable its automatic triggers when you’re ready. This test event won’t be replayed."}
+              ? t("task-components:finishSetupToEnableThisWebhookFuture_391fff2b")
+              : t("task-components:finishSetupToSaveThisWebhookThe_7580f066")}
           </p>
         )}
         {schedule && draft.step === 2 && !routineActive && (
-          <p className="text-sm text-muted-foreground">
-            The routine is paused. Enable its automatic triggers when you’re
-            ready to use this schedule.
-          </p>
+          <p className="text-sm text-muted-foreground">{t("task-components:theRoutineIsPausedEnableItsAutomatic_28f90721")}</p>
         )}
         {saveError && (
           <p role="alert" className="text-sm text-destructive">
@@ -568,26 +536,20 @@ export function RoutineTriggerWizard({
         <SetupWizardFooter onSaveExit={saveAndExit}>
           {draft.step > 0 && goBack}
           {draft.step === 0 ? (
-            <Button disabled={draft.kind === "choose"} onClick={advance}>
-              Continue
-            </Button>
+            <Button disabled={draft.kind === "choose"} onClick={advance}>{t("task-components:continue_31fbef16")}</Button>
           ) : schedule ? (
             draft.step === 1 ? (
-              <Button disabled={!draft.time} onClick={advance}>
-                Review schedule
-              </Button>
+              <Button disabled={!draft.time} onClick={advance}>{t("task-components:reviewSchedule_98c00356")}</Button>
             ) : (
-              <Button onClick={() => void perform(() => onFinish(draft))}>
-                Add schedule
-              </Button>
+              <Button onClick={() => void perform(() => onFinish(draft))}>{t("task-components:addSchedule_79218735")}</Button>
             )
           ) : draft.step === 1 ? (
-            <Button onClick={advance}>Check connection</Button>
+            <Button onClick={advance}>{t("task-components:checkConnection_be5dff52")}</Button>
           ) : (
             <Button onClick={() => void perform(() => onFinish(draft))}>
               {checkResult === "received"
-                ? "Finish setup"
-                : "Finish without checking"}
+                ? t("task-components:finishSetup_bc01ae77")
+                : t("task-components:finishWithoutChecking_ccfc47b4")}
             </Button>
           )}
         </SetupWizardFooter>

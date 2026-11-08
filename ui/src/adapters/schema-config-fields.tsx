@@ -1,3 +1,5 @@
+import { useTranslation, i18n } from "@/i18n";
+import { getAgentConfigDisplayText } from "./display-translations";
 import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
@@ -24,6 +26,7 @@ function SelectField({
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation("agent-config");
   const [open, setOpen] = useState(false);
   const selectedOpt = options.find((o) => o.value === value);
   return (
@@ -31,7 +34,7 @@ function SelectField({
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className={!value ? "text-muted-foreground" : ""}>
-            {selectedOpt?.label ?? value ?? "Select..."}
+            {getAgentConfigDisplayText(selectedOpt?.label) ?? value ?? t("agent-config:select_b92e64f")}
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
@@ -47,7 +50,7 @@ function SelectField({
               setOpen(false);
             }}
           >
-            <span>{opt.label}</span>
+            <span>{getAgentConfigDisplayText(opt.label)}</span>
           </button>
         ))}
       </PopoverContent>
@@ -73,6 +76,7 @@ function ComboboxField({
   onChange: (val: string) => void;
   placeholder?: string;
 }) {
+  const { t } = useTranslation("agent-config");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -110,7 +114,7 @@ function ComboboxField({
       setFilter("");
       inputRef.current?.blur();
     },
-    [onChange],
+    [onChange, i18n.resolvedLanguage],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -139,7 +143,7 @@ function ComboboxField({
           type="text"
           className="flex-1 rounded-l-md border border-r-0 border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 focus:z-10"
           value={displayValue}
-          placeholder={placeholder ?? "Type or select..."}
+          placeholder={placeholder ?? t("agent-config:typeOrSelect_4855f03")}
           onChange={(e) => {
             setFilter(e.target.value);
             if (!open) setOpen(true);
@@ -189,9 +193,7 @@ function ComboboxField({
               </div>
             ))}
             {filter && filtered.length === 0 && (
-              <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                Use &quot;{filter}&quot; as custom value (press Enter)
-              </div>
+              <div className="px-2 py-1.5 text-sm text-muted-foreground"> {t("agent-config:use_8106f4e")}{filter}{t("agent-config:asCustomValuePressEnter_438a7d0")} </div>
             )}
           </PopoverContent>
         </Popover>
@@ -248,6 +250,7 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 // ---------------------------------------------------------------------------
 
 export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
+  
   const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
     () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
   );
@@ -331,6 +334,7 @@ export function SchemaConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  useTranslation("agent-config");
   const schema = useConfigSchema(adapterType);
 
   const defaultsApplied = useRef({ adapterType, applied: false });
@@ -419,7 +423,7 @@ export function SchemaConfigFields({
             case "select": {
               const currentVal = String(readValue(field) ?? "");
               return (
-                <Field key={field.key} label={field.label} hint={field.hint}>
+                <Field key={field.key} label={getAgentConfigDisplayText(field.label)} hint={getAgentConfigDisplayText(field.hint)}>
                   <SelectField
                     value={currentVal}
                     options={field.options ?? []}
@@ -433,8 +437,8 @@ export function SchemaConfigFields({
               return (
                 <ToggleField
                   key={field.key}
-                  label={field.label}
-                  hint={field.hint}
+                  label={getAgentConfigDisplayText(field.label)}
+                  hint={getAgentConfigDisplayText(field.hint)}
                   checked={readValue(field) === true}
                   onChange={(v) => writeValue(field, v)}
                 />
@@ -442,7 +446,7 @@ export function SchemaConfigFields({
 
             case "number":
               return (
-                <Field key={field.key} label={field.label} hint={field.hint}>
+                <Field key={field.key} label={getAgentConfigDisplayText(field.label)} hint={getAgentConfigDisplayText(field.hint)}>
                   <DraftNumberInput
                     value={Number(readValue(field) ?? 0)}
                     onCommit={(v) => writeValue(field, v)}
@@ -454,7 +458,7 @@ export function SchemaConfigFields({
 
             case "textarea":
               return (
-                <Field key={field.key} label={field.label} hint={field.hint}>
+                <Field key={field.key} label={getAgentConfigDisplayText(field.label)} hint={getAgentConfigDisplayText(field.hint)}>
                   <DraftTextarea
                     value={String(readValue(field) ?? "")}
                     onCommit={(v) => writeValue(field, v || undefined)}
@@ -494,12 +498,12 @@ export function SchemaConfigFields({
                 }
               }
               return (
-                <Field key={field.key} label={field.label} hint={field.hint}>
+                <Field key={field.key} label={getAgentConfigDisplayText(field.label)} hint={getAgentConfigDisplayText(field.hint)}>
                   <ComboboxField
                     value={currentVal}
                     options={comboboxOptions}
                     onChange={(v) => writeValue(field, v || undefined)}
-                    placeholder={field.hint}
+                    placeholder={getAgentConfigDisplayText(field.hint)}
                   />
                 </Field>
               );
@@ -508,7 +512,7 @@ export function SchemaConfigFields({
             case "text":
             default:
               return (
-                <Field key={field.key} label={field.label} hint={field.hint}>
+                <Field key={field.key} label={getAgentConfigDisplayText(field.label)} hint={getAgentConfigDisplayText(field.hint)}>
                   <DraftInput
                     value={String(readValue(field) ?? "")}
                     onCommit={(v) => writeValue(field, v || undefined)}

@@ -1,0 +1,7 @@
+{
+  "clearLocalWorkspaceFolder": "Clear local folder from this workspace?",
+  "removeLocalWorkspaceFolder": "Delete this workspace local folder?",
+  "revealProviderFrame": "This exact provider frame may contain prompts, tool arguments, secrets, or reasoning. Reveal it now?",
+  "downloadRawTrace": "Download the exact raw trace? It may contain sensitive prompts, tool arguments, and provider-only fields.",
+  "deleteRawTrace": "Delete this raw trace immediately? This cannot be undone."
+}

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type {
   ReasoningMessagePart,
@@ -655,11 +656,11 @@ function createTimelineEventMessage(args: {
   const actorName = event.actorType === "agent"
     ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
     : event.actorType === "system"
-      ? "System"
-      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
+      ? t("display:copy_76a115382e4b")
+      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? t("display:copy_478a9db68250"));
 
   const lines: string[] = [
-    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
+    event.followUpRequested ? t("display:copy_41bb1f0713cc", { value0: actorName }) : t("display:copy_f1885920961f", { value0: actorName }),
   ];
   if (event.statusChange) {
     lines.push(
@@ -669,10 +670,10 @@ function createTimelineEventMessage(args: {
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? t("display:copy_f9e94775ded1"));
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? t("display:copy_f9e94775ded1"));
     lines.push(`Assignee: ${from} -> ${to}`);
   }
   if (event.workspaceChange) {
@@ -782,18 +783,18 @@ export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+    return t("display:duration_seconds", { count: totalSeconds });
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return t("display:duration_minutes", { count: totalMinutes });
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return t("display:duration_hours", { count: hours });
   }
-  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return t("display:duration_hours_minutes", { hours: t("display:duration_hours", { count: hours }), minutes: t("display:duration_minutes", { count: minutes }) });
 }
 
 function runDurationLabel(run: {
@@ -811,24 +812,24 @@ function runDurationLabel(run: {
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText ? t("display:copy_0f3462a69931", { value0: durationText }) : t("display:copy_6b311591ce56");
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText ? t("display:copy_6f6e950c38e5", { value0: durationText }) : t("display:copy_8972310ea446");
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText ? t("display:copy_ece59e5662ca", { value0: durationText }) : t("display:copy_b4e9df23c547");
     case "cancelled":
       if (isOperatorInterruptedRun(run.resultJson, run.errorCode)) {
-        return durationText ? `Interrupted by board after ${durationText}` : "Interrupted by board";
+        return durationText ? t("display:copy_a6dde9973ef5", { value0: durationText }) : t("display:copy_2f05490e5537");
       }
       if (stopReason === "paused") {
-        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+        return durationText ? t("display:copy_2df38eceb5ba", { value0: durationText }) : t("display:copy_be1d3b851f82");
       }
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText ? t("display:copy_a794f315b2ac", { value0: durationText }) : t("display:copy_d2dcaf35b666");
     case "queued":
-      return "Queued";
+      return t("display:copy_4d05bdb186e0");
     case "running":
-      return "Working...";
+      return t("display:copy_3bfdf40dd1bc");
     default:
       return formatStatusLabel(run.status);
   }
@@ -840,7 +841,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
     id: `run:${run.runId}`,
     role: "system",
     createdAt: toDate(runTimestamp(run)),
-    content: [{ type: "text", text: `${agentName} run ${run.runId.slice(0, 8)} ${formatStatusLabel(run.status)}` }],
+    content: [{ type: "text", get "text"() { return t("display:copy_84e4bc5116d6", { value0: agentName, value1: run.runId.slice(0, 8), value2: formatStatusLabel(run.status) }); } }],
     metadata: {
       custom: {
         kind: "run",
@@ -867,7 +868,7 @@ function createHistoricalTranscriptMessage(args: {
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = hasOutput ? "" : "Run finished";
+  const waitingText = hasOutput ? "" : t("display:copy_27fb2f4b9018");
   const content = parts.length > 0
     ? parts
     : waitingText
@@ -1014,13 +1015,13 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "result") {
       if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
-          orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
+          orderedParts.push({ type: "reasoning", get "text"() { return t("display:copy_b7170813f5ba", { value0: summarizeNotice(error) }); } });
         }
       } else if (entry.text) {
         orderedParts.push({
           type: "reasoning",
           text: entry.isError
-            ? `Run error: ${summarizeNotice(entry.text)}`
+            ? t("display:copy_b7170813f5ba", { value0: summarizeNotice(entry.text) })
             : summarizeNotice(entry.text),
         });
       }
@@ -1114,7 +1115,7 @@ function createLiveRunMessage(args: {
       ? "Queued..."
       : parts.length > 0
         ? ""
-        : "Working...";
+        : t("display:copy_3bfdf40dd1bc");
 
   const content = parts;
 

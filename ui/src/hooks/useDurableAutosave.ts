@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import { QueryClientContext } from "@tanstack/react-query";
 import { bindAccount } from "@/lib/account-scope";
@@ -29,15 +30,15 @@ export type DurableAutosaveResult =
 export function autosaveLabel(status: DurableAutosaveStatus, error: ErrorDescription | null): string | null {
   switch (status) {
     case "saving":
-      return "Saving…";
+      return t("display:copy_6891965cb90b");
     case "saved":
-      return "Saved";
+      return t("display:copy_bb45494fe556");
     case "waiting":
-      return "Will save when reconnected";
+      return t("display:copy_02621dea2d30");
     case "stalled":
-      return "Automatic saving paused";
+      return t("display:copy_217090f2ec08");
     case "error":
-      return error ? `Couldn't save (${error.body.replace(/\.$/, "")})` : "Couldn't save";
+      return error ? t("display:copy_fc5e928102ca", { value0: error.body.replace(/\.$/, "") }) : t("display:copy_51749fd00af1");
     default:
       return null;
   }
@@ -116,6 +117,7 @@ const SAVED_LINGER_MS = 1600;
  * - Errors become readable copy for "Couldn't save (reason)".
  */
 export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): DurableAutosave<T> {
+  useTranslation("display");
   const client = useContext(QueryClientContext);
   const owner = useDraftOwner();
   const readOwner = useDraftOwnerReader();

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
@@ -15,13 +16,13 @@ function formatTime(value: string | Date): string {
 
 function summarizeEvent(event: RoutineActivityEvent): string {
   const details = event.details;
-  if (event.action === "routine.webhook_test_received") return "Connection working · No run or task created";
-  if (event.action === "routine.webhook_test_rejected") return "Update the key in your app and resend";
-  if (event.action === "routine.webhook_received") return "Authentication passed";
-  if (event.action === "routine.webhook_rejected") return "Check the key in your sending app";
+  if (event.action === "routine.webhook_test_received") return t("final-components-a:connectionWorkingNoRunOr_eb762a3d");
+  if (event.action === "routine.webhook_test_rejected") return t("final-components-a:updateTheKeyInYour_a3b5a0e7");
+  if (event.action === "routine.webhook_received") return t("final-components-a:authenticationPassed_0e41aef6");
+  if (event.action === "routine.webhook_rejected") return t("final-components-a:checkTheKeyInYour_27adf524");
   if (!details) return "";
   if (typeof details.changeSummary === "string") return details.changeSummary;
-  if (event.action === "routine.run_triggered") return `${details.source === "webhook" ? "Webhook" : details.source === "schedule" ? "Schedule" : "Manual"} · ${details.status === "issue_created" ? "Task created" : String(details.status ?? "").replaceAll("_", " ")}`;
+  if (event.action === "routine.run_triggered") return `${details.source === "webhook" ? t("final-components-a:webhook_4814f62c") : details.source === "schedule" ? t("final-components-a:schedule_f4830a1d") : t("final-components-a:manual_b0b9fe24")} · ${details.status === "issue_created" ? t("final-components-a:taskCreated_a3e3e968") : String(details.status ?? "").replaceAll("_", " ")}`;
   return Object.entries(details).filter(([key]) => !/id$/i.test(key)).slice(0, 3)
     .map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").toLowerCase()}: ${formatDetailValue(value)}`)
     .join(" · ");
@@ -40,14 +41,14 @@ function formatDetailValue(value: unknown): string {
 }
 
 const actionLabels: Record<string, string> = {
-  "routine.webhook_test_received": "Connection test passed",
-  "routine.webhook_test_rejected": "Connection test rejected",
-  "routine.webhook_received": "Webhook event received",
-  "routine.webhook_rejected": "Webhook authentication failed",
-  "routine.created": "Routine created", "routine.updated": "Routine updated",
-  "routine.trigger_created": "Trigger added", "routine.trigger_updated": "Trigger updated",
-  "routine.trigger_deleted": "Trigger removed", "routine.trigger_removed": "Trigger removed", "routine.trigger_restored": "Trigger restored", "routine.trigger_setup_finished": "Webhook setup finished", "routine.trigger_secret_rotated": "Webhook key replaced",
-  "routine.run_triggered": "Routine started", "routine.run_created": "Run created",
+  get "routine.webhook_test_received"() { return t("final-components-a:connectionTestPassed_97f70ab0"); },
+  get "routine.webhook_test_rejected"() { return t("final-components-a:connectionTestRejected_e726428f"); },
+  get "routine.webhook_received"() { return t("final-components-a:webhookEventReceived_acc54100"); },
+  get "routine.webhook_rejected"() { return t("final-components-a:webhookAuthenticationFailed_912bfefc"); },
+  get "routine.created"() { return t("final-components-a:routineCreated_73aa7818"); }, get "routine.updated"() { return t("final-components-a:routineUpdated_72f4c9a3"); },
+  get "routine.trigger_created"() { return t("final-components-a:triggerAdded_bdfe6f71"); }, get "routine.trigger_updated"() { return t("final-components-a:triggerUpdated_73c266d5"); },
+  get "routine.trigger_deleted"() { return t("final-components-a:triggerRemoved_7d0dec12"); }, get "routine.trigger_removed"() { return t("final-components-a:triggerRemoved_7d0dec12"); }, get "routine.trigger_restored"() { return t("final-components-a:triggerRestored_ebac38f2"); }, get "routine.trigger_setup_finished"() { return t("final-components-a:webhookSetupFinished_64a3b5cd"); }, get "routine.trigger_secret_rotated"() { return t("final-components-a:webhookKeyReplaced_404458cb"); },
+  get "routine.run_triggered"() { return t("final-components-a:routineStarted_768fcb18"); }, get "routine.run_created"() { return t("final-components-a:runCreated_4c211da8"); },
 };
 function actionLabel(action: string) {
   return actionLabels[action] ?? action.replace(/^routine[._]/, "").replaceAll("_", " ").replaceAll(".", " ").replace(/^./, (char) => char.toUpperCase());

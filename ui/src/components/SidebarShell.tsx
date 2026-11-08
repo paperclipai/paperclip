@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -102,6 +103,7 @@ export function SidebarShell({
   onPanelFocusCapture,
   onPanelBlurCapture,
 }: SidebarShellProps) {
+  const { t: translateShell } = useTranslation("shell");
   const [width, setWidth] = useState(() => readStoredSidebarWidth(storageKey));
   const [isResizing, setIsResizing] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -130,11 +132,11 @@ export function SidebarShell({
 
   const reservedStyle = useMemo(
     () => ({ width: `${reservedWidth}px` }),
-    [reservedWidth],
+    [reservedWidth, translateShell],
   );
   const panelStyle = useMemo(
     () => ({ width: `${panelWidth}px` }),
-    [panelWidth],
+    [panelWidth, translateShell],
   );
 
   const commitWidth = useCallback(
@@ -233,7 +235,7 @@ export function SidebarShell({
       {canResize ? (
         <div
           role="separator"
-          aria-label="Resize sidebar"
+          aria-label={translateShell("shell:resize_sidebar")}
           aria-orientation="vertical"
           aria-valuemin={MIN_SIDEBAR_WIDTH}
           aria-valuemax={MAX_SIDEBAR_WIDTH}

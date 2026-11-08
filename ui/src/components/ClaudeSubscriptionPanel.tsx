@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { quotaUnavailableMessage } from "@/lib/quota-refresh";
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
@@ -32,7 +33,7 @@ function detailText(window: QuotaWindow): string | null {
       minute: "2-digit",
       timeZoneName: "short",
     });
-    return `Resets ${formatted}`;
+    return t("final-components-b:Resets_time_8a0557", { time: formatted });
   }
   return null;
 }
@@ -57,18 +58,15 @@ export function ClaudeSubscriptionPanel({
   source = null,
   error = null,
 }: ClaudeSubscriptionPanelProps) {
+  useTranslation("task-components");
   const ordered = orderedWindows(windows);
 
   return (
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Anthropic subscription
-          </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            Quota from the Claude subscription connected to this server.
-          </div>
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:anthropicSubscription_62da3e89")}</div>
+          <div className="mt-1 text-sm text-muted-foreground">{t("task-components:quotaFromTheClaudeSubscriptionConnectedTo_29f74a67")}</div>
         </div>
         {source ? (
           <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
@@ -120,9 +118,7 @@ export function ClaudeSubscriptionPanel({
                   ) : null}
                 </div>
                 {window.usedPercent != null ? (
-                  <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-                    {window.usedPercent}% used
-                  </div>
+                  <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground"><Trans ns="final-components-b" i18nKey="numeric.ClaudeSubscriptionPanel.cae0c71da8c7_d4b22" values={{ usedPercent: window.usedPercent }} /></div>
                 ) : null}
               </div>
 

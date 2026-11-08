@@ -1,0 +1,8 @@
+{
+  "relative": {"justNow": "just now", "minute": "{{count}}m ago", "hour": "{{count}}h ago", "day": "{{count}}d ago", "week": "{{count}}w ago", "month": "{{count}}mo ago"},
+  "unit": {"second": "s", "minute": "m", "hour": "h", "day": "d"},
+  "monthlyBudget": "{{amount}}/mo",
+  "billing": {"metered_api": "Metered API", "subscription_included": "Subscription", "subscription_overage": "Subscription overage", "credits": "Credits", "fixed": "Fixed", "unknown": "Unknown"},
+  "finance": {"inference_charge": "Inference charge", "platform_fee": "Platform fee", "credit_purchase": "Credit purchase", "credit_refund": "Credit refund", "credit_expiry": "Credit expiry", "byok_fee": "BYOK fee", "gateway_overhead": "Gateway overhead", "log_storage_charge": "Log storage", "logpush_charge": "Logpush", "provisioned_capacity_charge": "Provisioned capacity", "training_charge": "Training", "custom_model_import_charge": "Custom model import", "custom_model_storage_charge": "Custom model storage", "manual_adjustment": "Manual adjustment"},
+  "direction": {"credit": "Credit", "debit": "Debit"}
+}

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
@@ -152,6 +153,7 @@ export function CompanyPatternIcon({
   className,
   logoFit = "cover",
 }: CompanyPatternIconProps) {
+  useTranslation("task-components");
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
   const [imageError, setImageError] = useState(false);
   const logo = !imageError && typeof logoUrl === "string" && logoUrl.trim().length > 0 ? logoUrl : null;
@@ -173,7 +175,7 @@ export function CompanyPatternIcon({
       {logo ? (
         <img
           src={logo}
-          alt={`${companyName} logo`}
+          alt={t("task-components:logo_93cb9fdf", { value1: companyName })}
           onError={() => setImageError(true)}
           className={cn(
             "absolute inset-0 h-full w-full",

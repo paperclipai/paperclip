@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
@@ -88,11 +89,13 @@ function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
 }
 
 export function WhatNeedsMe() {
+  const { t } = useTranslation("work");
   const { enabled } = useCoordinatorWorkspaceEnabled();
   return enabled ? <CoordinatorNeedsYou /> : <ClassicWhatNeedsMe />;
 }
 
 function ClassicWhatNeedsMe() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -141,12 +144,12 @@ function ClassicWhatNeedsMe() {
   // safe to key the feed query on without thrashing.
   const activityBounds = useMemo(
     () => resolveAttentionDateRange(dateRange, Date.now(), customRange),
-    [dateRange, customRange],
+    [dateRange, customRange, t],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Decisions" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("work:copy.decisions_cfa6a0") }]);
+  }, [setBreadcrumbs, t]);
 
   // Re-hydrate per-company preferences when the company changes.
   useEffect(() => {
@@ -204,7 +207,7 @@ function ClassicWhatNeedsMe() {
     const map = new Map<string, Agent>();
     for (const agent of agents ?? []) map.set(agent.id, agent);
     return map;
-  }, [agents]);
+  }, [agents, t]);
 
   // Reset optimistic state once the server sends a fresh snapshot.
   useEffect(() => {
@@ -212,7 +215,7 @@ function ClassicWhatNeedsMe() {
     setPendingRestore(new Set());
   }, [feed?.generatedAt]);
 
-  const allItems = useMemo(() => feed?.items ?? [], [feed]);
+  const allItems = useMemo(() => feed?.items ?? [], [feed, t]);
 
   const isServerHidden = (item: AttentionItem) => item.dismissal != null && item.dismissal.isActive;
 
@@ -221,7 +224,7 @@ function ClassicWhatNeedsMe() {
       allItems.filter(
         (item) => (!isServerHidden(item) || pendingRestore.has(item.id)) && !pendingHide.has(item.id),
       ),
-    [allItems, pendingHide, pendingRestore],
+    [allItems, pendingHide, pendingRestore, t],
   );
 
   // The server's clock at feed time — used for the arrival/decide-by shelves and
@@ -229,20 +232,20 @@ function ClassicWhatNeedsMe() {
   // exactly, and stay stable across renders (Date.now() only as a pre-load fallback).
   const now = useMemo(
     () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
-    [feed?.generatedAt],
+    [feed?.generatedAt, t],
   );
 
   // Aging shelf (§4.4): items the server flags as idle past retention leave the
   // live desk for their own curtain, so today's desk shows only fresh decisions.
-  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
+  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems, t]);
+  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems, t]);
   const snoozedItems = useMemo(
     () =>
       allItems.filter(
         (item) =>
           item.dismissal?.kind === "snooze" && item.dismissal.isActive && !pendingRestore.has(item.id),
       ),
-    [allItems, pendingRestore],
+    [allItems, pendingRestore, t],
   );
   const dismissedItems = useMemo(
     () =>
@@ -250,10 +253,10 @@ function ClassicWhatNeedsMe() {
         (item) =>
           item.dismissal?.kind === "dismiss" && item.dismissal.isActive && !pendingRestore.has(item.id),
       ),
-    [allItems, pendingRestore],
+    [allItems, pendingRestore, t],
   );
 
-  const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
+  const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems, t]);
 
   // Filter → sort → group, all client-side so switching re-buckets without a
   // refetch. In the default (ungrouped) view the desk groups by arrival —
@@ -267,12 +270,12 @@ function ClassicWhatNeedsMe() {
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
+  }, [deskItems, filters, searchQuery, sortOrder, groupBy, now, t]);
 
-  const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
+  const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups, t]);
   const keyboardItems = useMemo(
     () => groups.filter((group) => group.label === null || !collapsedGroupKeys.has(group.key)).flatMap((group) => group.items),
-    [collapsedGroupKeys, groups],
+    [collapsedGroupKeys, groups, t],
   );
 
   // Rendered-row budget: only ratchets up (a hard reset mid-scroll would yank
@@ -309,11 +312,11 @@ function ClassicWhatNeedsMe() {
     selectedAttentionId,
     snoozedItems,
     snoozedOpen,
-  ]);
+  , t]);
 
   const loadMoreRows = useCallback(() => {
     setRenderedRowLimit((current) => current + ATTENTION_ROW_RENDER_BATCH_SIZE);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!renderPlan.hasMoreRows) return;
@@ -429,7 +432,7 @@ function ClassicWhatNeedsMe() {
       });
       restore(item.dismissalKey);
     },
-    [restore],
+    [restore, t],
   );
   const handleDismiss = useCallback(
     (item: AttentionItem) => {
@@ -440,14 +443,14 @@ function ClassicWhatNeedsMe() {
       pushToast({
         id: `attention-dismiss-${item.id}`,
         dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-        title: "Dismissed",
+        title: t("work:copy.dismissed_9d7472"),
         body: item.subject.title ?? undefined,
         tone: "info",
         ttlMs: 8000,
-        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
+        action: { label: t("work:copy.undo_a8283a"), onClick: () => handleUndoDismiss(item) },
       });
     },
-    [dismiss, handleUndoDismiss, pushToast],
+    [dismiss, handleUndoDismiss, pushToast, t],
   );
   const handleSnooze = useCallback(
     (item: AttentionItem, snoozedUntil: string) => {
@@ -455,20 +458,20 @@ function ClassicWhatNeedsMe() {
       snooze(item.dismissalKey, snoozedUntil);
       setExpandedId((previous) => (previous === item.id ? null : previous));
     },
-    [snooze],
+    [snooze, t],
   );
   const handleRestore = useCallback(
     (item: AttentionItem) => {
       setPendingRestore((prev) => new Set(prev).add(item.id));
       restore(item.dismissalKey);
     },
-    [restore],
+    [restore, t],
   );
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setSelectedAttentionId(item.id);
     setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
-  }, []);
+  }, [t]);
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveAttentionQueueKeyAction({
@@ -515,7 +518,7 @@ function ClassicWhatNeedsMe() {
   }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("work:copy.selectAnOrganizationFirst_0d7c81")}</p>;
   }
 
   // Keep a loaded feed on screen through a failed refetch; only a real
@@ -528,7 +531,7 @@ function ClassicWhatNeedsMe() {
       <QueryErrorState
         size="page"
         error={feedView.error}
-        action="load your decisions"
+        action={t("work:copy.loadYourDecisions_c769ec")}
         onRetry={feedView.retry}
         retrying={feedView.isFetching}
       />
@@ -540,7 +543,7 @@ function ClassicWhatNeedsMe() {
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="space-y-4">
-        <h1 className="text-xl font-bold">Decisions</h1>
+        <h1 className="text-xl font-bold">{t("work:copy.decisions_cfa6a0")}</h1>
         <DecisionsToolbar
           query={searchQuery}
           onQueryChange={setSearchQuery}
@@ -653,7 +656,7 @@ function ClassicWhatNeedsMe() {
 
           {snoozedItems.length > 0 && (
             <Curtain
-              label="Snoozed"
+              label={t("work:copy.snoozed_880965")}
               count={snoozedItems.length}
               open={snoozedOpen}
               onToggle={() => setSnoozedOpen((prev) => !prev)}
@@ -677,7 +680,7 @@ function ClassicWhatNeedsMe() {
 
           {dismissedItems.length > 0 && (
             <Curtain
-              label="Dismissed"
+              label={t("work:copy.dismissed_9d7472")}
               count={dismissedItems.length}
               open={dismissedOpen}
               onToggle={() => setDismissedOpen((prev) => !prev)}
@@ -701,14 +704,12 @@ function ClassicWhatNeedsMe() {
 
           {agingItems.length > 0 && (
             <Curtain
-              label="Aging"
+              label={t("work:copy.aging_90dd09")}
               count={agingItems.length}
               open={agingOpen}
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
-              <p className="text-xs text-muted-foreground">
-                Idle past {ATTENTION_AGING_DAYS} days — kept off the desk. Keep any you still want surfaced.
-              </p>
+              <p className="text-xs text-muted-foreground">{t("work:messages.agingDesk", { days: ATTENTION_AGING_DAYS })}</p>
               {agingItems.map((item) => (
                 <AgingItemRow
                   key={item.id}
@@ -732,13 +733,13 @@ function ClassicWhatNeedsMe() {
 
       <div className="space-y-4">
         <Curtain
-          label="Decided"
+          label={t("work:copy.decided_30ba70")}
           count={decisionHistoryCount(decidedDecisions?.length)}
           open={decidedOpen}
           onToggle={() => setDecidedOpen((prev) => !prev)}
         >
           {decidedDecisionsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+            <p className="text-xs text-muted-foreground">{t("work:copy.loadingDecidedDecisions_444621")}</p>
           ) : (decidedDecisions?.length ?? 0) > 0 ? (
             decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver
@@ -750,18 +751,18 @@ function ClassicWhatNeedsMe() {
               />
             ))
           ) : (
-            <p className="text-xs text-muted-foreground">No decided decisions.</p>
+            <p className="text-xs text-muted-foreground">{t("work:copy.noDecidedDecisions_455204")}</p>
           )}
         </Curtain>
 
         <Curtain
-          label="Expired"
+          label={t("work:copy.expired_424a25")}
           count={decisionHistoryCount(expiredDecisions?.length)}
           open={expiredOpen}
           onToggle={() => setExpiredOpen((prev) => !prev)}
         >
           {expiredDecisionsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+            <p className="text-xs text-muted-foreground">{t("work:copy.loadingExpiredDecisions_16b6f1")}</p>
           ) : (expiredDecisions?.length ?? 0) > 0 ? (
             expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver
@@ -773,7 +774,7 @@ function ClassicWhatNeedsMe() {
               />
             ))
           ) : (
-            <p className="text-xs text-muted-foreground">No expired decisions.</p>
+            <p className="text-xs text-muted-foreground">{t("work:copy.noExpiredDecisions_56b04b")}</p>
           )}
         </Curtain>
       </div>
@@ -797,15 +798,15 @@ export function DecisionBundleHeader({
   originIssue: AttentionSubject | null;
   count: number;
 }) {
-  const noun = count === 1 ? "decision" : "decisions";
+  const { t } = useTranslation("work");
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
       <span className="font-semibold text-violet-800 dark:text-violet-200">
-        {agentName ?? "An agent"} proposed {count} {noun}
+        {t("work:messages.proposedDecisions", { agent: agentName ?? t("work:copy.anAgent_ea6a03"), count })}
       </span>
       {originIssue && (originIssue.identifier || originIssue.title) && (
         <span className="text-muted-foreground">
-          {"· from "}
+          {t("work:extra.message_6b23b9e02f")}
           {originIssue.href ? (
             <a href={originIssue.href} className="hover:underline">
               {originIssue.identifier ?? originIssue.title}
@@ -816,35 +817,35 @@ export function DecisionBundleHeader({
         </span>
       )}
       {title && <span className="text-muted-foreground">· {title}</span>}
-      <span className="text-muted-foreground">· {count} pending</span>
+      <span className="text-muted-foreground">· {count}{" "}{t("work:copy.pending_62a2fe")}</span>
     </div>
   );
 }
 
 function CaughtUpNote({ filtered }: { filtered: boolean }) {
+  const { t } = useTranslation("work");
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your search or filters." : "You're all caught up."}
+        {filtered ? t("work:copy.noDecisionsMatchYourSearchOrFilters_3fc01f") : t("work:copy.youReAllCaughtUp_aebca5")}
       </p>
       {filtered && (
-        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("work:copy.adjustOrClearYourSearchAndFiltersToSee_5040e9")}</p>
       )}
     </div>
   );
 }
 
 function ZeroState() {
+  const { t } = useTranslation("work");
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
       <div className="mb-4 rounded-full bg-green-500/10 p-4">
         <CheckCircle2 className="h-10 w-10 text-green-500" />
       </div>
-      <p className="text-lg font-semibold text-foreground">You're all caught up</p>
+      <p className="text-lg font-semibold text-foreground">{t("work:copy.youReAllCaughtUp_2f485b")}</p>
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
-        <Inbox className="h-4 w-4" />
-        Nothing needs a decision from you right now.
-      </p>
+        <Inbox className="h-4 w-4" />{t("work:copy.nothingNeedsADecisionFromYouRightNow_158178")}</p>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { IssueChatLinkedRun } from "./issue-chat-messages";
 import type { TaskChatMarkerItem } from "../components/task-chat/task-chat-model";
 
@@ -20,11 +21,11 @@ export function credentialAccessNotice(
   const responsibleUserId = typeof configuration.responsibleUserId === "string"
     ? configuration.responsibleUserId : run.responsibleUserId;
   return {
-    agentName: run.agentName?.trim() || "This agent",
+    agentName: run.agentName?.trim() || t("display:copy_dacbdf2f9cad"),
     credentialName: typeof credential.connectionName === "string" && credential.connectionName.trim()
       ? credential.connectionName : undefined,
     deniedUser: responsibleUserId && responsibleUserId === currentUserId
-      ? "you" : responsibleUserId ? userLabels?.get(responsibleUserId) || "the person this task runs for" : "the person this task runs for",
+      ? t("display:copy_57e69a780555") : responsibleUserId ? userLabels?.get(responsibleUserId) || t("display:copy_55587004c72c") : t("display:copy_55587004c72c"),
     settingsHref: `/agents/${encodeURIComponent(run.agentId)}/runtime`,
   };
 }

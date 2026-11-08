@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { TaskChatExpansionState, useTaskChatExpansion } from "./expansion-state";
 import { useContext, useEffect, type ReactNode } from "react";
 import { Brain, ChevronRight, CircleEllipsis } from "lucide-react";
@@ -45,6 +46,7 @@ export function TaskChatActivityPhase({
   /** Codex-style summary treatment used only by the new Paperclip task UI. */
   appearance?: "classic" | "runner";
 }) {
+  useTranslation("task-components");
   const shouldAutoOpen =
     defaultOpen ||
     (autoOpen &&
@@ -94,7 +96,7 @@ export function TaskChatActivityPhase({
         <button
           type="button"
           aria-expanded={open}
-          aria-label={`${open ? "Collapse" : "Expand"} activity: ${item.summary}`}
+          aria-label={t("task-components:activity_254e159e", { value1: open ? "Collapse" : "Expand", value2: item.summary })}
           onClick={() => setOpen((value) => !value)}
           className={cn(
             runnerAppearance

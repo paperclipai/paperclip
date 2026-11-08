@@ -1,3 +1,5 @@
+import { getAgentConfigDisplayText } from "@/adapters/display-translations";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -57,6 +59,7 @@ export function AgentContextualSidebar({
   agentName?: string;
   labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
+  const { t } = useTranslation("agent-config");
   const { selectedCompanyId } = useCompany();
   const shouldResolveAgent = !agentId || !agentName;
   const { data: resolvedAgent } = useQuery({
@@ -66,7 +69,7 @@ export function AgentContextualSidebar({
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
   const { slots: pluginTabs } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: resolvedAgent?.companyId ?? selectedCompanyId, enabled: Boolean(resolvedId) });
-  const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  const resolvedName = agentName ?? resolvedAgent?.name ?? t("agent-config:agent_5ce2e6f");
 
   return (
     <ContextualSidebarFrame
@@ -77,7 +80,7 @@ export function AgentContextualSidebar({
       className="border-r border-border bg-background"
     >
       <nav
-        aria-label={`${resolvedName} navigation`}
+        aria-label={t("agent-config:valueNavigation_8a5e3ed", { value1: resolvedName })}
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
@@ -85,7 +88,7 @@ export function AgentContextualSidebar({
           <div key={section.label} className="contents">
             {section.label === "Audit" && pluginTabs.length > 0 ? (
               <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-                <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
+                <p className={contextualSidebarStyles.sectionLabel}>{t("agent-config:apps_d9a3685")}</p>
                 <div className={contextualSidebarStyles.group}>
                   {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
                 </div>
@@ -93,14 +96,14 @@ export function AgentContextualSidebar({
             ) : null}
             <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
               <p data-slot="contextual-sidebar-section-label" className={contextualSidebarStyles.sectionLabel}>
-                {section.label}
+                {getAgentConfigDisplayText(section.label)}
               </p>
               <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
                 {section.items.map((item) => (
                   <SidebarNavItem
                     key={item.value}
                     to={agentDetailHref(agentRef, item.value)}
-                    label={labels?.[item.value] ?? item.label}
+                    label={labels?.[item.value] ?? getAgentConfigDisplayText(item.label)}
                     icon={localIcons[item.value]}
                   />
                 ))}

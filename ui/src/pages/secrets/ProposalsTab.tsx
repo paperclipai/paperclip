@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -31,12 +33,12 @@ import {
 /** ISO expiry → "expires in 12d" / "expires in 5h" / "expired". */
 function expiryLabel(expiresAt: string): { text: string; urgent: boolean } {
   const ms = new Date(expiresAt).getTime() - Date.now();
-  if (Number.isNaN(ms)) return { text: "no expiry", urgent: false };
-  if (ms <= 0) return { text: "expired", urgent: true };
+  if (Number.isNaN(ms)) return { text: translateAgentPage("agents:no_expiry"), urgent: false };
+  if (ms <= 0) return { text: translateAgentPage("agents:expired"), urgent: true };
   const hours = Math.floor(ms / 3_600_000);
-  if (hours < 24) return { text: `expires in ${hours}h`, urgent: true };
+  if (hours < 24) return { text: finalPagesT("final-pages:expires_in_hours_h_96988b", { hours }), urgent: true };
   const days = Math.floor(hours / 24);
-  return { text: `expires in ${days}d`, urgent: days <= 2 };
+  return { text: finalPagesT("final-pages:expires_in_days_d_73c56b", { days }), urgent: days <= 2 };
 }
 
 function ProposalRow({
@@ -50,6 +52,7 @@ function ProposalRow({
   onReject: (p: SecretProposalView) => void;
   disabled: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const isSecret = proposal.kind === "secret";
   const expiry = expiryLabel(proposal.expiresAt);
   const secret = bindingSecretLabel(proposal);
@@ -74,7 +77,7 @@ function ProposalRow({
               {proposal.target ? (
                 <AgentRefChip agent={proposal.target} className="font-medium" />
               ) : (
-                <span className="text-muted-foreground">agent</span>
+                <span className="text-muted-foreground">{translateAgentPage("agents:agent")}</span>
               )}
               <DeliveryBadge configPath={proposal.configPath} />
               <code className="font-mono text-xs">{envKey || proposal.configPath}</code>
@@ -90,8 +93,7 @@ function ProposalRow({
 
         {/* Provenance meta */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            by <AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
+          <span className="inline-flex items-center gap-1">{translateAgentPage("agents:by")}{" "}<AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
           </span>
           {proposal.originIssue ? (
             <>
@@ -144,6 +146,7 @@ export function ProposalsTab({
   companyId: string;
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const proposalsQuery = useQuery({
     queryKey: queryKeys.secrets.proposals(companyId, "pending"),
     queryFn: () => secretsApi.listProposals(companyId, "pending"),
@@ -170,7 +173,7 @@ export function ProposalsTab({
       <div className="py-4">
         <QueryErrorState
           error={proposalsQuery.error}
-          action="load proposals"
+          action={translateAgentPage("agents:load_proposals")}
           onRetry={proposalsView.retry}
           retrying={proposalsView.isFetching}
         />
@@ -181,8 +184,7 @@ export function ProposalsTab({
   if (proposalsQuery.isPending || proposalsView.kind === "reconnecting") {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Loading proposals…
-      </div>
+        <Loader2 className="size-4 animate-spin" />{" "}{translateAgentPage("agents:loading_proposals")}</div>
     );
   }
 
@@ -190,18 +192,15 @@ export function ProposalsTab({
     return (
       <EmptyState
         icon={Inbox}
-        title="No pending proposals"
-        message="When an agent proposes a secret or an access binding, it shows up here for review."
+        title={translateAgentPage("agents:no_pending_proposals")}
+        message={translateAgentPage("agents:when_an_agent_proposes_a_secret_or_an")}
       />
     );
   }
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">
-        Agents propose credentials and access bindings; you approve or reject them here. Proposed
-        values are never shown — only a fingerprint and length.
-      </p>
+      <p className="text-xs text-muted-foreground">{translateAgentPage("agents:agents_propose_credentials_and_access_bindings_you_approve")}</p>
       {sorted.map((proposal) => (
         <ProposalRow
           key={proposal.id}

@@ -1,3 +1,7 @@
+import { describeUiError } from "@/lib/localized-ui-error";
+import { getAgentRoleLabel } from "@/adapters/display-translations";
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
@@ -41,7 +45,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-display-registry";
-import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import { adapterLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -221,25 +225,25 @@ function shouldUseMarkdownInstructionsEditor(input: {
 }
 
 const sourceLabels: Record<string, string> = {
-  timer: "Timer",
-  assignment: "Assignment",
-  on_demand: "On-demand",
-  automation: "Automation",
+  get timer() { return translateAgentPage("agents:timer"); },
+  get assignment() { return translateAgentPage("agents:assignment"); },
+  get on_demand() { return translateAgentPage("agents:on_demand"); },
+  get automation() { return translateAgentPage("agents:automation"); },
 };
 
 /** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
 export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
 
 const LEGACY_AGENT_DETAIL_TABS = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "instructions", label: "Instructions" },
-  { value: "skills", label: "Skills" },
-  { value: "configuration", label: "Configuration" },
-  { value: "secrets", label: "Secrets" },
-  { value: "tools", label: "Tools" },
-  { value: "runs", label: "Runs" },
-  { value: "audit", label: "Audit" },
-  { value: "budget", label: "Budget" },
+  { value: "dashboard", get label() { return translateAgentPage("agents:dashboard"); } },
+  { value: "instructions", get label() { return translateAgentPage("agents:instructions"); } },
+  { value: "skills", get label() { return translateAgentPage("agents:skills"); } },
+  { value: "configuration", get label() { return translateAgentPage("agents:configuration"); } },
+  { value: "secrets", get label() { return translateAgentPage("agents:secrets"); } },
+  { value: "tools", get label() { return translateAgentPage("agents:tools"); } },
+  { value: "runs", get label() { return translateAgentPage("agents:runs"); } },
+  { value: "audit", get label() { return translateAgentPage("agents:audit"); } },
+  { value: "budget", get label() { return translateAgentPage("agents:budget"); } },
 ] as const;
 
 export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
@@ -249,7 +253,7 @@ export function confirmAgentConfigNavigation(
   confirm: (message: string) => boolean = (message) =>
     typeof window === "undefined" || window.confirm(message),
 ): boolean {
-  return !dirty || confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
+  return !dirty || confirm(finalPagesT("final-pages:Discard_unsaved_agent_configuration_changes_316cb0"));
 }
 
 export function agentConfigHistoryRestoreDelta(currentIndex: unknown, nextIndex: unknown): number | null {
@@ -335,23 +339,24 @@ const OVERVIEW_ACTIVITY_LIMIT = 200;
 function agentViewDescription(view: AgentDetailView, name: string): string | null {
   switch (view) {
     case "runtime":
-      return `How ${name} runs: harness, model and environment.`;
+      return translateAgentPage("agents:how_runs_harness_model_and_environment", { value1: name });
     case "secrets":
-      return "Secrets this agent can reach. Values are never shown here.";
+      return translateAgentPage("agents:secrets_this_agent_can_reach_values_are_never");
     case "permissions":
-      return `What ${name} may do without asking, and where.`;
+      return translateAgentPage("agents:what_may_do_without_asking_and_where", { value1: name });
     case "activity":
-      return `Everything ${name} did and everything done to ${name}.`;
+      return translateAgentPage("agents:everything_did_and_everything_done_to", { value1: name, value2: name });
     case "runs":
-      return `Every execution of ${name}, newest first.`;
+      return translateAgentPage("agents:every_execution_of_newest_first", { value1: name });
     case "costs":
-      return `What ${name} spent, by model.`;
+      return translateAgentPage("agents:what_spent_by_model", { value1: name });
     default:
       return null;
   }
 }
 
 export function AgentDetail() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
     agentId: string;
@@ -487,7 +492,7 @@ export function AgentDetail() {
       builtInAgentsApi.reset(resolvedCompanyId!, builtInState!.definition.key, [kind]),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update bundle resource");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_update_bundle_resource"));
     },
   });
   const runBuiltInRoutine = useMutation({
@@ -495,7 +500,7 @@ export function AgentDetail() {
       builtInAgentsApi.runRoutine(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to run built-in routine");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_run_built_in_routine"));
     },
   });
   const enableBuiltInSchedule = useMutation({
@@ -503,7 +508,7 @@ export function AgentDetail() {
       builtInAgentsApi.enableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to enable routine schedule");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_enable_routine_schedule"));
     },
   });
   const disableBuiltInSchedule = useMutation({
@@ -511,7 +516,7 @@ export function AgentDetail() {
       builtInAgentsApi.disableRoutineSchedule(resolvedCompanyId!, builtInState!.definition.key, routineKey),
     onSuccess: invalidateBuiltIn,
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to disable routine schedule");
+      setActionError(error instanceof Error ? error.message : translateAgentPage("agents:failed_to_disable_routine_schedule"));
     },
   });
   const builtInRoutineActionPending =
@@ -580,14 +585,14 @@ export function AgentDetail() {
   const saveHeaderField = async (patch: { name?: string; title?: string | null }) => {
     if (!agent) return;
     if (configDirty || configSaving) {
-      setActionError(`Save or discard your unsaved changes before you change the ${patch.name === undefined ? "title" : "name"}.`);
+      setActionError(translateAgentPage("agents:save_or_discard_your_unsaved_changes_before_you", { value1: patch.name === undefined ? "title" : "name" }));
       return;
     }
     setActionError(null);
     try {
       await headerUpdate.mutateAsync({ target: agent, patch });
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Could not save that change");
+      setActionError(err instanceof Error ? err.message : translateAgentPage("agents:could_not_save_that_change"));
     }
   };
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
@@ -625,7 +630,7 @@ export function AgentDetail() {
   // AgentActionButtons component. Approval and lifecycle retry stay in the detail header.
   const agentAction = useMutation({
     mutationFn: async (action: "approve" | "retryLifecycle") => {
-      if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
+      if (!agentLookupRef) return Promise.reject(new Error(translateAgentPage("agents:no_agent_reference")));
       if (action === "approve") {
         return agentsApi.approve(agentLookupRef, resolvedCompanyId ?? undefined);
       }
@@ -649,7 +654,7 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      setActionError(err instanceof Error ? err.message : translateAgentPage("agents:action_failed"));
     },
   });
 
@@ -676,28 +681,28 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
+      setActionError(err instanceof Error ? err.message : translateAgentPage("agents:failed_to_update_permissions"));
     },
   });
 
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
-      { label: "Agents", href: "/agents" },
+      { label: translateAgentPage("agents:agentsTitle"), href: "/agents" },
     ];
-    const agentName = agent?.name ?? routeAgentRef ?? "Agent";
+    const agentName = agent?.name ?? routeAgentRef ?? translateAgentPage("agents:agent_5ce2e6");
     if (activeView === "overview" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
       crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: agentDetailHref(canonicalAgentRef, "runs") });
-        crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
+        crumbs.push({ label: translateAgentPage("agents:runs"), href: agentDetailHref(canonicalAgentRef, "runs") });
+        crumbs.push({ label: translateAgentPage("agents:run", { value1: urlRunId.slice(0, 8) }) });
       } else {
         crumbs.push({ label: agentDetailViewLabel(activeView === "run-detail" ? "overview" : activeView) });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, translateAgentPage]);
 
   useEffect(() => {
     closePanel();
@@ -794,7 +799,7 @@ export function AgentDetail() {
 
   if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
   if (agentView.kind === "error") {
-    return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
+    return <QueryErrorState size="page" error={error} action={translateAgentPage("agents:load_this_agent")} onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
   if (!agent) return null;
   if (!urlRunId && !urlTab) {
@@ -821,9 +826,7 @@ export function AgentDetail() {
     <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
-          <p className="min-w-0 flex-1">
-            You left this agent. It no longer appears in your sidebar.
-          </p>
+          <p className="min-w-0 flex-1">{translateAgentPage("agents:you_left_this_agent_it_no_longer_appears")}</p>
           <MembershipAction
             compact
             state="left"
@@ -846,7 +849,7 @@ export function AgentDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
-            aria-label="Dismiss agent membership notice"
+            aria-label={translateAgentPage("agents:dismiss_agent_membership_notice")}
             onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
           >
             ×
@@ -857,7 +860,7 @@ export function AgentDetail() {
         <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 space-y-1">
-            <p className="font-medium">Escalation path is paused</p>
+            <p className="font-medium">{translateAgentPage("agents:escalation_path_is_paused")}</p>
             <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
           </div>
         </div>
@@ -866,26 +869,23 @@ export function AgentDetail() {
         <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 space-y-1">
-            <p className="font-medium">Invalid reporting chain</p>
+            <p className="font-medium">{translateAgentPage("agents:invalid_reporting_chain")}</p>
             <p className="text-amber-900/90 dark:text-amber-100/90">
-              {agent.name} cannot accept tasks or start runs until its reporting chain is repaired.
-            </p>
+              {agent.name}{" "}{translateAgentPage("agents:cannot_accept_tasks_or_start_runs_until_its")}</p>
             <p className="break-words font-mono text-xs text-amber-900/80 dark:text-amber-100/80">
               {formatOrgChainHealthPath(agent)}
             </p>
             {agent.orgChainHealth?.repairGuidance ? (
               <p className="text-amber-900/85 dark:text-amber-100/85">{agent.orgChainHealth.repairGuidance}</p>
             ) : (
-              <p className="text-amber-900/85 dark:text-amber-100/85">
-                Assign this agent to an active manager/root, or explicitly pause or terminate the affected agent/subtree.
-              </p>
+              <p className="text-amber-900/85 dark:text-amber-100/85">{translateAgentPage("agents:assign_this_agent_to_an_active_manager_root")}</p>
             )}
           </div>
         </div>
       ) : null}
       {/* Header */}
       <header className="agent-character-header flex items-center gap-2">
-        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+        <div role="img" aria-label={translateAgentPage("agents:avatar", { value1: agent.name })} className="shrink-0">
           <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} size={128} className="agent-header-character" trackingScope="page" followCursor />
         </div>
         <div className="min-w-0 flex-1">
@@ -895,7 +895,7 @@ export function AgentDetail() {
               value={agent.title ?? ""}
               fitContent
               nullable
-              placeholder={roleLabels[agent.role] ?? agent.role}
+              placeholder={getAgentRoleLabel(agent.role)}
               className="min-w-0 truncate text-2xl font-semibold leading-8 text-foreground"
               onSave={(title) => saveHeaderField({ title: title || null })}
             />
@@ -904,7 +904,7 @@ export function AgentDetail() {
           <div className="mt-1 flex min-w-0 items-center gap-2 text-sm leading-5 text-muted-foreground">
             <Link
               to={agentDetailHref(canonicalAgentRef, "runtime")}
-              aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
+              aria-label={translateAgentPage("agents:open_harness_settings", { value1: getAdapterDisplay(agentDisplayAdapterType(agent)).label })}
               className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
@@ -916,7 +916,7 @@ export function AgentDetail() {
             <InlineEditor
               fitContent
               value={agent.name}
-              placeholder="Agent name"
+              placeholder={translateAgentPage("agents:agent_name")}
               className="min-w-0 truncate text-sm leading-5 text-muted-foreground"
               onSave={(name) => saveHeaderField({ name })}
             />
@@ -926,16 +926,16 @@ export function AgentDetail() {
         <AgentActionButtons
           agent={currentAgent}
           companyId={resolvedCompanyId}
-          assignLabel="New task"
+          assignLabel={translateAgentPage("agents:new_task")}
           size="default"
           showAssignIcon={false}
           showChat
           showStatus={false}
           workActionsInMenu
-          menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+          menuItems={[{ label: translateAgentPage("agents:agent_history"), icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
           actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
           workActionsDisabled={hasInvalidOrgChain}
-          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+          workActionsDisabledReason={translateAgentPage("agents:repair_this_agent_s_reporting_chain_before_assigning")}
           hasPendingNavigationChanges={configDirty}
           onBeforeNavigate={prepareAgentNavigation}
           onActionError={setActionError}
@@ -944,13 +944,12 @@ export function AgentDetail() {
           pauseConfirm={
             builtInState
               ? {
-                  title: `Pause the ${builtInState.definition.displayName}?`,
+                  title: translateAgentPage("agents:pause_the", { value1: builtInState.definition.displayName }),
                   description: (
                     <>
-                      {builtInFeatureLabel} depends on this agent. While paused,{" "}
-                      {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
-                      {builtInFeatureLabel} page shows a warning.
-                    </>
+                      {builtInFeatureLabel}{" "}{translateAgentPage("agents:depends_on_this_agent_while_paused")}{" "}
+                      {builtInFeatureLabel.toLowerCase()}{" "}{translateAgentPage("agents:generation_is_skipped_and_the")}{" "}
+                      {builtInFeatureLabel}{" "}{translateAgentPage("agents:page_shows_a_warning")}</>
                   ),
                 }
               : undefined
@@ -965,7 +964,7 @@ export function AgentDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{translateAgentPage("agents:live")}</span>
             </Link>
           )}
         </AgentActionButtons>
@@ -974,13 +973,11 @@ export function AgentDetail() {
       <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-            <AlertDialogDescription>
-              You have unsaved changes to {agent.name}&rsquo;s {activeView === "runtime" ? "harness settings" : activeView === "secrets" ? "secrets and variables" : activeView === "advanced" ? "configuration" : "instructions"}. If you continue, they&rsquo;ll be lost.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{translateAgentPage("agents:discard_unsaved_changes")}</AlertDialogTitle>
+            <AlertDialogDescription>{activeView === "runtime" ? finalPagesT("final-pages:You_have_unsaved_changes_to_name_s_harness_settings_If_you_contin_f5b637", { name: agent.name }) : activeView === "secrets" ? finalPagesT("final-pages:You_have_unsaved_changes_to_name_s_secrets_and_variables_If_you_c_7f8443", { name: agent.name }) : activeView === "advanced" ? finalPagesT("final-pages:You_have_unsaved_changes_to_name_s_configuration_If_you_continue__30a7e1", { name: agent.name }) : finalPagesT("final-pages:You_have_unsaved_changes_to_name_s_instructions_If_you_continue_t_2dc997", { name: agent.name })}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="sm:justify-between">
-            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogCancel>{translateAgentPage("agents:keep_editing")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-white hover:bg-destructive/90"
               onClick={() => {
@@ -995,9 +992,7 @@ export function AgentDetail() {
                   leaveBypassRef.current = false;
                 }
               }}
-            >
-              Discard changes
-            </AlertDialogAction>
+            >{translateAgentPage("agents:discard_changes")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1005,7 +1000,7 @@ export function AgentDetail() {
       {builtInState && (
         <InlineBanner
           tone="info"
-          title="Built-in agent"
+          title={translateAgentPage("agents:built_in_agent")}
           actions={
             <Button
               variant="outline"
@@ -1013,13 +1008,10 @@ export function AgentDetail() {
               onClick={() => resetBuiltIn.mutate()}
               disabled={resetBuiltIn.isPending}
             >
-              {resetBuiltIn.isPending ? "Resetting…" : "Reset to defaults"}
+              {resetBuiltIn.isPending ? translateAgentPage("agents:resetting") : translateAgentPage("agents:reset_to_defaults")}
             </Button>
           }
-        >
-          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
-          any agent — model, instructions, budget. It can be paused but not deleted; pausing it
-          pauses {builtInFeatureLabel}.
+        >{translateAgentPage("agents:ships_with_paperclip_and_powers")}{" "}<strong>{builtInFeatureLabel}</strong>{translateAgentPage("agents:configure_it_like_any_agent_model_instructions_budget")}{" "}{builtInFeatureLabel}.
         </InlineBanner>
       )}
 
@@ -1053,7 +1045,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
-          <span>This agent is pending board approval and cannot be invoked yet.</span>
+          <span>{translateAgentPage("agents:this_agent_is_pending_board_approval_and_cannot")}</span>
           <Button
             variant="outline"
             size="sm"
@@ -1061,7 +1053,7 @@ export function AgentDetail() {
             disabled={agentAction.isPending}
           >
             <CheckCircle2 className="h-3.5 w-3.5 sm:mr-1" />
-            <span>Approve agent</span>
+            <span>{translateAgentPage("agents:approve_agent")}</span>
           </Button>
         </div>
       )}
@@ -1183,7 +1175,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "advanced" && (
-        <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>}>
+        <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_configuration")}</p>}>
           <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={setConfigDirty} onSavingChange={setConfigSaving}
             onSaved={updated => {
               const nextRef = agentRouteRef(updated);
@@ -1218,11 +1210,11 @@ export function AgentDetail() {
           ) : configJustSaved ? (
             <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" />
           ) : null}
-          {configSaving ? "Saving changes…" : configDirty ? "Unsaved changes" : configJustSaved ? "Changes saved" : "No unsaved changes"}
+          {configSaving ? translateAgentPage("agents:saving_changes") : configDirty ? translateAgentPage("agents:unsaved_changes") : configJustSaved ? translateAgentPage("agents:changes_saved") : translateAgentPage("agents:no_unsaved_changes")}
         </p>
         <div className="flex gap-2">
-          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
-          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
+          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>{translateAgentPage("agents:discard")}</Button>
+          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? translateAgentPage("agents:saving") : translateAgentPage("agents:save_changes")}</Button>
         </div>
       </footer>}
 
@@ -1286,6 +1278,7 @@ function LatestRunCard({
   agentId: string;
   issuesById: Map<string, LatestRunIssue>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const sorted = useMemo(
     () =>
       [...runs].sort(
@@ -1367,7 +1360,7 @@ function LatestRunCard({
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
             )}
-            <span>{isLive ? "Live Run" : "Latest Run"}</span>
+            <span>{isLive ? translateAgentPage("agents:live_run") : translateAgentPage("agents:latest_run")}</span>
             <span className="font-mono text-xs font-normal text-muted-foreground">
               &middot; {run.id.slice(0, 8)}
             </span>
@@ -1439,6 +1432,7 @@ export function AgentOverview({
   skillNames: string[];
   agentRouteId: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const agentRef = agentRouteRef(agent);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
@@ -1467,49 +1461,49 @@ export function AgentOverview({
         <AgentMetricTile
           icon={ActivityIcon}
           value={activity.isLoading ? "–" : formatWindowCount(activityThisWeek)}
-          label="Activity"
-          description="Events this week"
+          label={translateAgentPage("agents:activity")}
+          description={translateAgentPage("agents:events_this_week")}
           to={agentDetailHref(agentRef, "activity")}
         />
         <AgentMetricTile
           icon={PlayCircle}
           value={formatWindowCount(runsThisWeek)}
-          label="Runs"
-          description={`${formatWindowCount(recentFailures)} failed in the last 2 days`}
+          label={translateAgentPage("agents:runs")}
+          description={translateAgentPage("agents:failed_in_the_last_2_days", { value1: formatWindowCount(recentFailures) })}
           to={agentDetailHref(agentRef, "runs")}
         />
         <AgentMetricTile
           icon={ReceiptText}
           value={formatCents(spent)}
-          label="Costs"
-          description="Month to date"
+          label={translateAgentPage("agents:costs")}
+          description={translateAgentPage("agents:month_to_date")}
           to={agentDetailHref(agentRef, "costs")}
         />
         <AgentMetricTile
           icon={Gauge}
           value={budgetPercent === null ? "–" : `${budgetPercent}%`}
-          label="Budget used"
-          description={budgetPercent === null ? "No monthly budget set" : `of ${formatCents(budget)} this month`}
+          label={translateAgentPage("agents:budget_used")}
+          description={budgetPercent === null ? translateAgentPage("agents:no_monthly_budget_set") : translateAgentPage("agents:of_this_month", { value1: formatCents(budget) })}
           to={agentDetailHref(agentRef, "budgets")}
         />
-        <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile"
+        <AgentPanel title={translateAgentPage("agents:profile")} className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label={translateAgentPage("agents:profile")}
           meta={<span className={creatorFailed ? "text-destructive" : undefined}>
-            {creatorFailed ? "Could not load creator" : creatorLabel ? `Created by ${creatorLabel} · ${formatDate(agent.createdAt)}` : `Created ${formatDate(agent.createdAt)}`}
+            {creatorFailed ? translateAgentPage("agents:could_not_load_creator") : creatorLabel ? translateAgentPage("agents:created_by_with_date", { value1: creatorLabel, value2: formatDate(agent.createdAt) }) : translateAgentPage("agents:created_with_date", { value1: formatDate(agent.createdAt) })}
           </span>}>
           <div className="flex flex-col pb-3">
             <AgentReportingManager key={agent.id} agent={agent} />
             {directReports.length > 0 && <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="text-muted-foreground">Direct reports:</span>
+              <span className="text-muted-foreground">{translateAgentPage("agents:direct_reports")}:</span>
               <AgentDirectReports reports={directReports} />
             </div>}
 
           </div>
         </AgentPanel>
         <AgentPanel
-          title="Skills"
-          meta={<span>{skillNames.length} enabled</span>}
+          title={translateAgentPage("agents:skills")}
+          meta={<span>{skillNames.length}{" "}{translateAgentPage("agents:enabled")}</span>}
           className="min-h-(--agent-detail-tile-min-h) sm:col-span-2"
-          aria-label="Skills"
+          aria-label={translateAgentPage("agents:skills")}
         >
           {skillNames.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset)">
@@ -1518,22 +1512,20 @@ export function AgentOverview({
               ))}
             </div>
           ) : (
-            <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">No skills enabled.</p>
+            <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">{translateAgentPage("agents:no_skills_enabled")}</p>
           )}
         </AgentPanel>
       </div>
 
-      <section className="flex flex-col gap-3" aria-label="Recent tasks">
+      <section className="flex flex-col gap-3" aria-label={translateAgentPage("agents:recent_tasks")}>
         <AgentSectionHeading
-          title="Recent tasks"
+          title={translateAgentPage("agents:recent_tasks")}
           action={
-            <Link to={`/issues?participantAgentId=${agent.id}`} className="text-xs text-muted-foreground no-underline transition-colors hover:text-foreground">
-              See all tasks
-            </Link>
+            <Link to={`/issues?participantAgentId=${agent.id}`} className="text-xs text-muted-foreground no-underline transition-colors hover:text-foreground">{translateAgentPage("agents:see_all_tasks")}</Link>
           }
         />
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent tasks.</p>
+          <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_recent_tasks")}</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border bg-(--agent-detail-tile)">
             <TaskSummaryList issues={assignedIssues.slice(0, 5)} />
@@ -1553,6 +1545,7 @@ export function AgentRevisionsTab({
   agent: AgentDetailRecord;
   companyId?: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -1575,11 +1568,11 @@ export function AgentRevisionsTab({
   return (
     <div className="max-w-3xl space-y-3">
       <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-medium">Configuration Revisions</h3>
-        <span className="text-xs text-muted-foreground">{configRevisions?.length ?? 0} total</span>
+        <h3 className="text-sm font-medium">{translateAgentPage("agents:configuration_revisions")}</h3>
+        <span className="text-xs text-muted-foreground">{configRevisions?.length ?? 0}{" "}{translateAgentPage("agents:total")}</span>
       </div>
       {(configRevisions ?? []).length === 0 ? (
-        <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_configuration_revisions_yet")}</p>
       ) : (
         <div className="space-y-2">
           {(configRevisions ?? []).map((revision) => (
@@ -1597,12 +1590,9 @@ export function AgentRevisionsTab({
                   variant="outline"
                   onClick={() => rollbackConfig.mutate(revision.id)}
                   disabled={rollbackConfig.isPending}
-                >
-                  Restore
-                </Button>
+                >{translateAgentPage("agents:restore")}</Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Changed: {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+              <p className="text-xs text-muted-foreground">{translateAgentPage("agents:changed")}{" "}{revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : translateAgentPage("agents:no_tracked_changes")}
               </p>
             </div>
           ))}
@@ -1639,6 +1629,7 @@ export function ConfigurationTab({
   content?: "runtime" | "permissions" | "secrets";
   canConfigureProviderTrace?: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
@@ -1686,7 +1677,7 @@ export function ConfigurationTab({
         || !syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.urlKey) });
       }
-      pushToast({ title: "Agent saved", tone: updated.configurationWarnings?.length ? "warn" : "success",
+      pushToast({ title: translateAgentPage("agents:agent_saved"), tone: updated.configurationWarnings?.length ? "warn" : "success",
         body: updated.configurationWarnings?.map(warning => warning.message).join("\n") });
     },
     onError: (err) => {
@@ -1696,8 +1687,8 @@ export function ConfigurationTab({
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Could not save agent";
-      pushToast({ title: "Save failed", body: message, tone: "error" });
+            : translateAgentPage("agents:could_not_save_agent");
+      pushToast({ title: translateAgentPage("agents:save_failed"), body: message, tone: "error" });
     },
   });
 
@@ -1727,14 +1718,14 @@ export function ConfigurationTab({
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
+      ? translateAgentPage("agents:enabled_automatically_for_ceo_agents")
       : taskAssignSource === "agent_creator"
-        ? "Enabled automatically while this agent can create new agents."
+        ? translateAgentPage("agents:enabled_automatically_while_this_agent_can_create_new")
         : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit organization permission grant."
+          ? translateAgentPage("agents:enabled_via_explicit_organization_permission_grant")
           : taskAssignSource === "simple_default"
-            ? "Enabled by simple organization-wide task assignment defaults."
-            : "Disabled unless explicitly granted.";
+            ? translateAgentPage("agents:enabled_by_simple_organization_wide_task_assignment_defaults")
+            : translateAgentPage("agents:disabled_unless_explicitly_granted");
 
   return (
     <div className={cn("agent-settings-form", content === "permissions" ? "flex flex-col gap-(--agent-detail-module-gap)" : "space-y-6")}>
@@ -1786,14 +1777,12 @@ export function ConfigurationTab({
         }
       /> : null}
 
-      {content === "permissions" ? <AgentPanel title="Capabilities" aria-label="Capabilities">
+      {content === "permissions" ? <AgentPanel title={translateAgentPage("agents:capabilities")} aria-label={translateAgentPage("agents:capabilities")}>
         <div className="flex flex-col pb-3">
           <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
-              <div>Can create new agents</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
-              </p>
+              <div>{translateAgentPage("agents:can_create_new_agents")}</div>
+              <p className="text-xs text-muted-foreground">{translateAgentPage("agents:lets_this_agent_create_or_hire_agents_this")}</p>
             </div>
             <ToggleSwitch
               checked={canCreateAgents}
@@ -1809,10 +1798,8 @@ export function ConfigurationTab({
           </div>
           <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
-              <div>Can create/import skills</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent install, import, create, and scan organization skills without creating agents.
-              </p>
+              <div>{translateAgentPage("agents:can_create_import_skills")}</div>
+              <p className="text-xs text-muted-foreground">{translateAgentPage("agents:lets_this_agent_install_import_create_and_scan")}</p>
             </div>
             <ToggleSwitch
               checked={canCreateSkills}
@@ -1828,7 +1815,7 @@ export function ConfigurationTab({
           </div>
           <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
-              <div>Can assign tasks</div>
+              <div>{translateAgentPage("agents:can_assign_tasks")}</div>
               <p className="text-xs text-muted-foreground">
                 {taskAssignHint}
               </p>
@@ -1872,6 +1859,7 @@ export function PromptsTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -1999,7 +1987,7 @@ export function PromptsTab({
   const preservedCandidates = candidates.data?.filter((candidate) => candidate.contract !== "agent_files") ?? [];
   const loadCandidate = useMutation({
     mutationFn: async (candidate: AgentInstructionCandidate) => {
-      if (candidate.content === null) throw new Error("These instruction edits have not been retrieved yet.");
+      if (candidate.content === null) throw new Error(translateAgentPage("agents:these_instruction_edits_have_not_been_retrieved_yet"));
       const file = await agentsApi.instructionsFile(agent.id, candidate.entryFile, companyId).catch((error) => {
         if (error instanceof ApiError && error.status === 404 && candidate.baseRevisionId === null) return null;
         throw error;
@@ -2112,7 +2100,7 @@ export function PromptsTab({
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select an organization to upload images");
+      if (!selectedCompanyId) throw new Error(translateAgentPage("agents:select_an_organization_to_upload_images"));
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });
@@ -2328,9 +2316,7 @@ export function PromptsTab({
   if (!isLocal) {
     return (
       <div className="max-w-3xl">
-        <p className="text-sm text-muted-foreground">
-          Instructions bundles are only available for local adapters.
-        </p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:instructions_bundles_are_only_available_for_local_adapters")}</p>
       </div>
     );
   }
@@ -2350,9 +2336,7 @@ export function PromptsTab({
           ))}
         </div>
       )}
-      {showSaveNotice && <p className="text-xs text-muted-foreground">
-        Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
-      </p>}
+      {showSaveNotice && <p className="text-xs text-muted-foreground">{translateAgentPage("agents:saved_instructions_affect_the_next_run_active_runs")}</p>}
 
       <InstructionsBundleSettings
         agentId={agent.id}
@@ -2380,14 +2364,14 @@ export function PromptsTab({
           isMobile && !showFilePanel && "hidden",
         )}>
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-foreground">Files</h4>
+            <h4 className="text-sm font-semibold text-foreground">{translateAgentPage("agents:files")}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
                   type="button"
                   size="icon-xs"
                   variant="ghost"
-                  aria-label="Add agent file"
+                  aria-label={translateAgentPage("agents:add_agent_file")}
                   onClick={() => setShowNewFileInput(true)}
                 >
                   <Plus className="size-4" />
@@ -2410,7 +2394,7 @@ export function PromptsTab({
             <div className="space-y-2">
               <div className="agent-markdown-name-field flex items-center rounded-md border border-input focus-within:ring-2 focus-within:ring-ring">
               <Input
-                aria-label="New Markdown file name"
+                aria-label={translateAgentPage("agents:new_markdown_file_name")}
                 aria-describedby="markdown-file-name-hint"
                 aria-invalid={Boolean(newFilePath && !markdownFileName(newFilePath))}
                 value={newFilePath}
@@ -2427,7 +2411,7 @@ export function PromptsTab({
               />
               <span className="pr-3 font-mono text-sm text-muted-foreground/50" aria-hidden>.md</span>
               </div>
-              <p id="markdown-file-name-hint" className="text-xs text-muted-foreground">Use letters, numbers, hyphens or underscores.</p>
+              <p id="markdown-file-name-hint" className="text-xs text-muted-foreground">{translateAgentPage("agents:markdown_file_name_hint")}</p>
               <div className="flex gap-2">
                 <Button
                   type="button"
@@ -2438,7 +2422,7 @@ export function PromptsTab({
                   onClick={() => {
                     const candidate = markdownFileName(newFilePath);
                     if (!candidate || visibleFilePaths.includes(candidate)) return;
-                    if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
+                    if (!confirmAgentConfigNavigation(isDirty)) return;
                     setPendingFiles([candidate]);
                     setSelectedFile(candidate);
                     setDraft("");
@@ -2446,9 +2430,7 @@ export function PromptsTab({
                     setNewFilePath("");
                     setShowNewFileInput(false);
                   }}
-                >
-                  Create
-                </Button>
+                >{translateAgentPage("agents:create")}</Button>
                 <Button
                   type="button"
                   size="sm"
@@ -2458,9 +2440,7 @@ export function PromptsTab({
                     setShowNewFileInput(false);
                     setNewFilePath("");
                   }}
-                >
-                  Cancel
-                </Button>
+                >{translateAgentPage("agents:cancel")}</Button>
               </div>
             </div>
           )}
@@ -2477,7 +2457,7 @@ export function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               if (filePath === selectedOrEntryFile) return;
-              if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
+              if (!confirmAgentConfigNavigation(isDirty)) return;
               setDraft(null);
               setPendingFiles([]);
               setSelectedFile(filePath);
@@ -2496,19 +2476,15 @@ export function PromptsTab({
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide cursor-help">
-                        virtual file
-                      </span>
+                      <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide cursor-help">{translateAgentPage("agents:virtual_file")}</span>
                     </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
-                    </TooltipContent>
+                    <TooltipContent side="right" sideOffset={4}>{translateAgentPage("agents:legacy_inline_prompt_this_deprecated_virtual_file_preserves")}</TooltipContent>
                   </Tooltip>
                 );
               }
               return (
                 <span className={cn("ml-3 shrink-0 rounded text-muted-foreground px-1.5 py-0.5 font-sans text-(length:--text-nano) uppercase tracking-wide", file.isEntryFile && "bg-(--agent-detail-tile-chip)")}>
-                  {file.isEntryFile ? "ROOT" : `${file.size}b`}
+                  {file.isEntryFile ? translateAgentPage("agents:root_file_badge") : finalPagesT("final-pages:value_b_b8abf0", { value: file.size })}
                 </span>
               );
             }}
@@ -2540,21 +2516,21 @@ export function PromptsTab({
               <div className="flex min-w-0 flex-col gap-1.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <h4 className="agent-identity-preview-title min-w-0 truncate font-mono text-(length:--agent-identity-preview-title-size) text-foreground">{selectedOrEntryFile}</h4>
-                  <AgentChip>{currentMode === "external" ? "Managed externally" : "Managed by you"}</AgentChip>
+                  <AgentChip>{currentMode === "external" ? translateAgentPage("agents:managed_externally") : translateAgentPage("agents:managed_by_you")}</AgentChip>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
-                      ? "Deprecated virtual file"
+                      ? translateAgentPage("agents:deprecated_virtual_file")
                       : instructionFileDateLabel(selectedFileDetail ?? selectedFileSummary)
-                    : "New file in this bundle"}
+                    : translateAgentPage("agents:new_file_in_this_bundle")}
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <span role="status" aria-hidden={!copyVisible} className={cn("agent-file-copy-notice flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground", !copyVisible && "opacity-0", copyNotice === "error" && "text-destructive")}>
                 {copyNotice === "copied" && <CheckCircle2 className="size-3.5" aria-hidden />}
-                {copyNotice === "copied" ? "File copied" : copyNotice === "error" ? "Copy failed" : null}
+                {copyNotice === "copied" ? translateAgentPage("agents:file_copied") : copyNotice === "error" ? translateAgentPage("agents:copy_failed") : null}
               </span>
               <Button
                 type="button"
@@ -2562,8 +2538,8 @@ export function PromptsTab({
                 size="icon-xs"
                 className={cn("size-8", instructionMode === "edit" && "bg-(--agent-detail-tile-chip) text-foreground")}
                 aria-pressed={instructionMode === "edit"}
-                aria-label={instructionMode === "edit" ? `Stop editing ${selectedOrEntryFile}` : `Edit ${selectedOrEntryFile}`}
-                title={instructionMode === "edit" ? "Stop editing" : "Edit"}
+                aria-label={instructionMode === "edit" ? translateAgentPage("agents:stop_editing", { value1: selectedOrEntryFile }) : translateAgentPage("agents:edit", { value1: selectedOrEntryFile })}
+                title={instructionMode === "edit" ? translateAgentPage("agents:stop_editing_70a7cc") : translateAgentPage("agents:edit_530164")}
                 disabled={Boolean(selectedFileDetail?.binary)}
                 onClick={() => setInstructionMode(instructionMode === "edit" ? "raw" : "edit")}
               >
@@ -2571,7 +2547,7 @@ export function PromptsTab({
               </Button>
               {!fileLoading && (
                 <Button type="button" variant="ghost" size="icon-xs" className="size-8"
-                  aria-label="Copy instructions file as markdown" title="Copy as markdown"
+                  aria-label={translateAgentPage("agents:copy_instructions_file_as_markdown")} title={translateAgentPage("agents:copy_as_markdown")}
                   onClick={async () => {
                     clearTimeout(copyTimer.current);
                     setCopyVisible(true);
@@ -2588,10 +2564,10 @@ export function PromptsTab({
                   size="icon-xs"
                   variant="ghost"
                   className="size-8"
-                  aria-label={`Delete ${selectedOrEntryFile}`}
-                  title="Delete file"
+                  aria-label={translateAgentPage("agents:delete", { value1: selectedOrEntryFile })}
+                  title={translateAgentPage("agents:delete_file")}
                   onClick={() => {
-                    if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                    if (confirm(translateAgentPage("agents:delete_c93ae0", { value1: selectedOrEntryFile }))) {
                       deleteFile.mutate(selectedOrEntryFile, {
                         onSuccess: () => {
                           setSelectedFile(currentEntryFile);
@@ -2612,8 +2588,8 @@ export function PromptsTab({
           <div className="space-y-3 px-(--agent-identity-panel-gap) pt-4 empty:hidden">
           {currentMode === "managed" && preservedCandidates.length > 0 && (
             <div className="space-y-3">
-              <p className="text-sm font-medium">Preserved instruction edits</p>
-              <p className="text-sm text-muted-foreground">Older instruction-only sessions have edits to review.</p>
+              <p className="text-sm font-medium">{translateAgentPage("agents:preserved_instruction_edits")}</p>
+              <p className="text-sm text-muted-foreground">{translateAgentPage("agents:older_instruction_only_sessions_have_edits_to_review")}</p>
               {preservedCandidates.map((candidate) => (
                 <div key={candidate.runId} className="flex flex-wrap items-center gap-3">
                   <span className="font-mono text-xs text-muted-foreground">{candidate.runId.slice(0, 8)}</span>
@@ -2627,16 +2603,15 @@ export function PromptsTab({
                       } else {
                         loadCandidate.mutate(candidate);
                       }
-                    }}>Review preserved edits</Button>
+                    }}>{translateAgentPage("agents:review_preserved_edits")}</Button>
                   {candidate.errorMessage && <p className="text-sm text-muted-foreground">{candidate.errorMessage}</p>}
-                  {candidate.entryFile !== currentEntryFile && <p className="text-sm text-muted-foreground">The instruction entry changed. These edits remain preserved for the original file.</p>}
+                  {candidate.entryFile !== currentEntryFile && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:the_instruction_entry_changed_these_edits_remain_preserved")}</p>}
                   {candidate.entryFile !== currentEntryFile && candidate.content !== null && readOnlyCandidateRunId === candidate.runId && (
-                    <div role="region" aria-label={`Preserved edits for ${candidate.entryFile}`} className="w-full space-y-3">
-                      <p className="text-sm text-muted-foreground">Read only: {candidate.entryFile}. To keep any of these edits in {currentEntryFile}, copy them and edit the current entry explicitly.</p>
-                      <CopyText text={candidate.content} ariaLabel={`Copy preserved edits for ${candidate.entryFile}`}
+                    <div role="region" aria-label={translateAgentPage("agents:preserved_edits_for", { value1: candidate.entryFile })} className="w-full space-y-3">
+                      <p className="text-sm text-muted-foreground">{translateAgentPage("agents:read_only")}{" "}{candidate.entryFile}{translateAgentPage("agents:to_keep_any_of_these_edits_in")}{" "}{currentEntryFile}{translateAgentPage("agents:copy_them_and_edit_the_current_entry_explicitly")}</p>
+                      <CopyText text={candidate.content} ariaLabel={translateAgentPage("agents:copy_preserved_edits_for", { value1: candidate.entryFile })}
                         className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
-                        <Copy className="h-3.5 w-3.5" />Copy preserved edits
-                      </CopyText>
+                        <Copy className="h-3.5 w-3.5" />{translateAgentPage("agents:copy_preserved_edits")}</CopyText>
                       <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-3 font-mono text-sm">{candidate.content}</pre>
                     </div>
                   )}
@@ -2645,16 +2620,16 @@ export function PromptsTab({
             </div>
           )}
           {candidateRunId && <div role="status" className="space-y-3">
-            <p className="text-sm text-muted-foreground">Reviewing preserved edits. Save to apply your resolved draft and close this preserved edit.</p>
-            <details><summary className="cursor-pointer text-sm text-muted-foreground">Compare current instructions</summary>
+            <p className="text-sm text-muted-foreground">{translateAgentPage("agents:reviewing_preserved_edits_save_to_apply_your_resolved")}</p>
+            <details><summary className="cursor-pointer text-sm text-muted-foreground">{translateAgentPage("agents:compare_current_instructions")}</summary>
               <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">{currentContent}</pre>
             </details>
-            {draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null) && <p className="text-sm text-destructive">The current instructions changed after this draft was loaded. Refresh the current revision, compare the instructions, and save your resolved draft again.</p>}
-            {(resolveCandidate.error || draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null)) && <Button type="button" variant="outline" size="sm" disabled={isSaving} onClick={() => refreshCandidateBase.mutate()}>Refresh current revision</Button>}
+            {draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null) && <p className="text-sm text-destructive">{translateAgentPage("agents:the_current_instructions_changed_after_this_draft_was")}</p>}
+            {(resolveCandidate.error || draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null)) && <Button type="button" variant="outline" size="sm" disabled={isSaving} onClick={() => refreshCandidateBase.mutate()}>{translateAgentPage("agents:refresh_current_revision")}</Button>}
           </div>}
-          {(candidates.error || loadCandidate.error || resolveCandidate.error || refreshCandidateBase.error) && <p role="alert" className="text-sm text-destructive">{(candidates.error ?? loadCandidate.error ?? resolveCandidate.error ?? refreshCandidateBase.error)?.message} Your preserved edits remain available.</p>}
-          {(saveFile.error || fileError || updateBundle.error) && <p role="alert" className="text-sm text-destructive">{(saveFile.error ?? fileError ?? updateBundle.error)?.message} Your unsaved edits are retained.</p>}
-          {selectedFileDetail?.receipt?.materialization === "pending" && <p role="status" className="text-sm text-muted-foreground">Revision saved. The instruction file still needs to be rebuilt from the saved revision.</p>}
+          {(candidates.error || loadCandidate.error || resolveCandidate.error || refreshCandidateBase.error) && <p role="alert" className="text-sm text-destructive">{(candidates.error ?? loadCandidate.error ?? resolveCandidate.error ?? refreshCandidateBase.error)?.message}{" "}{translateAgentPage("agents:your_preserved_edits_remain_available")}</p>}
+          {(saveFile.error || fileError || updateBundle.error) && <p role="alert" className="text-sm text-destructive">{(saveFile.error ?? fileError ?? updateBundle.error)?.message}{" "}{translateAgentPage("agents:your_unsaved_edits_are_retained")}</p>}
+          {selectedFileDetail?.receipt?.materialization === "pending" && <p role="status" className="text-sm text-muted-foreground">{translateAgentPage("agents:revision_saved_the_instruction_file_still_needs_to")}</p>}
           {selectedFileDetail?.revision && currentMode === "managed" && bundle?.persistence !== "agent_files" && <InstructionHistory
             key={selectedOrEntryFile} agentId={agent.id} companyId={companyId} path={selectedOrEntryFile}
             currentRevisionId={selectedFileDetail.revision.id} disabled={isDirty || isSaving}
@@ -2669,8 +2644,8 @@ export function PromptsTab({
           </div>
           {selectedFileDetail?.binary ? (
             <div className="space-y-3 px-(--agent-identity-panel-gap) py-5">
-              <p className="text-sm text-muted-foreground">This file is preserved with the agent directory. Download it to view its contents.</p>
-              <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>Download {selectedOrEntryFile}</a>
+              <p className="text-sm text-muted-foreground">{translateAgentPage("agents:this_file_is_preserved_with_the_agent_directory")}</p>
+              <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>{translateAgentPage("agents:download")} {selectedOrEntryFile}</a>
             </div>
           ) : selectedFileExists && fileLoading && !selectedFileDetail ? (
             <div className="px-(--agent-identity-panel-gap) py-5">
@@ -2678,7 +2653,7 @@ export function PromptsTab({
             </div>
           ) : instructionMode === "edit" ? (
             <textarea
-              aria-label="Instruction file editor"
+              aria-label={translateAgentPage("agents:instruction_file_editor")}
               autoFocus
               value={displayValue}
               spellCheck={false}
@@ -2688,10 +2663,10 @@ export function PromptsTab({
                 setDraft(event.target.value);
               }}
               className="block min-h-(--sz-420px) w-full field-sizing-content resize-none bg-transparent p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap text-foreground outline-none"
-              placeholder="File contents"
+              placeholder={translateAgentPage("agents:file_contents")}
             />
           ) : (
-            <div role="button" tabIndex={0} aria-label={`Edit ${selectedOrEntryFile} contents`}
+            <div role="button" tabIndex={0} aria-label={translateAgentPage("agents:edit_file_contents", { value1: selectedOrEntryFile })}
               className="cursor-text outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => setInstructionMode("edit")}
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setInstructionMode("edit"); } }}>
@@ -2700,7 +2675,7 @@ export function PromptsTab({
               className="block min-h-(--sz-420px) w-full overflow-x-auto p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
             >
               {displayValue}
-            </pre> : <p className="min-h-(--sz-420px) p-(--agent-identity-panel-gap) text-sm text-muted-foreground">This instruction file is empty.</p>}
+            </pre> : <p className="min-h-(--sz-420px) p-(--agent-identity-panel-gap) text-sm text-muted-foreground">{translateAgentPage("agents:this_instruction_file_is_empty")}</p>}
             </div>
           )}
         </div>
@@ -2767,6 +2742,7 @@ function PromptEditorSkeleton() {
 /* ---- Runs Tab ---- */
 
 function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelected: boolean; agentId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
@@ -2809,8 +2785,8 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       )}
       {(metrics.usageUnavailable || (metrics.totalTokens ?? 0) > 0 || (metrics.cost ?? 0) > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.usageUnavailable && <span>Usage and cost unavailable</span>}
-          {metrics.totalTokens !== null && metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.usageUnavailable && <span>{translateAgentPage("agents:usage_and_cost_unavailable")}</span>}
+          {metrics.totalTokens !== null && metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)}{" "}{translateAgentPage("agents:tok")}</span>}
           {metrics.cost !== null && metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
@@ -2835,6 +2811,7 @@ export function RunsTab({
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { isMobile } = useSidebar();
 
   // Sort by created descending
@@ -2847,13 +2824,13 @@ export function RunsTab({
   const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
   const selectedRun = selection.run;
   if (selectedRunId && !selectedRun) {
-    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    if (selection.loading) return <p className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_run")}</p>;
     return <div role="alert">
-      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
-      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : translateAgentPage("agents:this_run_is_unavailable_for_this_agent")}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>{translateAgentPage("agents:try_again")}</Button>}
     </div>;
   }
-  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_runs_yet")}</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -2864,9 +2841,7 @@ export function RunsTab({
             to={`/agents/${agentRouteId}/runs`}
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors no-underline"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to runs
-          </Link>
+            <ArrowLeft className="h-3.5 w-3.5" />{translateAgentPage("agents:back_to_runs")}</Link>
           <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
         </div>
       );
@@ -2908,6 +2883,7 @@ export function RunsTab({
 /* ---- Run Detail (expanded) ---- */
 
 export function AgentFileRunNotice({ resultJson }: { resultJson: HeartbeatRun["resultJson"] }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const save = asRecord(resultJson?.instructionSave);
   const storageWarning = asNonEmptyString(save?.storageWarning);
   const error = asNonEmptyString(save?.errorMessage);
@@ -2916,19 +2892,20 @@ export function AgentFileRunNotice({ resultJson }: { resultJson: HeartbeatRun["r
   // I/O failure must stay visible even when storage was full at run start.
   const showSyncFailure = syncFailure && (!storageWarning || save?.errorCode !== "AGENT_FILES_LIMIT_EXCEEDED");
   return <>
-    {storageWarning && <InlineBanner tone="warning" title="Agent storage warning" compact>{storageWarning}</InlineBanner>}
-    {showSyncFailure && <InlineBanner tone="warning" title="Agent file sync failed for this run" compact>{error}</InlineBanner>}
+    {storageWarning && <InlineBanner tone="warning" title={translateAgentPage("agents:agent_storage_warning")} compact>{storageWarning}</InlineBanner>}
+    {showSyncFailure && <InlineBanner tone="warning" title={translateAgentPage("agents:agent_file_sync_failed_for_this_run")} compact>{error}</InlineBanner>}
   </>;
 }
 
 export function RunAccountingMetrics({ run }: { run: HeartbeatRun }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const metrics = runMetrics(run);
   if (!metrics.usageUnavailable && ![metrics.input, metrics.output, metrics.cached, metrics.cost].some(value => (value ?? 0) > 0)) return null;
   const values = [
-    ["Input", metrics.input === null ? "Unavailable" : formatTokens(metrics.input)],
-    ["Output", metrics.output === null ? "Unavailable" : formatTokens(metrics.output)],
-    ["Cached", metrics.cached === null ? "Unavailable" : formatTokens(metrics.cached)],
-    ["Cost", metrics.cost === null ? "Unavailable" : metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"],
+    ["Input", metrics.input === null ? translateAgentPage("agents:unavailable") : formatTokens(metrics.input)],
+    ["Output", metrics.output === null ? translateAgentPage("agents:unavailable") : formatTokens(metrics.output)],
+    ["Cached", metrics.cached === null ? translateAgentPage("agents:unavailable") : formatTokens(metrics.cached)],
+    ["Cost", metrics.cost === null ? translateAgentPage("agents:unavailable") : metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"],
   ];
   return (
     <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
@@ -2943,6 +2920,7 @@ export function RunAccountingMetrics({ run }: { run: HeartbeatRun }) {
 }
 
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3036,7 +3014,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         payload: resumePayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(result.message ?? "Resume request was skipped.");
+        throw new Error(result.message ?? translateAgentPage("agents:resume_request_was_skipped"));
       }
       return result;
     },
@@ -3082,7 +3060,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         debug: { providerTrace: "raw" },
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(result.message ?? "Trace re-run was skipped.");
+        throw new Error(result.message ?? translateAgentPage("agents:trace_re_run_was_skipped"));
       }
       return result;
     },
@@ -3157,7 +3135,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           break-glass handlers as the task detail page. */}
       <RunWorkspaceRecoverySurface run={run} />
       <AiConnectionPoolRunDetails context={run.contextSnapshot} />
-      {grokWork && <p className="text-sm text-muted-foreground">Runs in Grok Bot. Usage not reported. Stopping this session revokes Paperclip authority; remote execution may continue. Open the Grok Bot desktop app to inspect it. This view contains Paperclip-reported activity.</p>}
+      {grokWork && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:runs_in_grok_bot_usage_not_reported_stopping")}</p>}
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
@@ -3190,7 +3168,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={resumeRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {resumeRun.isPending ? "Resuming…" : "Resume"}
+                  {resumeRun.isPending ? translateAgentPage("agents:resuming") : translateAgentPage("agents:resume")}
                 </Button>
               )}
               {canRetryRun && !canResumeLostRun && (
@@ -3202,7 +3180,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={retryRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending ? translateAgentPage("agents:retrying") : translateAgentPage("agents:retry")}
                 </Button>
               )}
               <Button
@@ -3211,9 +3189,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 className="text-xs h-6 px-2"
                 onClick={() => setInspectorOpen(true)}
               >
-                <Eye className="h-3.5 w-3.5 mr-1" />
-                Inspect run
-              </Button>
+                <Eye className="h-3.5 w-3.5 mr-1" />{translateAgentPage("agents:inspect_run")}</Button>
               <HoneycombRunLink
                 runId={run.id}
                 enabled={paperclipDeveloperMode && canUseProviderTrace}
@@ -3227,7 +3203,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={rerunWithTrace.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {rerunWithTrace.isPending ? "Starting…" : "Re-run with provider trace"}
+                  {rerunWithTrace.isPending ? translateAgentPage("agents:starting") : translateAgentPage("agents:re_run_with_provider_trace")}
                 </Button>
               ) : null}
             </div>
@@ -3256,8 +3232,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               <div
                 data-testid="run-detail-on-behalf-of"
                 className="text-xs text-muted-foreground"
-              >
-                On behalf of{" "}
+              >{translateAgentPage("agents:on_behalf_of")}{" "}
                 <span className="text-foreground">
                   {responsibleUserName ?? responsibleUserLabel(null)}
                 </span>
@@ -3265,13 +3240,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {Boolean(run.identityHistory?.length) && (
               <details className="text-xs text-muted-foreground" data-testid="run-identity-history">
-                <summary className="cursor-pointer">GitHub identity history</summary>
+                <summary className="cursor-pointer">{translateAgentPage("agents:github_identity_history")}</summary>
                 <ol className="mt-2 space-y-2">
                   {run.identityHistory!.map((identity) => {
                     const person = userDirectory?.users.find((entry) => entry.principalId === identity.responsibleUserId);
                     return (
                       <li key={identity.id}>
-                        <span className="text-foreground">{person?.user?.name ?? person?.user?.email ?? identity.responsibleUserId ?? "No responsible person"}</span>
+                        <span className="text-foreground">{person?.user?.name ?? person?.user?.email ?? identity.responsibleUserId ?? translateAgentPage("agents:no_responsible_person")}</span>
                         {" · "}{identity.cause}{" · "}{identity.status}
                         {identity.github ? (
                           <span className="block">
@@ -3279,7 +3254,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                             {identity.github.source ? `${identity.github.source} · ` : ""}
                             {identity.github.status}{identity.github.reason ? `: ${identity.github.reason}` : ""}
                           </span>
-                        ) : <span className="block">No GitHub operation recorded</span>}
+                        ) : <span className="block">{translateAgentPage("agents:no_github_operation_recorded")}</span>}
                       </li>
                     );
                   })}
@@ -3288,17 +3263,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {cancelRun.error && (
               <div className="text-xs text-destructive" role="alert">
-                {cancelRun.error instanceof Error ? cancelRun.error.message : "Failed to stop run"}
+                {cancelRun.error instanceof Error ? describeUiError(cancelRun.error).body : translateAgentPage("agents:failed_to_stop_run")}
               </div>
             )}
             {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error ? resumeRun.error.message : translateAgentPage("agents:failed_to_resume_run")}
               </div>
             )}
             {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error ? retryRun.error.message : translateAgentPage("agents:failed_to_retry_run")}
               </div>
             )}
             {startTime && (
@@ -3313,8 +3288,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
                 </div>
                 {displayDurationSec !== null && (
-                  <div className="text-xs text-muted-foreground">
-                    Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
+                  <div className="text-xs text-muted-foreground">{translateAgentPage("agents:duration")}{" "}{displayDurationSec >= 60 ? finalPagesT("final-pages:first_m_second_s_b97502", { first: Math.floor(displayDurationSec / 60), second: displayDurationSec % 60 }) : finalPagesT("final-pages:value_s_47c4d1", { value: displayDurationSec })}
                   </div>
                 )}
               </div>
@@ -3337,19 +3311,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => runClaudeLogin.mutate()}
                   disabled={runClaudeLogin.isPending}
                 >
-                  {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
+                  {runClaudeLogin.isPending ? translateAgentPage("agents:running_claude_login") : translateAgentPage("agents:login_to_claude_code")}
                 </Button>
                 {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
-                      : "Failed to run Claude login"}
+                      : translateAgentPage("agents:failed_to_run_claude_login")}
                   </p>
                 )}
                 {claudeLoginResult?.loginUrl && (
-                  <p className="text-xs">
-                    Login URL:
-                    <a
+                  <p className="text-xs">{translateAgentPage("agents:login_url")}<a
                       href={claudeLoginResult.loginUrl}
                       className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
                       target="_blank"
@@ -3382,9 +3354,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               />
             )}
             {hasNonZeroExit && (
-              <div className="text-xs text-red-600 dark:text-red-400">
-                Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+              <div className="text-xs text-red-600 dark:text-red-400">{translateAgentPage("agents:exit_code")}{" "}{run.exitCode}
+                {run.signal && <span className="text-muted-foreground ml-1">{translateAgentPage("agents:signal")}{" "}{run.signal})</span>}
               </div>
             )}
             <RunRetryDetails run={run} agentRouteId={agentRouteId} />
@@ -3400,21 +3371,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setSessionOpen((v) => !v)}
             >
-              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
-              Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
+              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />{translateAgentPage("agents:session")}{sessionChanged && <span className="text-yellow-400 ml-1">{translateAgentPage("agents:changed_1588c0")}</span>}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
                 {run.sessionIdBefore && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
+                    <span className="text-muted-foreground w-12">{sessionChanged ? translateAgentPage("agents:before") : "ID"}</span>
                     <CopyText text={run.sessionIdBefore} className="font-mono" />
                   </div>
                 )}
                 {sessionChanged && run.sessionIdAfter && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">After</span>
+                    <span className="text-muted-foreground w-12">{translateAgentPage("agents:after")}</span>
                     <CopyText text={run.sessionIdAfter} className="font-mono" />
                   </div>
                 )}
@@ -3427,21 +3396,21 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                       onClick={() => {
                         const issueCount = touchedIssueIds.length;
                         const confirmed = window.confirm(
-                          `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
+                          translateAgentPage("agents:clear_session_for_issue_touched_by_this_run_count", { value1: issueCount, count: issueCount }),
                         );
                         if (!confirmed) return;
                         clearSessionsForTouchedIssues.mutate();
                       }}
                     >
                       {clearSessionsForTouchedIssues.isPending
-                        ? "clearing session..."
-                        : "clear session for these tasks"}
+                        ? translateAgentPage("agents:clearing_session")
+                        : translateAgentPage("agents:clear_session_for_these_tasks")}
                     </button>
                     {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
-                          : "Failed to clear sessions"}
+                          : translateAgentPage("agents:failed_to_clear_sessions")}
                       </p>
                     )}
                   </div>
@@ -3455,7 +3424,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Tasks Touched ({touchedIssues.length})</span>
+          <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:tasks_touched")}{touchedIssues.length})</span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
@@ -3477,7 +3446,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
+          <span className="text-xs font-medium text-red-600 dark:text-red-400">{translateAgentPage("agents:stderr")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
         </div>
       )}
@@ -3485,7 +3454,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stdout excerpt when no log is available */}
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
+          <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:stdout")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
         </div>
       )}
@@ -3518,6 +3487,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 /* ---- Keys Tab ---- */
 
 export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");
@@ -3531,7 +3501,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
   });
 
   const createKey = useMutation({
-    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || "Default", companyId),
+    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || translateAgentPage("agents:default"), companyId),
     onSuccess: (data) => {
       setNewToken(data.token);
       setTokenVisible(true);
@@ -3555,7 +3525,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
         setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {
-        pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+        pushToast({ title: translateAgentPage("agents:copy_failed"), body: translateAgentPage("agents:clipboard_access_is_unavailable"), tone: "error" });
       });
   }
 
@@ -3567,9 +3537,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
       {/* New token banner */}
       {newToken && (
         <div className="border border-yellow-300 dark:border-yellow-600/40 bg-yellow-50 dark:bg-yellow-500/5 rounded-lg p-4 space-y-2">
-          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
-            API key created — copy it now, it will not be shown again.
-          </p>
+          <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">{translateAgentPage("agents:api_key_created_copy_it_now_it_will")}</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
@@ -3578,7 +3546,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
               variant="ghost"
               size="icon-sm"
               onClick={() => setTokenVisible((v) => !v)}
-              title={tokenVisible ? "Hide" : "Show"}
+              title={tokenVisible ? translateAgentPage("agents:hide") : translateAgentPage("agents:show")}
             >
               {tokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </Button>
@@ -3586,35 +3554,29 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
               variant="ghost"
               size="icon-sm"
               onClick={copyToken}
-              title="Copy"
+              title={translateAgentPage("agents:copy")}
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            {copied && <span className="text-xs text-green-400">Copied!</span>}
+            {copied && <span className="text-xs text-green-400">{translateAgentPage("agents:copied_b7c3ca")}</span>}
           </div>
           <Button
             variant="ghost"
             size="sm"
             className="text-muted-foreground text-xs"
             onClick={() => setNewToken(null)}
-          >
-            Dismiss
-          </Button>
+          >{translateAgentPage("agents:dismiss")}</Button>
         </div>
       )}
 
       {/* Create new key */}
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-2">
-          <Key className="h-3.5 w-3.5" />
-          Create API Key
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          API keys allow this agent to authenticate calls to the Paperclip server.
-        </p>
+          <Key className="h-3.5 w-3.5" />{translateAgentPage("agents:create_api_key")}</h3>
+        <p className="text-xs text-muted-foreground">{translateAgentPage("agents:api_keys_allow_this_agent_to_authenticate_calls")}</p>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Key name (e.g. production)"
+            placeholder={translateAgentPage("agents:key_name_e_g_production")}
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             className="h-8 text-sm"
@@ -3627,31 +3589,26 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
             onClick={() => createKey.mutate()}
             disabled={createKey.isPending}
           >
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            Create
-          </Button>
+            <Plus className="h-3.5 w-3.5 mr-1" />{translateAgentPage("agents:create")}</Button>
         </div>
       </div>
 
       {/* Active keys */}
-      {isLoading && <p className="text-sm text-muted-foreground">Loading keys...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_keys")}</p>}
 
       {!isLoading && activeKeys.length === 0 && !newToken && (
-        <p className="text-sm text-muted-foreground">No active API keys.</p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_active_api_keys")}</p>
       )}
 
       {activeKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Active Keys
-          </h3>
+          <h3 className="text-xs font-medium text-muted-foreground mb-2">{translateAgentPage("agents:active_keys")}</h3>
           <div className="border border-border rounded-lg divide-y divide-border">
             {activeKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>
                   <span className="text-sm font-medium">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Created {formatDate(key.createdAt)}
+                  <span className="text-xs text-muted-foreground ml-3">{translateAgentPage("agents:created")}{" "}{formatDate(key.createdAt)}
                   </span>
                 </div>
                 <Button
@@ -3660,9 +3617,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
                   className="text-destructive hover:text-destructive text-xs"
                   onClick={() => revokeKey.mutate(key.id)}
                   disabled={revokeKey.isPending}
-                >
-                  Revoke
-                </Button>
+                >{translateAgentPage("agents:revoke")}</Button>
               </div>
             ))}
           </div>
@@ -3672,16 +3627,13 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
       {/* Revoked keys */}
       {revokedKeys.length > 0 && (
         <div>
-          <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Revoked Keys
-          </h3>
+          <h3 className="text-xs font-medium text-muted-foreground mb-2">{translateAgentPage("agents:revoked_keys")}</h3>
           <div className="border border-border rounded-lg divide-y divide-border opacity-50">
             {revokedKeys.map((key: AgentKey) => (
               <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
                 <div>
                   <span className="text-sm line-through">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Revoked {key.revokedAt ? formatDate(key.revokedAt) : ""}
+                  <span className="text-xs text-muted-foreground ml-3">{translateAgentPage("agents:revoked")}{" "}{key.revokedAt ? formatDate(key.revokedAt) : ""}
                   </span>
                 </div>
               </div>

@@ -1,11 +1,13 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { htmlPreviewDocument } from "@/lib/html-preview";
 
 export function HtmlArtifactPreview({ html, title }: { html: string; title: string }) {
+  useTranslation("task-components");
   const srcDoc = useMemo(() => htmlPreviewDocument(html), [html]);
   return (
     <iframe
-      title={`${title} rendered HTML`}
+      title={t("task-components:renderedHtml_82d9d53c", { value1: title })}
       srcDoc={srcDoc}
       // Never add allow-same-origin: the opaque origin is the cookie/storage
       // and parent-DOM security boundary, including after frame navigation.

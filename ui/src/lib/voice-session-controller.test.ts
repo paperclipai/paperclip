@@ -17,7 +17,7 @@ describe("voice media session lifecycle", () => {
   it("closes a definitively rejected call and explains credits without automatic retry or media", async () => {
     const x=setup();x.dependencies.mint.mockRejectedValue(new VoiceSessionStartError("failed-call","credits_required"));
     await x.controller.start();expect(x.dependencies.connect).not.toHaveBeenCalled();expect(x.dependencies.end).toHaveBeenCalledWith("failed-call");
-    expect(x.dependencies.mint).toHaveBeenCalledOnce();expect(x.controller.getSnapshot()).toMatchObject({state:"failed",error:"Speko needs credits before starting a call. Add credits in Speko, then try again."});
+    expect(x.dependencies.mint).toHaveBeenCalledOnce();expect(x.controller.getSnapshot()).toMatchObject({state:"failed",error:{key:"display:copy_3983c1d1558e"}});
   });
   it("closes a session minted after the caller ended without connecting media", async () => {
     const x = setup(); const mint = deferred<VoiceMediaCredentials>(); x.dependencies.mint.mockReturnValue(mint.promise);
@@ -219,4 +219,50 @@ describe("voice media session lifecycle", () => {
     expect(x.controller.getSnapshot().state).toBe("ended");
   });
 
+});
+
+
+describe("voice error descriptors", () => {
+  it.each(["mute", "notify", "repeat", "resumeAudio"] as const)("retains the raw %s cause until a successful retry clears it", async (operation) => {
+    vi.useFakeTimers();
+    const x = setup();
+    await x.controller.start();
+    const cause = new Error("opaque provider failure");
+    const method = operation === "mute" ? x.media.setMicMuted : operation === "resumeAudio" ? x.media.startAudioPlayback : x.media.sendChatMessage;
+    method.mockRejectedValueOnce(cause);
+    const notification = { ...credentials, publicationId: "result" };
+    const run = (attempt: number) => operation === "notify" ? x.controller.notify({ ...notification, attempt }) : x.controller[operation]();
+    await run(0);
+    const failed = x.controller.getSnapshot();
+    expect(failed.error?.key).toMatch(/^display:/);
+    expect(failed.errorCause).toBe(cause);
+    expect(failed.busy).toBe(false);
+    x.callbacks().onModeChange("listening");
+    expect(x.controller.getSnapshot().error).toBe(failed.error);
+    expect(x.controller.getSnapshot().errorCause).toBe(cause);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await run(1);
+    expect(x.controller.getSnapshot().error).toBeUndefined();
+    expect(x.controller.getSnapshot().errorCause).toBeUndefined();
+    await x.controller.stop();
+  });
+
+  it.each(["mint", "connect", "cleanup"] as const)("retains the raw %s cause and clears it on restart or cleanup", async (operation) => {
+    const x = setup();
+    const cause = { code: "opaque-provider-code" };
+    if (operation === "mint") x.dependencies.mint.mockRejectedValueOnce(cause);
+    if (operation === "connect") x.dependencies.connect.mockRejectedValueOnce(cause);
+    await x.controller.start();
+    if (operation === "cleanup") {
+      x.dependencies.end.mockRejectedValueOnce(cause);
+      await x.controller.stop();
+    }
+    expect(x.controller.getSnapshot().errorCause).toBe(cause);
+    expect(x.controller.getSnapshot().error?.key).toMatch(/^display:/);
+    if (operation === "cleanup") await x.controller.stop();
+    else await x.controller.start();
+    expect(x.controller.getSnapshot().error).toBeUndefined();
+    expect(x.controller.getSnapshot().errorCause).toBeUndefined();
+    await x.controller.stop();
+  });
 });

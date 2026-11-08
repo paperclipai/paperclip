@@ -1,3 +1,6 @@
+import { getPageValueLabel } from "@/pages/tools/shared";
+import { Trans } from "@/i18n";
+import { useTranslation, t as translate } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -13,12 +16,12 @@ import { RelativeTime } from "@/pages/tools/shared";
 const PAGE_SIZE = 25;
 
 const OUTCOME_META: Record<ToolAuditOutcome, { label: string; status: string }> = {
-  allowed: { label: "Allowed", status: "allowed" },
-  blocked: { label: "Blocked", status: "denied" },
-  asked_first: { label: "Asked first", status: "require-approval" },
-  waiting: { label: "Waiting", status: "deferred" },
-  failed: { label: "Failed", status: "failed" },
-  unknown: { label: "Recorded", status: "unchecked" },
+  allowed: { get label() { return translate("connections:allowed_77c7b49"); }, status: "allowed" },
+  blocked: { get label() { return translate("connections:blocked_99613c7"); }, status: "denied" },
+  asked_first: { get label() { return translate("connections:asked_first_804224d"); }, status: "require-approval" },
+  waiting: { get label() { return translate("connections:waiting_33d3063"); }, status: "deferred" },
+  failed: { get label() { return translate("connections:failed_09fef5d"); }, status: "failed" },
+  unknown: { get label() { return translate("connections:recorded_d5383ea"); }, status: "unchecked" },
 };
 
 function detailString(details: Record<string, unknown> | null, key: string): string | null {
@@ -49,7 +52,7 @@ function durationLabel(event: ToolGatewayActivityEvent): string | null {
   const started = event.invocation?.startedAt ? new Date(event.invocation.startedAt).getTime() : Number.NaN;
   const completed = event.invocation?.completedAt ? new Date(event.invocation.completedAt).getTime() : Number.NaN;
   if (!Number.isFinite(started) || !Number.isFinite(completed) || completed < started) return null;
-  return `${completed - started} ms`;
+  return translate("connections:ms_cfd3540", { value: completed - started });
 }
 
 function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
@@ -64,11 +67,12 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
 }
 
 function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
+  const { t } = useTranslation("connections");
   const [open, setOpen] = useState(false);
   const outcome = OUTCOME_META[event.normalizedOutcome] ?? OUTCOME_META.unknown;
-  const actor = event.agentDisplayName ?? "Client";
-  const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? "App";
-  const tool = event.toolDisplayName ?? event.invocation?.toolName ?? "Tool call";
+  const actor = event.agentDisplayName ?? t("client_1bdd79b");
+  const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? t("app_fc4a695");
+  const tool = event.toolDisplayName ?? event.invocation?.toolName ?? t("tool_call_e313188");
   const rawTool = event.invocation?.toolName ?? detailString(event.details, "tool") ?? detailString(event.details, "toolName");
   const reason = detailString(event.details, "reasonCode");
   const argumentsText = formatSummary(
@@ -94,7 +98,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
         )}
         <span className="min-w-0 flex-1">
           <span className="block text-foreground">
-            <span className="font-medium">{actor}</span> used <span className="font-medium">{tool}</span> in {app}
+            <Trans ns="final-pages" i18nKey="actor_actor_actor_used_tool_tool_tool_in_app_d46bef" components={{ actor: <span className="font-medium" />, tool: <span className="font-medium" /> }} values={{ actor, tool, app }} />
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
@@ -108,18 +112,18 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
       {open ? (
         <div className="border-t border-border bg-muted/30 px-4 py-3 pl-10 text-xs">
           <dl>
-            {rawTool ? <Fact label="Tool" value={rawTool} mono /> : null}
-            {event.invocation?.status ? <Fact label="Call status" value={event.invocation.status} /> : null}
-            {event.invocation?.policyDecision ? <Fact label="Decision" value={event.invocation.policyDecision} /> : null}
-            {reason ? <Fact label="Reason" value={reason} mono /> : null}
-            {duration ? <Fact label="Duration" value={duration} /> : null}
-            {event.invocation?.id ? <Fact label="Invocation ID" value={event.invocation.id} mono /> : null}
-            {event.invocation?.errorCode ? <Fact label="Error code" value={event.invocation.errorCode} mono /> : null}
-            {event.invocation?.errorMessage ? <Fact label="Error" value={event.invocation.errorMessage} /> : null}
+            {rawTool ? <Fact label={t("tool_9a830c7")} value={rawTool} mono /> : null}
+            {event.invocation?.status ? <Fact label={t("call_status_7f36412")} value={getPageValueLabel(event.invocation.status)} /> : null}
+            {event.invocation?.policyDecision ? <Fact label={t("decision_7f59a1f")} value={event.invocation.policyDecision} /> : null}
+            {reason ? <Fact label={t("reason_f219cc0")} value={reason} mono /> : null}
+            {duration ? <Fact label={t("duration_1370004")} value={duration} /> : null}
+            {event.invocation?.id ? <Fact label={t("invocation_id_4be9446")} value={event.invocation.id} mono /> : null}
+            {event.invocation?.errorCode ? <Fact label={t("error_code_03f5ce0")} value={event.invocation.errorCode} mono /> : null}
+            {event.invocation?.errorMessage ? <Fact label={t("error_7f2f6a1")} value={event.invocation.errorMessage} /> : null}
           </dl>
           {argumentsText ? (
             <div className="mt-2 space-y-1">
-              <div className="text-muted-foreground">Arguments (redacted)</div>
+              <div className="text-muted-foreground">{t("arguments_redacted_e944825")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {argumentsText}
               </pre>
@@ -127,7 +131,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
           ) : null}
           {resultText ? (
             <div className="mt-3 space-y-1">
-              <div className="text-muted-foreground">Result (redacted)</div>
+              <div className="text-muted-foreground">{t("result_redacted_6b5eb33")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {resultText}
               </pre>
@@ -146,6 +150,7 @@ export function GatewayActivityPanel({
   companyId: string;
   gateway: ToolMcpGatewayWithTokens;
 }) {
+  const { t } = useTranslation("connections");
   const activityQuery = useInfiniteQuery({
     queryKey: queryKeys.tools.activity(companyId, { gateway: gateway.id, window: "30d" }),
     queryFn: ({ pageParam }) =>
@@ -163,7 +168,7 @@ export function GatewayActivityPanel({
 
   const events = useMemo(
     () => activityQuery.data?.pages.flatMap((page) => page.events) ?? [],
-    [activityQuery.data],
+    [activityQuery.data, t],
   );
 
   if (activityQuery.isLoading || activityView.kind === "reconnecting") {
@@ -188,13 +193,9 @@ export function GatewayActivityPanel({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">
-        Calls through this gateway from the last 30 days. Open a row to inspect its tool, redacted arguments, result, and decision.
-      </p>
+      <p className="text-sm text-muted-foreground">{t("calls_through_this_gateway_from_the_last_1146f4e")}</p>
       {events.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No calls have gone through this gateway yet.
-        </div>
+        <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{t("no_calls_have_gone_through_this_gateway_8edbd9a")}</div>
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">
           {events.map((event) => <ActivityRow key={event.id} event={event} />)}
@@ -208,7 +209,7 @@ export function GatewayActivityPanel({
             onClick={() => activityQuery.fetchNextPage()}
             disabled={activityQuery.isFetchingNextPage}
           >
-            {activityQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+            {activityQuery.isFetchingNextPage ? t("loading_33ce417") : t("load_more_dfe60ca")}
           </Button>
         </div>
       ) : null}

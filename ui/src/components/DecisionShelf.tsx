@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sun } from "lucide-react";
@@ -28,6 +29,7 @@ export function Curtain({
   onToggle: () => void;
   children: ReactNode;
 }) {
+  useTranslation("task-components");
   return (
     <section className="space-y-2">
       <IssueGroupHeader
@@ -70,6 +72,7 @@ export function AgingItemRow({
   onDismiss: (item: AttentionItem) => void;
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
 }) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const idleDays = attentionIdleDays(item, now);
@@ -77,12 +80,12 @@ export function AgingItemRow({
     mutationFn: () => decisionQueuesApi.setKeep(companyId, item.sourceKind, item.subject.id, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-      pushToast({ title: "Kept on desk", body: item.subject.title ?? undefined, tone: "success" });
+      pushToast({ presentation: { title: { key: "task-components:keptOnDesk_d5c41d42" } },  title: t("task-components:keptOnDesk_d5c41d42"), body: item.subject.title ?? undefined, tone: "success" });
     },
     onError: (error) =>
-      pushToast({
-        title: "Could not keep this decision",
-        body: error instanceof Error ? error.message : "Please try again.",
+      pushToast({ presentation: { title: { key: "task-components:couldNotKeepThisDecision_f5156cd3" }, error: { cause: error } }, 
+        title: t("task-components:couldNotKeepThisDecision_f5156cd3"),
+        body: error instanceof Error ? error.message : t("final-components-a:pleaseTryAgain_eea4fb33"),
         tone: "error",
       }),
   });
@@ -90,9 +93,7 @@ export function AgingItemRow({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2 px-1">
-        <span className="text-(length:--text-nano) text-muted-foreground">
-          Idle {idleDays} {idleDays === 1 ? "day" : "days"}
-        </span>
+        <span className="text-(length:--text-nano) text-muted-foreground"><Trans ns="final-components-a" i18nKey="numeric_ae5a0eb337d4" values={{ idleDays: idleDays }} components={{ part2: <>{idleDays === 1 ? t("task-components:day_944c27e5") : t("task-components:days_ab51004e")}</> }} /></span>
         <Button
           type="button"
           variant="outline"
@@ -103,7 +104,7 @@ export function AgingItemRow({
         >
           {keep.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
           <Sun className="h-3.5 w-3.5" />
-          {item.keep ? "Kept" : "Keep on desk"}
+          {item.keep ? t("task-components:kept_c159e746") : t("task-components:keepOnDesk_00ede66c")}
         </Button>
       </div>
       <AttentionQueueRow

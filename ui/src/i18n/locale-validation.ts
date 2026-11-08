@@ -23,7 +23,9 @@ function hasEventHandlerAttribute(value: string) {
 }
 
 function urlsIn(value: string) {
-  return Array.from(value.matchAll(/\bhttps?:\/\/[^\s<>"')]+/gi), (match) => match[0]).sort();
+  return Array.from(value.matchAll(/\bhttps?:\/\/[^\s<>"')]+/gi), (match) =>
+    match[0].replace(/[.,;:!?，。；：！？、]+$/u, ""),
+  ).sort();
 }
 
 function hasBlockedData(value: string, englishValue: string) {

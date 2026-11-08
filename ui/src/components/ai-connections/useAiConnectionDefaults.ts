@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AiConnectionList, AiManagedConnectionSummary, AiProvider, ToolConnection } from "@paperclipai/shared";
@@ -43,7 +44,7 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
     queryKey: listKey,
     queryFn: async ({ signal }) => {
       const result = await aiConnectionsApi.list(companyId!, undefined, { signal, fresh: true });
-      if (identity.userId && result.currentUserId !== identity.userId) throw new Error("Your account changed. Refresh your connections.");
+      if (identity.userId && result.currentUserId !== identity.userId) throw localizeUiError(new Error("Your account changed. Refresh your connections."), { key: "connections:default_account_changed" });
       return result;
     },
     enabled: Boolean(companyId) && identity.settled && enabled,
@@ -63,7 +64,7 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
       if (activeScope.current !== target.scope || !identity.settled || !snapshot || !account ||
           account.companyId !== companyId || !isOwnAiAccount(account, snapshot.currentUserId) ||
           !account.canSetDefault || account.status !== "connected" || account.unavailableReason) {
-        throw new Error("This account is unavailable as your default. Refresh or reconnect it, then try again.");
+        throw localizeUiError(new Error("This account is unavailable as your default. Refresh or reconnect it, then try again."), { key: "connections:default_account_unavailable" });
       }
       if (!account.isDefault) await aiConnectionsApi.setDefault(account.companyId, account.grantId);
     },
@@ -72,12 +73,12 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
       if (activeScope.current !== target.scope) return;
       const saved = client.getQueryData<AiConnectionList>(listKey)?.connections.find(account => account.grantId === target.account.grantId);
       toast?.pushToast(saved?.isDefault
-        ? { tone: "success", title: `${target.account.name} is now your ${AI_PROVIDERS[target.account.provider].name} default` }
-        : { tone: "info", title: `Your ${AI_PROVIDERS[target.account.provider].name} default was updated`, body: "The latest saved selection is shown in Connectors." });
+        ? { presentation: { title: { key: "connections:account_now_provider_default", values: { account: target.account.name, provider: AI_PROVIDERS[target.account.provider].name } } }, tone: "success", title: `${target.account.name} is now your ${AI_PROVIDERS[target.account.provider].name} default` }
+        : { presentation: { title: { key: "connections:provider_default_updated", values: { provider: AI_PROVIDERS[target.account.provider].name } }, body: { key: "connections:latest_default_in_connectors" } }, tone: "info", title: `Your ${AI_PROVIDERS[target.account.provider].name} default was updated`, body: "The latest saved selection is shown in Connectors." });
     },
     onError: (error, target) => {
       if (activeScope.current !== target.scope) return;
-      toast?.pushToast({ tone: "error", title: `Couldn’t change your ${AI_PROVIDERS[target.account.provider].name} default`,
+      toast?.pushToast({ presentation: { title: { key: "connections:change_default_failed", values: { provider: AI_PROVIDERS[target.account.provider].name } }, error: { cause: error }, action: { key: "connections:retry_49618ff" } }, tone: "error", title: `Couldn’t change your ${AI_PROVIDERS[target.account.provider].name} default`,
         body: describeError(error).body, action: { label: "Retry", onClick: () => choose(target.account, true, target.scope) } });
     },
   });

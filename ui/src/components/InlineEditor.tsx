@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { cn } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
@@ -70,6 +71,7 @@ export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: ()
 }
 
 export function InlineEditor(props: InlineEditorProps) {
+  useTranslation("task-components");
   const draftOwner = useDraftOwner();
   const [scope, setScope] = useState({ owner: draftOwner, generation: 0 });
   const generation = scope.generation + (scope.owner !== undefined && scope.owner !== draftOwner ? 1 : 0);
@@ -82,7 +84,7 @@ function OwnedInlineEditor({
   onSave,
   as: Tag = "span",
   className,
-  placeholder = "Click to edit...",
+  placeholder = t("final-components-b:InlineEditor.Click_to_edit_f946cf"),
   multiline = false,
   fitContent = false,
   nullable = false,
@@ -97,6 +99,7 @@ function OwnedInlineEditor({
   readCurrentValue,
   draftOwner,
 }: InlineEditorProps & { draftOwner: string | undefined }) {
+  useTranslation("task-components");
   const [editing, setEditing] = useState(false);
   const editingChangeCallback = useRef(onEditingChange);
   editingChangeCallback.current = onEditingChange;
@@ -498,9 +501,9 @@ function OwnedInlineEditor({
             )}
             role={autosaveState === "error" ? "alert" : "status"}
           >
-            {autosave.label ?? "Idle"}
+            {autosave.label ?? t("task-components:idle_ab0171ca")}
           </span>
-          {autosaveState === "stalled" ? <button type="button" className="ml-2 text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
+          {autosaveState === "stalled" ? <button type="button" className="ml-2 text-xs text-foreground underline" onClick={autosave.resendNow}>{t("task-components:retrySaving_3adee60b")}</button> : null}
         </div>
       </div>
     );
@@ -555,7 +558,7 @@ function OwnedInlineEditor({
     >
       {value || placeholder}
     </DisplayTag>
-    {autosaveState === "stalled" ? <button type="button" className="text-xs text-foreground underline" onClick={autosave.resendNow}>Retry saving</button> : null}
+    {autosaveState === "stalled" ? <button type="button" className="text-xs text-foreground underline" onClick={autosave.resendNow}>{t("task-components:retrySaving_3adee60b")}</button> : null}
     </>
   );
 }

@@ -1,3 +1,5 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation } from "@/i18n";
 import { createContext, useContext, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, Issue, IssueCommentMetadata } from "@paperclipai/shared";
@@ -41,6 +43,7 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
   onRepaired: () => void;
   children: ReactNode;
 }) {
+  useTranslation("final-components-a");
   const action = issue.activeRecoveryAction;
   const recordedRunId = action?.evidence?.latestRunId ?? action?.evidence?.runId;
   const runId = typeof recordedRunId === "string" ? recordedRunId : null;
@@ -59,17 +62,17 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
     const stale = action.status !== "active" || issue.status !== "blocked" || action.ownerType !== "board"
       || !issue.assigneeAgentId || issue.assigneeAgentId !== action.returnOwnerAgentId || run.agentId !== issue.assigneeAgentId;
     retry = { actionId: action.id, runId,
-      unavailableReason: stale ? "Refresh the task to retry."
+      unavailableReason: stale ? t("final-components-a:refreshTheTaskToRetry_e61e6c32")
         : unavailableReason
-        ?? (issue.executionRunId || issue.checkoutRunId ? "Wait for the current run to finish." : null)
-        ?? (agent?.status === "paused" || agent?.status === "terminated" ? "The assigned agent is unavailable." : null)
-        ?? (issue.executionState?.status === "pending" ? "Complete the pending review or approval before retrying." : null)
-        ?? (issue.blockedBy?.some(b => b.status !== "done" && b.status !== "cancelled") ? "Resolve the task’s blockers before retrying." : null),
+        ?? (issue.executionRunId || issue.checkoutRunId ? t("final-components-a:waitForTheCurrentRun_a85d72b1") : null)
+        ?? (agent?.status === "paused" || agent?.status === "terminated" ? t("final-components-a:theAssignedAgentIsUnavailable_c49c4bae") : null)
+        ?? (issue.executionState?.status === "pending" ? t("final-components-a:completeThePendingReviewOr_5066bafc") : null)
+        ?? (issue.blockedBy?.some(b => b.status !== "done" && b.status !== "cancelled") ? t("final-components-a:resolveTheTaskSBlockers_be0f8f68") : null),
       onRetry: async () => {
         try {
           const receipt = await issuesApi.resolveRecoveryAction(issue.id, { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" });
           if (receipt.issue.status !== "todo" || receipt.issue.assigneeAgentId !== issue.assigneeAgentId) {
-            throw new Error("The task changed. Refresh and try again.");
+            throw localizeUiError(new Error("The task changed. Refresh and try again."), { key: "final-components-a:theTaskChangedRefreshAnd_7d938a34" });
           }
         } finally { onRepaired(); }
       },
@@ -82,7 +85,7 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
     const requestedRef = failure.requestedRef;
     const workspace = issue.project?.workspaces?.find(w => w.id === issue.projectWorkspaceId)
       ?? issue.project?.primaryWorkspace;
-    let repository = "The task’s repository";
+    let repository = t("final-components-a:theTaskSRepository_02ea1195");
     if (workspace?.repoUrl) {
       try { const url = new URL(workspace.repoUrl); if (url.protocol === "https:" || url.protocol === "http:") repository = `${url.hostname}${url.pathname.replace(/\.git$/, "")}`; } catch { /* Keep local paths and credentials out of the card. */ }
     }
@@ -90,15 +93,15 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
     const currentRef = record(settings.workspaceStrategy).baseRef;
     const stale = action.status !== "active" || issue.status !== "blocked" || issue.assigneeAgentId !== action.returnOwnerAgentId
       || run.agentId !== issue.assigneeAgentId || (typeof currentRef === "string" && Boolean(currentRef.trim()) && currentRef !== requestedRef);
-    const reason = stale ? "This repair no longer matches the task. Refresh to review its current state."
+    const reason = stale ? t("final-components-a:thisRepairNoLongerMatches_03388852")
       : baseRefUnavailableReason ?? unavailableReason
-      ?? (issue.executionRunId || issue.checkoutRunId ? "Wait for the current run to finish." : null)
-      ?? (agent?.status === "paused" || agent?.status === "terminated" ? "The assigned agent is unavailable." : null)
-      ?? (issue.executionState?.status === "pending" ? "Complete the pending review or approval before retrying." : null)
-      ?? (issue.blockedBy?.some(b => b.status !== "done" && b.status !== "cancelled") ? "Resolve the task’s blockers before retrying." : null);
+      ?? (issue.executionRunId || issue.checkoutRunId ? t("final-components-a:waitForTheCurrentRun_a85d72b1") : null)
+      ?? (agent?.status === "paused" || agent?.status === "terminated" ? t("final-components-a:theAssignedAgentIsUnavailable_c49c4bae") : null)
+      ?? (issue.executionState?.status === "pending" ? t("final-components-a:completeThePendingReviewOr_5066bafc") : null)
+      ?? (issue.blockedBy?.some(b => b.status !== "done" && b.status !== "cancelled") ? t("final-components-a:resolveTheTaskSBlockers_be0f8f68") : null);
     value = { actionId: action.id, runId, props: {
       requestedRef, repository, taskOverride: currentRef === requestedRef, defaultBranch: typeof failure.defaultBranch === "string" ? failure.defaultBranch : null,
-      agentName: agent?.name ?? "The assigned agent", unavailableReason: reason,
+      agentName: agent?.name ?? t("final-components-a:theAssignedAgent_7a6c723b"), unavailableReason: reason,
       failureKind: typeof failure.fetchError === "string" && failure.fetchError.includes(`couldn't find remote ref refs/heads/${requestedRef}`) ? "missing_branch" : "unresolved_ref",
       onRepair: async branch => {
         try {
@@ -107,7 +110,7 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
           });
           if (receipt.issue.status !== "todo" || receipt.issue.assigneeAgentId !== issue.assigneeAgentId
             || record(record(receipt.issue.executionWorkspaceSettings).workspaceStrategy).baseRef !== branch) {
-            throw new Error("The task changed while saving. Refresh to check its current state.");
+            throw localizeUiError(new Error("The task changed while saving. Refresh to check its current state."), { key: "final-components-a:theTaskChangedWhileSaving_276f13bd" });
           }
         } finally { onRepaired(); }
       },

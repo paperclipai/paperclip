@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { act as reactAct } from "react";
+import { act as reactAct, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   ISSUE_THREAD_INTERACTION_KINDS as INTERACTION_KINDS,
   type InteractionResolverGovernance,
@@ -231,4 +232,140 @@ describe("applyGovernanceChange", () => {
       request_confirmation: { defaultPolicy: "human_only" },
     });
   });
+});
+
+describe("mounted governance localization", () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  let root: Root;
+  let host: HTMLDivElement;
+  const kinds = {
+    en: ["Suggested tasks", "Ask user questions", "Confirmations", "Checkbox confirmations", "Item verdicts", "Connection requests"],
+    "zh-CN": ["建议任务", "向用户提问", "确认请求", "勾选确认请求", "逐项判定", "连接请求"],
+  };
+  const copy = {
+    en: {
+      fields: ["Default policy", "Cap"],
+      labels: [["Anyone (default)", "Anyone except creator", "Human only"], ["No cap", "Anyone except creator", "Human only"]],
+      effects: [
+        ["New cards are open — the board or any agent can respond, including the one that asked.", "New cards exclude the agent that created them, so the answer comes from someone else.", "New cards wait for a person on the board. Agents are turned away."],
+        ["A request keeps whatever audience it asks for.", "Even a card that asks for Anyone is narrowed to exclude its creator.", "Every card of this kind waits for a person, whatever it asked for."],
+      ],
+    },
+    "zh-CN": {
+      fields: ["默认策略", "范围上限"],
+      labels: [["任何人（默认）", "除创建者外的任何人", "仅限人员"], ["不设上限", "除创建者外的任何人", "仅限人员"]],
+      effects: [
+        ["新卡片默认向所有人开放：管理者或任何智能体均可响应，包括发起请求的智能体。", "新卡片不允许创建它的智能体响应，确保由其他人或智能体作答。", "新卡片仅等待管理端的人员响应，智能体不能响应。"],
+        ["请求保留其指定的响应范围。", "即使卡片指定任何人均可响应，也会收窄范围，排除创建者。", "此类卡片一律等待人员响应，不受其原先指定的响应范围影响。"],
+      ],
+    },
+  };
+
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  async function language(locale: "en" | "zh-CN") {
+    await act(async () => { await i18n.changeLanguage(locale); });
+  }
+  function trigger(kind: string, suffix: string) {
+    const element = host.querySelector<HTMLButtonElement>(`[data-testid="governance-${kind}-${suffix}"]`);
+    expect(element).toBeTruthy();
+    return element!;
+  }
+  async function open(element: HTMLElement) {
+    await act(async () => { element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    return document.querySelector<HTMLElement>('[role="listbox"]')!;
+  }
+  async function close(list: HTMLElement) {
+    await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  }
+
+  it("updates all six mounted kind rows, mobile labels and accessible combobox names in both directions without resetting a controlled draft", async () => {
+    const onChange = vi.fn();
+    function Draft() {
+      const [governance, setGovernance] = useState<InteractionResolverGovernance>({ request_confirmation: { defaultPolicy: "human_only", cap: "not_creator" } });
+      return <form><InteractionGovernancePanel governance={governance} onChange={(kind, field, value) => {
+        onChange(kind, field, value);
+        setGovernance(current => applyGovernanceChange(current, kind, field, value));
+      }} /></form>;
+    }
+    await act(async () => root.render(<Draft />));
+    const draftOptions = await open(trigger("suggest_tasks", "default"));
+    await act(async () => {
+      draftOptions.querySelectorAll<HTMLElement>('[role="option"]')[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("suggest_tasks", "defaultPolicy", "not_creator");
+    onChange.mockClear();
+    const retained = trigger("request_confirmation", "default");
+    const initialValues = Array.from(host.querySelectorAll("select"), select => select.value);
+    expect(initialValues).toHaveLength(12);
+    expect(initialValues[0]).toBe("not_creator");
+    for (const locale of ["en", "zh-CN", "en"] as const) {
+      await language(locale);
+      expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(12);
+      INTERACTION_KINDS.forEach((kind, index) => {
+        const kindLabel = kinds[locale][index];
+        expect(host.textContent).toContain(kindLabel);
+        for (const [fieldIndex, suffix] of ["default", "cap"].entries()) {
+          const button = trigger(kind, suffix);
+          const aria = locale === "en"
+            ? fieldIndex === 0 ? `Default resolver audience for ${kindLabel}` : `Resolver cap for ${kindLabel}`
+            : fieldIndex === 0 ? `${kindLabel}的默认响应范围` : `${kindLabel}的响应范围上限`;
+          expect(button.getAttribute("role")).toBe("combobox");
+          expect(button.getAttribute("aria-label")).toBe(aria);
+          expect(button.parentElement?.querySelector("span")?.textContent).toBe(copy[locale].fields[fieldIndex]);
+          const selected = kind === "request_confirmation" ? fieldIndex === 0 ? 2 : 1 : kind === "suggest_tasks" && fieldIndex === 0 ? 1 : 0;
+          expect(button.textContent).toBe(copy[locale].labels[fieldIndex][selected]);
+        }
+      });
+      expect(trigger("request_confirmation", "default")).toBe(retained);
+      expect(Array.from(host.querySelectorAll("select"), select => select.value)).toEqual(initialValues);
+      expect(onChange).not.toHaveBeenCalled();
+    }
+  });
+
+  it("updates every option and full effect message while open, preserving exact canonical values and change payloads", async () => {
+    const onChange = vi.fn();
+    function Draft() {
+      const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+      return <form><InteractionGovernancePanel governance={governance} onChange={(kind, field, value) => {
+        onChange(kind, field, value);
+        setGovernance(current => applyGovernanceChange(current, kind, field, value));
+      }} /></form>;
+    }
+    await act(async () => root.render(<Draft />));
+    for (const [fieldIndex, suffix] of ["default", "cap"].entries()) {
+      const list = await open(trigger("request_confirmation", suffix));
+      expect(list).toBeTruthy();
+      for (const locale of ["en", "zh-CN", "en"] as const) {
+        await language(locale);
+        const options = Array.from(list.querySelectorAll('[role="option"]'));
+        expect(options).toHaveLength(3);
+        options.forEach((option, index) => {
+          expect(option.textContent).toBe(copy[locale].labels[fieldIndex][index] + copy[locale].effects[fieldIndex][index]);
+        });
+        const selects = Array.from(host.querySelectorAll("select"));
+        expect(selects.length).toBeGreaterThan(0);
+        selects.forEach(select => expect(Array.from(select.options, option => option.value)).toEqual(["default", "not_creator", "human_only"]));
+        expect(onChange).not.toHaveBeenCalled();
+      }
+      await close(list);
+      for (const [index, value] of [[1, "not_creator"], [2, "human_only"], [0, "default"]] as const) {
+        const choices = await open(trigger("request_confirmation", suffix));
+        await act(async () => { choices.querySelectorAll<HTMLElement>('[role="option"]')[index].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+        expect(onChange).toHaveBeenLastCalledWith("request_confirmation", fieldIndex === 0 ? "defaultPolicy" : "cap", value);
+        onChange.mockClear();
+      }
+    }
+  });
+
 });

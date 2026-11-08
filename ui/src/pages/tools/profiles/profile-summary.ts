@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import type { ToolProfileStatus, ToolProfileSummary, ToolProfileWithDetails } from "@paperclipai/shared";
 
 /**
@@ -8,6 +9,8 @@ import type { ToolProfileStatus, ToolProfileSummary, ToolProfileWithDetails } fr
  */
 
 function plural(n: number, one: string, many = `${one}s`): string {
+  const key: Record<string, string> = { tool: "count_tool", app: "count_app", agent: "count_agent", assignment: "count_assignment" };
+  if (key[one]) return translateAgentPage(`agents:${key[one]}`, { count: n });
   return `${n} ${n === 1 ? one : many}`;
 }
 
@@ -15,8 +18,8 @@ function plural(n: number, one: string, many = `${one}s`): string {
 export function allowsLabel(summary: ToolProfileSummary): string {
   if (summary.accessMode === "all_except") {
     return summary.excludedToolCount === 0
-      ? "All tools"
-      : `All except ${plural(summary.excludedToolCount, "tool")}`;
+      ? translateAgentPage("agents:all_tools_b390ab")
+      : translateAgentPage("agents:all_except", { value1: plural(summary.excludedToolCount, "tool") });
   }
   const parts = [plural(summary.allowedToolCount, "tool")];
   if (summary.allowedApplicationCount > 0) {
@@ -33,21 +36,21 @@ export interface AssignedLabel {
 
 /** "Organization default" / "2 agents" / "Not assigned yet". */
 export function assignedLabel(summary: ToolProfileSummary): AssignedLabel {
-  if (summary.isCompanyDefault) return { text: "Organization default", unassigned: false };
+  if (summary.isCompanyDefault) return { text: translateAgentPage("agents:organization_default"), unassigned: false };
   if (summary.appliesToAgentCount > 0) {
     return { text: plural(summary.appliesToAgentCount, "agent"), unassigned: false };
   }
   if (summary.assignmentCount > 0) {
     return { text: plural(summary.assignmentCount, "assignment"), unassigned: false };
   }
-  return { text: "Not assigned yet", unassigned: true };
+  return { text: translateAgentPage("agents:not_assigned_yet"), unassigned: true };
 }
 
 export const STATUS_LABEL: Record<ToolProfileStatus, string> = {
-  draft: "Draft",
-  active: "Active",
-  disabled: "Off",
-  archived: "Archived",
+  get draft() { return translateAgentPage("agents:draft"); },
+  get active() { return translateAgentPage("agents:active"); },
+  get disabled() { return translateAgentPage("agents:off"); },
+  get archived() { return translateAgentPage("agents:archived"); },
 };
 
 export function isDraft(profile: Pick<ToolProfileWithDetails, "status">): boolean {

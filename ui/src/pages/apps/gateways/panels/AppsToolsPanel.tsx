@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { useTranslation } from "@/i18n";
 import type { ToolProfileWithDetails } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -15,26 +17,21 @@ export function AppsToolsPanel({
   apps: GatewayAppRow[];
   profile: ToolProfileWithDetails | undefined;
 }) {
+  const { t } = useTranslation("connections");
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        These apps go through this gateway. The bound profile
-        {profile ? ` (${profile.name})` : ""} decides which tools are allowed
-        {profile ? ` — ${allowedToolsLabel(profile)}.` : "."} Change the profile under Advanced.
-      </p>
+      <p className="text-sm text-muted-foreground">{t("these_apps_go_through_this_gateway_the_bd143ad", { value: profile ? ` (${profile.name})` : "", value2: profile ? ` — ${allowedToolsLabel(profile)}.` : "." })}</p>
 
       {apps.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No apps are assigned to this gateway’s profile yet.
-        </div>
+        <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{t("no_apps_are_assigned_to_this_gateway_9f3de48")}</div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full min-w-(--sz-32rem) text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2.5">App</th>
-                <th className="px-4 py-2.5">Tools</th>
-                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">{t("app_fc4a695")}</th>
+                <th className="px-4 py-2.5">{t("tools_4fa8cc8")}</th>
+                <th className="px-4 py-2.5">{t("status_bae7d5b")}</th>
                 <th className="px-4 py-2.5 text-right" />
               </tr>
             </thead>
@@ -54,7 +51,7 @@ export function AppsToolsPanel({
                       ) : null}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {app.toolCount} {app.toolCount === 1 ? "tool" : "tools"}
+                      {finalPagesT("final-pages:tools", { count: app.toolCount })}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -65,13 +62,11 @@ export function AppsToolsPanel({
                             : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
                         )}
                       >
-                        {app.needsAttention ? "Needs attention" : "Healthy"}
+                        {app.needsAttention ? t("needs_attention_a126722") : t("healthy_80ea156")}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Link to={href} className="text-xs font-medium text-primary hover:underline">
-                        Open →
-                      </Link>
+                      <Link to={href} className="text-xs font-medium text-primary hover:underline">{t("open_dd66f26")}</Link>
                     </td>
                   </tr>
                 );

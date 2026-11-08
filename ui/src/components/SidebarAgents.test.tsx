@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { act, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
+import { ToastViewport } from "./ToastViewport";
+import type { ToastInput } from "../context/ToastContext";
 import { SidebarAgents } from "./SidebarAgents";
+import { SidebarAgents as ProductionSidebarAgents } from "./SidebarAgents.production";
 import { queryKeys } from "../lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -90,9 +94,11 @@ vi.mock("../context/SidebarContext", () => ({
   }),
 }));
 
-vi.mock("../context/ToastContext", () => ({
+vi.mock("../context/ToastContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../context/ToastContext")>(),
   useToastActions: () => ({
     pushToast: mockPushToast,
+    dismissToast: vi.fn(),
   }),
 }));
 
@@ -299,17 +305,18 @@ describe("SidebarAgents", () => {
       document.body.innerHTML = "";
       localStorage.clear();
       vi.clearAllMocks();
+      await i18n.changeLanguage("en");
     }
   });
 
-  async function renderSidebarAgents(streamlined = true) {
+  async function renderSidebarAgents(streamlined = true, Component = SidebarAgents) {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
     await act(async () => {
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAgents streamlined={streamlined} />
+          <Component streamlined={streamlined} />
         </QueryClientProvider>,
       );
     });
@@ -631,6 +638,53 @@ describe("SidebarAgents", () => {
 
     expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent paused" }));
+  });
+
+  it.each(([
+    ["pause", "network"], ["resume", "network"],
+    ["pause", "raw"], ["resume", "raw"],
+    ["pause", "success"], ["resume", "success"],
+  ] as const).flatMap(([action, outcome]) => [false, true].map(production => ({ action, outcome, production }))))(
+    "retains the $action toast operation across locale changes ($outcome, production=$production)", async ({ action, outcome, production }) => {
+    const raw = "Vendor diagnostic: user-provided value 原文";
+    mockAgentsApi.list.mockResolvedValue([makeAgent({ status: action === "resume" ? "paused" : "idle" })]);
+    const cause = outcome === "network" ? new TypeError("Failed to fetch") : new Error(raw);
+    if (outcome !== "success") mockAgentsApi[action].mockRejectedValue(cause);
+    await renderSidebarAgents(true, production ? ProductionSidebarAgents : SidebarAgents);
+    await openAgentMenu();
+    const item = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find(element => element.textContent?.includes(action === "pause" ? "Pause agent" : "Resume agent"));
+    expect(item).toBeTruthy();
+    await act(async () => { item!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(mockAgentsApi[action]).toHaveBeenCalledWith("agent-1", "company-1");
+    const toast = mockPushToast.mock.calls.at(-1)![0] as ToastInput;
+    if (outcome !== "success") expect(toast.presentation?.error?.cause).toBe(cause);
+
+    // Exercise the real storage and renderer with the component's actual payload,
+    // so a translated string alone cannot satisfy the live-switch contract.
+    const actual = await vi.importActual<typeof import("../context/ToastContext")>("../context/ToastContext");
+    function CapturedToast() {
+      const { pushToast } = actual.useToastActions();
+      useEffect(() => { pushToast(toast); }, [pushToast]);
+      return <ToastViewport />;
+    }
+    await act(async () => root!.render(<actual.ToastProvider><CapturedToast /></actual.ToastProvider>));
+    const englishTitle = outcome === "success"
+      ? action === "pause" ? "Agent paused" : "Agent resumed"
+      : action === "pause" ? "Could not pause agent" : "Could not resume agent";
+    expect(container.querySelector("li p")?.textContent).toBe(englishTitle);
+    if (outcome === "network") expect(container.textContent).toContain("Paperclip is temporarily unavailable");
+    else expect(container.textContent).toContain(outcome === "raw" ? raw : "Alpha");
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(container.querySelector("li p")?.textContent).toBe(outcome === "success"
+      ? action === "pause" ? "智能体已暂停" : "智能体已恢复"
+      : action === "pause" ? "无法暂停智能体" : "无法恢复智能体");
+    if (outcome === "network") expect(container.textContent).not.toContain("Paperclip is temporarily unavailable");
+    else expect(container.textContent).toContain(outcome === "raw" ? raw : "Alpha");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.querySelector("li p")?.textContent).toBe(englishTitle);
+    expect(mockAgentsApi[action]).toHaveBeenCalledOnce();
   });
 
   it("offers leave agent from each sidebar agent menu", async () => {

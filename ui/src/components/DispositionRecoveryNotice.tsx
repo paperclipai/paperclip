@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { createContext, useContext, useId, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import type { Agent, Issue, IssueCommentMetadata, IssueRecoveryAction } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ export type DispositionRecoveryContextValue = {
 
 const RecoveryContext = createContext<DispositionRecoveryContextValue | null>(null);
 export function DispositionRecoveryProvider({ value, children }: { value: DispositionRecoveryContextValue; children: ReactNode }) {
+  useTranslation("task-components");
   return <RecoveryContext.Provider value={value}>{children}</RecoveryContext.Provider>;
 }
 
@@ -38,33 +40,29 @@ export function useDispositionRecoverySnapshot(metadata: IssueCommentMetadata | 
 
 /** UI affordance only; the server rechecks the current action and all execution gates. */
 export function dispositionRetryUnavailableReason(snapshot: DispositionRecoverySnapshot, context: DispositionRecoveryContextValue | null): string | null {
-  if (!context) return "Open the task to review its current state.";
+  if (!context) return t("deep-ui:open_the_task_to_review_its_current_state_ed21d6");
   const { issue } = context;
   const action = issue.activeRecoveryAction;
-  if (!action || action.id !== snapshot.actionId || action.status !== "active") return "This recovery notice is no longer active.";
-  if (issue.status !== "blocked") return "The task’s state has changed. Review its current state before retrying.";
-  if (action.kind !== "deliberate_wait_without_target" || action.ownerType !== "board" || action.wakePolicy?.type !== "board_escalation") return "The task’s recovery state has changed. Refresh to see the current action.";
-  if (!snapshot.assigneeAgentId || issue.assigneeAgentId !== snapshot.assigneeAgentId || action.returnOwnerAgentId !== snapshot.assigneeAgentId) return "The assigned agent has changed. Review the task before retrying.";
+  if (!action || action.id !== snapshot.actionId || action.status !== "active") return t("deep-ui:this_recovery_notice_is_no_longer_active_8bcc81");
+  if (issue.status !== "blocked") return t("deep-ui:the_task_s_state_has_changed_review_its_current_state_before_71e317");
+  if (action.kind !== "deliberate_wait_without_target" || action.ownerType !== "board" || action.wakePolicy?.type !== "board_escalation") return t("deep-ui:the_task_s_recovery_state_has_changed_refresh_to_see_the_cur_2b6e7c");
+  if (!snapshot.assigneeAgentId || issue.assigneeAgentId !== snapshot.assigneeAgentId || action.returnOwnerAgentId !== snapshot.assigneeAgentId) return t("deep-ui:the_assigned_agent_has_changed_review_the_task_before_retryi_bbbc9c");
   if (context.unavailableReason) return context.unavailableReason;
-  if (context.hasPendingInteraction) return "Respond to the pending question or confirmation before retrying.";
-  if (issue.executionRunId || issue.checkoutRunId) return "The task already has an active run. Wait for it to finish.";
-  if (issue.executionState?.status === "pending") return "The task is waiting for a review or approval.";
-  if (issue.blockedBy?.some(blocker => blocker.status !== "done" && blocker.status !== "cancelled")) return "Resolve the task’s blockers before retrying.";
+  if (context.hasPendingInteraction) return t("deep-ui:respond_to_the_pending_question_or_confirmation_before_retry_8ffb0d");
+  if (issue.executionRunId || issue.checkoutRunId) return t("deep-ui:the_task_already_has_an_active_run_wait_for_it_to_finish_a7b645");
+  if (issue.executionState?.status === "pending") return t("deep-ui:the_task_is_waiting_for_a_review_or_approval_e82e5e");
+  if (issue.blockedBy?.some(blocker => blocker.status !== "done" && blocker.status !== "cancelled")) return t("deep-ui:resolve_the_task_s_blockers_before_retrying_be0f8f");
   const agent = context.agentMap?.get(snapshot.assigneeAgentId);
-  if (agent?.status === "paused") return "The assigned agent is paused. Resume the agent before retrying.";
-  if (agent?.status === "terminated") return "The assigned agent is no longer available.";
+  if (agent?.status === "paused") return t("deep-ui:the_assigned_agent_is_paused_resume_the_agent_before_retryin_4e52ab");
+  if (agent?.status === "terminated") return t("deep-ui:the_assigned_agent_is_no_longer_available_8cf16b");
   return null;
 }
 
 function descriptionFor(snapshot: DispositionRecoverySnapshot) {
-  const start = "The agent stopped without recording an outcome or a next step.";
-  if (snapshot.reason === "owner_budget_blocked") return `${start} Automatic recovery stopped because a spending or pause limit prevents the agent from running.`;
-  if (snapshot.reason === "owner_not_invokable") return `${start} Automatic recovery stopped because the assigned agent is unavailable.`;
-  if (snapshot.reason === "unchanged_source_state_exhausted") {
-    const attempts = snapshot.attemptCount === 2 ? "Two" : String(snapshot.attemptCount);
-    return `${start} ${attempts} automatic ${snapshot.attemptCount === 1 ? "attempt" : "attempts"} to resolve this failed.`;
-  }
-  return `${start} Automatic recovery stopped. Review the details before trying again.`;
+  if (snapshot.reason === "owner_budget_blocked") return t("deep-ui:recovery_budget_stopped");
+  if (snapshot.reason === "owner_not_invokable") return t("deep-ui:recovery_owner_unavailable");
+  if (snapshot.reason === "unchanged_source_state_exhausted") return t("deep-ui:recovery_exhausted", { count: snapshot.attemptCount, attempts: snapshot.attemptCount === 2 ? t("deep-ui:recovery_two") : snapshot.attemptCount });
+  return t("deep-ui:recovery_stopped");
 }
 
 /** Same component in both task interfaces and Storybook; no prose controls actions. */
@@ -73,18 +71,19 @@ export function DispositionRecoveryNotice({ snapshot, createdAt, defaultExpanded
   createdAt?: string;
   defaultExpanded?: boolean;
 }) {
+  useTranslation("task-components");
   const context = useContext(RecoveryContext);
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [pending, setPending] = useState(false);
   const [requested, setRequested] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ raw: string } | { key: string } | null>(null);
   const inFlight = useRef(false);
   const detailsId = useId();
   const titleId = useId();
   const unavailableId = useId();
   const unavailableReason = dispositionRetryUnavailableReason(snapshot, context);
   const historical = Boolean(context && context.issue.activeRecoveryAction?.id !== snapshot.actionId);
-  const agentName = (snapshot.assigneeAgentId && context?.agentMap?.get(snapshot.assigneeAgentId)?.name) || "the assigned agent";
+  const agentName = (snapshot.assigneeAgentId && context?.agentMap?.get(snapshot.assigneeAgentId)?.name) || t("deep-ui:the_assigned_agent_52c658");
   const HeadingIcon = requested || historical ? Check : TriangleAlert;
 
   async function retry() {
@@ -96,7 +95,7 @@ export function DispositionRecoveryNotice({ snapshot, createdAt, defaultExpanded
       await context.onRetry(snapshot.actionId);
       setRequested(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Refresh the task to check its current state, then try again.");
+      setError(cause instanceof Error ? { raw: cause.message } : { key: "recovery_retry_failed" });
     } finally {
       inFlight.current = false;
       setPending(false);
@@ -109,27 +108,27 @@ export function DispositionRecoveryNotice({ snapshot, createdAt, defaultExpanded
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex flex-col gap-1" role="status" aria-live="polite">
           <h2 id={titleId} className="break-words text-sm font-medium text-foreground">
-            {requested ? "Retry requested" : historical ? "Agent needed attention" : "Agent needs attention"}
+            {requested ? t("task-components:retryRequested_6ef56fa4") : historical ? t("task-components:agentNeededAttention_cf12a1b6") : t("task-components:agentNeedsAttention_fca5d0b0")}
           </h2>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            {requested ? `The task was returned to To do for ${agentName}.` : descriptionFor(snapshot)}
+            {requested ? t("task-components:theTaskWasReturnedToToDo_764021e0", { value1: agentName }) : descriptionFor(snapshot)}
           </p>
         </div>
         {unavailableReason && !requested ? (
           <p id={unavailableId} className="text-xs leading-relaxed text-muted-foreground">
-            {!historical && <span className="font-medium text-foreground">Retry unavailable. </span>}{unavailableReason}
+            {!historical && <span className="font-medium text-foreground">{t("task-components:retryUnavailable_458cbe4c")}{" "}</span>}{unavailableReason}
           </p>
         ) : null}
-        {error ? <p role="alert" className="text-sm text-destructive">Couldn’t confirm the retry. {error}</p> : null}
+        {error ? <p role="alert" className="text-sm text-destructive"><Trans ns="task-components" i18nKey="sentence_ef7ba0fde40a" components={{ part1: <>{error && ("raw" in error ? error.raw : t(`deep-ui:${error.key}`))}</> }} /></p> : null}
         <div className="flex flex-wrap items-center gap-2">
           {!requested && !historical ? (
             <Button size="xs" variant="outline" disabled={pending || Boolean(unavailableReason)} aria-describedby={unavailableReason ? unavailableId : undefined} onClick={() => void retry()}>
               {pending ? <Loader2 aria-hidden="true" className="size-3 animate-spin motion-reduce:animate-none" /> : <RotateCcw aria-hidden="true" className="size-3" />}
-              {pending ? "Requesting retry…" : "Retry agent"}
+              {pending ? t("task-components:requestingRetry_bb24a440") : t("task-components:retryAgent_542baccf")}
             </Button>
           ) : null}
           <Button size="xs" variant="ghost" className="text-muted-foreground" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded(current => !current)}>
-            {expanded ? "Hide details" : "View details"}
+            {expanded ? t("task-components:hideDetails_c9722a7a") : t("task-components:viewDetails_d1bf045b")}
             <ChevronDown aria-hidden="true" className={cn("size-3", expanded && "rotate-180")} />
           </Button>
           {createdAt ? <time dateTime={createdAt} className="font-mono text-xs text-muted-foreground sm:ml-auto">{timeAgo(createdAt)}</time> : null}
@@ -137,12 +136,12 @@ export function DispositionRecoveryNotice({ snapshot, createdAt, defaultExpanded
         {expanded ? (
           <div id={detailsId} className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3">
             <dl className="flex flex-col gap-2 text-xs">
-              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">Assigned when recovery stopped</dt><dd>{agentName}</dd></div>
-              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">Automatic attempts</dt><dd className="font-mono">{snapshot.attemptCount} of {snapshot.maxAttempts}</dd></div>
-              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">Automatic retries for this recovery</dt><dd>Stopped</dd></div>
+              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">{t("task-components:assignedWhenRecoveryStopped_38214f4d")}</dt><dd>{agentName}</dd></div>
+              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">{t("task-components:automaticAttempts_35a02e3b")}</dt><dd className="font-mono">{t("deep-ui:recovery_attempts", { count: snapshot.attemptCount, max: snapshot.maxAttempts })}</dd></div>
+              <div className="flex flex-wrap justify-between gap-1"><dt className="text-muted-foreground">{t("task-components:automaticRetriesForThisRecovery_1ac4415a")}</dt><dd>{t("task-components:stopped_1a4f630a")}</dd></div>
             </dl>
-            <p className="text-xs leading-relaxed text-muted-foreground">Recovery asked the assigned agent to record an outcome or a next step. Retrying keeps the same task and agent, and checks the task’s current controls before continuing.</p>
-            <div className="flex flex-col gap-1"><span className="text-xs text-muted-foreground">Technical reason</span><code className="break-all font-mono text-xs">{snapshot.reason}</code></div>
+            <p className="text-xs leading-relaxed text-muted-foreground">{t("task-components:recoveryAskedTheAssignedAgentToRecord_4970e649")}</p>
+            <div className="flex flex-col gap-1"><span className="text-xs text-muted-foreground">{t("task-components:technicalReason_8469882d")}</span><code className="break-all font-mono text-xs">{snapshot.reason}</code></div>
           </div>
         ) : null}
       </div>

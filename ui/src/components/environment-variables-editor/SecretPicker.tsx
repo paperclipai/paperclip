@@ -1,3 +1,4 @@
+import { useTranslation, t, i18n } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import { CornerUpLeft, Folder, KeyRound, Plus } from "lucide-react";
 import type { CompanySecret, SecretStatus } from "@paperclipai/shared";
@@ -107,7 +108,7 @@ function buildFolderGroup(
     options.push({
       key: `folder-up-${pathKey(currentPath)}`,
       value: folderValue(parentPath),
-      label: "Up one folder",
+      label: t("agent-config:upOneFolder_8801148"),
       title: pathLabel(parentPath),
       searchText: pathLabel(parentPath),
       kind: "back",
@@ -119,7 +120,7 @@ function buildFolderGroup(
 
   return {
     id: "browse-secrets",
-    label: currentPath.length > 0 ? pathLabel(currentPath) : "Browse secrets",
+    label: currentPath.length > 0 ? pathLabel(currentPath) : t("agent-config:browseSecrets_38dad50"),
     options,
   };
 }
@@ -154,14 +155,15 @@ export function SecretPicker({
   triggerClassName,
   disablePortal,
 }: SecretPickerProps) {
+  const { t } = useTranslation("agent-config");
   const [currentPathKey, setCurrentPathKey] = useState("");
   const boundSecret = useMemo(
     () => secrets.find((secret) => secret.id === secretId) ?? null,
-    [secrets, secretId],
+    [secrets, secretId, i18n.resolvedLanguage],
   );
   const boundMissing = Boolean(secretId) && !boundSecret;
-  const currentPath = useMemo(() => (currentPathKey ? currentPathKey.split("/") : []), [currentPathKey]);
-  const hasFolderPaths = useMemo(() => secrets.some((secret) => splitSecretPath(secret.name).length > 1), [secrets]);
+  const currentPath = useMemo(() => (currentPathKey ? currentPathKey.split("/") : []), [currentPathKey, i18n.resolvedLanguage]);
+  const hasFolderPaths = useMemo(() => secrets.some((secret) => splitSecretPath(secret.name).length > 1), [secrets, i18n.resolvedLanguage]);
 
   const groups = useMemo<SearchableSelectGroup<string, SecretOption>[]>(() => {
     const result: SearchableSelectGroup<string, SecretOption>[] = [];
@@ -171,13 +173,13 @@ export function SecretPicker({
     if (boundMissing) {
       result.push({
         id: "current-missing",
-        label: "Current",
+        label: t("agent-config:current_4fc0e2b"),
         options: [
           {
             key: `missing-${secretId}`,
             value: secretId,
-            label: `Missing secret (${secretId.slice(0, 8)}…)`,
-            title: `Missing secret (${secretId})`,
+            label: t("agent-config:missingSecretValue_657c8b5", { value1: secretId.slice(0, 8) }),
+            title: t("agent-config:missingSecretValue_7b48df2", { value1: secretId }),
             missing: true,
             disabled: true,
           },
@@ -191,7 +193,7 @@ export function SecretPicker({
     if (recent.length > 0) {
       result.push({
         id: "recently-used",
-        label: "Recently used",
+        label: t("agent-config:recentlyUsed_cc5bc92"),
         options: recent.map((secret) => ({
           key: `recent-${secret.id}`,
           value: secret.id,
@@ -207,7 +209,7 @@ export function SecretPicker({
 
     result.push({
       id: "all-secrets",
-      label: recent.length > 0 ? "All secrets" : undefined,
+      label: recent.length > 0 ? t("agent-config:allSecrets_924b5de") : undefined,
       options: secrets.map((secret) => ({
         key: `all-${secret.id}`,
         value: secret.id,
@@ -224,7 +226,7 @@ export function SecretPicker({
     });
 
     return result;
-  }, [boundMissing, recentlyUsedSecrets, secretId, secrets]);
+  }, [boundMissing, recentlyUsedSecrets, secretId, secrets, i18n.resolvedLanguage]);
 
   const deriveGroups = useCallback(
     (query: string, baseGroups: readonly SearchableSelectGroup<string, SecretOption>[]) => {
@@ -235,7 +237,7 @@ export function SecretPicker({
       const stableGroups = baseGroups.filter((group) => group.id === "current-missing" || group.id === "recently-used");
       return browseGroup.options.length > 0 ? [...stableGroups, browseGroup] : stableGroups;
     },
-    [currentPath, hasFolderPaths, secretId, secrets],
+    [currentPath, hasFolderPaths, secretId, secrets, i18n.resolvedLanguage],
   );
 
   return (
@@ -253,9 +255,9 @@ export function SecretPicker({
       deriveGroups={deriveGroups}
       disabled={disabled}
       disablePortal={disablePortal}
-      placeholder="Select secret…"
-      searchPlaceholder="Search secrets…"
-      emptyMessage="No matching secrets"
+      placeholder={t("agent-config:selectSecret_2e11066")}
+      searchPlaceholder={t("agent-config:searchSecrets_5fa6814")}
+      emptyMessage={t("agent-config:noMatchingSecrets_b4e12e2")}
       triggerClassName={cn(
         "h-(--sz-34px) min-h-(--sz-34px) font-mono text-sm",
         boundMissing && "border-destructive text-destructive",
@@ -264,7 +266,7 @@ export function SecretPicker({
       )}
       renderValue={(option) => {
         if (!option) {
-          return <span className="text-muted-foreground">Select secret…</span>;
+          return <span className="text-muted-foreground">{t("agent-config:selectSecret_2e11066")}</span>;
         }
         if (option.missing) {
           return (
@@ -323,11 +325,10 @@ export function SecretPicker({
               <span className="flex items-center gap-1.5 text-sm">
                 <Plus className="size-3.5 shrink-0" />
                 {query.trim() ? (
-                  <span>
-                    Create secret <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
+                  <span>{t("agent-config:createSecret_f138473")} <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
                   </span>
                 ) : (
-                  <span>Create new secret…</span>
+                  <span>{t("agent-config:createNewSecret_3817a7e")}</span>
                 )}
               </span>
             ),

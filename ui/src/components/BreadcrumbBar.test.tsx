@@ -4,6 +4,7 @@ import { act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
+import { i18n } from "@/i18n";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { CoordinatorAgentSwitcher } from "./CoordinatorAgentSwitcher";
 import type { Agent } from "@paperclipai/shared";
@@ -125,13 +126,15 @@ describe("BreadcrumbBar", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    await i18n.changeLanguage("en");
   });
 
-  it("uses the standard section heading for Chat while retaining the properties toggle", async () => {
+  it.each(["en", "zh-CN"])("uses the standard Chat heading and localized properties toggle (%s)", async (locale) => {
+    await i18n.changeLanguage(locale);
     const toggle = vi.fn();
     function ChatHeader() {
       const { setBreadcrumbs, setBreadcrumbPanelControl } = useBreadcrumbs();
@@ -146,7 +149,9 @@ describe("BreadcrumbBar", () => {
     expect(container.querySelector("h1")?.className).toContain("uppercase");
     expect(container.querySelector('[aria-label^="Switch agent"]')).toBeNull();
     expect(container.querySelector('[aria-label^="Pin "]')).toBeNull();
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show properties"]')!.click());
+    const button = container.querySelector<HTMLButtonElement>(`[aria-label="${locale === "en" ? "Show properties" : "显示属性"}"]`)!;
+    expect(button.title).toBe(locale === "en" ? "Show properties" : "显示属性");
+    await act(async () => button.click());
     expect(toggle).toHaveBeenCalledOnce();
   });
 

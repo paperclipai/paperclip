@@ -31,6 +31,8 @@ import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
+import { PluginLauncherTargetFailure, PluginRenderFailure } from "./PluginFeedback";
 import {
   PluginBridgeContext,
   type PluginHostContext,
@@ -423,7 +425,7 @@ class LauncherErrorBoundary extends Component<LauncherErrorBoundaryProps, Launch
     if (this.state.hasError) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {this.props.launcher.pluginDisplayName}: failed to render
+          <PluginRenderFailure name={this.props.launcher.pluginDisplayName} />
         </div>
       );
     }
@@ -462,7 +464,7 @@ function LauncherRenderContent({
 
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-        {instance.launcher.pluginDisplayName}: could not resolve launcher target "{instance.launcher.action.target}".
+        <PluginLauncherTargetFailure name={instance.launcher.pluginDisplayName} target={instance.launcher.action.target} />
       </div>
     );
   }
@@ -503,6 +505,7 @@ function LauncherModalShell({
   closeLauncher: (key: string, event: PluginRenderCloseEvent) => Promise<void>;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useTranslation("platform");
   const titleId = useId();
 
   useEffect(() => {
@@ -602,7 +605,7 @@ function LauncherModalShell({
             className="ml-auto"
             onClick={() => void closeLauncher(instance.key, { reason: "programmatic" })}
           >
-            Close
+            {t("close")}
           </Button>
         </div>
         <div

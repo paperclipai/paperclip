@@ -1,3 +1,4 @@
+import { i18n, t } from "@/i18n";
 import { Brain, CirclePause, Gauge, Layers3 } from "lucide-react";
 import type { TaskChatActivityPhaseItem } from "./task-chat-model";
 import {
@@ -8,21 +9,60 @@ import {
 import { protocolActivityPresentation, providerNoticeSeverity } from "./task-chat-activity-presentation";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
+
+const categoryIdentity: Record<string, string> = {
+  "checkFailed": "Check failed",
+  "skippedChecks": "Skipped checks",
+  "switchedModels": "Switched models",
+  "autoReviewedActions": "Auto-reviewed actions",
+  "ranChecks": "Ran checks",
+  "ranCommands": "Ran commands",
+  "searchedFiles": "Searched files",
+  "readFiles": "Read files",
+  "editedFiles": "Edited files",
+  "searchedWeb": "Searched the web",
+  "workedPlan": "Worked on a plan",
+  "requestedInput": "Requested input",
+  "workedAgents": "Worked with agents",
+  "reviewedSafety": "Reviewed safety",
+  "workedImages": "Worked with images",
+  "waited": "Waited",
+  "connectedTools": "Used connected tools",
+  "usedTools": "Used tools",
+  "workedArtifacts": "Worked with artifacts",
+  "managedContext": "Managed context",
+  "checkedMemory": "Checked memory",
+  "checkedModels": "Checked model settings",
+  "workedReview": "Worked in review mode",
+  "ranHooks": "Ran hooks",
+  "workedFiles": "Worked on files",
+  "referencedFiles": "Referenced files",
+  "addedResources": "Added resources",
+  "receivedUpdate": "Received a provider update",
+  "providerError": "Provider error reported",
+  "providerWarning": "Provider warning reported",
+  "receivedUpdates": "Received provider updates",
+  "checkedFiles": "Checked files",
+  "thought": "Thought through the task",
+  "stopped": "Activity stopped",
+  "usage": "Recorded usage"
+};
+
 const labels: Record<ToolFamily, string> = {
-  terminal: "Ran commands",
-  grep: "Searched files",
-  search: "Searched files",
-  read: "Read files",
-  edit: "Edited files",
-  web: "Searched the web",
-  plan: "Worked on a plan",
-  question: "Requested input",
-  agent: "Worked with agents",
-  safety: "Reviewed safety",
-  image: "Worked with images",
-  wait: "Waited",
-  mcp: "Used connected tools",
-  other: "Used tools",
+  terminal: "ranCommands",
+  grep: "searchedFiles",
+  search: "searchedFiles",
+  read: "readFiles",
+  edit: "editedFiles",
+  web: "searchedWeb",
+  plan: "workedPlan",
+  question: "requestedInput",
+  agent: "workedAgents",
+  safety: "reviewedSafety",
+  image: "workedImages",
+  wait: "waited",
+  mcp: "connectedTools",
+  other: "usedTools",
 };
 
 /** Describe observed activities, never infer success from a finished group. */
@@ -31,10 +71,12 @@ export function completedActivitySummary(items: Activity[]) {
     string,
     { label: string; icon: ToolIcon; order: number }
   >();
-  const add = (label: string, icon: ToolIcon, order = 0) => {
-    const existing = categories.get(label);
+  const add = (key: string, icon: ToolIcon, order = 0, raw = false) => {
+    const identity = raw ? key : categoryIdentity[key];
+    const label = raw ? key : t(`activity-ui:summary.${key}`);
+    const existing = categories.get(identity);
     if (!existing || order < existing.order)
-      categories.set(label, { label, icon, order });
+      categories.set(identity, { label, icon, order });
   };
   const tools: Array<{
     family: ToolFamily;
@@ -84,19 +126,19 @@ export function completedActivitySummary(items: Activity[]) {
         if (item.surface === "provider_activity" && (item.family === "hook" || item.family === "safety")) {
           // A hook or reviewer that stopped an action is the headline of the
           // group; routine passes only describe a group with nothing else.
-          if (p.tone === "blocked" || p.tone === "failed") add(p.completedLabel, p.icon, -1);
-          else quietGovernance.push({ label: item.family === "hook" ? "Ran hooks" : "Auto-reviewed actions", single: p.completedLabel, icon: p.icon, order });
+          if (p.tone === "blocked" || p.tone === "failed") add(p.completedLabel, p.icon, -1, true);
+          else quietGovernance.push({ label: item.family === "hook" ? "ranHooks" : "autoReviewedActions", single: p.completedLabel, icon: p.icon, order });
           continue;
         }
         if (item.surface === "provider_activity" && item.family === "verification") {
           // A failed check stays visible even when the compact label truncates.
-          if (item.status === "failed") add("Check failed", p.icon, -1);
-          else if (item.details.find((entry) => entry.label === "Status")?.value === "not_run") add("Skipped checks", p.icon, order);
-          else add("Ran checks", p.icon, order);
+          if (item.status === "failed") add("checkFailed", p.icon, -1);
+          else if (item.details.find((entry) => entry.label === "Status")?.value === "not_run") add("skippedChecks", p.icon, order);
+          else add("ranChecks", p.icon, order);
           continue;
         }
         if (item.surface === "provider_activity" && item.eventType === "model.route.changed") {
-          add("Switched models", p.icon, order);
+          add("switchedModels", p.icon, order);
           continue;
         }
         const family =
@@ -104,24 +146,24 @@ export function completedActivitySummary(items: Activity[]) {
         const label =
           (
             {
-              research: "Searched the web",
-              plan: "Worked on a plan",
-              delegation: "Worked with agents",
-              artifact: "Worked with artifacts",
-              context: "Managed context",
-              memory: "Checked memory",
-              model_identity: "Checked model settings",
-              review: "Worked in review mode",
-              hook: "Ran hooks",
-              safety: "Reviewed safety",
-              terminal: "Ran commands",
-              wait: "Waited",
-              verification: "Ran checks",
-              workspace_change: "Worked on files",
-              workspace_file: "Referenced files",
-              resource: "Added resources",
+              research: "searchedWeb",
+              plan: "workedPlan",
+              delegation: "workedAgents",
+              artifact: "workedArtifacts",
+              context: "managedContext",
+              memory: "checkedMemory",
+              model_identity: "checkedModels",
+              review: "workedReview",
+              hook: "ranHooks",
+              safety: "reviewedSafety",
+              terminal: "ranCommands",
+              wait: "waited",
+              workspace_change: "workedFiles",
+              workspace_file: "referencedFiles",
+              resource: "addedResources",
+              verification: "ranChecks",
             } as Record<string, string>
-          )[family] ?? "Used tools";
+          )[family] ?? "usedTools";
         add(label, p.icon, order);
       }
     }
@@ -131,15 +173,15 @@ export function completedActivitySummary(items: Activity[]) {
       ?? notices.find((notice) => notice.severity === "warning")
       ?? notices[0]!;
     const label = notices.length === 1
-      ? strongest.summary || "Received a provider update"
+      ? strongest.summary || "receivedUpdate"
       : strongest.severity === "error"
-        ? "Provider error reported"
+        ? "providerError"
         : strongest.severity === "warning"
-          ? "Provider warning reported"
-          : "Received provider updates";
+          ? "providerWarning"
+          : "receivedUpdates";
     // One notice category leaves room for actual work. Keep warnings and errors
     // visible when the compact label truncates other activity categories.
-    add(label, strongest.icon, strongest.severity === "info" ? notices[0]!.order : -1);
+    add(label, strongest.icon, strongest.severity === "info" ? notices[0]!.order : -1, notices.length === 1 && Boolean(strongest.summary));
   }
   const completedFamilies = new Set(
     tools.filter((tool) => tool.completed).map((tool) => tool.family),
@@ -149,34 +191,34 @@ export function completedActivitySummary(items: Activity[]) {
     const succeeded = completedFamilies.has(tool.family);
     const label =
       tool.family === "read" && !succeeded
-        ? "Checked files"
+        ? "checkedFiles"
         : tool.family === "edit" && !succeeded
-          ? "Worked on files"
+          ? "workedFiles"
           : labels[tool.family];
     add(label, tool.icon, tool.order);
   }
   if (!categories.size) {
     // One quiet hook or review names itself; several share a category label.
-    if (quietGovernance.length === 1) add(quietGovernance[0]!.single, quietGovernance[0]!.icon, quietGovernance[0]!.order);
+    if (quietGovernance.length === 1) add(quietGovernance[0]!.single, quietGovernance[0]!.icon, quietGovernance[0]!.order, true);
     else for (const quiet of quietGovernance) add(quiet.label, quiet.icon, quiet.order);
   }
   if (!categories.size) {
     if (items.some((item) => item.kind === "thinking"))
-      add("Thought through the task", Brain);
+      add("thought", Brain);
     else if (items.some((item) => item.kind === "marker"))
-      add("Activity stopped", CirclePause);
-    else add("Recorded usage", Gauge);
+      add("stopped", CirclePause);
+    else add("usage", Gauge);
   }
   const values = [...categories.values()].sort((a, b) => a.order - b.order);
-  const join = (parts: string[]) =>
-    parts
-      .map((p, i) => (i ? p.charAt(0).toLowerCase() + p.slice(1) : p))
-      .join(", ");
+  const join = (parts: string[]) => parts
+    .map((part, index) => index && i18n.resolvedLanguage !== "zh-CN"
+      ? part.charAt(0).toLowerCase() + part.slice(1) : part)
+    .reduce((first, next) => t("activity-ui:summary.join", { first, next }));
   const fullLabel = join(values.map((v) => v.label));
   return {
     label:
       values.length > 3
-        ? `${join(values.slice(0, 2).map((v) => v.label))}, and more`
+        ? t("activity-ui:summary.more", { summary: join(values.slice(0, 2).map((v) => v.label)) })
         : fullLabel,
     fullLabel,
     icon: values.length === 1 ? values[0].icon : Layers3,

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Copy } from "lucide-react";
 import { useQueryView } from "@/components/QueryView";
@@ -33,6 +34,7 @@ export function GitHubConnectionComplete({
   onClose: () => void;
   onCloseAutoFocus?: () => void;
 }) {
+  const { t } = useTranslation("connections");
   const repositories = useQuery({
     queryKey: ["github-connected-repositories", endpoint.id],
     queryFn: () => githubChatApi.repositories(endpoint.id, { limit: 1 }),
@@ -56,7 +58,7 @@ export function GitHubConnectionComplete({
           <header className="space-y-5">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="size-6 shrink-0 text-(--status-task-done)" />
-              <DialogTitle className="text-xl leading-normal">GitHub connected</DialogTitle>
+              <DialogTitle className="text-xl leading-normal">{t("github_connected_ba4f963")}</DialogTitle>
             </div>
             <div className="flex items-center gap-3">
               <AgentAvatar agent={avatar} size={48} />
@@ -77,14 +79,14 @@ export function GitHubConnectionComplete({
                   </>}
                 </p>
                 <Link to={`/apps/chat/${endpoint.id}/access`} className="inline-block text-xs text-muted-foreground underline underline-offset-4">
-                  {repositoriesView.kind === "error" ? "Repository access unavailable" : count === undefined ? "Repository access" : count === 0 ? "No repositories enabled" : `${count} ${count === 1 ? "repository" : "repositories"} enabled`}
+                  {repositoriesView.kind === "error" ? t("repository_access_unavailable_ceb3a85") : count === undefined ? t("repository_access_707c5b6") : count === 0 ? t("no_repositories_enabled_714242c") : t("enabled_3ad874c", { count: count, value: count === 1 ? "repository" : "repositories" })}
                 </Link>
               </div>
             </div>
           </header>
           {incomplete.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-sm font-medium">Before your first review</h2>
+              <h2 className="text-sm font-medium">{t("before_your_first_review_da4b283")}</h2>
               {incomplete.map((check) => (
                 <p key={check.key} className="text-sm text-muted-foreground">{check.detail}</p>
               ))}
@@ -92,17 +94,17 @@ export function GitHubConnectionComplete({
           )}
           <section className="space-y-3">
             <div className="space-y-1">
-              <h2 className="text-base font-semibold">Try your bot</h2>
+              <h2 className="text-base font-semibold">{t("try_your_bot_e59e676")}</h2>
               <p className="text-sm text-muted-foreground">
                 {count === 0
-                  ? "Enable a repository in Access to try your bot."
-                  : "Post this on a pull request in an enabled repository."}
+                  ? t("enable_a_repository_in_access_to_try_1aff631")
+                  : t("post_this_on_a_pull_request_in_c76a279")}
               </p>
             </div>
             <CopyText
               text={mention}
-              ariaLabel="Copy mention"
-              title="Copy mention"
+              ariaLabel={t("copy_mention_789c5ef")}
+              title={t("copy_mention_789c5ef")}
               containerClassName="w-full"
               className="flex w-full items-center gap-3 rounded-md border border-border bg-muted/30 p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
@@ -115,7 +117,7 @@ export function GitHubConnectionComplete({
             avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatar.appearance, endpoint.assignedAgentId), 512, 1, "rest")}
           />
           <DialogFooter>
-            <Button onClick={onClose}>Done</Button>
+            <Button onClick={onClose}>{t("done_e9b450d")}</Button>
           </DialogFooter>
         </div>
       </DialogContent>

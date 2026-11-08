@@ -1,7 +1,9 @@
+import { t, useTranslation } from "@/i18n";
 import type { SVGProps } from "react";
 import { cn } from "../lib/utils";
 
 export function AnimatedPaperclipIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useTranslation("task-components");
   return (
     <svg
       viewBox="-1 -1 26 26"
@@ -24,13 +26,14 @@ export function AnimatedPaperclipIcon({ className, ...props }: SVGProps<SVGSVGEl
 
 /** Full-page loading state: a large, centered, gray animated paperclip. */
 export function PaperclipLoading({ className }: { className?: string }) {
+  useTranslation("task-components");
   return (
     <div
       role="status"
       className={cn("flex min-h-dvh w-full items-center justify-center", className)}
     >
       <AnimatedPaperclipIcon className="h-24 w-24 text-muted-foreground" />
-      <span className="sr-only">Loading…</span>
+      <span className="sr-only">{t("task-components:loading_ba3bbbe1")}</span>
     </div>
   );
 }

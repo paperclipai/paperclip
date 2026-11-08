@@ -1,3 +1,4 @@
+import { t as translate } from "@/i18n";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
 
 export type ActionPermissionSummary = {
@@ -29,13 +30,13 @@ export function summarizeActionPermissions(
 }
 
 function summaryCount(label: string, count: number): string {
-  return `${label} ${count}${count === 1 ? " action" : ""}`;
+  return translate("connections:_ceb3e8b", { label, count });
 }
 
 export function formatActionPermissionSummary(summary: ActionPermissionSummary): string {
   return [
-    summaryCount("Allowed for", summary.allowedCount),
-    summaryCount("Ask first for", summary.askFirstCount),
-    summaryCount("Off for", summary.offCount),
+    summaryCount(translate("connections:allowed_for_5647072"), summary.allowedCount),
+    summaryCount(translate("connections:ask_first_for_a7e9166"), summary.askFirstCount),
+    summaryCount(translate("connections:off_for_3d766f4"), summary.offCount),
   ].join(" · ");
 }

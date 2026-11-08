@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import {
@@ -30,6 +31,7 @@ export function IssueFieldChangeReceipt({
   resolveUserLabel?: (userId: string) => string | null | undefined;
   className?: string;
 }) {
+  useTranslation("task-components");
   const rows = readIssueChangeReceipt(event.details, { resolveAgentLabel, resolveUserLabel });
   const reason = issueAuthorizationReasonLabel(
     typeof event.details?.authorizationReason === "string"
@@ -65,9 +67,7 @@ export function IssueFieldChangeReceipt({
                 {/* Long text is stored as a preview, so the receipt says so
                     rather than implying the whole value is shown. */}
                 {row.truncated ? (
-                  <span className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    preview
-                  </span>
+                  <span className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:preview_5975cf1b")}</span>
                 ) : null}
               </dd>
             </div>
@@ -84,12 +84,9 @@ export function IssueFieldChangeReceipt({
             aria-hidden="true"
           />
           {responsibleUserName ? (
-            <>
-              for <span className="text-foreground">{responsibleUserName}</span>
-              {" · "}
-            </>
+            <><Trans ns="task-components" i18nKey="sentence_13e5e74f886d" components={{ part1: <>{<span className="text-foreground">{responsibleUserName}</span>}</> }} /></>
           ) : null}
-          authorized by {reason}
+          {t("final-components-b:authorized_by_reason_fc49b3", { reason })}
         </p>
       ) : null}
     </div>

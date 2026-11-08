@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateShell, useTranslation, Trans } from "@/i18n";
 import type { ReactElement, ReactNode } from "react";
 import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
@@ -13,12 +15,12 @@ type LabFixtureKey =
   | "public-invite-only";
 
 const FIXTURE_LABELS: Record<LabFixtureKey, string> = {
-  "signed-out-private": "1 · authenticated/private — signed out (browser claim available)",
-  "signed-in-private": "2 · authenticated/private — signed in (claim CTA primary)",
-  claiming: "3 · authenticated/private — claim in flight",
-  "claim-error": "4 · authenticated/private — claim error (e.g. 409 already claimed)",
-  "claim-success": "5 · authenticated/private — claim succeeded, redirect pending",
-  "public-invite-only": "6 · authenticated/public — invite-only (no browser claim)",
+  get "signed-out-private"() { return translateShell("shell:1_authenticated_private_signed_out_browser_claim"); },
+  get "signed-in-private"() { return translateShell("shell:2_authenticated_private_signed_in_claim_cta"); },
+  get claiming() { return translateShell("shell:3_authenticated_private_claim_in_flight"); },
+  get "claim-error"() { return translateShell("shell:4_authenticated_private_claim_error_e_g"); },
+  get "claim-success"() { return translateShell("shell:5_authenticated_private_claim_succeeded_redirect_pending"); },
+  get "public-invite-only"() { return translateShell("shell:6_authenticated_public_invite_only_no_browser"); },
 };
 
 const FIXTURE_ORDER: LabFixtureKey[] = [
@@ -31,16 +33,17 @@ const FIXTURE_ORDER: LabFixtureKey[] = [
 ];
 
 function CliFallback({ hasActiveInvite }: { hasActiveInvite: boolean }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="mt-6 border-t border-border pt-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Terminal className="size-4 text-muted-foreground" aria-hidden />
-        <span>Prefer to finish setup from the host?</span>
+        <span>{translateShell("shell:prefer_to_finish_setup_from_the_host")}</span>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
         {hasActiveInvite
-          ? "A bootstrap invite is already active. Check your Paperclip startup logs for the first‑admin URL, or run this command on the host to rotate it:"
-          : "Run this command on the host that runs Paperclip to print a one‑time first‑admin invite URL:"}
+          ? translateShell("shell:a_bootstrap_invite_is_already_active_check")
+          : translateShell("shell:run_this_command_on_the_host_that")}
       </p>
       <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
 {BOOTSTRAP_FALLBACK_COMMAND}
@@ -50,6 +53,7 @@ function CliFallback({ hasActiveInvite }: { hasActiveInvite: boolean }) {
 }
 
 function StateChrome({ children }: { children: ReactNode }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="mx-auto max-w-xl py-10">
       <Card className="block p-6">{children}</Card>
@@ -58,16 +62,14 @@ function StateChrome({ children }: { children: ReactNode }) {
 }
 
 function SignedOutPrivate() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Sign in or create your Paperclip account to become the first
-        admin from this browser.
-      </p>
+      <h1 className="text-xl font-semibold">{translateShell("shell:finish_setting_up_this_paperclip")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:no_admin_has_claimed_this_instance_yet")}</p>
       <div className="mt-5">
         <Button asChild>
-          <a href="/auth?next=/">Sign in / Create account</a>
+          <a href="/auth?next=/">{translateShell("shell:sign_in_create_account")}</a>
         </Button>
       </div>
       <CliFallback hasActiveInvite={false} />
@@ -76,45 +78,31 @@ function SignedOutPrivate() {
 }
 
 function SignedInPrivate() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
-      </p>
+      <h1 className="text-xl font-semibold">{translateShell("shell:finish_setting_up_this_paperclip")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:no_admin_has_claimed_this_instance_yet_c5c1f5")}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
-        <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
-        </span>
+        <Button>{translateShell("shell:claim_this_instance")}</Button>
+        <span className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="signed_in_as" components={{ part1: <>{<span className="font-medium text-foreground">jane@appliance.local</span>}</> }} /></span>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">
-        Wrong account?{" "}
-        <a href="/auth?next=/" className="underline underline-offset-2">
-          Switch account
-        </a>
-        .
-      </p>
+      <p className="mt-3 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="wrong_account" components={{ part1: <>{<a href="/auth?next=/" className="underline underline-offset-2">{finalPagesT("final-pages:Switch_account_fedce0")}</a>}</> }} /></p>
       <CliFallback hasActiveInvite={false} />
     </StateChrome>
   );
 }
 
 function ClaimingPrivate() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
-      </p>
+      <h1 className="text-xl font-semibold">{translateShell("shell:finish_setting_up_this_paperclip")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:no_admin_has_claimed_this_instance_yet_c5c1f5")}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Button disabled>
-          <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
-          Claiming…
-        </Button>
-        <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
-        </span>
+          <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />{translateShell("shell:claiming")}</Button>
+        <span className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="signed_in_as" components={{ part1: <>{<span className="font-medium text-foreground">jane@appliance.local</span>}</> }} /></span>
       </div>
       <CliFallback hasActiveInvite={false} />
     </StateChrome>
@@ -122,17 +110,14 @@ function ClaimingPrivate() {
 }
 
 function ClaimErrorPrivate() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
-      </p>
+      <h1 className="text-xl font-semibold">{translateShell("shell:finish_setting_up_this_paperclip")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:no_admin_has_claimed_this_instance_yet_c5c1f5")}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
-        <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
-        </span>
+        <Button>{translateShell("shell:claim_this_instance")}</Button>
+        <span className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="signed_in_as" components={{ part1: <>{<span className="font-medium text-foreground">jane@appliance.local</span>}</> }} /></span>
       </div>
       <div
         role="alert"
@@ -140,11 +125,8 @@ function ClaimErrorPrivate() {
       >
         <TriangleAlert className="mt-0.5 size-4 flex-shrink-0" aria-hidden />
         <div>
-          <p className="font-medium">Someone else has already claimed this instance.</p>
-          <p className="mt-1 text-destructive/90">
-            Refresh to sign in, or ask the existing admin to invite you from{" "}
-            <span className="font-mono">Settings → Access</span>.
-          </p>
+          <p className="font-medium">{translateShell("shell:someone_else_has_already_claimed_this_instance")}</p>
+          <p className="mt-1 text-destructive/90"><Trans ns="shell" i18nKey="refresh_to_sign_in_or_ask_the" components={{ part1: <>{<span className="font-mono">{finalPagesT("final-pages:Settings_Access_aaed72")}</span>}</> }} /></p>
         </div>
       </div>
       <CliFallback hasActiveInvite={false} />
@@ -153,6 +135,7 @@ function ClaimErrorPrivate() {
 }
 
 function ClaimSuccess() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
       <div className="flex items-start gap-3">
@@ -160,19 +143,17 @@ function ClaimSuccess() {
           <ShieldCheck className="size-5" aria-hidden />
         </div>
         <div>
-          <h1 className="text-xl font-semibold">You&rsquo;re the instance admin</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Setup is complete. Taking you to onboarding to create your first organization&hellip;
-          </p>
+          <h1 className="text-xl font-semibold">{translateShell("shell:you_re_the_instance_admin")}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:setup_is_complete_taking_you_to_onboarding")}</p>
         </div>
       </div>
       <div className="mt-5 flex items-center gap-3">
         <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-        <span className="text-sm text-muted-foreground">Redirecting&hellip;</span>
+        <span className="text-sm text-muted-foreground">{translateShell("shell:redirecting")}</span>
       </div>
       <div className="mt-5">
         <Button asChild variant="outline">
-          <a href="/">Continue to dashboard</a>
+          <a href="/">{translateShell("shell:continue_to_dashboard")}</a>
         </Button>
       </div>
     </StateChrome>
@@ -180,18 +161,13 @@ function ClaimSuccess() {
 }
 
 function PublicInviteOnly() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">This Paperclip is waiting on its first admin</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        This instance runs in invite‑only mode. The operator must generate a one‑time first‑admin invite URL
-        from the host. Once you have the link, open it from this browser to finish setup.
-      </p>
+      <h1 className="text-xl font-semibold">{translateShell("shell:this_paperclip_is_waiting_on_its_first")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{translateShell("shell:this_instance_runs_in_invite_only_mode")}</p>
       <CliFallback hasActiveInvite />
-      <p className="mt-4 text-xs text-muted-foreground">
-        Browser‑based claim is intentionally disabled in public mode so anyone on the network can&rsquo;t
-        promote themselves.
-      </p>
+      <p className="mt-4 text-xs text-muted-foreground">{translateShell("shell:browser_based_claim_is_intentionally_disabled_in")}</p>
     </StateChrome>
   );
 }
@@ -206,26 +182,18 @@ const FIXTURE_BODIES: Record<LabFixtureKey, ReactElement> = {
 };
 
 export function BootstrapSetupUxLab() {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="bg-background min-h-screen pb-16">
       <header className="border-b border-border bg-muted/20">
         <div className="mx-auto max-w-3xl px-6 py-6">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">UX Lab</p>
-          <h1 className="mt-1 text-2xl font-semibold">Bootstrap-pending setup states</h1>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Fixtures for the bootstrap-pending screen in <span className="font-mono">CloudAccessGate</span>. Used
-            as the UX spec for{" "}
-            <a className="underline underline-offset-2" href="/PAP/issues/PAP-10113">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{translateShell("shell:ux_lab")}</p>
+          <h1 className="mt-1 text-2xl font-semibold">{translateShell("shell:bootstrap_pending_setup_states")}</h1>
+          <p className="mt-2 max-w-2xl text-sm text-muted-foreground"><Trans ns="shell" i18nKey="fixtures_for_the_bootstrap_pending_screen_in" components={{ part1: <>{<span className="font-mono">CloudAccessGate</span>}</>, part2: <>{<a className="underline underline-offset-2" href="/PAP/issues/PAP-10113">
               PAP-10113
-            </a>{" "}
-            and the implementation reference for{" "}
-            <a className="underline underline-offset-2" href="/PAP/issues/PAP-10114">
+            </a>}</>, part3: <>{<a className="underline underline-offset-2" href="/PAP/issues/PAP-10114">
               PAP-10114
-            </a>
-            . The browser claim CTA only appears when{" "}
-            <span className="font-mono">deploymentMode === &quot;authenticated&quot;</span> and{" "}
-            <span className="font-mono">deploymentExposure === &quot;private&quot;</span>.
-          </p>
+            </a>}</>, part4: <>{<span className="font-mono">deploymentMode === &quot;authenticated&quot;</span>}</>, part5: <>{<span className="font-mono">deploymentExposure === &quot;private&quot;</span>}</> }} /></p>
         </div>
       </header>
       <main className="mx-auto max-w-3xl space-y-12 px-6 pt-10">

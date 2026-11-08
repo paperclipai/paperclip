@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical, Loader2, Plus } from "lucide-react";
@@ -21,6 +22,7 @@ import { StatusCardDetailDrawer } from "./StatusCardDetailDrawer";
 import type { StatusCardView } from "./types";
 
 export function StatusCards() {
+  const { t: translateShell } = useTranslation("shell");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -35,8 +37,8 @@ export function StatusCards() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Status" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: translateShell("shell:status") }]);
+  }, [setBreadcrumbs, translateShell]);
 
   const activeQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.statusCards.list(selectedCompanyId, false) : ["status-cards", "none", "active"],
@@ -57,7 +59,7 @@ export function StatusCards() {
   // by-id fetch for direct navigation.
   const cardInLists = useMemo(
     () => [...activeCards, ...archivedCards].find((card) => card.id === cardId) ?? null,
-    [activeCards, archivedCards, cardId],
+    [activeCards, archivedCards, cardId, translateShell],
   );
   const detailFallbackQuery = useQuery({
     queryKey: cardId ? queryKeys.statusCards.detail(cardId) : ["status-cards", "detail", "none"],
@@ -78,25 +80,25 @@ export function StatusCards() {
     mutationFn: (id: string) => statusCardsApi.refresh(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(describeError(err, { action: "refresh the card" }).body),
+    onError: (err) => setActionError(describeError(err, { action: translateShell("shell:refresh_the_card") }).body),
   });
   const recompileMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.recompile(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(describeError(err, { action: "run the card" }).body),
+    onError: (err) => setActionError(describeError(err, { action: translateShell("shell:run_the_card") }).body),
   });
   const archiveMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: true }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(describeError(err, { action: "archive the card" }).body),
+    onError: (err) => setActionError(describeError(err, { action: translateShell("shell:archive_the_card") }).body),
   });
   const restoreMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: false }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(describeError(err, { action: "restore the card" }).body),
+    onError: (err) => setActionError(describeError(err, { action: translateShell("shell:restore_the_card") }).body),
   });
 
   const openDetail = (id: string, tab: string = "summary") => {
@@ -119,44 +121,38 @@ export function StatusCards() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">Status</h1>
+          <h1 className="text-xl font-bold">{translateShell("shell:status")}</h1>
           <Badge variant="secondary" className="gap-1">
-            <FlaskConical className="h-3 w-3" />
-            Experimental
-          </Badge>
+            <FlaskConical className="h-3 w-3" />{translateShell("shell:experimental")}</Badge>
         </div>
         <div className="flex items-center gap-4">
           {showCostMeter ? (
-            <span className="text-xs text-muted-foreground">
-              Today: {formatTokens(todayTotals.tokens)} · ~{formatCents(todayTotals.cents)}
+            <span className="text-xs text-muted-foreground">{translateShell("shell:today")}{" "}{formatTokens(todayTotals.tokens)} · ~{formatCents(todayTotals.cents)}
             </span>
           ) : null}
           <Button onClick={() => setCreateOpen(true)} disabled={!selectedCompanyId}>
-            <Plus className="h-4 w-4" />
-            New card
-          </Button>
+            <Plus className="h-4 w-4" />{translateShell("shell:new_card")}</Button>
         </div>
       </div>
 
-      {actionError ? <InlineBanner tone="warning" title="Heads up">{actionError}</InlineBanner> : null}
+      {actionError ? <InlineBanner tone="warning" title={translateShell("shell:heads_up")}>{actionError}</InlineBanner> : null}
 
       {activeView.kind === "loading" || activeView.kind === "reconnecting" ? (
         <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading cards…
-        </div>
+          <Loader2 className="h-4 w-4 animate-spin" />{" "}{translateShell("shell:loading_cards")}</div>
       ) : activeView.kind === "error" ? (
         <QueryErrorState
           error={activeView.error}
-          action="load status cards"
+          action={translateShell("shell:extra_47_load_status_cards")}
           onRetry={activeView.retry}
           retrying={activeView.isFetching}
         />
       ) : activeCards.length === 0 ? (
         <EmptyState
           icon={FlaskConical}
-          title="No status cards yet"
-          message="Create a card to keep a living summary of the issues you care about."
-          action={selectedCompanyId ? "New card" : undefined}
+          title={translateShell("shell:no_status_cards_yet")}
+          message={translateShell("shell:extra_46_create_a_card_to_keep_a_living_summary_of_the")}
+          action={selectedCompanyId ? translateShell("shell:new_card") : undefined}
           onAction={() => setCreateOpen(true)}
         />
       ) : (
@@ -186,7 +182,7 @@ export function StatusCards() {
             onClick={() => setShowArchived((prev) => !prev)}
             className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
-            {showArchived ? "Hide archived" : `Show archived (${archivedCards.length})`}
+            {showArchived ? translateShell("shell:hide_archived") : translateShell("shell:show_archived", { value1: archivedCards.length })}
           </button>
           {showArchived
             ? archivedCards.map((card) => (

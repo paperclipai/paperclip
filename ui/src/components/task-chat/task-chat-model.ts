@@ -224,6 +224,8 @@ export interface TaskChatToolItem {
   name: string;
   /** Raw ACP tool name pre-collapse ("mcp__server__tool") for taxonomy lookup. */
   rawName?: string;
+  /** UI projection provenance only; name/rawName remain stable taxonomy inputs. */
+  generatedName?: "missing" | "edit";
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;
@@ -276,6 +278,8 @@ export interface TaskChatStatusItem {
   detail?: string;
   /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
   toolName?: string;
+  /** UI-only provenance for the synthesized missing-name detail; raw detail stays intact. */
+  generatedToolDetail?: { target?: string };
   /**
    * Flattened plain text of the interstitial update currently streaming
    * (PAP-361, round 9): it renders in a dedicated single-line row directly
@@ -384,6 +388,8 @@ export interface TaskChatPlanDocumentItem {
 }
 
 export interface TaskChatProtocolDetail {
+  /** Provider-authored detail names are data, even when they collide with owned labels. */
+  labelSource?: "provider";
   label: string;
   value: string;
   mono?: boolean;

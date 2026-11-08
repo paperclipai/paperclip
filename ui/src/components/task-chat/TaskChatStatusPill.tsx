@@ -1,24 +1,26 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
 import { statusLabelIcon, toolTaxonomy } from "./tool-taxonomy";
 import { isGenericStatusLabel, whimsyWord } from "./status-whimsy";
+import { statusDisplayLabel, whimsyDisplayLabel } from "./task-chat-display";
 import { parseCssTimeMs } from "./motion-tokens";
 
 function elapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
   const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return t("task-chat-ui:durationSeconds", { seconds: s });
+  return t("task-chat-ui:durationMinutesSeconds", { minutes: Math.floor(s / 60), seconds: s % 60 });
 }
 
 /** Tenths-precision elapsed ("24.3s", "1m 24.3s") so the readout visibly moves. */
 function liveElapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
   const s = Math.max(0, ms) / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  return `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`;
+  if (s < 60) return t("task-chat-ui:durationSeconds", { seconds: s.toFixed(1) });
+  return t("task-chat-ui:durationMinutesSeconds", { minutes: Math.floor(s / 60), seconds: (s % 60).toFixed(1) });
 }
 
 /** Elapsed ms since `startedAtMs`, ticking ten times a second while `live`. */
@@ -74,6 +76,7 @@ function LiveSelfTalkLine({
   streaming: boolean;
   leaving?: boolean;
 }) {
+  useTranslation("task-components");
   const innerRef = useRef<HTMLSpanElement | null>(null);
   const [offset, setOffset] = useState(0);
   const [entered, setEntered] = useState(false);
@@ -289,12 +292,18 @@ export function TaskChatStatusPill({
   chevronOpen,
   onToggle,
 }: TaskChatStatusPillProps) {
+  useTranslation("task-components");
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
   const live = item.status === "running" || item.status === "working";
   const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
   const heldSelfTalk = useHeldSelfTalk(live ? item.selfTalk : undefined, live);
   const elapsed = elapsedLabel(item.elapsedMs);
+  const detail = item.generatedToolDetail
+    ? item.generatedToolDetail.target
+      ? t("task-chat-ui:unnamedToolTarget", { target: item.generatedToolDetail.target })
+      : t("task-chat-ui:tool.unnamed")
+    : item.detail;
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
@@ -313,8 +322,8 @@ export function TaskChatStatusPill({
     // gerund (seeded by the run-scoped item id, rotating ~10s via the live
     // tick).
     const label = streamingInterstitial || isGenericStatusLabel(item.label)
-      ? whimsyWord(item.id, liveElapsedMs ?? item.elapsedMs ?? 0)
-      : item.label;
+      ? whimsyDisplayLabel(whimsyWord(item.id, liveElapsedMs ?? item.elapsedMs ?? 0))
+      : statusDisplayLabel(item.label);
     const statusLine = (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         {chevronOpen !== undefined ? (
@@ -352,12 +361,10 @@ export function TaskChatStatusPill({
             </span>
           ) : null}
           {item.detail ? (
-            <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{item.detail}</span>
+            <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{detail}</span>
           ) : null}
           {item.tokens ? (
-            <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)">
-              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
-            </span>
+            <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)"><Trans ns="task-components" i18nKey="sentence_d355cccf7475" components={{ part1: <>{item.tokens.used.toLocaleString()}</>, part2: <>{item.tokens.size.toLocaleString()}</> }} /></span>
           ) : null}
         </span>
       </div>
@@ -421,13 +428,11 @@ export function TaskChatStatusPill({
         <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           {elapsed ? <span>{elapsed}</span> : null}
           {item.tokens ? (
-            <span>
-              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
-            </span>
+            <span><Trans ns="task-components" i18nKey="sentence_d355cccf7475" components={{ part1: <>{item.tokens.used.toLocaleString()}</>, part2: <>{item.tokens.size.toLocaleString()}</> }} /></span>
           ) : null}
         </span>
       </div>
-      {item.detail ? <p className="text-xs text-muted-foreground">{item.detail}</p> : null}
+      {item.detail ? <p className="text-xs text-muted-foreground">{detail}</p> : null}
       {awaiting && item.approval ? (
         <div className="flex flex-wrap justify-end gap-2 pt-1">
           {item.approval.options.map((opt) => {

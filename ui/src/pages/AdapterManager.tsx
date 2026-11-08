@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 /**
  * @fileoverview Adapter Manager page — install, view, and manage external adapters.
  *
@@ -66,6 +67,7 @@ function AdapterRow({
   toggleTitleDisabled?: string;
   disabledBadgeLabel?: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <li>
       <div className="flex items-center gap-4 px-4 py-3">
@@ -77,11 +79,11 @@ function AdapterRow({
                   external adapter ever provides one. */}
               {adapter.label && adapter.label !== adapter.type ? adapter.label : getAdapterLabel(adapter.type)}
             </span>
-            <Badge variant="outline">{adapter.source === "external" ? "External" : "Built-in"}</Badge>
+            <Badge variant="outline">{adapter.source === "external" ? translateAgentPage("agents:external") : translateAgentPage("agents:built_in_20f409")}</Badge>
             {adapter.source === "external" && (
               adapter.isLocalPath
-                ? <span title="Installed from local path"><FolderOpen className="h-4 w-4 text-amber-500" /></span>
-                : <span title="Installed from npm"><Package className="h-4 w-4 text-red-500" /></span>
+                ? <span title={translateAgentPage("agents:installed_from_local_path")}><FolderOpen className="h-4 w-4 text-amber-500" /></span>
+                : <span title={translateAgentPage("agents:installed_from_npm")}><Package className="h-4 w-4 text-red-500" /></span>
             )}
             {adapter.version && (
               <Badge variant="secondary" className="font-mono text-(length:--text-nano)">
@@ -89,18 +91,15 @@ function AdapterRow({
               </Badge>
             )}
             {adapter.overriddenBuiltin && (
-              <Badge variant="secondary" className="text-blue-600 border-blue-400">
-                Overrides built-in
-              </Badge>
+              <Badge variant="secondary" className="text-blue-600 border-blue-400">{translateAgentPage("agents:overrides_built_in")}</Badge>
             )}
             {overriddenBy && (
-              <Badge variant="secondary" className="text-blue-600 border-blue-400">
-                Overridden by {overriddenBy}
+              <Badge variant="secondary" className="text-blue-600 border-blue-400">{translateAgentPage("agents:overridden_by")}{" "}{overriddenBy}
               </Badge>
             )}
             {adapter.disabled && (
               <Badge variant="secondary" className="text-amber-600 border-amber-400">
-                {disabledBadgeLabel ?? "Hidden from menus"}
+                {disabledBadgeLabel ?? translateAgentPage("agents:hidden_from_menus")}
               </Badge>
             )}
           </div>
@@ -109,8 +108,7 @@ function AdapterRow({
             {adapter.packageName && adapter.packageName !== adapter.type && (
               <> · {adapter.packageName}</>
             )}
-            {" · "}{adapter.modelsCount} models
-          </p>
+            {" · "}{adapter.modelsCount}{" "}{translateAgentPage("agents:models")}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {onReinstall && (
@@ -118,7 +116,7 @@ function AdapterRow({
               variant="outline"
               size="icon-sm"
               className="h-8 w-8"
-              title="Reinstall adapter (pull latest from npm)"
+              title={translateAgentPage("agents:reinstall_adapter_pull_latest_from_npm")}
               disabled={isReinstalling}
               onClick={() => onReinstall(adapter.type)}
             >
@@ -130,7 +128,7 @@ function AdapterRow({
               variant="outline"
               size="icon-sm"
               className="h-8 w-8"
-              title="Reload adapter (hot-swap)"
+              title={translateAgentPage("agents:reload_adapter_hot_swap")}
               disabled={isReloading}
               onClick={() => onReload(adapter.type)}
             >
@@ -142,8 +140,8 @@ function AdapterRow({
             size="icon-sm"
             className="h-8 w-8"
             title={adapter.disabled
-              ? (toggleTitleEnabled ?? "Show in agent menus")
-              : (toggleTitleDisabled ?? "Hide from agent menus")}
+              ? (toggleTitleEnabled ?? translateAgentPage("agents:show_in_agent_menus"))
+              : (toggleTitleDisabled ?? translateAgentPage("agents:hide_from_agent_menus"))}
             disabled={isToggling}
             onClick={() => onToggle(adapter.type, !adapter.disabled)}
           >
@@ -154,7 +152,7 @@ function AdapterRow({
               variant="outline"
               size="icon-sm"
               className="h-8 w-8 text-destructive hover:text-destructive"
-              title="Remove adapter"
+              title={translateAgentPage("agents:remove_adapter")}
               onClick={() => onRemove(adapter.type)}
             >
               <Trash2 className="h-4 w-4" />
@@ -188,6 +186,7 @@ function ReinstallDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { data: latestVersion, isLoading: isFetchingVersion } = useQuery({
     queryKey: ["npm-latest-version", adapter?.packageName],
     queryFn: () => {
@@ -204,49 +203,41 @@ function ReinstallDialog({
     <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reinstall Adapter</DialogTitle>
-          <DialogDescription>
-            This will pull the latest version of{" "}
-            <strong>{adapter?.packageName}</strong> from npm and hot-swap
-            the running adapter module. Existing agents will use the new
-            version on their next run.
-          </DialogDescription>
+          <DialogTitle>{translateAgentPage("agents:reinstall_adapter")}</DialogTitle>
+          <DialogDescription>{translateAgentPage("agents:this_will_pull_the_latest_version_of")}{" "}
+            <strong>{adapter?.packageName}</strong>{" "}{translateAgentPage("agents:from_npm_and_hot_swap_the_running_adapter")}</DialogDescription>
         </DialogHeader>
 
         <div className="rounded-md border bg-muted/50 px-4 py-3 text-sm space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Package</span>
+            <span className="text-muted-foreground">{translateAgentPage("agents:package")}</span>
             <span className="font-mono">{adapter?.packageName}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Current</span>
+            <span className="text-muted-foreground">{translateAgentPage("agents:current")}</span>
             <span className="font-mono">
-              {adapter?.version ? `v${adapter.version}` : "unknown"}
+              {adapter?.version ? `v${adapter.version}` : translateAgentPage("agents:unknown")}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Latest on npm</span>
+            <span className="text-muted-foreground">{translateAgentPage("agents:latest_on_npm")}</span>
             <span className="font-mono">
               {isFetchingVersion
-                ? "checking..."
+                ? translateAgentPage("agents:checking")
                 : latestVersion
                   ? `v${latestVersion}`
-                  : "unavailable"}
+                  : translateAgentPage("agents:unavailable_1d5ee3")}
             </span>
           </div>
           {isUpToDate && (
-            <p className="text-xs text-muted-foreground pt-1">
-              Already on the latest version.
-            </p>
+            <p className="text-xs text-muted-foreground pt-1">{translateAgentPage("agents:already_on_the_latest_version")}</p>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel} disabled={isReinstalling}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={onCancel} disabled={isReinstalling}>{translateAgentPage("agents:cancel")}</Button>
           <Button disabled={isReinstalling} onClick={onConfirm}>
-            {isReinstalling ? "Reinstalling..." : "Reinstall"}
+            {isReinstalling ? translateAgentPage("agents:reinstalling") : translateAgentPage("agents:reinstall")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -255,6 +246,7 @@ function ReinstallDialog({
 }
 
 export function AdapterManager() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -269,11 +261,11 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Adapters" },
+      { label: selectedCompany?.name ?? translateAgentPage("agents:organization"), href: "/dashboard" },
+      { label: translateAgentPage("agents:settings"), href: "/company/settings" },
+      { label: translateAgentPage("agents:adapters") },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs, translateAgentPage]);
 
   const { data: adapters, isLoading } = useQuery({
     queryKey: queryKeys.adapters.all,
@@ -294,13 +286,13 @@ export function AdapterManager() {
       setInstallVersion("");
       setIsLocalPath(false);
       pushToast({
-        title: "Adapter installed",
-        body: `Type "${result.type}" registered successfully.${result.version ? ` (v${result.version})` : ""}`,
+        title: translateAgentPage("agents:adapter_installed"),
+        body: translateAgentPage("agents:type_registered_successfully", { value1: result.type, value2: result.version ? ` (v${result.version})` : "" }),
         tone: "success",
       });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Install failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:install_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -308,10 +300,10 @@ export function AdapterManager() {
     mutationFn: (type: string) => adaptersApi.remove(type),
     onSuccess: () => {
       invalidate();
-      pushToast({ title: "Adapter removed", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:adapter_removed"), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Removal failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:removal_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -322,7 +314,7 @@ export function AdapterManager() {
       invalidate();
     },
     onError: (err: Error) => {
-      pushToast({ title: "Toggle failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:toggle_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -333,7 +325,7 @@ export function AdapterManager() {
       invalidate();
     },
     onError: (err: Error) => {
-      pushToast({ title: "Override toggle failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:override_toggle_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -344,13 +336,13 @@ export function AdapterManager() {
       invalidateDynamicParser(result.type);
       invalidateConfigSchemaCache(result.type);
       pushToast({
-        title: "Adapter reloaded",
-        body: `Type "${result.type}" reloaded.${result.version ? ` (v${result.version})` : ""}`,
+        title: translateAgentPage("agents:adapter_reloaded"),
+        body: translateAgentPage("agents:type_reloaded", { value1: result.type, value2: result.version ? ` (v${result.version})` : "" }),
         tone: "success",
       });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Reload failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:reload_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -361,13 +353,13 @@ export function AdapterManager() {
       invalidateDynamicParser(result.type);
       invalidateConfigSchemaCache(result.type);
       pushToast({
-        title: "Adapter reinstalled",
-        body: `Type "${result.type}" updated from npm.${result.version ? ` (v${result.version})` : ""}`,
+        title: translateAgentPage("agents:adapter_reinstalled"),
+        body: translateAgentPage("agents:type_updated_from_npm", { value1: result.type, value2: result.version ? ` (v${result.version})` : "" }),
         tone: "success",
       });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Reinstall failed", body: err.message, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:reinstall_failed"), body: err.message, tone: "error" });
     },
   });
 
@@ -391,7 +383,7 @@ export function AdapterManager() {
       menuDisabled: !!a.disabled,
     }));
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading adapters...</div>;
+  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{translateAgentPage("agents:loading_adapters")}</div>;
 
   const isMutating = installMutation.isPending || removeMutation.isPending || toggleMutation.isPending || overrideMutation.isPending || reloadMutation.isPending || reinstallMutation.isPending;
 
@@ -401,24 +393,19 @@ export function AdapterManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Adapters</h1>
-          <Badge variant="outline" className="text-amber-600 border-amber-400">
-            Alpha
-          </Badge>
+          <h1 className="text-xl font-semibold">{translateAgentPage("agents:adapters")}</h1>
+          <Badge variant="outline" className="text-amber-600 border-amber-400">{translateAgentPage("agents:alpha")}</Badge>
         </div>
 
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
-              <Plus className="h-4 w-4" />
-              Install Adapter
-            </Button>
+              <Plus className="h-4 w-4" />{translateAgentPage("agents:install_adapter")}</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Install External Adapter</DialogTitle>
-              <DialogDescription>
-                Add an adapter from npm or a local path. The adapter package must export <code className="text-xs bg-muted px-1 py-0.5 rounded">createServerAdapter()</code>.
+              <DialogTitle>{translateAgentPage("agents:install_external_adapter")}</DialogTitle>
+              <DialogDescription>{translateAgentPage("agents:add_an_adapter_from_npm_or_a_local")}{" "}<code className="text-xs bg-muted px-1 py-0.5 rounded">createServerAdapter()</code>.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -434,9 +421,7 @@ export function AdapterManager() {
                   )}
                   onClick={() => setIsLocalPath(false)}
                 >
-                  <Package className="h-3.5 w-3.5" />
-                  npm package
-                </button>
+                  <Package className="h-3.5 w-3.5" />{translateAgentPage("agents:npm_package_6be130")}</button>
                 <button
                   type="button"
                   className={cn(
@@ -447,15 +432,13 @@ export function AdapterManager() {
                   )}
                   onClick={() => setIsLocalPath(true)}
                 >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                  Local path
-                </button>
+                  <FolderOpen className="h-3.5 w-3.5" />{translateAgentPage("agents:local_path")}</button>
               </div>
 
               {isLocalPath ? (
                 /* Local path input */
                 <div className="grid gap-2">
-                  <Label htmlFor="adapterLocalPath">Path to adapter package</Label>
+                  <Label htmlFor="adapterLocalPath">{translateAgentPage("agents:path_to_adapter_package")}</Label>
                   <div className="flex gap-2">
                     <Input
                       id="adapterLocalPath"
@@ -466,15 +449,13 @@ export function AdapterManager() {
                     />
                     <ChoosePathButton />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Accepts Linux, WSL, and Windows paths. Windows paths are auto-converted.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{translateAgentPage("agents:accepts_linux_wsl_and_windows_paths_windows_paths")}</p>
                 </div>
               ) : (
                 /* npm package input */
                 <>
                   <div className="grid gap-2">
-                    <Label htmlFor="adapterPackageName">Package Name</Label>
+                    <Label htmlFor="adapterPackageName">{translateAgentPage("agents:package_name")}</Label>
                     <Input
                       id="adapterPackageName"
                       placeholder="my-paperclip-adapter"
@@ -483,7 +464,7 @@ export function AdapterManager() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="adapterVersion">Version (optional)</Label>
+                    <Label htmlFor="adapterVersion">{translateAgentPage("agents:version_optional")}</Label>
                     <Input
                       id="adapterVersion"
                       placeholder="latest"
@@ -495,7 +476,7 @@ export function AdapterManager() {
               )}
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>{translateAgentPage("agents:cancel")}</Button>
               <Button
                 onClick={() =>
                   installMutation.mutate({
@@ -506,7 +487,7 @@ export function AdapterManager() {
                 }
                 disabled={!installPackage || installMutation.isPending}
               >
-                {installMutation.isPending ? "Installing..." : "Install"}
+                {installMutation.isPending ? translateAgentPage("agents:installing_1106a2") : translateAgentPage("agents:install")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -518,11 +499,8 @@ export function AdapterManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">External adapters are alpha.</p>
-            <p className="text-muted-foreground">
-              The adapter plugin system is under active development. APIs and storage format may change.
-              Use the power icon to hide adapters from agent menus without removing them.
-            </p>
+            <p className="font-medium text-foreground">{translateAgentPage("agents:external_adapters_are_alpha")}</p>
+            <p className="text-muted-foreground">{translateAgentPage("agents:the_adapter_plugin_system_is_under_active_development")}</p>
           </div>
         </div>
       </div>
@@ -531,17 +509,15 @@ export function AdapterManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">External Adapters</h2>
+          <h2 className="text-base font-semibold">{translateAgentPage("agents:external_adapters")}</h2>
         </div>
 
         {externalAdapters.length === 0 ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Cpu className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No external adapters installed</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Install an adapter package to extend model support.
-              </p>
+              <p className="text-sm font-medium">{translateAgentPage("agents:no_external_adapters_installed")}</p>
+              <p className="text-xs text-muted-foreground mt-1">{translateAgentPage("agents:install_an_adapter_package_to_extend_model_support")}</p>
             </CardContent>
           </Card>
         ) : (
@@ -573,9 +549,9 @@ export function AdapterManager() {
                   isToggling={isBuiltinOverride ? overrideMutation.isPending : toggleMutation.isPending}
                   isReloading={reloadMutation.isPending}
                   isReinstalling={reinstallMutation.isPending}
-                  toggleTitleDisabled={isBuiltinOverride ? "Pause external override" : undefined}
-                  toggleTitleEnabled={isBuiltinOverride ? "Resume external override" : undefined}
-                  disabledBadgeLabel={isBuiltinOverride ? "Override paused" : undefined}
+                  toggleTitleDisabled={isBuiltinOverride ? translateAgentPage("agents:pause_external_override") : undefined}
+                  toggleTitleEnabled={isBuiltinOverride ? translateAgentPage("agents:resume_external_override") : undefined}
+                  disabledBadgeLabel={isBuiltinOverride ? translateAgentPage("agents:override_paused") : undefined}
                 />
               );
             })}
@@ -588,11 +564,11 @@ export function AdapterManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Built-in Adapters</h2>
+          <h2 className="text-base font-semibold">{translateAgentPage("agents:built_in_adapters")}</h2>
         </div>
 
         {builtinAdapters.length === 0 && overriddenBuiltins.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No built-in adapters found.</div>
+          <div className="text-sm text-muted-foreground">{translateAgentPage("agents:no_built_in_adapters_found")}</div>
         ) : (
           <Card className="block py-0">
           <ul className="divide-y">
@@ -643,18 +619,14 @@ export function AdapterManager() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove Adapter</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to remove the <strong>{removeType}</strong> adapter?
-              It will be unregistered and removed from the adapter store.
-              {removeType && adapters?.find((a) => a.type === removeType)?.packageName && (
-                <> npm packages will be cleaned up from disk.</>
+            <DialogTitle>{translateAgentPage("agents:remove_adapter_d7d84d")}</DialogTitle>
+            <DialogDescription>{translateAgentPage("agents:are_you_sure_you_want_to_remove_the")}{" "}<strong>{removeType}</strong>{" "}{translateAgentPage("agents:adapter_it_will_be_unregistered_and_removed_from")}{removeType && adapters?.find((a) => a.type === removeType)?.packageName && (
+                <>{" "}{translateAgentPage("agents:npm_packages_will_be_cleaned_up_from_disk")}</>
               )}
-              {" "}This action cannot be undone.
-            </DialogDescription>
+              {" "}{translateAgentPage("agents:this_action_cannot_be_undone_951f49")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRemoveType(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setRemoveType(null)}>{translateAgentPage("agents:cancel")}</Button>
             <Button
               variant="destructive"
               disabled={removeMutation.isPending}
@@ -666,7 +638,7 @@ export function AdapterManager() {
                 }
               }}
             >
-              {removeMutation.isPending ? "Removing..." : "Remove"}
+              {removeMutation.isPending ? translateAgentPage("agents:removing_2a76d4") : translateAgentPage("agents:remove")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deriveMonitorState,
+  getMonitorTimingState,
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
@@ -26,6 +27,12 @@ describe("monitor time formatting", () => {
     [3 * 24 * 60 * 60_000, "in 3d"],
   ])("formats future offset %i with up to two non-zero units", (offsetMs, expected) => {
     expect(formatMonitorEta(new Date(now.getTime() + offsetMs), now)).toBe(expected);
+  });
+
+  it.each([
+    [1, "future"], [0, "due-now"], [-59_999, "due-now"], [-60_000, "overdue"],
+  ] as const)("classifies timing at offset %i without using display text", (offset, expected) => {
+    expect(getMonitorTimingState(new Date(now.getTime() + offset), now)).toBe(expected);
   });
 
   it("uses due-now grace before switching to overdue copy", () => {

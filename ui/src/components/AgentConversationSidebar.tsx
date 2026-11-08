@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Plus, Search, Users, X } from "lucide-react";
 import { Badge } from "./ui/badge";
@@ -34,6 +35,7 @@ export interface AgentConversationSidebarProps {
 
 /** Searchable navigation for one conversation per agent. */
 export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction }: AgentConversationSidebarProps) {
+  const { t } = useTranslation("agent-config");
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -47,29 +49,29 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
     searchRef.current?.focus();
   }
   return <aside aria-labelledby={headingId} className="flex h-full min-h-0 flex-col border-r border-border bg-background">
-    <h2 id={headingId} className="sr-only">Chat contacts</h2>
+    <h2 id={headingId} className="sr-only">{t("chatContacts")}</h2>
     <div className="flex shrink-0 items-center gap-2 px-3 pb-3 pt-5">
       <div className="relative min-w-0 flex-1">
         <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input ref={searchRef} aria-label="Search chats" placeholder="Search chats" value={search} onChange={event => setSearch(event.target.value)}
+        <Input ref={searchRef} aria-label={t("searchChats")} placeholder={t("searchChats")} value={search} onChange={event => setSearch(event.target.value)}
           onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); setSearch(""); } }}
           className="h-9 pl-8 pr-8 text-xs md:text-xs" />
-        {search && <Button variant="ghost" size="icon-xs" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={focusSearch}><X className="size-3" /></Button>}
+        {search && <Button variant="ghost" size="icon-xs" aria-label={t("clearSearch_67300d0")} className="absolute right-1 top-1/2 -translate-y-1/2" onClick={focusSearch}><X className="size-3" /></Button>}
       </div>
     </div>
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3 scrollbar-auto-hide">
-      <span role="status" className="sr-only">{loading ? "Loading agents" : `${visible.length} ${visible.length === 1 ? "agent" : "agents"}`}</span>
-      {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading chat history…</p>}
+      <span role="status" className="sr-only">{loading ? t("loadingAgents_e9d8880") : t("final-configuration:agentCount", { count: visible.length })}</span>
+      {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">{t("loadingChatHistory_6d7762e")}</p>}
       {historyError && <div role="alert" className="flex flex-col items-start gap-2 px-2 py-3">
-        <p className="text-xs text-muted-foreground">Some chat history couldn’t load.</p>
-        <Button variant="outline" size="sm" onClick={onRetryHistory}>Retry chat history</Button>
+        <p className="text-xs text-muted-foreground">{t("agent-config:someChatHistoryCouldnTLoad_ec9886d")}</p>
+        <Button variant="outline" size="sm" onClick={onRetryHistory}>{t("agent-config:retryChatHistory_a55c5fd")}</Button>
       </div>}
-      {error ? <div role="alert" className="flex flex-col items-start gap-2 px-2 py-6"><p className="text-sm">Couldn’t load your chats.</p><Button variant="outline" size="sm" onClick={onRetry}>Try again</Button></div> : loading ? <div aria-hidden="true" className="flex flex-col gap-1">
+      {error ? <div role="alert" className="flex flex-col items-start gap-2 px-2 py-6"><p className="text-sm">{t("agent-config:couldnTLoadYourChats_6df847d")}</p><Button variant="outline" size="sm" onClick={onRetry}>{t("agent-config:tryAgain_042c862")}</Button></div> : loading ? <div aria-hidden="true" className="flex flex-col gap-1">
         {[0, 1, 2, 3].map(index => <div key={index} className="flex items-center gap-3 rounded-md px-2 py-3 motion-safe:animate-pulse">
           <div className="size-8 shrink-0 rounded-lg bg-muted" />
           <div className="flex flex-1 flex-col gap-2"><div className="h-3 w-2/3 rounded-sm bg-muted" /><div className="h-2 w-full rounded-sm bg-muted" /></div>
         </div>)}
-      </div> : visible.length ? <nav aria-label="Agent conversations" className="flex flex-col gap-1">
+      </div> : visible.length ? <nav aria-label={t("agentConversations_4a0447d")} className="flex flex-col gap-1">
         {visible.map(agent => {
           const unreadCount = unreadMessageCounts?.get(agent.id) ?? 0;
           const hasUnread = unreadCount > 0 || unreadIds.has(agent.id);
@@ -81,27 +83,27 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           <AgentAvatar agent={agent} size={40} />
           <span className="agent-pin-text flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-sm font-medium">{agent.name}</span>
-            <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? "Terminated" : agent.title ?? agent.role}</span>
+            <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? t("terminated_a1848f4") : agent.title ?? agent.role}</span>
           </span>
-          {unreadCount > 0 ? <Badge variant="ghost" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"} from ${agent.name}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
-            : unreadIds.has(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
+          {unreadCount > 0 ? <Badge variant="ghost" aria-label={t("unreadMessagesFromAgent", { count: unreadCount, name: agent.name })} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
+            : unreadIds.has(agent.id) && <span role="img" aria-label={t("unreadMessagesFromValue_d329b03", { value1: agent.name })} className="size-2 shrink-0 rounded-full bg-primary" />}
         </Link>{renderAgentAction?.(agent)}</div>;
         })}
       </nav> : !agents.length && (historyLoading || historyError) ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
-        <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
-        <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? "Try another name or role." : "Choose an agent to start a conversation."}</p>
-        {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>Choose an agent</Button>}
-        {agents.length > 0 && <Button variant="outline" size="sm" onClick={focusSearch}>Clear search</Button>}
+        <p className="text-sm font-medium">{agents.length ? t("agent-config:noAgentsFound_b1da2fe") : t("agent-config:noChatsYet_adf8169")}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? t("agent-config:tryAnotherNameOrRole_bb064a7") : t("agent-config:chooseAnAgentToStartAConversation_c86ef1b")}</p>
+        {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>{t("agent-config:chooseAnAgent_faaaf2b")}</Button>}
+        {agents.length > 0 && <Button variant="outline" size="sm" onClick={focusSearch}>{t("agent-config:clearSearch_67300d0")}</Button>}
       </div>}
       {onCreateAgent && !loading && !error && <button type="button" onClick={onCreateAgent}
         className="flex min-w-0 items-center gap-3 rounded-md px-2.5 py-3 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <span aria-hidden className="flex size-10 shrink-0 items-center justify-center"><span className="agent-contact-create flex size-8 items-center justify-center bg-muted"><Plus className="size-5 text-foreground" /></span></span>
-        <span className="text-sm font-medium">Create a new agent</span>
+        <span className="text-sm font-medium">{t("createNewAgent")}</span>
       </button>}
     </div>
     {onBrowse && <div className="shrink-0 px-3 py-4">
       <Button variant="ghost" size="sm" className="w-full justify-start gap-2 px-2 text-muted-foreground" onClick={onBrowse}>
-        <Users className="size-4" />Browse all agents
+        <Users className="size-4" />{t("browseAllAgents_788dbb9")}
       </Button>
     </div>}
     <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}

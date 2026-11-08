@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -23,6 +24,7 @@ type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | 
 
 /** Task identifier rendered in gray monospace beside its breadcrumb label. */
 function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  const { t: translateShell } = useTranslation("shell");
   if (!identifier) return null;
   return (
     <span data-slot="task-title-identifier" className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
@@ -38,6 +40,7 @@ function GlobalToolbar({
   context: GlobalToolbarContext;
   pageToolbar?: ReactNode;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
   return (
@@ -54,6 +57,7 @@ function GlobalToolbar({
 }
 
 export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
+  const { t: translateShell } = useTranslation("shell");
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
@@ -72,8 +76,8 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       size="icon-sm"
       className="ml-5 size-9 shrink-0 text-muted-foreground"
       onClick={toggleTaskPanel}
-      aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-      title={taskPanelOpen ? "Hide properties" : "Show properties"}
+      aria-label={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
+      title={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
     >
       {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
     </Button>
@@ -84,7 +88,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       companyId: selectedCompanyId ?? null,
       companyPrefix: selectedCompany?.issuePrefix ?? null,
     }),
-    [selectedCompanyId, selectedCompany?.issuePrefix],
+    [selectedCompanyId, selectedCompany?.issuePrefix, translateShell],
   );
 
   const globalToolbarSlots = (
@@ -116,7 +120,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={translateShell("shell:open_sidebar")}
     >
       <Menu className="h-5 w-5" />
     </Button>

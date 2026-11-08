@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue } from "../api/heartbeats";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
+import { i18n } from "@/i18n";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => (
@@ -171,6 +172,14 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
 }
 
 describe("IssueRunLedger", () => {
+  it("renders a localized run summary while preserving raw liveness diagnostics", async () => {
+    await i18n.changeLanguage("zh-CN");
+    try {
+      renderLedger({ runs: [createRun({ status: "running", livenessReason: "raw diagnostic / 原文" })] });
+      expect(container.textContent).toContain("当前由"); expect(container.textContent).not.toContain("Running now by");
+    } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+  });
+
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced",

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { AdapterModel } from "../../api/agents";
 import type { Issue, Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
@@ -55,19 +56,19 @@ export function toDateTimeLocalValue(value: string | null | undefined) {
 
 export const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
+    { value: "", get label() { return t("final-components-a:default_21b111cb"); } },
+    { value: "low", get label() { return t("final-components-a:low_f793de20"); } },
+    { value: "medium", get label() { return t("final-components-a:medium_8e588cd1"); } },
+    { value: "high", get label() { return t("final-components-a:high_c4ebc6d4"); } },
   ],
   opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-    { value: "max", label: "Max" },
+    { value: "", get label() { return t("final-components-a:default_21b111cb"); } },
+    { value: "minimal", get label() { return t("final-components-a:minimal_057b5de4"); } },
+    { value: "low", get label() { return t("final-components-a:low_f793de20"); } },
+    { value: "medium", get label() { return t("final-components-a:medium_8e588cd1"); } },
+    { value: "high", get label() { return t("final-components-a:high_c4ebc6d4"); } },
+    { value: "xhigh", get label() { return t("final-components-a:xHigh_393d3e4b"); } },
+    { value: "max", get label() { return t("final-components-a:max_a1a5936d"); } },
   ],
 } as const;
 

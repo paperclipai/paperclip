@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check, ChevronDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ interface SidePanelMobileTabsProps {
 
 /** A readable title and a vertical overview replace crowded desktop tabs. */
 export function SidePanelMobileTabs({ tabs, activeTabId, onActiveTabChange, onCloseTab, addControl }: SidePanelMobileTabsProps) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -42,16 +44,16 @@ export function SidePanelMobileTabs({ tabs, activeTabId, onActiveTabChange, onCl
           <Button
             variant="ghost"
             className="h-(--sz-44px) min-w-0 flex-1 justify-start gap-2 px-2"
-            aria-label={`Switch tabs, ${tabs.length} open`}
+            aria-label={t("task-components:switchTabsOpen_404609fa", { value1: tabs.length })}
             disabled={tabs.length === 0}
           >
-            <span id={activeTab ? `side-panel-tab-${activeTab.id}` : undefined} className="min-w-0 flex-1 truncate text-left">{activeTab?.label ?? "Choose a tab"}</span>
+            <span id={activeTab ? `side-panel-tab-${activeTab.id}` : undefined} className="min-w-0 flex-1 truncate text-left">{activeTab?.label ?? t("task-components:chooseATab_f3af270a")}</span>
             <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{tabs.length}</span>
             <ChevronDown aria-hidden className="shrink-0" />
           </Button>
         </PopoverTrigger>
         <PopoverContent
-          aria-label="Open tabs"
+          aria-label={t("task-components:openTabs_33c2eb40")}
           align="start"
           className="w-(--side-panel-mobile-tabs-width) max-w-(--radix-popover-content-available-width) p-2"
           onOpenAutoFocus={(event) => {
@@ -66,8 +68,8 @@ export function SidePanelMobileTabs({ tabs, activeTabId, onActiveTabChange, onCl
             if (addButton) { event.preventDefault(); addButton.focus(); }
           }}
         >
-          <p className="px-2 py-2 text-xs font-medium text-muted-foreground">Open tabs</p>
-          <ul ref={listRef} aria-label="Open tabs" className="max-h-(--side-panel-mobile-tabs-max-height) overflow-y-auto overscroll-contain">
+          <p className="px-2 py-2 text-xs font-medium text-muted-foreground">{t("task-components:openTabs_33c2eb40")}</p>
+          <ul ref={listRef} aria-label={t("task-components:openTabs_33c2eb40")} className="max-h-(--side-panel-mobile-tabs-max-height) overflow-y-auto overscroll-contain">
             {tabs.map((tab) => (
               <li key={tab.id} className={cn("flex items-center rounded-md", tab.id === activeTabId && "bg-muted")}>
                 <button
@@ -89,7 +91,7 @@ export function SidePanelMobileTabs({ tabs, activeTabId, onActiveTabChange, onCl
                     variant="ghost"
                     size="icon"
                     className="size-(--sz-44px) shrink-0"
-                    aria-label={`Close ${tab.label}`}
+                    aria-label={t("task-components:close_39f97a2f", { value1: tab.label })}
                     disabled={tab.disabled}
                     onClick={() => {
                       // Focus the neighboring selector before removing the

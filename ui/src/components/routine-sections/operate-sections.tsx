@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon } from "lucide-react";
@@ -15,6 +16,7 @@ import { RoutineActivityRow } from "../RoutineActivityRow";
 import { useRoutineDetail } from "./context";
 
 export function RunsSection() {
+  useTranslation("task-components");
   const { routine, companyId, agents, projects, hasLiveRun, activeIssueId } = useRoutineDetail();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -33,7 +35,7 @@ export function RunsSection() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routine.id) });
     },
-    onError: (updateError) => pushToast({ title: "Failed to update task", body: describeError(updateError).body, tone: "error" }),
+    onError: (updateError) => pushToast({ presentation: { title: { key: "task-components:failedToUpdateTask_be6f0c0f" } },  title: t("task-components:failedToUpdateTask_be6f0c0f"), body: describeError(updateError).body, tone: "error" }),
   });
 
   return (
@@ -67,6 +69,7 @@ export function ActivitySection({
   onRetry?: () => void;
   retrying?: boolean;
 } = {}) {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const { activity } = ctx;
   const events = activity ?? [];
@@ -74,7 +77,7 @@ export function ActivitySection({
   const groups = useMemo(() => {
     const byDay = new Map<string, typeof events>();
     for (const event of events) {
-      let label = "Earlier";
+      let label = t("final-components-a:earlier_e10ae990");
       try {
         label = new Date(event.createdAt).toLocaleDateString(undefined, {
           weekday: "short",
@@ -89,9 +92,9 @@ export function ActivitySection({
       byDay.set(label, bucket);
     }
     return Array.from(byDay.entries());
-  }, [events]);
+  }, [events, i18n.language]);
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading activity…</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">{t("task-components:loadingActivity_a389c395")}</p>;
   if (error) {
     return (
       <QueryErrorState
@@ -104,7 +107,7 @@ export function ActivitySection({
   }
 
   if (events.length === 0) {
-    return <EmptyState icon={ActivityIcon} message="No activity yet." />;
+    return <EmptyState icon={ActivityIcon} message={t("final-components-a:noActivityYet_a288d2d0")} />;
   }
 
   return (
@@ -126,6 +129,7 @@ export function ActivitySection({
 }
 
 export function HistorySection() {
+  useTranslation("task-components");
   const ctx = useRoutineDetail();
   const {
     routine,

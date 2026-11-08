@@ -1,3 +1,6 @@
+import { t, useTranslation, Trans } from "@/i18n";
+import { enumDisplayLabel } from "./task-chat-display";
+import { detailDisplayLabel } from "./task-chat-display";
 import { useContext, useEffect, useMemo, useState } from "react";
 import { TaskChatImageGrid } from "./TaskChatImageGrid";
 import { imageResourceSource } from "./image-resources";
@@ -108,6 +111,7 @@ function StatusIcon({
   status: string;
   className?: string;
 }) {
+  useTranslation("task-components");
   if (["running", "pending", "in_progress", "waiting"].includes(status)) {
     return (
       <Loader2
@@ -158,6 +162,7 @@ function CardShell({
   testId: string;
   presentation?: "timeline" | "takeover";
 }) {
+  useTranslation("task-components");
   const titleRow = (
     <div className="flex min-w-0 items-center gap-2">
       <Icon aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -172,7 +177,7 @@ function CardShell({
           )}
         >
           <StatusIcon status={status} className="h-3.5 w-3.5" />
-          {status.replaceAll("_", " ")}
+          {enumDisplayLabel(status, status.replaceAll("_", " "))}
         </span>
       ) : null}
     </div>
@@ -226,7 +231,7 @@ function CardShell({
                 )}
               >
                 <StatusIcon status={status} className="h-3.5 w-3.5" />
-                {status.replaceAll("_", " ")}
+                {enumDisplayLabel(status, status.replaceAll("_", " "))}
               </span>
             ) : null}
           </div>
@@ -243,9 +248,10 @@ function CardShell({
 }
 
 function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
+  useTranslation("task-components");
   if (steps.length === 0) return null;
   return (
-    <ol className="flex flex-col gap-1.5" aria-label="Plan steps">
+    <ol className="flex flex-col gap-1.5" aria-label={t("task-components:planSteps_3fa02f98")}>
       {steps.map((step) => (
         <li key={step.id} className="flex items-start gap-2 text-sm">
           <StatusIcon status={step.status} className="mt-0.5 shrink-0" />
@@ -296,6 +302,7 @@ function ProviderActivityCard({
 }: {
   item: TaskChatProviderActivityItem;
 }) {
+  useTranslation("task-components");
   if (item.family === "plan_proposal") return <PlanProposalCard item={item} />;
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
@@ -313,7 +320,7 @@ function ProviderActivityCard({
     >
       {item.steps.length > 0 ? <PlanSteps steps={item.steps} /> : null}
       {item.children.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Delegated agents">
+        <ul className="flex flex-col gap-2" aria-label={t("task-components:delegatedAgents_a3a4ad04")}>
           {item.children.map((child) => (
             <li
               key={child.id}
@@ -328,7 +335,7 @@ function ProviderActivityCard({
                     statusTone(child.status),
                   )}
                 >
-                  {child.status}
+                  {enumDisplayLabel(child.status)}
                 </span>
               </div>
               {child.metadata ? (
@@ -346,7 +353,7 @@ function ProviderActivityCard({
         </ul>
       ) : null}
       {item.links.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Research sources">
+        <ul className="flex flex-col gap-2" aria-label={t("task-components:researchSources_6891cd22")}>
           {item.links.map((link) => (
             <li key={link.href}>
               <a
@@ -377,8 +384,7 @@ function ProviderActivityCard({
           )}
         >
           <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
-            <ChevronDown aria-hidden className="h-3.5 w-3.5" /> Details
-          </summary>
+            <ChevronDown aria-hidden className="h-3.5 w-3.5" />{" "}{t("task-components:details_45989de4")}</summary>
           {item.details.length > 0 ? (
             <dl className="mt-2 flex min-w-0 flex-col gap-1.5 text-xs">
               {item.details.map((detail) => (
@@ -386,7 +392,7 @@ function ProviderActivityCard({
                   key={`${detail.label}:${detail.value}`}
                   className="grid min-w-0 grid-cols-1 gap-0.5 sm:grid-cols-(--gtc-task-chat-details) sm:gap-3"
                 >
-                  <dt className="text-muted-foreground">{detail.label}</dt>
+                  <dt className="text-muted-foreground">{detailDisplayLabel(detail)}</dt>
                   <dd
                     className={cn(
                       "min-w-0 break-words text-foreground",
@@ -405,9 +411,7 @@ function ProviderActivityCard({
             </pre>
           ) : null}
           {item.outputTruncated ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Output truncated to 8 KiB.
-            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("task-components:outputTruncatedTo8Kib_71045c3c")}</p>
           ) : null}
         </details>
       ) : null}
@@ -487,12 +491,14 @@ const OPERATION_LABEL: Record<string, string> = {
 };
 
 function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
+  useTranslation("task-components");
   const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [expanded, setExpanded] = useState(false);
   const visibleFiles = expanded ? item.files : item.files.slice(0, 5);
   const fileCount = item.totals.files || item.files.length;
-  const fileLabel = `${fileCount} ${fileCount === 1 ? "file" : "files"}`;
-  const summary = item.complete ? `${fileLabel} changed` : `${fileLabel} so far`;
+  const summary = item.complete
+    ? t(fileCount === 1 ? "task-chat-ui:oneFileChanged" : "task-chat-ui:filesChanged", { count: fileCount, stats: "" })
+    : t("task-chat-ui:filesSoFar", { count: fileCount });
   const toggle = (path: string) =>
     setOpenPaths((current) => {
       const next = new Set(current);
@@ -503,7 +509,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
   return (
     <CardShell
       icon={GitBranch}
-      title={item.complete ? "Changed in this turn" : "Changing files"}
+      title={item.complete ? t("task-chat-ui:changedThisTurn") : t("task-chat-ui:changingFiles")}
       status={item.complete ? null : "running"}
       testId="task-chat-workspace-change"
     >
@@ -520,7 +526,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
               )
             }
           >
-            {openPaths.size > 0 ? "Collapse all" : "Expand all"}
+            {openPaths.size > 0 ? t("task-chat-ui:collapseAll") : t("task-chat-ui:expandAll")}
           </button>
         ) : null}
       </div>
@@ -542,13 +548,12 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
           className="mt-1"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "Show fewer files" : `Show ${item.files.length - 5} more files`}
+          {expanded ? t("task-components:showFewerFiles_17fe4047") : t("task-components:showMoreFiles_c4abcf78", { value1: item.files.length - 5 })}
         </Button>
       ) : null}
       {fileCount > item.files.length ? (
         <p className="mt-1 px-2 text-xs text-muted-foreground" data-testid="task-chat-workspace-change-omitted">
-          {fileCount - item.files.length} more {fileCount - item.files.length === 1 ? "file" : "files"} changed.
-          This change set is too large to list them here.
+          {t("task-chat-ui:omittedFiles", { count: fileCount - item.files.length })}
         </p>
       ) : null}
     </CardShell>
@@ -556,12 +561,13 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
 }
 
 function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const extension = item.displayName.includes(".")
     ? item.displayName.split(".").at(-1)?.toUpperCase()
-    : "FILE";
+    : t("task-chat-ui:fileExtensionFallback");
   const label =
-    item.presentation === "generic" ? "File" : titleCaseKey(item.presentation);
+    item.presentation === "generic" ? t("task-chat-ui:attachment.File") : enumDisplayLabel(item.presentation, titleCaseKey(item.presentation));
   const workspaceFileRef = useMemo(
     () => ({
       path: item.path,
@@ -580,7 +586,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
         status={
           item.source === "runner_verified" ? "completed" : "informational"
         }
-        summary={`${label} · ${extension}${item.line ? ` · line ${item.line}` : ""}`}
+        summary={item.line ? t("task-chat-ui:fileSummaryLine", { kind: label, extension, line: item.line }) : t("task-chat-ui:fileSummary", { kind: label, extension })}
         testId="task-chat-workspace-file"
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -594,9 +600,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
             size="sm"
             variant="outline"
             onClick={() => setOpen(true)}
-          >
-            Preview
-          </Button>
+          >{t("task-components:preview_324b134f")}</Button>
         </div>
       </CardShell>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -606,10 +610,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
           </DialogHeader>
           <p className="font-mono text-xs text-muted-foreground">{item.path}</p>
           {item.preview == null ? (
-            <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">
-              Preview unavailable. The verified workspace reference is still
-              available above.
-            </p>
+            <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">{t("task-components:previewUnavailableTheVerifiedWorkspaceReferenceIs_adcad82d")}</p>
           ) : item.presentation === "document" ? (
             <div className="max-h-(--sz-70vh) overflow-auto rounded-sm bg-muted/30 p-3">
               <MarkdownBody>{item.preview}</MarkdownBody>
@@ -628,9 +629,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
             </pre>
           )}
           {item.previewTruncated ? (
-            <p className="text-xs text-muted-foreground">
-              Preview truncated by the runner.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("task-components:previewTruncatedByTheRunner_c8a44a1e")}</p>
           ) : null}
         </DialogContent>
       </Dialog>
@@ -649,6 +648,7 @@ function RuntimeQuestionHistory({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  useTranslation("task-components");
   const questionSet = item.questionSet;
   if (!questionSet) return null;
   return (
@@ -675,8 +675,8 @@ function RuntimeQuestionHistory({
           ))}
           <p className="text-xs text-muted-foreground">
             {item.status === "resolved"
-              ? "Answer details were not recorded by this older runtime."
-              : `No answers were submitted; this request was ${item.status}.`}
+              ? t("task-components:answerDetailsWereNotRecordedByThis_43dc6c77")
+              : t("task-components:noAnswersWereSubmittedThisRequestWas_32c4768d", { value1: item.status })}
           </p>
         </div>
       )}
@@ -689,14 +689,15 @@ function RuntimeQuestionReceipt({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  useTranslation("task-components");
   const label =
     item.status === "resolved"
-      ? "Questions answered"
+      ? t("task-chat-ui:questionsAnswered")
       : item.status === "cancelled"
-        ? "Questions cancelled"
+        ? t("task-chat-ui:questionsCancelled")
         : item.status === "expired"
-          ? "Questions expired"
-          : "Questions resolved";
+          ? t("task-chat-ui:questionsExpired")
+          : t("task-chat-ui:questionsResolved");
   return (
     <details className="group" data-testid="task-chat-runtime-request">
       <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -720,7 +721,7 @@ function RuntimeQuestionReceipt({
       <div className="pb-3 pl-7 pr-1">
         <div className="mb-3">
           <p className="text-sm font-medium text-foreground">
-            {item.questionSet?.title ?? "Runtime input"}
+            {item.questionSet?.title ?? t("task-components:runtimeInput_b73049f7")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">{item.prompt}</p>
         </div>
@@ -745,6 +746,7 @@ function RuntimeRequestCard({
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
 }) {
+  useTranslation("task-components");
   const historyIssueId = useContext(TaskChatRequestHistoryContext);
   const draftKey = requestedDraftKey ?? (historyIssueId
     ? `paperclip:task-input:${historyIssueId}:runtime:${item.runId}:${item.requestId}`
@@ -752,12 +754,12 @@ function RuntimeRequestCard({
   const title =
     item.questionSet?.title ??
     (item.requestType === "permission"
-      ? "Runtime permission"
-      : "Runtime input");
+      ? t("task-chat-ui:runtimePermission")
+      : t("task-components:runtimeInput_b73049f7"));
   const fields =
     item.fields.length > 0
       ? item.fields
-      : [{ name: "answer", label: "Response", placeholder: null }];
+      : [{ name: "answer", label: t("task-components:response_9061383b"), placeholder: null }];
   const [values, setValues] = useState<Record<string, string>>(() =>
     draftKey ? loadStructuredDraft(draftKey, {}) : {},
   );
@@ -794,7 +796,7 @@ function RuntimeRequestCard({
       setError(
         cause instanceof Error
           ? cause.message
-          : "The runtime request could not be resolved.",
+          : t("task-chat-ui:runtimeResolutionFailed"),
       );
     }
   };
@@ -893,7 +895,7 @@ function RuntimeRequestCard({
               size="sm"
               disabled={!onDecision || submitting || !canSubmitInput}
             >
-              {submitting ? "Submitting…" : "Submit response"}
+              {submitting ? t("task-components:submitting_49195f55") : t("task-components:submitResponse_2b35561b")}
             </Button>
             {item.choices.some((choice) => choice.key === "decline") ? (
               <Button
@@ -902,9 +904,7 @@ function RuntimeRequestCard({
                 variant="outline"
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "decline" })}
-              >
-                Deny
-              </Button>
+              >{t("task-components:deny_05a2d733")}</Button>
             ) : null}
             {presentation === "timeline" ? (
               <Button
@@ -913,9 +913,7 @@ function RuntimeRequestCard({
                 variant="outline"
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "cancel" })}
-              >
-                Cancel
-              </Button>
+              >{t("task-components:cancel_19766ed6")}</Button>
             ) : null}
           </div>
         </form>
@@ -946,15 +944,13 @@ function RuntimeRequestCard({
                   }
                 }}
               >
-                {submitting ? "Submitting…" : choice.label}
+                {submitting ? t("task-components:submitting_49195f55") : choice.label}
               </Button>
             ))}
         </div>
       ) : null}
       {item.status === "pending" && !onDecision ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Resolve this request in the active runtime session.
-        </p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("task-components:resolveThisRequestInTheActiveRuntime_a855c7a3")}</p>
       ) : null}
       {error ? (
         <p className="mt-2 text-xs text-destructive" role="alert">
@@ -987,6 +983,7 @@ function ResultCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_result" }>;
 }) {
+  useTranslation("task-components");
   const hasDetails =
     item.verification.length > 0 ||
     item.remainingWork.length > 0 ||
@@ -995,7 +992,7 @@ function ResultCard({
   return (
     <CardShell
       icon={PackageCheck}
-      title="Run result"
+      title={t("task-components:runResult_916788b6")}
       status={item.disposition}
       summary={item.summary}
       testId="task-chat-run-result"
@@ -1004,7 +1001,7 @@ function ResultCard({
         <div className="flex flex-col gap-3 text-sm">
           {item.blocker ? (
             <div className="rounded-sm bg-muted/50 p-2">
-              <strong>Blocked: {item.blocker.reasonCode}</strong>
+              <strong><Trans ns="task-components" i18nKey="sentence_2b4a488ac17c" components={{ part1: <>{item.blocker.reasonCode}</> }} /></strong>
               <p className="mt-1 text-muted-foreground">
                 {item.blocker.unblockAction}
               </p>
@@ -1013,7 +1010,7 @@ function ResultCard({
           {item.verification.length > 0 ? (
             <ul
               className="flex flex-col gap-1"
-              aria-label="Verification results"
+              aria-label={t("task-components:verificationResults_14a01310")}
             >
               {item.verification.map((check, index) => (
                 <li
@@ -1043,7 +1040,7 @@ function ResultCard({
               {item.remainingWork.map((work, index) => (
                 <li key={`${work.description}:${index}`}>
                   {work.description}
-                  {work.blocksCompletion ? " · blocks completion" : ""}
+                  {work.blocksCompletion ? (" " + t("task-components:blocksCompletion_935d5b7e")) : ""}
                 </li>
               ))}
             </ul>
@@ -1071,10 +1068,11 @@ function TerminalCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_terminal" }>;
 }) {
+  useTranslation("task-components");
   return (
     <CardShell
       icon={TerminalSquare}
-      title="Run ended"
+      title={t("task-components:runEnded_65ad5d90")}
       status={item.runState}
       summary={[item.disposition.replaceAll("_", " "), item.stopReason]
         .filter(Boolean)
@@ -1089,6 +1087,7 @@ function ResourceCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "resource" }>;
 }) {
+  useTranslation("task-components");
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   if (imageResourceSource(item)) {
     return <TaskChatImageGrid items={item.imageItems ?? [item]} />;
@@ -1154,6 +1153,7 @@ export function TaskChatProtocolCard({
   imageUploadHandler,
   mentions,
 }: TaskChatProtocolCardProps) {
+  useTranslation("task-components");
   switch (item.surface) {
     case "provider_activity":
       return isStatusNotice(item)

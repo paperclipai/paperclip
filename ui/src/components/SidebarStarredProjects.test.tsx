@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project, ResourceMemberships } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarStarredProjects } from "./SidebarStarredProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -166,6 +167,20 @@ describe("SidebarStarredProjects", () => {
     });
     await flushReact();
   }
+
+  it("localizes starred project labels without translating project names", async () => {
+    mockProjectsApi.list.mockResolvedValue([makeProject({ visibility: "private" })]);
+    memberships = { ...memberships, starredProjectIds: ["project-a"] };
+    await render();
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector('[aria-label="星标项目"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="私有项目"]')).not.toBeNull();
+      expect(projectLink(container, "alpha")?.textContent).toContain("Alpha");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("renders only starred projects returned by the default active project list", async () => {
     mockProjectsApi.list.mockResolvedValue([

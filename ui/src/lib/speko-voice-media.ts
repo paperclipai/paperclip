@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { VoiceMediaCallbacks, VoiceMediaCredentials } from "./voice-session-controller";
 
 /** Load media after the server authorizes a user-initiated session. */
@@ -17,7 +18,7 @@ export async function connectSpekoVoiceMedia(credentials: VoiceMediaCredentials,
     sendChatMessage: (text: string) => conversation.sendChatMessage(text),
     async startAudioPlayback() {
       await conversation.startAudioPlayback();
-      if (!conversation.canPlaybackAudio) throw new Error("Audio playback remains blocked");
+      if (!conversation.canPlaybackAudio) throw localizeUiError(new Error("Audio playback remains blocked"), { key: "integration-errors:audioBlocked" });
     },
   };
 }

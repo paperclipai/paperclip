@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { useTranslation, i18n } from "@/i18n";
 import { describeError } from "../api/errors";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
@@ -19,6 +21,7 @@ import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
 export function ApprovalDetail() {
+  const { t } = useTranslation("work");
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -63,14 +66,14 @@ export function ApprovalDetail() {
     const map = new Map<string, string>();
     for (const agent of agents ?? []) map.set(agent.id, agent.name);
     return map;
-  }, [agents]);
+  }, [agents, t]);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Approvals", href: "/approvals" },
-      { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
+      { label: t("work:copy.approvals_2bfc34"), href: "/approvals" },
+      { label: approval?.id?.slice(0, 8) ?? approvalId ?? t("work:copy.approval_147fb8") },
     ]);
-  }, [setBreadcrumbs, approval, approvalId]);
+  }, [setBreadcrumbs, approval, approvalId, t]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -93,7 +96,7 @@ export function ApprovalDetail() {
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(describeError(err, { action: "approve this request" }).body),
+    onError: (err) => setError(describeError(err, { action: t("work:copy.approveThisRequest_2c094f") }).body),
   });
 
   const rejectMutation = useMutation({
@@ -102,7 +105,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(describeError(err, { action: "reject this request" }).body),
+    onError: (err) => setError(describeError(err, { action: t("work:copy.rejectThisRequest_257c13") }).body),
   });
 
   const revisionMutation = useMutation({
@@ -111,7 +114,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(describeError(err, { action: "request a revision" }).body),
+    onError: (err) => setError(describeError(err, { action: t("work:copy.requestARevision_1f9255") }).body),
   });
 
   const resubmitMutation = useMutation({
@@ -120,7 +123,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(describeError(err, { action: "resubmit this request" }).body),
+    onError: (err) => setError(describeError(err, { action: t("work:copy.resubmitThisRequest_4dbd97") }).body),
   });
 
   const addCommentMutation = useMutation({
@@ -130,7 +133,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : t("work:copy.commentFailed_728785")),
   });
 
   const deleteAgentMutation = useMutation({
@@ -140,11 +143,11 @@ export function ApprovalDetail() {
       refresh();
       navigate("/approvals");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : t("work:copy.deleteFailed_8727e2")),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
-  if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
+  if (!approval) return <p className="text-sm text-muted-foreground">{t("work:copy.approvalNotFound_4b9044")}</p>;
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
@@ -158,17 +161,17 @@ export function ApprovalDetail() {
       ? {
           label:
             (linkedIssues?.length ?? 0) > 1
-              ? "Review linked tasks"
-              : "Review linked task",
+              ? t("work:copy.reviewLinkedTasks_5a3a4d")
+              : t("work:copy.reviewLinkedTask_c29a3b"),
           to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
         }
       : linkedAgentId
         ? {
-            label: "Open hired agent",
+            label: t("work:copy.openHiredAgent_96f074"),
             to: `/agents/${linkedAgentId}`,
           }
         : {
-            label: "Back to approvals",
+            label: t("work:copy.backToApprovals_822a55"),
             to: "/approvals",
           };
 
@@ -183,10 +186,8 @@ export function ApprovalDetail() {
                 <Sparkles className="h-3 w-3 text-green-500 dark:text-green-200 absolute -right-2 -top-1 animate-pulse" />
               </div>
               <div>
-                <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
-                <p className="text-xs text-green-700 dark:text-green-200/90">
-                  Requesting agent was notified to review this approval and linked tasks.
-                </p>
+                <p className="text-sm text-green-800 dark:text-green-100 font-medium">{t("work:copy.approvalConfirmed_711153")}</p>
+                <p className="text-xs text-green-700 dark:text-green-200/90">{t("work:copy.requestingAgentWasNotifiedToReviewThisApprovalAnd_424b90")}</p>
               </div>
             </div>
             <Button
@@ -214,9 +215,9 @@ export function ApprovalDetail() {
         <div className="text-sm space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground text-xs">Requested by</span>
+              <span className="text-muted-foreground text-xs">{t("work:copy.requestedBy_9199a0")}</span>
               <AgentIdentity
-                agent={agents?.find((agent) => agent.id === approval.requestedByAgentId) ?? { id: approval.requestedByAgentId, name: "Agent" }}
+                agent={agents?.find((agent) => agent.id === approval.requestedByAgentId) ?? { id: approval.requestedByAgentId, name: t("work:copy.agent_11b39c") }}
                 size="sm"
               />
             </div>
@@ -227,22 +228,20 @@ export function ApprovalDetail() {
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
             onClick={() => setShowRawPayload((v) => !v)}
           >
-            <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
-            See full request
-          </button>
+            <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />{t("work:copy.seeFullRequest_f19dd6")}</button>
           {showRawPayload && (
             <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
               {JSON.stringify(payload, null, 2)}
             </pre>
           )}
           {approval.decisionNote && (
-            <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
+            <p className="text-xs text-muted-foreground">{t("work:copy.decisionNote_e5ca9c")}{" "}{approval.decisionNote}</p>
           )}
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Tasks</p>
+            <p className="text-xs text-muted-foreground mb-1.5">{t("work:copy.linkedTasks_d49080")}</p>
             <div className="space-y-1.5">
               {linkedIssues.map((issue) => (
                 <Link
@@ -257,9 +256,7 @@ export function ApprovalDetail() {
                 </Link>
               ))}
             </div>
-            <p className="text-(length:--text-micro) text-muted-foreground mt-2">
-              Linked tasks remain open until the requesting agent follows up and closes them.
-            </p>
+            <p className="text-(length:--text-micro) text-muted-foreground mt-2">{t("work:copy.linkedTasksRemainOpenUntilTheRequestingAgentFollows_3d5aaf")}</p>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
@@ -270,22 +267,17 @@ export function ApprovalDetail() {
                 className="bg-green-700 hover:bg-green-600 text-white"
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
-              >
-                Approve
-              </Button>
+              >{t("work:copy.approve_6007ac")}</Button>
               <Button
                 variant="destructive"
                 size="sm"
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
-              >
-                Reject
-              </Button>
+              >{t("work:copy.reject_ab604a")}</Button>
             </>
           )}
           {isBudgetApproval && approval.status === "pending" && (
-            <p className="text-sm text-muted-foreground">
-              Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
+            <p className="text-sm text-muted-foreground"><Trans t={t} i18nKey="work:messages.budgetStopControls" components={{ costPage: <Link to="/costs" className="underline underline-offset-2" /> }} />
             </p>
           )}
           {approval.status === "pending" && (
@@ -294,9 +286,7 @@ export function ApprovalDetail() {
               variant="outline"
               onClick={() => revisionMutation.mutate()}
               disabled={revisionMutation.isPending}
-            >
-              Request revision
-            </Button>
+            >{t("work:copy.requestRevision_0bf92c")}</Button>
           )}
           {approval.status === "revision_requested" && (
             <Button
@@ -304,9 +294,7 @@ export function ApprovalDetail() {
               variant="outline"
               onClick={() => resubmitMutation.mutate()}
               disabled={resubmitMutation.isPending}
-            >
-              Mark resubmitted
-            </Button>
+            >{t("work:copy.markResubmitted_91f017")}</Button>
           )}
           {approval.status === "rejected" && approval.type === "hire_agent" && linkedAgentId && (
             <Button
@@ -314,19 +302,17 @@ export function ApprovalDetail() {
               variant="outline"
               className="text-destructive border-destructive/40"
               onClick={() => {
-                if (!window.confirm("Delete this disapproved agent? This cannot be undone.")) return;
+                if (!window.confirm(t("work:copy.deleteThisDisapprovedAgentThisCannotBeUndone_272afb"))) return;
                 deleteAgentMutation.mutate(linkedAgentId);
               }}
               disabled={deleteAgentMutation.isPending}
-            >
-              Delete disapproved agent
-            </Button>
+            >{t("work:copy.deleteDisapprovedAgent_1d5044")}</Button>
           )}
         </div>
       </div>
 
       <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+        <h3 className="text-sm font-medium">{t("work:messages.comments", { count: comments?.length ?? 0 })}</h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment: ApprovalComment) => (
             <div key={comment.id} className="border border-border/60 rounded-md p-3">
@@ -334,15 +320,15 @@ export function ApprovalDetail() {
                 {comment.authorAgentId ? (
                   <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
                     <AgentIdentity
-                      agent={agents?.find((agent) => agent.id === comment.authorAgentId) ?? { id: comment.authorAgentId, name: "Agent" }}
+                      agent={agents?.find((agent) => agent.id === comment.authorAgentId) ?? { id: comment.authorAgentId, name: t("work:copy.agent_11b39c") }}
                       size="sm"
                     />
                   </Link>
                 ) : (
-                  <Identity name="Board" size="sm" />
+                  <Identity name={t("work:copy.board_4816cb")} size="sm" />
                 )}
                 <span className="text-xs text-muted-foreground">
-                  {new Date(comment.createdAt).toLocaleString()}
+                  {new Date(comment.createdAt).toLocaleString(i18n.resolvedLanguage)}
                 </span>
               </div>
               <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
@@ -352,7 +338,7 @@ export function ApprovalDetail() {
         <Textarea
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
-          placeholder="Add a comment..."
+          placeholder={t("work:copy.addAComment_23c5f3")}
           rows={3}
         />
         <div className="flex justify-end">
@@ -361,7 +347,7 @@ export function ApprovalDetail() {
             onClick={() => addCommentMutation.mutate()}
             disabled={!commentBody.trim() || addCommentMutation.isPending}
           >
-            {addCommentMutation.isPending ? "Posting…" : "Post comment"}
+            {addCommentMutation.isPending ? t("work:extra.message_648a2ef491") : t("work:copy.postComment_153dc1")}
           </Button>
         </div>
       </div>

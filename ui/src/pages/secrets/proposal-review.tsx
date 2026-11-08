@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -41,8 +43,8 @@ import { describeError } from "@/api/errors";
 
 /** Short, non-reversible fingerprint label. Never renders the value. */
 export function fingerprintLabel(fingerprint: string | null, length: number | null): string {
-  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : "no fingerprint";
-  const size = typeof length === "number" ? `${length} ${length === 1 ? "byte" : "bytes"}` : null;
+  const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : translateAgentPage("agents:no_fingerprint");
+  const size = typeof length === "number" ? finalPagesT("final-pages:bytes", { count: length }) : null;
   return size ? `${digest} · ${size}` : digest;
 }
 
@@ -60,6 +62,7 @@ export function FingerprintChip({
   length: number | null;
   className?: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { pushToast } = useToastActions();
   const label = fingerprintLabel(fingerprint, length);
   if (!fingerprint) {
@@ -76,10 +79,10 @@ export function FingerprintChip({
       type="button"
       onClick={() => {
         copyTextToClipboard(full)
-          .then(() => pushToast({ title: "Fingerprint copied", tone: "success" }))
-          .catch(() => pushToast({ title: "Couldn’t copy fingerprint", tone: "error" }));
+          .then(() => pushToast({ title: translateAgentPage("agents:fingerprint_copied"), tone: "success" }))
+          .catch(() => pushToast({ title: translateAgentPage("agents:couldn_t_copy_fingerprint"), tone: "error" }));
       }}
-      title={`Copy full digest — ${full}`}
+      title={translateAgentPage("agents:copy_full_digest", { value1: full })}
       className={cn(
         "inline-flex items-center gap-1 font-mono hover:text-foreground",
         className,
@@ -106,9 +109,10 @@ export function ProposalJustification({
   justification: string;
   className?: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <div className={cn("space-y-0.5", className)}>
-      <p className="text-(length:--text-micro) text-muted-foreground">Reason given by the agent</p>
+      <p className="text-(length:--text-micro) text-muted-foreground">{translateAgentPage("agents:reason_given_by_the_agent")}</p>
       <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
         “{justification}”
       </p>
@@ -155,6 +159,7 @@ export function DeliveryBadge({ configPath }: { configPath: string | null }) {
 
 /** Distinct "Proposed" pill used wherever a proposal is inlined among live rows. */
 export function ProposedBadge({ className }: { className?: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Badge
       variant="outline"
@@ -164,8 +169,7 @@ export function ProposedBadge({ className }: { className?: string }) {
         className,
       )}
     >
-      <ShieldAlert className="size-3" /> Proposed
-    </Badge>
+      <ShieldAlert className="size-3" />{" "}{translateAgentPage("agents:proposed")}</Badge>
   );
 }
 
@@ -224,6 +228,7 @@ export function useProposalReview(
   companyId: string | null,
   providerConfigs: CompanySecretProviderConfig[] = [],
 ): UseProposalReview {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -259,11 +264,11 @@ export function useProposalReview(
     },
     onSuccess: (result) => {
       pushToast({
-        title: result.kind === "secret" ? "Secret approved" : "Binding approved",
+        title: result.kind === "secret" ? translateAgentPage("agents:secret_approved") : translateAgentPage("agents:binding_approved"),
         body:
           result.kind === "secret"
-            ? (result.proposedName ?? "Secret created")
-            : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "binding"}`,
+            ? (result.proposedName ?? translateAgentPage("agents:secret_created"))
+            : `${result.target?.name ?? translateAgentPage("agents:agent_5ce2e6")} · ${bindingEnvKey(result) || finalPagesT("final-pages:binding_80f70a")}`,
         tone: "success",
       });
       setApproveDraft(null);
@@ -278,7 +283,7 @@ export function useProposalReview(
       secretsApi.rejectProposal(companyId!, proposal.id, { reason: reason.trim() }),
     onSuccess: (result) => {
       pushToast({
-        title: "Proposal rejected",
+        title: translateAgentPage("agents:proposal_rejected"),
         body: result.kind === "secret" ? (result.proposedName ?? undefined) : undefined,
         tone: "info",
       });
@@ -379,6 +384,7 @@ function ApproveDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const isSecret = draft?.proposal.kind === "secret";
   const previewName = draft
     ? draft.folder.trim()
@@ -395,19 +401,19 @@ function ApproveDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {isSecret ? "Approve & create secret" : "Approve binding"}
+                {isSecret ? translateAgentPage("agents:approve_create_secret") : translateAgentPage("agents:approve_binding")}
               </DialogTitle>
               <DialogDescription>
                 {isSecret
-                  ? "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands."
-                  : "Grant the target agent access to this secret. This runs with your permissions."}
+                  ? translateAgentPage("agents:the_value_is_created_as_the_proposing_agent")
+                  : translateAgentPage("agents:grant_the_target_agent_access_to_this_secret")}
               </DialogDescription>
             </DialogHeader>
 
             {/* Provenance recap — keeps the social-engineering surface visible. */}
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
               <div className="flex items-center gap-1.5 text-muted-foreground">
-                <span>Proposed by</span>
+                <span>{translateAgentPage("agents:proposed_by")}</span>
                 <AgentRefChip agent={draft.proposal.proposedBy} className="font-medium text-foreground" />
               </div>
               <ProposalJustification justification={draft.proposal.justification} />
@@ -417,7 +423,7 @@ function ApproveDialog({
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <Label htmlFor="approve-folder">Folder</Label>
+                    <Label htmlFor="approve-folder">{translateAgentPage("agents:folder")}</Label>
                     <Input
                       id="approve-folder"
                       value={draft.folder}
@@ -427,7 +433,7 @@ function ApproveDialog({
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="approve-name">Name</Label>
+                    <Label htmlFor="approve-name">{translateAgentPage("agents:name")}</Label>
                     <Input
                       id="approve-name"
                       value={draft.leaf}
@@ -439,28 +445,27 @@ function ApproveDialog({
                     />
                   </div>
                 </div>
-                <p className="text-(length:--text-micro) text-muted-foreground">
-                  Lands as{" "}
+                <p className="text-(length:--text-micro) text-muted-foreground">{translateAgentPage("agents:lands_as")}{" "}
                   {previewName ? (
                     <SecretPathName name={previewName} className="font-mono" />
                   ) : (
-                    <span className="italic">enter a name</span>
+                    <span className="italic">{translateAgentPage("agents:enter_a_name")}</span>
                   )}
                 </p>
 
                 <div className="space-y-1">
-                  <Label htmlFor="approve-description">Description</Label>
+                  <Label htmlFor="approve-description">{translateAgentPage("agents:description")}</Label>
                   <Input
                     id="approve-description"
                     value={draft.description}
                     onChange={(event) => onChange({ ...draft, description: event.target.value })}
-                    placeholder="Optional"
+                    placeholder={translateAgentPage("agents:optional")}
                   />
                 </div>
 
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
-                    <Label htmlFor="approve-provider-config">Provider vault</Label>
+                    <Label htmlFor="approve-provider-config">{translateAgentPage("agents:provider_vault")}</Label>
                     <select
                       id="approve-provider-config"
                       value={draft.providerConfigId}
@@ -469,7 +474,7 @@ function ApproveDialog({
                       }
                       className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
-                      <option value="">Deployment default</option>
+                      <option value="">{translateAgentPage("agents:deployment_default")}</option>
                       {localConfigs.map((config) => (
                         <option key={config.id} value={config.id}>
                           {config.displayName}
@@ -497,17 +502,15 @@ function ApproveDialog({
             ) : null}
 
             <DialogFooter>
-              <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
-              </Button>
+              <Button variant="ghost" onClick={onCancel} disabled={pending}>{translateAgentPage("agents:cancel")}</Button>
               <Button onClick={onConfirm} disabled={pending || !canConfirm}>
                 {pending
-                  ? "Approving…"
+                  ? translateAgentPage("agents:approving")
                   : isSecret
-                    ? "Approve & create"
+                    ? translateAgentPage("agents:approve_create")
                     : draft.cascade
-                      ? "Approve secret & bind"
-                      : "Approve binding"}
+                      ? translateAgentPage("agents:approve_secret_bind")
+                      : translateAgentPage("agents:approve_binding")}
               </Button>
             </DialogFooter>
           </>
@@ -524,6 +527,7 @@ function BindingApproveBody({
   draft: ApproveDraft;
   onChange: (next: ApproveDraft) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { proposal } = draft;
   const secret = bindingSecretLabel(proposal);
   const envKey = bindingEnvKey(proposal);
@@ -531,7 +535,7 @@ function BindingApproveBody({
     <div className="space-y-3 text-sm">
       <div className="space-y-2 rounded-md border border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Target agent</span>
+          <span className="text-xs text-muted-foreground">{translateAgentPage("agents:target_agent")}</span>
           {proposal.target ? (
             <AgentRefChip agent={proposal.target} className="text-sm font-medium" />
           ) : (
@@ -539,14 +543,14 @@ function BindingApproveBody({
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Delivered as</span>
+          <span className="text-xs text-muted-foreground">{translateAgentPage("agents:delivered_as")}</span>
           <span className="flex items-center gap-1.5">
             <DeliveryBadge configPath={proposal.configPath} />
             <code className="font-mono text-xs">{envKey || proposal.configPath}</code>
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Secret</span>
+          <span className="text-xs text-muted-foreground">{translateAgentPage("agents:secret_f4e7a8")}</span>
           <span className="flex items-center gap-1.5">
             <KeyRound className="size-3.5 text-muted-foreground" />
             <span className="font-medium">{secret.name}</span>
@@ -562,13 +566,10 @@ function BindingApproveBody({
             checked={draft.cascade}
             onCheckedChange={(checked) => onChange({ ...draft, cascade: checked === true })}
             className="mt-0.5"
-            aria-label="Also approve the proposed secret"
+            aria-label={translateAgentPage("agents:also_approve_the_proposed_secret")}
           />
-          <span className="text-foreground/90">
-            Also approve the proposed secret{" "}
-            <span className="font-medium">{secret.name}</span> and create it in the same step. The
-            binding can’t land without it.
-          </span>
+          <span className="text-foreground/90">{translateAgentPage("agents:also_approve_the_proposed_secret")}{" "}
+            <span className="font-medium">{secret.name}</span>{" "}{translateAgentPage("agents:and_create_it_in_the_same_step_the")}</span>
         </label>
       ) : null}
     </div>
@@ -596,6 +597,7 @@ function RejectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const canConfirm = reason.trim().length > 0;
   return (
     <Dialog open={Boolean(proposal)} onOpenChange={(open) => !open && onCancel()}>
@@ -603,22 +605,19 @@ function RejectDialog({
         {proposal ? (
           <>
             <DialogHeader>
-              <DialogTitle>Reject proposal</DialogTitle>
-              <DialogDescription>
-                The reason is sent back to{" "}
-                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />. Dependent
-                bindings are rejected too.
-              </DialogDescription>
+              <DialogTitle>{translateAgentPage("agents:reject_proposal")}</DialogTitle>
+              <DialogDescription>{translateAgentPage("agents:the_reason_is_sent_back_to")}{" "}
+                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />{translateAgentPage("agents:dependent_bindings_are_rejected_too")}</DialogDescription>
             </DialogHeader>
             <div className="space-y-1">
-              <Label htmlFor="reject-reason">Reason</Label>
+              <Label htmlFor="reject-reason">{translateAgentPage("agents:reason")}</Label>
               <Textarea
                 id="reject-reason"
                 value={reason}
                 onChange={(event) => onReasonChange(event.target.value)}
                 rows={3}
                 autoFocus
-                placeholder="Why is this being rejected?"
+                placeholder={translateAgentPage("agents:why_is_this_being_rejected")}
               />
             </div>
             {error ? (
@@ -627,11 +626,9 @@ function RejectDialog({
               </p>
             ) : null}
             <DialogFooter>
-              <Button variant="ghost" onClick={onCancel} disabled={pending}>
-                Cancel
-              </Button>
+              <Button variant="ghost" onClick={onCancel} disabled={pending}>{translateAgentPage("agents:cancel")}</Button>
               <Button variant="destructive" onClick={onConfirm} disabled={pending || !canConfirm}>
-                {pending ? "Rejecting…" : "Reject"}
+                {pending ? translateAgentPage("agents:rejecting") : translateAgentPage("agents:reject")}
               </Button>
             </DialogFooter>
           </>
@@ -658,6 +655,7 @@ export function ProposalActions({
   disabled?: boolean;
   size?: "sm" | "xs";
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const blocked = !proposal.viewerCanApprove;
   const heightClass = size === "xs" ? "h-7 px-2 text-xs" : "";
   const approveButton = (
@@ -666,9 +664,7 @@ export function ProposalActions({
       className={heightClass}
       disabled={disabled || blocked}
       onClick={() => onApprove(proposal)}
-    >
-      Approve
-    </Button>
+    >{translateAgentPage("agents:approve")}</Button>
   );
   return (
     <div className="flex items-center gap-1.5">
@@ -679,7 +675,7 @@ export function ProposalActions({
               <span tabIndex={0}>{approveButton}</span>
             </TooltipTrigger>
             <TooltipContent className="max-w-72">
-              {proposal.approveBlockReason ?? "You don’t have permission to approve this."}
+              {proposal.approveBlockReason ?? translateAgentPage("agents:you_don_t_have_permission_to_approve_this")}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -692,9 +688,7 @@ export function ProposalActions({
         className={heightClass}
         disabled={disabled}
         onClick={() => onReject(proposal)}
-      >
-        Reject
-      </Button>
+      >{translateAgentPage("agents:reject")}</Button>
     </div>
   );
 }

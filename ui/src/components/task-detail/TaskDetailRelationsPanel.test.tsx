@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   TaskDetailReferencesPanel,
@@ -72,6 +73,40 @@ describe("task-detail relation panels", () => {
 
     flushSync(() => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(onAdd).toHaveBeenCalledOnce();
+  });
+
+  it.each([0, 1])("preserves numeric completion across mounted locale changes (count=%s)", async (completed) => {
+    await i18n.changeLanguage("en");
+    const items = [createIssue({ id: "31", title: "用户任务 / Alpha", status: completed === 1 ? "done" : "todo" })];
+    const dataBefore = JSON.stringify(items);
+    const onAddSubtask = vi.fn();
+    flushSync(() => root.render(<TaskDetailSubtasksPanel items={items} onAddSubtask={onAddSubtask} />));
+    try {
+      expect(container.textContent).toContain(`${completed} of 1 complete`);
+      const progress = container.querySelector('[role="progressbar"]');
+      const fill = progress?.firstElementChild;
+      const link = container.querySelector('a[href="/issues/PAP-31"]');
+      const button = container.querySelector("button");
+      expect(link?.textContent).toContain("用户任务 / Alpha");
+      for (const locale of ["zh-CN", "en"]) {
+        flushSync(() => { void i18n.changeLanguage(locale); });
+        expect(container.textContent).toContain(locale === "en" ? `${completed} of 1 complete` : `已完成 ${completed}／1 项`);
+        expect(container.querySelector('[role="progressbar"]')).toBe(progress);
+        expect(progress?.getAttribute("aria-valuemin")).toBe("0");
+        expect(progress?.getAttribute("aria-valuemax")).toBe("100");
+        expect(progress?.getAttribute("aria-valuenow")).toBe(String(completed * 100));
+        expect(progress?.firstElementChild).toBe(fill);
+        expect((fill as HTMLElement).style.width).toBe(`${completed * 100}%`);
+        expect(container.querySelector('a[href="/issues/PAP-31"]')).toBe(link);
+        expect(link?.textContent).toContain("用户任务 / Alpha");
+        expect(container.querySelector("button")).toBe(button);
+        expect(JSON.stringify(items)).toBe(dataBefore);
+      }
+      flushSync(() => button?.click());
+      expect(onAddSubtask).toHaveBeenCalledOnce();
+    } finally {
+      flushSync(() => { void i18n.changeLanguage("en"); });
+    }
   });
 
   it("puts a blocked subtask's root blocker before the shared task row", () => {

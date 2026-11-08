@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Send } from "lucide-react";
@@ -28,6 +29,7 @@ import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
 import { describeError } from "@/api/errors";
 
 export function GatewayDetail() {
+  const { t } = useTranslation("connections");
   const { gatewayId = "", tab } = useParams<{ gatewayId: string; tab?: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -74,11 +76,11 @@ export function GatewayDetail() {
 
   const gateway = useMemo(
     () => (gatewaysQuery.data?.gateways ?? []).find((g) => g.id === gatewayId),
-    [gatewaysQuery.data, gatewayId],
+    [gatewaysQuery.data, gatewayId, t],
   );
   const profile = useMemo(
     () => (profilesQuery.data?.profiles ?? []).find((p) => p.id === gateway?.profileId),
-    [profilesQuery.data, gateway?.profileId],
+    [profilesQuery.data, gateway?.profileId, t],
   );
   const apps = useMemo(
     () =>
@@ -87,15 +89,15 @@ export function GatewayDetail() {
         applicationsQuery.data?.applications ?? [],
         connectionsQuery.data?.connections ?? [],
       ),
-    [profile, applicationsQuery.data, connectionsQuery.data],
+    [profile, applicationsQuery.data, connectionsQuery.data, t],
   );
   const agentNames = useMemo(
     () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent.name])),
-    [agentsQuery.data],
+    [agentsQuery.data, t],
   );
   const projectNames = useMemo(
     () => new Map((projectsQuery.data ?? []).map((project) => [project.id, project.name])),
-    [projectsQuery.data],
+    [projectsQuery.data, t],
   );
 
   function rememberCreatedToken(token: ToolMcpGatewayTokenCreated) {
@@ -105,12 +107,12 @@ export function GatewayDetail() {
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Gateways", href: "/apps/gateways" },
+      { label: t("connectors_4b1e950"), href: "/apps" },
+      { label: t("gateways_8220856"), href: "/apps/gateways" },
       { label: gateway.name },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, gateway]);
+  }, [setBreadcrumbs, gateway, t]);
 
   const toggleMutation = useMutation({
     mutationFn: () =>
@@ -119,25 +121,25 @@ export function GatewayDetail() {
       }),
     onSuccess: async (updated) => {
       pushToast({
-        title: updated.status === "active" ? "Gateway on" : "Gateway off",
+        title: updated.status === "active" ? t("gateway_on_000445d") : t("gateway_off_c7a89c2"),
         body:
           updated.status === "active"
-            ? `${updated.name} is exposing its tools again.`
-            : `${updated.name} is off — every client goes silent.`,
+            ? t("is_exposing_its_tools_again_63e6b47", { name: updated.name })
+            : t("is_off_every_client_goes_silent_4507e64", { name: updated.name }),
         tone: "success",
       });
       await queryClient.invalidateQueries({ queryKey: gatewaysQueryKey(selectedCompanyId!) });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't update the gateway",
+        title: t("couldn_t_update_the_gateway_c98b694"),
         body: describeError(error).body,
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("select_an_organization_to_manage_gateways_78cafb1")}</div>;
   }
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;
@@ -165,10 +167,8 @@ export function GatewayDetail() {
   if (!gateway) {
     return (
       <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn’t find that gateway.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/gateways")}>
-          Back to gateways
-        </Button>
+        <p className="text-sm text-muted-foreground">{t("we_couldn_t_find_that_gateway_b0d144a")}</p>
+        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/gateways")}>{t("back_to_gateways_c22de08")}</Button>
       </div>
     );
   }
@@ -178,26 +178,20 @@ export function GatewayDetail() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs text-muted-foreground">
-            <Link to="/apps/gateways" className="hover:underline">
-              Apps · Gateways
-            </Link>
+            <Link to="/apps/gateways" className="hover:underline">{t("apps_gateways_90eda07")}</Link>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">{gateway.name}</h1>
           <CopyableGatewayUrl endpointPath={gateway.endpointPath} className="mt-1 max-w-xl" />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setEditing(true)}>
-            <Pencil className="mr-1.5 h-4 w-4" />
-            Edit
-          </Button>
+            <Pencil className="mr-1.5 h-4 w-4" />{t("edit_16f01b4")}</Button>
           <Button onClick={() => setSnippetOpen(true)}>
-            <Send className="mr-1.5 h-4 w-4" />
-            Client snippets
-          </Button>
+            <Send className="mr-1.5 h-4 w-4" />{t("client_snippets_a8ebe47")}</Button>
         </div>
       </div>
 
-      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label="Gateway tabs">
+      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label={t("gateway_tabs_76b67c2")}>
         {GATEWAY_TABS.map((item) => {
           const isActive = item.key === activeTab;
           return (

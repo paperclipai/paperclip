@@ -30,6 +30,7 @@ import {
 } from "@tanstack/react-query";
 import { classifyError, describeError, errorRetryAfterMs, isTransientError } from "@/api/errors";
 import { MAX_PROBE_DELAY_MS, PROBE_BACKOFF_MS, type ConnectivityStore } from "./connectivity";
+import type { ToastPresentation } from "./localized-ui-error";
 
 export interface AppMutationMeta extends Record<string, unknown> {
   /**
@@ -110,6 +111,7 @@ export function shouldReportQueryError(error: unknown): boolean {
 }
 
 export interface MutationErrorToast {
+  presentation?: ToastPresentation;
   title: string;
   body: string;
 }
@@ -186,7 +188,7 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
       const connectionDown = deps.connectivity.getSnapshot().status !== "online";
       if (!deps.notifyMutationError || !shouldToastMutationError(error, mutation, connectionDown)) return;
       const { title, body } = describeError(error);
-      deps.notifyMutationError({ title, body });
+      deps.notifyMutationError({ title, body, presentation: { error: { cause: error } } });
     },
   });
 

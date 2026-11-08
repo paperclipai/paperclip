@@ -1,3 +1,5 @@
+import { displayStatusLabel } from "./StatusBadge";
+import { t, useTranslation, Trans } from "@/i18n";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
@@ -28,9 +30,9 @@ import { Badge } from "@/components/ui/badge";
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace", get label() { return t("task-components:projectDefault_e8cb80e5"); } },
+  { value: "isolated_workspace", get label() { return t("task-components:newIsolatedWorkspace_0c67029f"); } },
+  { value: "reuse_existing", get label() { return t("task-components:reuseExistingWorkspace_c84ba2b6"); } },
 ] as const;
 
 /* -------------------------------------------------------------------------- */
@@ -38,6 +40,7 @@ const EXECUTION_WORKSPACE_OPTIONS = [
 /* -------------------------------------------------------------------------- */
 
 function BreakablePath({ text }: { text: string }) {
+  useTranslation("task-components");
   const parts: React.ReactNode[] = [];
   const segments = text.split(/(?<=[\/-])/);
   for (let i = 0; i < segments.length; i++) {
@@ -48,6 +51,7 @@ function BreakablePath({ text }: { text: string }) {
 }
 
 function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
+  useTranslation("task-components");
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -72,8 +76,8 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
-        aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "value"}`}
+        title={copied ? t("task-components:copied_ea61bc15") : t("task-components:copy_e21f935f")}
+        aria-label={copied ? t("task-components:copiedToClipboard_d37078fe") : t("task-components:copy_9776bafb", { value1: label ?? "value" })}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -83,11 +87,11 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
 
 function workspaceModeLabel(mode: string | null | undefined) {
   switch (mode) {
-    case "isolated_workspace": return "Isolated workspace";
-    case "operator_branch": return "Operator branch";
-    case "cloud_sandbox": return "Cloud environment";
-    case "adapter_managed": return "Adapter managed";
-    default: return "Workspace";
+    case "isolated_workspace": return t("final-components-b:IssueWorkspaceCard.Isolated_workspace_291e49");
+    case "operator_branch": return t("final-components-b:IssueWorkspaceCard.Operator_branch_ff9526");
+    case "cloud_sandbox": return t("final-components-b:IssueWorkspaceCard.Cloud_environment_f6aabf");
+    case "adapter_managed": return t("final-components-b:IssueWorkspaceCard.Adapter_managed_17348d");
+    default: return t("task-components:workspace_87bb59ba");
   }
 }
 
@@ -97,13 +101,13 @@ function configuredWorkspaceLabel(
 ) {
   switch (selection) {
     case "isolated_workspace":
-      return "New isolated workspace";
+      return t("task-components:newIsolatedWorkspace_0c67029f");
     case "reuse_existing":
       return reusableWorkspace?.mode === "isolated_workspace"
-        ? "Existing isolated workspace"
-        : "Reuse existing workspace";
+        ? t("task-components:existingIsolatedWorkspace_cb171f74")
+        : t("task-components:reuseExistingWorkspace_c84ba2b6");
     default:
-      return "Project default";
+      return t("task-components:projectDefault_e8cb80e5");
   }
 }
 
@@ -194,6 +198,7 @@ export function IssueWorkspaceCard({
   onBrowseFiles,
   onOpenFileByPath,
 }: IssueWorkspaceCardProps) {
+  useTranslation("task-components");
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -359,16 +364,13 @@ export function IssueWorkspaceCard({
                   className="h-6 px-2 text-xs text-muted-foreground"
                   onClick={handleCancel}
                 >
-                  <X className="h-3 w-3 mr-1" />Cancel
-                </Button>
+                  <X className="h-3 w-3 mr-1" />{t("task-components:cancel_19766ed6")}</Button>
                 <Button
                   size="sm"
                   className="h-6 px-2 text-xs"
                   onClick={handleSave}
                   disabled={!canSaveWorkspaceConfig}
-                >
-                  Save
-                </Button>
+                >{t("task-components:save_1509f561")}</Button>
               </>
             ) : (
               <Button
@@ -377,8 +379,7 @@ export function IssueWorkspaceCard({
                 className="h-6 px-2 text-xs text-muted-foreground"
                 onClick={() => setEditing(true)}
               >
-                <Pencil className="h-3 w-3 mr-1" />Edit
-              </Button>
+                <Pencil className="h-3 w-3 mr-1" />{t("task-components:edit_464c4ffd")}</Button>
             )}
           </div>
         )}
@@ -401,32 +402,28 @@ export function IssueWorkspaceCard({
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-(length:--text-micro)">Repo:</span>
+              <span className="text-(length:--text-micro)">{t("task-components:repo_8d01a908")}</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}
           {environmentsEnabled && currentEnvironmentId && (
-            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
-              {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
-                ? " · reused workspace"
+            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}><Trans ns="task-components" i18nKey="sentence_2010bc7ba083" components={{ part1: <>{<span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>}</>, part2: <>{currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
+                ? (" " + t("task-components:reusedWorkspace_cd5acd29"))
                 : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
-                ? " · project default"
-                : null}
-            </div>
+                ? (" " + t("task-components:projectDefault_2a001b78"))
+                : null}</> }} /></div>
           )}
           {!workspace && (
             <div className="text-muted-foreground">
               {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this task runs."
+                ? t("task-components:aFreshIsolatedWorkspaceWillBeCreated_65c789bf")
                 : currentSelection === "reuse_existing"
-                  ? "This task will reuse an existing workspace when it runs."
-                  : "This task will use the project default workspace configuration when it runs."}
+                  ? t("task-components:thisTaskWillReuseAnExistingWorkspace_6243271b")
+                  : t("task-components:thisTaskWillUseTheProjectDefault_263f49e4")}
             </div>
           )}
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
-            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Reusing:{" "}
+            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>{t("task-components:reusing_cc296a09")}{" "}
               {selectedReusableWorkspaceLink ? (
                 <Link
                   to={selectedReusableWorkspaceLink}
@@ -444,9 +441,7 @@ export function IssueWorkspaceCard({
               <Link
                 to={currentWorkspaceLink}
                 className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
-              >
-                View workspace details →
-              </Link>
+              >{t("task-components:viewWorkspaceDetails_2e956143")}</Link>
             </div>
           )}
         </div>
@@ -471,7 +466,7 @@ export function IssueWorkspaceCard({
             {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
+                  ? t("task-components:existingIsolatedWorkspace_cb171f74")
                   : option.label}
               </option>
             ))}
@@ -491,7 +486,7 @@ export function IssueWorkspaceCard({
           {workspace && (
             <div className="text-(length:--text-micro) text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
               <div style={{ overflowWrap: "anywhere" }}>
-                Current:{" "}
+                {t("final-components-b:IssueWorkspaceCard.Current_c09f63")}{" "}
                 {currentWorkspaceLink ? (
                   <Link
                     to={currentWorkspaceLink}
@@ -503,7 +498,7 @@ export function IssueWorkspaceCard({
                   <BreakablePath text={workspace.name} />
                 )}
                 {" · "}
-                {workspace.status}
+                {displayStatusLabel(workspace.status)}
               </div>
             </div>
           )}
@@ -518,17 +513,13 @@ export function IssueWorkspaceCard({
             onClick={onBrowseFiles}
             className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
-            <FolderSearch className="h-3.5 w-3.5 shrink-0" />
-            Browse files…
-          </button>
+            <FolderSearch className="h-3.5 w-3.5 shrink-0" />{t("task-components:browseFiles_62f9b067")}</button>
           <button
             type="button"
             onClick={onOpenFileByPath ?? onBrowseFiles}
             className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
-            <FileSearch className="h-3.5 w-3.5 shrink-0" />
-            Open file by path…
-          </button>
+            <FileSearch className="h-3.5 w-3.5 shrink-0" />{t("task-components:openFileByPath_1f9a7fd5")}</button>
         </div>
       )}
     </div>

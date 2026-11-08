@@ -1,3 +1,5 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation, Trans } from "@/i18n";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
 import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
@@ -49,7 +51,7 @@ import {
 import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { buildExecutionPolicy, stageParticipantValues } from "../../lib/localized-issue-execution-policy";
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   areAutomaticMonitorChecksPaused,
@@ -57,6 +59,7 @@ import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
+  getMonitorTimingState,
   formatMonitorEtaLabel,
   formatMonitorOffset,
   useMonitorCountdown,
@@ -151,6 +154,7 @@ function splitMiddleTruncation(value: string): { prefix: string; suffix: string 
 }
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: ComponentType<{ className?: string }> }) {
+  useTranslation("task-components");
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timerRef.current), []);
@@ -176,7 +180,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
         )}
         onClick={handleCopy}
         title={value}
-        aria-label={`Copy ${value} to clipboard`}
+        aria-label={t("task-components:copyToClipboard_95f5bf10", { value1: value })}
       >
         {!streamlinedUiEnabled ? value : middle ? (
           <span className="flex min-w-0" data-middle-truncate="true">
@@ -189,9 +193,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
       </button>
       {copied && (
         <span className={cn("inline-flex items-center gap-1 text-xs shrink-0", issueStatusText.done)} role="status">
-          <Check className="h-3 w-3 shrink-0" />
-          Copied
-        </span>
+          <Check className="h-3 w-3 shrink-0" />{t("task-components:copied_8d525e5f")}</span>
       )}
     </div>
   );
@@ -258,6 +260,7 @@ export function IssueProperties({
   sidePanelContentOnly = false,
   contextUsage,
 }: IssuePropertiesProps) {
+  useTranslation("task-components");
   const policyResult = useExecutionPolicy(issue.executionPolicy);
   const policyAvailable = policyResult.success;
   const executionPolicy = policyResult.success ? policyResult.data : null;
@@ -552,7 +555,7 @@ export function IssueProperties({
   };
 
   const projectName = (id: string | null) => {
-    if (!id) return id?.slice(0, 8) ?? "None";
+    if (!id) return id?.slice(0, 8) ?? t("final-components-b:issue-properties.IssueProperties.None_dc937b");
     const project = orderedProjects.find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
@@ -603,10 +606,10 @@ export function IssueProperties({
     (workspace) => workspace.id === issue.executionWorkspaceId,
   ) ?? issue.currentExecutionWorkspace ?? null;
   const workspaceTriggerLabel = activeWorkspacePickerMode === "isolated"
-    ? "New isolated workspace"
+    ? t("task-components:newIsolatedWorkspace_0c67029f")
     : activeWorkspacePickerMode === "reuse"
-      ? boundWorkspace?.name ?? "Reuse existing workspace"
-      : "Default";
+      ? boundWorkspace?.name ?? t("task-components:reuseExistingWorkspace_c84ba2b6")
+      : t("task-components:default_21b111cb");
   const workspaceTriggerTitle = activeWorkspacePickerMode === "reuse"
     ? boundWorkspace?.branchName ?? undefined
     : undefined;
@@ -649,7 +652,7 @@ export function IssueProperties({
   const controlWorkspaceRuntime = useMutation({
     mutationFn: (request: WorkspaceRuntimeControlRequest) => {
       const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
-      if (!workspaceId) throw new Error("This task is not attached to a workspace.");
+      if (!workspaceId) throw localizeUiError(new Error("This task is not attached to a workspace."), { key: "final-components-b:error.This_task_is_not_attached_to_a_workspace_391e13" });
       return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request);
     },
     onSuccess: (result, request) => {
@@ -874,23 +877,23 @@ export function IssueProperties({
         assigneeOverrideThinkingEffort,
         assigneeOverrideChrome ? "Chrome" : "",
       ].filter(Boolean);
-      const summary = details.length > 0 ? `Override · ${details.join(" · ")}` : "Override · adapter options";
+      const summary = details.length > 0 ? t("final-components-b:Override_details_ed1b9c", { details: details.join(" · ") }) : t("final-components-b:issue-properties.IssueProperties.Override_adapter_options_332c4f");
       return (
         <span
           className="min-w-0 truncate text-sm"
-          title={`Task-level model override — replaces the agent's primary model for this issue.${details.length > 0 ? ` (${details.join(" · ")})` : ""}`}
+          title={t("task-components:taskLevelModelOverrideReplacesTheAgent_a80572fa", { value1: details.length > 0 ? ` (${details.join(" · ")})` : "" })}
         >
           {summary}
         </span>
       );
     }
-    return <span className="text-sm text-muted-foreground">Primary model</span>;
+    return <span className="text-sm text-muted-foreground">{t("task-components:primaryModel_51cbaf4c")}</span>;
   })();
   const assigneeOptionsContent = supportsAssigneeOverrides ? (
     <div className="w-full space-y-3 p-2">
       <div className="space-y-1.5">
-        <div className="text-xs text-muted-foreground">Model lane</div>
-        <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
+        <div className="text-xs text-muted-foreground">{t("task-components:modelLane_7cd1d36f")}</div>
+        <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label={t("task-components:modelLane_7cd1d36f")}>
           {(["primary", "custom"] as const).map((lane) => (
             <button
               key={lane}
@@ -903,33 +906,31 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : "Override"}
+              {lane === "primary" ? t("task-components:primary_efe10c80") : t("task-components:override_43bc0f5f")}
             </button>
           ))}
         </div>
         {assigneeOverrideLane === "custom" ? (
-          <p className="text-xs text-muted-foreground">
-            Task-level model override — replaces the agent&apos;s primary model for this issue.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("task-components:taskLevelModelOverrideReplacesTheAgent_fd6678a2")}</p>
         ) : null}
       </div>
       {assigneeOverrideLane === "custom" ? (
         <>
           <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">Model</div>
+            <div className="text-xs text-muted-foreground">{t("task-components:model_5e2c614c")}</div>
             <InlineEntitySelector
               value={assigneeOverrideModel}
               options={modelOverrideOptions}
-              placeholder="Default model"
+              placeholder={t("task-components:defaultModel_3840d9d2")}
               disablePortal
-              noneLabel="Default model"
-              searchPlaceholder="Search models..."
-              emptyMessage="No models found."
+              noneLabel={t("final-components-b:issue-properties.IssueProperties.Default_model_3840d9")}
+              searchPlaceholder={t("task-components:searchModels_37b90680")}
+              emptyMessage={t("task-components:noModelsFound_339e5fcd")}
               onChange={updateAssigneeOverrideModel}
             />
           </div>
           <div className="space-y-1.5">
-            <div className="text-xs text-muted-foreground">Thinking effort</div>
+            <div className="text-xs text-muted-foreground">{t("task-components:thinkingEffort_264c28cb")}</div>
             <div className="flex items-center gap-1.5 flex-wrap">
               {thinkingEffortOptionsFor(assigneeAdapterType, effectiveAssigneeModel).map((option) => (
                 <button
@@ -947,7 +948,7 @@ export function IssueProperties({
           </div>
           {assigneeAdapterType === "claude_local" ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-              <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+              <div className="text-xs text-muted-foreground">{t("task-components:enableChromeChrome_df1c9d67")}</div>
               <ToggleSwitch
                 checked={assigneeOverrideChrome}
                 onCheckedChange={(next) => updateAssigneeOverrideConfig({ chrome: next ? true : undefined })}
@@ -961,16 +962,14 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This assignee's adapter does not expose editable task overrides."
-          : "Select a compatible assignee agent to edit these overrides."}
+          ? t("task-components:thisAssigneeSAdapterDoesNotExpose_8b4cf55a")
+          : t("task-components:selectACompatibleAssigneeAgentToEdit_747f189d")}
       </p>
       <button
         type="button"
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         onClick={() => updateAssigneeAdapterOverrides(null)}
-      >
-        Clear adapter options
-      </button>
+      >{t("task-components:clearAdapterOptions_9a262cb3")}</button>
     </div>
   );
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
@@ -1061,7 +1060,7 @@ export function IssueProperties({
       return agentName(value.slice("agent:".length)) ?? value.slice("agent:".length, "agent:".length + 8);
     }
     if (value.startsWith("user:")) {
-      return userLabel(value.slice("user:".length)) ?? "User";
+      return userLabel(value.slice("user:".length)) ?? t("final-components-b:issue-properties.IssueProperties.User_b512d9");
     }
     return value;
   };
@@ -1069,10 +1068,10 @@ export function IssueProperties({
   const approverLabel = approverValues.map((value) => executionParticipantLabel(value)).join(", ");
   const reviewerTrigger = reviewerValues.length > 0
     ? <span className="text-sm truncate min-w-0" title={reviewerLabel}>{reviewerLabel}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>;
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm truncate min-w-0" title={approverLabel}>{approverLabel}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>;
   // PAP-16506 P4: who may give the `in_review` verdict. Only an agent sets this,
   // and only the two opt-in constraints are worth a row — the default (`null` ≡
   // "anyone can approve") is what every issue already does, so it shows nothing.
@@ -1093,13 +1092,13 @@ export function IssueProperties({
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         onClick={() => onUpdate({ status: "in_review" })}
       >
-        {stageType === "review" ? "Run review now" : "Run approval now"}
+        {stageType === "review" ? t("task-components:runReviewNow_32a0248a") : t("task-components:runApprovalNow_f574ab35")}
       </button>
     </PropertyRow>
   );
   const currentExecutionLabel = (() => {
     if (!issue.executionState?.currentStageType) return null;
-    const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
+    const stageLabel = issue.executionState.currentStageType === "review" ? t("task-components:review_aff0766a") : t("task-components:approval_147fb813");
     const participant = issue.executionState.currentParticipant;
     const participantLabel = participant
       ? (participant.type === "agent"
@@ -1197,38 +1196,36 @@ export function IssueProperties({
         </span>
       ) : null}
       {issue.watchdog.status === "disabled" ? (
-        <span className="shrink-0 text-xs text-muted-foreground">(disabled)</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{t("task-components:disabled_f2d421e5")}</span>
       ) : null}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const labelsExtra = !streamlinedPropertiesEnabled && (issue.labelIds ?? []).length > 0 ? (
     <button
       type="button"
       className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
-      aria-label="Add label"
-      title="Add label"
+      aria-label={t("task-components:addLabel_e3488b90")}
+      title={t("task-components:addLabel_e3488b90")}
     >
-      <Plus className="h-3 w-3" />
-      Add label
-    </button>
+      <Plus className="h-3 w-3" />{t("task-components:addLabel_e3488b90")}</button>
   ) : undefined;
   const watchdogContent = (
     <div className="space-y-3 p-2">
       <div className="space-y-1.5">
-        <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+        <div className="text-xs font-medium text-foreground">{t("task-components:watchdogAgent_c6f340c4")}</div>
         <InlineEntitySelector
           value={watchdogAgentInput}
           options={watchdogAgentOptions}
-          placeholder="Select agent"
-          noneLabel="No watchdog agent"
-          searchPlaceholder="Search agents..."
-          emptyMessage="No agents found."
+          placeholder={t("task-components:selectAgent_e9a702a9")}
+          noneLabel={t("final-components-b:issue-properties.IssueProperties.No_watchdog_agent_3c2f72")}
+          searchPlaceholder={t("final-components-b:issue-properties.IssueProperties.Search_agents_32f446")}
+          emptyMessage={t("task-components:noAgentsFound_61666542")}
           onChange={setWatchdogAgentInput}
           renderTriggerValue={(option) => {
-            if (!option) return <span className="text-muted-foreground">Select agent</span>;
+            if (!option) return <span className="text-muted-foreground">{t("task-components:selectAgent_e9a702a9")}</span>;
             const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
             return (
               <>
@@ -1249,22 +1246,20 @@ export function IssueProperties({
         />
       </div>
       <div className="space-y-1.5">
-        <div className="text-xs font-medium text-foreground">
-          Instructions <span className="font-normal text-muted-foreground">(optional)</span>
+        <div className="text-xs font-medium text-foreground">{t("task-components:instructions_934652dc")}{" "}<span className="font-normal text-muted-foreground">{t("task-components:optional_0059798b")}</span>
         </div>
         <Textarea
           value={watchdogInstructionsInput}
           onChange={(event) => setWatchdogInstructionsInput(event.target.value)}
-          placeholder="What should the watchdog watch for and how should it keep work moving?"
+          placeholder={t("task-components:whatShouldTheWatchdogWatchForAnd_f3065c6b")}
           rows={4}
           className="text-xs"
         />
       </div>
       {watchdogIssueRef ? (
-        <div className="text-xs text-muted-foreground">
-          Watchdog task:{" "}
+        <div className="text-xs text-muted-foreground">{t("task-components:watchdogTask_c9c37c8b")}{" "}
           <Link to={`/issues/${watchdogIssueRef.id}`} className="text-primary hover:underline">
-            {watchdogIssueRef.identifier ?? "View task"}
+            {watchdogIssueRef.identifier ?? t("task-components:viewTask_01444a2b")}
           </Link>
         </div>
       ) : null}
@@ -1280,7 +1275,7 @@ export function IssueProperties({
           disabled={deleteWatchdog.isPending || (!issue.watchdog && !watchdogAgentInput)}
           onClick={removeWatchdog}
         >
-          {deleteWatchdog.isPending ? "Removing…" : "Remove"}
+          {deleteWatchdog.isPending ? t("task-components:removing_d4b09919") : t("task-components:remove_c3812fc4")}
         </button>
         <Button
           type="button"
@@ -1289,7 +1284,7 @@ export function IssueProperties({
           disabled={!watchdogAgentInput || upsertWatchdog.isPending}
           onClick={saveWatchdog}
         >
-          {upsertWatchdog.isPending ? "Saving…" : issue.watchdog ? "Update" : "Set watchdog"}
+          {upsertWatchdog.isPending ? t("task-components:saving_23e39291") : issue.watchdog ? t("task-components:update_c1c1009d") : t("task-components:setWatchdog_03d6a683")}
         </Button>
       </div>
     </div>
@@ -1350,19 +1345,20 @@ export function IssueProperties({
   const canCheckMonitorNow = canCheckIssueMonitorNow(issue, monitorServiceName);
   const monitorNow = useMonitorCountdown(monitorPaused ? null : monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
-  const monitorIsDueNow = monitorRelative === "due now";
-  const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
+  const monitorTiming = monitorNextCheckAt ? getMonitorTimingState(monitorNextCheckAt, monitorNow) : null;
+  const monitorIsDueNow = monitorTiming === "due-now";
+  const monitorIsOverdue = monitorTiming === "overdue";
   const monitorPrimary = monitorNextCheckAt
-    ? monitorPaused ? "Automatic checks paused" : formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
+    ? monitorPaused ? t("final-components-b:issue-properties.IssueProperties.Automatic_checks_paused_03d978") : formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
     : monitorState?.status === "cleared"
-      ? "Cleared"
-      : "None";
+      ? t("final-components-b:issue-properties.IssueProperties.Cleared_15f3a2")
+      : t("final-components-b:issue-properties.IssueProperties.None_dc937b");
   const monitorSecondary = monitorNextCheckAt
     ? monitorPaused
-      ? canCheckMonitorNow ? "Check now to request a manual check" : "Resume this task to continue checking"
+      ? canCheckMonitorNow ? t("final-components-b:issue-properties.IssueProperties.Check_now_to_request_a_manual_check_bcf1ae") : t("final-components-b:issue-properties.IssueProperties.Resume_this_task_to_continue_checking_c6f59e")
       : monitorIsDueNow
-      ? "checking momentarily…"
-      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
+      ? t("final-components-b:issue-properties.IssueProperties.checking_momentarily_801f78")
+      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? t("final-components-b:issue-properties.IssueProperties.fires_on_next_tick_2528f8") : monitorAttemptCount > 0 ? t("final-components-b:Attempt_attempt_1b309e", { attempt: monitorAttemptCount }) : ""}`
     : monitorState?.status === "cleared"
       ? [
           monitorLastTriggeredAt ? `last checked ${timeAgo(monitorLastTriggeredAt)}` : null,
@@ -1396,36 +1392,36 @@ export function IssueProperties({
           onPointerDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <span className="text-sm font-semibold">Monitor</span>
-            {monitorAttemptCount > 0 ? <span className="text-xs text-muted-foreground">Attempt {monitorAttemptCount}</span> : null}
+            <span className="text-sm font-semibold">{t("task-components:monitor_4c2e1df4")}</span>
+            {monitorAttemptCount > 0 ? <span className="text-xs text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.bc1605e5a630_0900e" values={{ monitorAttemptCount: monitorAttemptCount }} /></span> : null}
           </div>
           <div className="space-y-3 px-4 py-3 text-left">
             <div>
-              <div className="text-xs text-muted-foreground">Next check</div>
+              <div className="text-xs text-muted-foreground">{t("task-components:nextCheck_9625086a")}</div>
               <div className="text-sm">{formatMonitorAbsoluteFull(monitorNextCheckAt)}</div>
-              <div className="text-xs text-muted-foreground">{monitorPaused ? "Automatic checks paused" : monitorRelative}</div>
+              <div className="text-xs text-muted-foreground">{monitorPaused ? t("final-components-b:issue-properties.IssueProperties.Automatic_checks_paused_03d978") : monitorRelative}</div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Watching</div>
+              <div className="text-xs text-muted-foreground">{t("task-components:watching_fbc59405")}</div>
               <div className="text-sm">{monitorServiceName ?? "—"}</div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Notes</div>
+              <div className="text-xs text-muted-foreground">{t("task-components:notes_8a7525b1")}</div>
               <div className="whitespace-normal text-sm">{monitorNotes ?? "—"}</div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Last triggered</div>
-              <div className="text-sm">{monitorLastTriggeredAt ? formatMonitorAbsoluteFull(monitorLastTriggeredAt) : "— not yet triggered"}</div>
+              <div className="text-xs text-muted-foreground">{t("task-components:lastTriggered_4876b1e2")}</div>
+              <div className="text-sm">{monitorLastTriggeredAt ? formatMonitorAbsoluteFull(monitorLastTriggeredAt) : t("task-components:notYetTriggered_bb0ba130")}</div>
             </div>
           </div>
           <div className="flex gap-2 border-t border-border px-4 py-3">
             {onCheckMonitorNow && canCheckMonitorNow ? (
               <Button type="button" size="sm" variant="outline" disabled={checkingMonitorNow} onClick={() => { setMonitorDetailsOpen(false); onCheckMonitorNow(); }}>
-                {checkingMonitorNow ? "Checking…" : "Check now"}
+                {checkingMonitorNow ? t("task-components:checking_ec963ffc") : t("task-components:checkNow_2937cffb")}
               </Button>
             ) : null}
-            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); setMonitorOpen(true); }}>Edit</Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); clearMonitor(); }}>Clear</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); setMonitorOpen(true); }}>{t("task-components:edit_464c4ffd")}</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); clearMonitor(); }}>{t("task-components:clear_83b12c22")}</Button>
           </div>
         </TooltipContent>
       ) : null}
@@ -1466,7 +1462,7 @@ export function IssueProperties({
   const scheduledRetryRetryNowSuccess = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
   const scheduledRetryAttemptBadge = scheduledRetryAttempt !== null ? (
-    <span className="whitespace-nowrap shrink-0 text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
+    <span className="whitespace-nowrap shrink-0 text-xs text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.bc1605e5a630_5d715" values={{ scheduledRetryAttempt: scheduledRetryAttempt }} /></span>
   ) : null;
   const scheduledRetryTrigger = (
     <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1488,24 +1484,22 @@ export function IssueProperties({
     <div className="flex w-full flex-col gap-2 p-2 text-xs">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-foreground">
-          {scheduledRetryIsContinuation ? "Scheduled continuation" : "Scheduled retry"}
+          {scheduledRetryIsContinuation ? t("task-components:scheduledContinuation_90d74172") : t("task-components:scheduledRetry_263ed103")}
         </span>
         {scheduledRetryAttempt !== null ? (
-          <span className="text-xs text-muted-foreground">
-            Attempt {scheduledRetryAttempt}
-          </span>
+          <span className="text-xs text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.bc1605e5a630_5d715" values={{ scheduledRetryAttempt: scheduledRetryAttempt }} /></span>
         ) : null}
       </div>
       <dl className="grid grid-cols-(--gtc-15) gap-y-1">
         {scheduledRetryReasonLabel ? (
           <>
-            <dt className="text-muted-foreground">Reason</dt>
+            <dt className="text-muted-foreground">{t("task-components:reason_f81ab834")}</dt>
             <dd className="text-foreground">{scheduledRetryReasonLabel}</dd>
           </>
         ) : null}
         {scheduledRetryAbsolute ? (
           <>
-            <dt className="text-muted-foreground">Next attempt</dt>
+            <dt className="text-muted-foreground">{t("task-components:nextAttempt_94158821")}</dt>
             <dd className="text-foreground">
               {scheduledRetryAbsolute}
               {scheduledRetryRelative ? (
@@ -1516,7 +1510,7 @@ export function IssueProperties({
         ) : null}
         {scheduledRetry.retryOfRunId ? (
           <>
-            <dt className="text-muted-foreground">Replaces run</dt>
+            <dt className="text-muted-foreground">{t("task-components:replacesRun_28efd336")}</dt>
             <dd className="text-foreground">
               <Link
                 to={`/agents/${scheduledRetry.agentId}/runs/${scheduledRetry.retryOfRunId}`}
@@ -1529,7 +1523,7 @@ export function IssueProperties({
         ) : null}
         {scheduledRetry.agentName ? (
           <>
-            <dt className="text-muted-foreground">Agent</dt>
+            <dt className="text-muted-foreground">{t("task-components:agent_11b39c93")}</dt>
             <dd className="text-foreground">
               <Link
                 to={`/agents/${scheduledRetry.agentId}`}
@@ -1542,7 +1536,7 @@ export function IssueProperties({
         ) : null}
         {scheduledRetry.error ? (
           <>
-            <dt className="text-muted-foreground">Last error</dt>
+            <dt className="text-muted-foreground">{t("task-components:lastError_5488d837")}</dt>
             <dd className="text-foreground break-words">{scheduledRetry.error}</dd>
           </>
         ) : null}
@@ -1566,33 +1560,29 @@ export function IssueProperties({
         >
           {retryNow.isPending ? (
             <span className="inline-flex items-center gap-1.5">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Retrying…
-            </span>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />{t("task-components:retrying_a16c8b1c")}</span>
           ) : scheduledRetryRetryNowSuccess ? (
             <span className="inline-flex items-center gap-1.5">
               <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-              {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+              {retryNow.data?.outcome === "already_promoted" ? t("task-components:alreadyPromoted_8a7ece83") : t("task-components:promoted_0cf04463")}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5">
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry now
-            </span>
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{t("task-components:retryNow_5148c3e2")}</span>
           )}
         </Button>
         <span className="text-right text-xs text-muted-foreground">
           {retryNow.isPending
-            ? "Promoting scheduled retry"
+            ? t("task-components:promotingScheduledRetry_ff49385c")
             : scheduledRetryRetryNowSuccess
               ? retryNow.data?.outcome === "already_promoted"
-                ? "Already promoted — run starting"
-                : "Promoted — run starting"
+                ? t("task-components:alreadyPromotedRunStarting_53e3c8d4")
+                : t("task-components:promotedRunStarting_6c8f599a")
               : retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
                 ? retryNow.data.message
                 : scheduledRetryIsContinuation
-                  ? "Pulls continuation forward immediately"
-                  : "Pulls retry forward immediately"}
+                  ? t("task-components:pullsContinuationForwardImmediately_0e8e38b5")
+                  : t("task-components:pullsRetryForwardImmediately_4730094a")}
         </span>
       </div>
     </div>
@@ -1609,7 +1599,7 @@ export function IssueProperties({
         <input
           type="text"
           className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-          placeholder="What should the agent re-check?"
+          placeholder={t("task-components:whatShouldTheAgentReCheck_ade0821d")}
           value={monitorNotesInput}
           onChange={(e) => setMonitorNotesInput(e.target.value)}
         />
@@ -1618,7 +1608,7 @@ export function IssueProperties({
         <input
           type="text"
           className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-          placeholder="External service"
+          placeholder={t("task-components:externalService_7ede008e")}
           value={monitorServiceInput}
           onChange={(e) => setMonitorServiceInput(e.target.value)}
         />
@@ -1628,17 +1618,13 @@ export function IssueProperties({
             className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
             disabled={!monitorAtInput}
             onClick={saveMonitor}
-          >
-            Schedule
-          </button>
+          >{t("task-components:schedule_f4830a1d")}</button>
           {executionPolicy?.monitor ? (
             <button
               type="button"
               className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
               onClick={clearMonitor}
-            >
-              Clear
-            </button>
+            >{t("task-components:clear_83b12c22")}</button>
           ) : null}
         </div>
       </div>
@@ -1673,19 +1659,17 @@ export function IssueProperties({
         </PropertyChip>
       ))}
       {selectedIssueLabels.length > 3 && (
-        <Badge variant="outline" className="border-border text-muted-foreground">
-          +{selectedIssueLabels.length - 3} more
-        </Badge>
+        <Badge variant="outline" className="border-border text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.59f3302a07f5_25270" values={{ count: selectedIssueLabels.length - 3 }} /></Badge>
       )}
     </div>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const labelsContent = (
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
+        placeholder={t("task-components:searchLabels_8b2837c0")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -1724,7 +1708,7 @@ export function IssueProperties({
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
+            placeholder={t("task-components:newLabel_2bda0a8b")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -1740,7 +1724,7 @@ export function IssueProperties({
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
+          {createLabel.isPending ? t("task-components:creating_c79ed949") : t("task-components:createLabel_69b585c1")}
         </button>
       </div>
     </>
@@ -1754,7 +1738,7 @@ export function IssueProperties({
       <span className="min-w-0 truncate text-sm" title={assigneeUserLabel}>{assigneeUserLabel}</span>
     </>
   ) : (
-    <span className="text-sm text-muted-foreground">Unassigned</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:unassigned_14d33bd0")}</span>
   );
 
   // Grouped picker options (design surface 2): a board-users section and an
@@ -1766,7 +1750,7 @@ export function IssueProperties({
           kind: "user" as const,
           value: `user:${currentUserId}`,
           userId: currentUserId,
-          label: "Assign to me",
+          label: t("task-components:assignToMe_9dd977a4"),
           searchText: userLabel(currentUserId) ?? "",
         }]
       : []),
@@ -1775,7 +1759,7 @@ export function IssueProperties({
           kind: "user" as const,
           value: `user:${issue.createdByUserId}`,
           userId: issue.createdByUserId,
-          label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+          label: creatorUserLabel ? t("final-components-b:Assign_to_userName_beb3a4", { userName: creatorUserLabel }) : t("final-components-b:issue-properties.IssueProperties.Assign_to_requester_448a74"),
           searchText: creatorUserLabel ?? "requester",
         }]
       : []),
@@ -1875,14 +1859,14 @@ export function IssueProperties({
       ) : null}
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder={t("task-components:searchAssignees_ad7ec86d")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
       />
       <div className="max-h-56 overflow-y-auto overscroll-contain">
         {showNoAssigneeOption
-          ? renderAssigneeOption({ kind: "none", value: "", label: "No assignee", searchText: "" })
+          ? renderAssigneeOption({ kind: "none", value: "", label: t("task-components:noAssignee_d64d8cec"), searchText: "" })
           : null}
         {visibleAgentOptions.length > 0 ? (
           <>
@@ -1897,7 +1881,7 @@ export function IssueProperties({
           </>
         ) : null}
         {!showNoAssigneeOption && visibleAgentOptions.length === 0 && visibleUserOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matches.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:noMatches_d6572bd2")}</div>
         ) : null}
       </div>
     </>
@@ -1913,7 +1897,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        placeholder={t("task-components:search_9a453e6d", { value1: stageType === "review" ? "reviewers" : "approvers" })}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         autoFocus={!inline}
@@ -1925,9 +1909,7 @@ export function IssueProperties({
             values.length === 0 && "bg-accent",
           )}
           onClick={onClear}
-        >
-          No {stageType === "review" ? "reviewers" : "approvers"}
-        </button>
+        ><Trans ns="task-components" i18nKey="sentence_c69b90c4d585" components={{ part1: <>{stageType === "review" ? t("task-components:reviewers_f49dd73f") : t("task-components:approvers_45522a36")}</> }} /></button>
         {currentUserId && (
           <button
             className={cn(
@@ -1936,9 +1918,7 @@ export function IssueProperties({
             )}
             onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
           >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
-          </button>
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />{t("task-components:assignToMe_9dd977a4")}</button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
           <button
@@ -1949,7 +1929,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${issue.createdByUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? creatorUserLabel : "Requester"}
+            {creatorUserLabel ? creatorUserLabel : t("task-components:requester_b5687cf0")}
           </button>
         )}
         {otherUserOptions
@@ -2005,7 +1985,7 @@ export function IssueProperties({
       <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const projectPickerOptions = orderItemsBySelectedAndRecent(
     [
@@ -2026,7 +2006,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search projects..."
+        placeholder={t("task-components:searchProjects_c59dd5a3")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -2090,12 +2070,12 @@ export function IssueProperties({
       ))}
       {blockedByRelations.length > 2 ? (
         <Badge asChild variant="outline" className="border-border text-muted-foreground hover:bg-accent/50">
-          <button type="button" onClick={() => setBlockedByOpen(true)}>+{blockedByRelations.length - 2} more</button>
+          <button type="button" onClick={() => setBlockedByOpen(true)}><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.59f3302a07f5_597d1" values={{ count: blockedByRelations.length - 2 }} /></button>
         </Badge>
       ) : null}
     </div>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const subtasksTrigger = childIssues.length > 0 ? (
     <div className="flex min-w-0 flex-col items-start gap-1">
@@ -2104,12 +2084,12 @@ export function IssueProperties({
       ))}
       {childIssues.length > 2 ? (
         <Badge asChild variant="outline" className="border-border text-muted-foreground hover:bg-accent/50">
-          <button type="button" onClick={() => setSubtasksOpen(true)}>+{childIssues.length - 2} more</button>
+          <button type="button" onClick={() => setSubtasksOpen(true)}><Trans ns="final-components-b" i18nKey="numeric.issue-properties.IssueProperties.59f3302a07f5_151b6" values={{ count: childIssues.length - 2 }} /></button>
         </Badge>
       ) : null}
     </div>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const visibleRelatedTasks = relatedTasksExpanded
     ? relatedTasks
@@ -2148,13 +2128,13 @@ export function IssueProperties({
       issue={isLockedIssueStub(parentAncestor) ? parentAncestor : {
         id: issue.parentId,
         identifier: parentIdentifier ?? issue.parentId,
-        title: parentTitle ?? "Parent task",
+        title: parentTitle ?? t("task-components:parentTask_fb8d8591"),
         status: parentAncestor?.status ?? currentParentIssue?.status,
       }}
       className="min-w-0 max-w-full"
     />
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
   );
   const parentSearchActive = normalizedParentSearch.length > 0;
   // When the user types, search on the server. The default list caps at 500 rows
@@ -2176,7 +2156,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search tasks..."
+        placeholder={t("task-components:searchTasks_c1af8370")}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -2191,9 +2171,7 @@ export function IssueProperties({
             onUpdate({ parentId: null });
             setParentOpen(false);
           }}
-        >
-          No parent
-        </button>
+        >{t("task-components:noParent_bfc4337c")}</button>
         {parentOptions.map((candidate) => (
           <button
             key={candidate.id}
@@ -2214,9 +2192,9 @@ export function IssueProperties({
           </button>
         ))}
         {parentOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:searchingTasks_33bf3954")}</div>
         ) : parentOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:noMatchingTasks_ee92fb1d")}</div>
         ) : null}
       </div>
     </>
@@ -2262,11 +2240,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search tasks..."
+        placeholder={t("task-components:searchTasks_c1af8370")}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search tasks to add as blockers"
+        aria-label={t("task-components:searchTasksToAddAsBlockers_b075e6c5")}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -2279,9 +2257,7 @@ export function IssueProperties({
             setBlockedByOpen(false);
             setBlockedBySearch("");
           }}
-        >
-          No blockers
-        </button>
+        >{t("task-components:noBlockers_c93d3fab")}</button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
           return (
@@ -2303,9 +2279,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:searchingTasks_33bf3954")}</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:noMatchingTasks_ee92fb1d")}</div>
         ) : null}
       </div>
     </>
@@ -2316,9 +2292,7 @@ export function IssueProperties({
       className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       onClick={onClick}
     >
-      <Plus className="h-3 w-3" />
-      Add blocker
-    </button>
+      <Plus className="h-3 w-3" />{t("task-components:addBlocker_61671f98")}</button>
   );
   const subtasksContent = (
     <>
@@ -2338,7 +2312,7 @@ export function IssueProperties({
             </span>
           </Link>
         )) : (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No subtasks yet.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:noSubtasksYet_17d17d5b")}</div>
         )}
       </div>
       {onAddSubIssue ? (
@@ -2351,9 +2325,7 @@ export function IssueProperties({
               onAddSubIssue();
             }}
           >
-            <Plus className="h-3 w-3" />
-            Add subtask
-          </button>
+            <Plus className="h-3 w-3" />{t("task-components:addSubtask_65db0c29")}</button>
         </div>
       ) : null}
     </>
@@ -2362,11 +2334,11 @@ export function IssueProperties({
   const propertiesBody = (
     <div className={cn(streamlinedPropertiesEnabled && "task-detail-properties pl-4")}>
       <PropertySection
-        title={streamlinedPropertiesEnabled ? "Work" : "Triage"}
+        title={streamlinedPropertiesEnabled ? t("task-components:work_104ab921") : t("task-components:triage_4ffbef3c")}
         first
         streamlined={streamlinedPropertiesEnabled}
       >
-        <PropertyRow label="Status">
+        <PropertyRow label={t("task-components:status_920e413c")}>
           <StatusIcon
             {...taskStatusIconProps(issue)}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
@@ -2378,7 +2350,7 @@ export function IssueProperties({
 
         {/* PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI. Revive by flipping the flag. */}
         {SHOW_TASK_PRIORITY_UI && (
-          <PropertyRow label="Priority">
+          <PropertyRow label={t("task-components:priority_d60dbba0")}>
             <PriorityIcon
               priority={issue.priority}
               onChange={(priority) => onUpdate({ priority })}
@@ -2389,7 +2361,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Assignee"
+          label={t("task-components:assignee_5e20d20e")}
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) { setAssigneeSearch(""); setPendingAssignee(null); } }}
           triggerContent={assigneeTrigger}
@@ -2410,7 +2382,7 @@ export function IssueProperties({
         {showAssigneeAdapterOptions ? (
           <PropertyPicker
             inline={inline}
-            label="Model"
+            label={t("task-components:model_5e2c614c")}
             open={assigneeOptionsOpen}
             onOpenChange={setAssigneeOptionsOpen}
             triggerContent={assigneeOptionsTrigger}
@@ -2436,7 +2408,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Project"
+          label={t("task-components:project_98595978")}
           open={projectOpen}
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
@@ -2457,7 +2429,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Labels"
+          label={t("task-components:labels_934b8899")}
           open={labelsOpen}
           onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
           triggerContent={labelsTrigger}
@@ -2470,10 +2442,10 @@ export function IssueProperties({
         </PropertyPicker>
       </PropertySection>
 
-      <PropertySection title="Relationships" streamlined={streamlinedPropertiesEnabled}>
+      <PropertySection title={t("task-components:relationships_85752a46")} streamlined={streamlinedPropertiesEnabled}>
         <PropertyPicker
           inline={inline}
-          label="Parent"
+          label={t("task-components:parent_5f7953f7")}
           open={parentOpen}
           onOpenChange={(open) => {
             setParentOpen(open);
@@ -2494,7 +2466,7 @@ export function IssueProperties({
         {streamlinedPropertiesEnabled ? (
           <PropertyPicker
             inline={inline}
-            label="Blocked by"
+            label={t("task-components:blockedBy_36931a94")}
             open={blockedByOpen}
             onOpenChange={(open) => {
               setBlockedByOpen(open);
@@ -2510,7 +2482,7 @@ export function IssueProperties({
           </PropertyPicker>
         ) : inline ? (
           <div>
-            <PropertyRow label="Blocked by" wrap>
+            <PropertyRow label={t("task-components:blockedBy_36931a94")} wrap>
               {visibleBlockedByRelations.map((relation) => (
                 <RemovableIssueReferencePill
                   key={relation.id}
@@ -2533,7 +2505,7 @@ export function IssueProperties({
             ) : null}
           </div>
         ) : (
-          <PropertyRow label="Blocked by" wrap>
+          <PropertyRow label={t("task-components:blockedBy_36931a94")} wrap>
             {visibleBlockedByRelations.map((relation) => (
               <RemovableIssueReferencePill
                 key={relation.id}
@@ -2562,7 +2534,7 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        <PropertyRow label="Blocking" wrap>
+        <PropertyRow label={t("task-components:blocking_f778a331")} wrap>
           {blockingIssues.length > 0 ? (
             <div className="flex flex-col items-start gap-1.5">
               {visibleBlockingIssues.map((relation) => (
@@ -2575,14 +2547,14 @@ export function IssueProperties({
               />
             </div>
           ) : (
-            <span className="text-sm text-muted-foreground">None</span>
+            <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
           )}
         </PropertyRow>
 
         {streamlinedPropertiesEnabled ? (
           <PropertyPicker
             inline={inline}
-            label="Subtasks"
+            label={t("task-components:subtasks_7eff0a19")}
             open={subtasksOpen}
             onOpenChange={setSubtasksOpen}
             separateTrigger={childIssues.length > 0}
@@ -2594,7 +2566,7 @@ export function IssueProperties({
             {subtasksContent}
           </PropertyPicker>
         ) : !taskChatShellEnabled ? (
-          <PropertyRow label="Sub-tasks" wrap>
+          <PropertyRow label={t("task-components:subTasks_ede4f888")} wrap>
             <div className="flex flex-col items-start gap-1.5">
               {visibleChildIssues.map((child) => (
                 <IssueReferencePill key={child.id} issue={child} />
@@ -2610,16 +2582,14 @@ export function IssueProperties({
                   className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
                   onClick={onAddSubIssue}
                 >
-                  <Plus className="h-3 w-3" />
-                  Add sub-task
-                </button>
+                  <Plus className="h-3 w-3" />{t("task-components:addSubTask_d4a8efaa")}</button>
               ) : null}
             </div>
           </PropertyRow>
         ) : null}
 
         {(!streamlinedPropertiesEnabled || !taskChatShellEnabled) && relatedTasks.length > 0 ? (
-          <PropertyRow label={streamlinedPropertiesEnabled ? "Referenced" : "Related tasks"} wrap>
+          <PropertyRow label={streamlinedPropertiesEnabled ? t("task-components:referenced_e1ea8a5e") : t("task-components:relatedTasks_c5ded36c")} wrap>
             <div className="flex flex-col items-start gap-1.5">
               {visibleRelatedTasks.map((related) => (
                 <IssueReferencePill key={related.id} issue={related} />
@@ -2634,12 +2604,11 @@ export function IssueProperties({
         ) : null}
 
         {pullRequests.length > 0 || workProductsError ? (
-          <PropertyRow label="Pull requests" wrap>
+          <PropertyRow label={t("task-components:pullRequests_d9e3f260")} wrap>
             <div className="flex min-w-0 flex-col gap-2">
               <IssuePullRequestLinks products={pullRequests} externalObjects={externalObjects?.map((entry) => entry.pill)} />
               {workProductsError ? (
-                <span className="text-xs text-muted-foreground">
-                  Couldn’t load pull requests. <button type="button" className="text-primary hover:underline" onClick={() => void refetchWorkProducts()}>Retry</button>
+                <span className="text-xs text-muted-foreground">{t("task-components:couldnTLoadPullRequests_e2da62bd")}{" "}<button type="button" className="text-primary hover:underline" onClick={() => void refetchWorkProducts()}>{t("task-components:retry_942087cc")}</button>
                 </span>
               ) : null}
             </div>
@@ -2653,10 +2622,10 @@ export function IssueProperties({
         />
       </PropertySection>
 
-      <PropertySection title="Execution" streamlined={streamlinedPropertiesEnabled}>
+      <PropertySection title={t("task-components:execution_a45cd4bd")} streamlined={streamlinedPropertiesEnabled}>
         {/* Read-only: agents set the policy, the board does not. */}
         {reviewPolicyBadge ? (
-          <PropertyRow label="Approvals">
+          <PropertyRow label={t("task-components:approvals_2bfc3471")}>
             <PropertyChip title={reviewPolicyBadge.description}>
               <reviewPolicyBadge.Icon className="shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 truncate">{reviewPolicyBadge.label}</span>
@@ -2665,13 +2634,13 @@ export function IssueProperties({
         ) : null}
 
         {!policyAvailable ? (
-          <PropertyRow label="Execution policy" wrap>
-            <span role="status" className="text-sm text-muted-foreground">Execution policy unavailable. Refresh to try again.</span>
+          <PropertyRow label={t("task-components:executionPolicy_b9215cec")} wrap>
+            <span role="status" className="text-sm text-muted-foreground">{t("task-components:executionPolicyUnavailableRefreshToTryAgain_f5e92904")}</span>
           </PropertyRow>
         ) : (<>
         <PropertyPicker
           inline={inline}
-          label="Reviewers"
+          label={t("task-components:reviewers_06499a30")}
           open={reviewersOpen}
           onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
           triggerContent={reviewerTrigger}
@@ -2690,7 +2659,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Approvers"
+          label={t("task-components:approvers_97ecaec1")}
           open={approversOpen}
           onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
           triggerContent={approverTrigger}
@@ -2709,19 +2678,19 @@ export function IssueProperties({
         </>)}
 
         {currentExecutionLabel && (
-          <PropertyRow label="Execution">
+          <PropertyRow label={t("task-components:execution_a45cd4bd")}>
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
           </PropertyRow>
         )}
 
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
-          <PropertyRow label="Workspace">
-            <span className="text-sm text-muted-foreground">Waiting for workspace</span>
+          <PropertyRow label={t("task-components:workspace_87bb59ba")}>
+            <span className="text-sm text-muted-foreground">{t("task-components:waitingForWorkspace_e682cb09")}</span>
           </PropertyRow>
         ) : showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
             inline={inline}
-            label="Scheduled retry"
+            label={t("task-components:scheduledRetry_263ed103")}
             open={scheduledRetryOpen}
             onOpenChange={setScheduledRetryOpen}
             triggerContent={scheduledRetryTrigger}
@@ -2736,7 +2705,7 @@ export function IssueProperties({
         {policyAvailable ? (
         <PropertyPicker
           inline={inline}
-          label="Monitor"
+          label={t("task-components:monitor_4c2e1df4")}
           open={monitorOpen}
           onOpenChange={setMonitorOpen}
           triggerContent={monitorTrigger}
@@ -2749,7 +2718,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Watchdog"
+          label={t("task-components:watchdog_da0ccfea")}
           open={watchdogOpen}
           onOpenChange={setWatchdogOpen}
           triggerContent={watchdogTrigger}
@@ -2760,8 +2729,8 @@ export function IssueProperties({
               <Link
                 to={`/issues/${watchdogIssueRef.id}`}
                 className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                title="Open watchdog task"
-                aria-label="Open watchdog task"
+                title={t("task-components:openWatchdogTask_b396a984")}
+                aria-label={t("task-components:openWatchdogTask_b396a984")}
                 onClick={(e) => e.stopPropagation()}
               >
                 <ArrowUpRight className="h-3 w-3" />
@@ -2778,11 +2747,11 @@ export function IssueProperties({
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
-        <PropertySection title="Workspace" streamlined={streamlinedPropertiesEnabled}>
+        <PropertySection title={t("task-components:workspace_87bb59ba")} streamlined={streamlinedPropertiesEnabled}>
           {workspacePickerEligible ? (
             <PropertyPicker
               inline={inline}
-              label="Execution"
+              label={t("task-components:execution_a45cd4bd")}
               open={workspacePickerOpen}
               onOpenChange={(open) => {
                 setWorkspacePickerOpen(open);
@@ -2808,8 +2777,8 @@ export function IssueProperties({
                       onClick={() => saveWorkspaceSelection(null)}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm">Default</span>
-                        <span className="block text-xs text-muted-foreground">Use the project workspace policy</span>
+                        <span className="block text-sm">{t("task-components:default_21b111cb")}</span>
+                        <span className="block text-xs text-muted-foreground">{t("task-components:useTheProjectWorkspacePolicy_8bf3f9b7")}</span>
                       </span>
                       {activeWorkspacePickerMode === "default" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                     </button>
@@ -2819,8 +2788,8 @@ export function IssueProperties({
                       onClick={() => saveWorkspaceSelection("isolated_workspace")}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm">New isolated workspace</span>
-                        <span className="block text-xs text-muted-foreground">Create a fresh workspace on the next run</span>
+                        <span className="block text-sm">{t("task-components:newIsolatedWorkspace_0c67029f")}</span>
+                        <span className="block text-xs text-muted-foreground">{t("task-components:createAFreshWorkspaceOnTheNext_b5e083cc")}</span>
                       </span>
                       {activeWorkspacePickerMode === "isolated" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                     </button>
@@ -2830,14 +2799,14 @@ export function IssueProperties({
                       onClick={() => setWorkspacePickerStep("reuse")}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm">Reuse existing workspace…</span>
-                        <span className="block text-xs text-muted-foreground">Pick a workspace to reuse</span>
+                        <span className="block text-sm">{t("task-components:reuseExistingWorkspace_9d80bee3")}</span>
+                        <span className="block text-xs text-muted-foreground">{t("task-components:pickAWorkspaceToReuse_50fe55e7")}</span>
                       </span>
                       {activeWorkspacePickerMode === "reuse" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                     </button>
                   </div>
                   <div className="mt-1 border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
-                    {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}
+                    {issue.executionWorkspaceId ? t("task-components:currentWorkspaceStaysActiveAppliesOnThe_84ea502a") : t("task-components:appliesOnTheNextRun_d6d33783")}
                   </div>
                 </>
               ) : (
@@ -2847,27 +2816,25 @@ export function IssueProperties({
                       type="button"
                       className="inline-flex items-center gap-1 rounded px-1 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                       onClick={() => setWorkspacePickerStep("mode")}
-                      aria-label="Back to workspace options"
+                      aria-label={t("task-components:backToWorkspaceOptions_bc31531c")}
                     >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                      Workspace mode
-                    </button>
+                      <ChevronLeft className="h-3.5 w-3.5" />{t("task-components:workspaceMode_36e8bba4")}</button>
                     <input
                       className="block w-full bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                      placeholder="Search workspaces..."
+                      placeholder={t("task-components:searchWorkspaces_5c192a3e")}
                       value={workspaceSearch}
                       onChange={(event) => setWorkspaceSearch(event.target.value)}
                       autoFocus={!inline}
-                      aria-label="Search reusable workspaces"
+                      aria-label={t("task-components:searchReusableWorkspaces_cb34b5eb")}
                     />
                   </div>
                   <div className="max-h-48 overflow-y-auto overscroll-contain py-1">
                     {reusableExecutionWorkspacesLoading ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">Loading workspaces...</div>
+                      <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:loadingWorkspaces_3f9adb0f")}</div>
                     ) : reusableExecutionWorkspacesError ? (
-                      <div className="px-2 py-2 text-xs text-destructive">Failed to load workspaces.</div>
+                      <div className="px-2 py-2 text-xs text-destructive">{t("task-components:failedToLoadWorkspaces_c7033771")}</div>
                     ) : reusableWorkspaceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">No matching workspaces.</div>
+                      <div className="px-2 py-2 text-xs text-muted-foreground">{t("task-components:noMatchingWorkspaces_76be0ffe")}</div>
                     ) : reusableWorkspaceOptions.map((group) => (
                       <div key={group.id} className="py-1">
                         <div className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.label}</div>
@@ -2889,26 +2856,24 @@ export function IssueProperties({
                     ))}
                   </div>
                   <div className="border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
-                    {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}
+                    {issue.executionWorkspaceId ? t("task-components:currentWorkspaceStaysActiveAppliesOnThe_84ea502a") : t("task-components:appliesOnTheNextRun_d6d33783")}
                   </div>
                 </>
               )}
             </PropertyPicker>
           ) : null}
           {showWorkspaceDetailLink && issue.executionWorkspaceId && (
-            <PropertyRow label="Workspace">
+            <PropertyRow label={t("task-components:workspace_87bb59ba")}>
               <Link
                 to={`/execution-workspaces/${issue.executionWorkspaceId}`}
                 className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
               >
-                <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                View workspace
-                <ArrowUpRight className="h-3 w-3 shrink-0" />
+                <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{t("task-components:viewWorkspace_ea77e961")}<ArrowUpRight className="h-3 w-3 shrink-0" />
               </Link>
             </PropertyRow>
           )}
           {hasWorkspaceRuntimeControls && (
-            <PropertyRow label="Service">
+            <PropertyRow label={t("task-components:service_d677190e")}>
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                 <WorkspaceRuntimeQuickControls
                   sections={workspaceRuntimeSections}
@@ -2929,7 +2894,7 @@ export function IssueProperties({
             </PropertyRow>
           )}
           {issue.currentExecutionWorkspace?.branchName && (
-            <PropertyRow label="Branch">
+            <PropertyRow label={t("task-components:branch_52656e81")}>
               <TruncatedCopyable
                 value={issue.currentExecutionWorkspace.branchName}
                 icon={GitBranch}
@@ -2937,7 +2902,7 @@ export function IssueProperties({
             </PropertyRow>
           )}
           {issue.currentExecutionWorkspace?.cwd && !hideHostPaths && (
-            <PropertyRow label="Folder">
+            <PropertyRow label={t("task-components:folder_74ccd433")}>
               <TruncatedCopyable
                 value={issue.currentExecutionWorkspace.cwd}
                 icon={FolderOpen}
@@ -2947,9 +2912,9 @@ export function IssueProperties({
         </PropertySection>
       ) : null}
 
-      <PropertySection title="About" streamlined={streamlinedPropertiesEnabled}>
+      <PropertySection title={t("task-components:about_4efca0d1")} streamlined={streamlinedPropertiesEnabled}>
         {originatingActor ? (
-          <PropertyRow label="Originating">
+          <PropertyRow label={t("task-components:originating_28d9df90")}>
             {originatingActor.kind === "agent" ? (
               <Link
                 to={`/agents/${originatingActor.id}`}
@@ -2960,21 +2925,19 @@ export function IssueProperties({
             ) : (
               <span className="flex min-w-0 items-center gap-1.5">
                 <Identity
-                  name={actualUserLabel(originatingActor.id) ?? originatingUserProfile?.label ?? "User"}
+                  name={actualUserLabel(originatingActor.id) ?? originatingUserProfile?.label ?? t("final-components-b:issue-properties.IssueProperties.User_b512d9")}
                   avatarUrl={originatingUserProfile?.image ?? null}
                   size="sm"
                 />
                 {originatingViaAgentName ? (
-                  <span className="shrink-0 truncate text-xs text-muted-foreground">
-                    via {originatingViaAgentName}
-                  </span>
+                  <span className="shrink-0 truncate text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_9dcf0de02fbd" components={{ part1: <>{originatingViaAgentName}</> }} /></span>
                 ) : null}
               </span>
             )}
           </PropertyRow>
         ) : null}
         {issue.startedAt && (
-          <PropertyRow label="Started">
+          <PropertyRow label={t("task-components:started_ecbc89cd")}>
             <span
               className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
               title={streamlinedPropertiesEnabled ? formatDateTime(issue.startedAt) : undefined}
@@ -2982,20 +2945,20 @@ export function IssueProperties({
           </PropertyRow>
         )}
         {issue.completedAt && (
-          <PropertyRow label="Completed">
+          <PropertyRow label={t("task-components:completed_22a970d2")}>
             <span
               className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
               title={streamlinedPropertiesEnabled ? formatDateTime(issue.completedAt) : undefined}
             >{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
+        <PropertyRow label={t("task-components:created_d70b9e24")}>
           <span
             className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
             title={streamlinedPropertiesEnabled ? formatDateTime(issue.createdAt) : undefined}
           >{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
+        <PropertyRow label={t("task-components:updated_3a5ecca1")}>
           <span
             className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
             title={streamlinedPropertiesEnabled ? timeAgo(issue.updatedAt) : undefined}
@@ -3006,7 +2969,7 @@ export function IssueProperties({
             const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
             const archivedByName = agentName(issue.archivedByAgentId);
             return (
-              <PropertyRow label="Archived">
+              <PropertyRow label={t("task-components:archived_bdb86505")}>
                 <div className="flex min-w-0 max-w-full flex-col items-start gap-1">
                   {/* The row label already reads "Archived", so the value shows just
                       the attributing agent (icon + name) — this gives the name the
@@ -3016,7 +2979,7 @@ export function IssueProperties({
                       truncation on genuinely long names is recoverable. */}
                   <span
                     className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
-                    title={`Archived by ${archivedByName} · ${formatDateTime(issue.archivedAt)}`}
+                    title={t("task-components:archivedBy_2e1acf44", { value1: archivedByName, value2: formatDateTime(issue.archivedAt) })}
                   >
                     {archivedByAgent
                       ? <AgentAvatar agent={archivedByAgent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
@@ -3034,7 +2997,7 @@ export function IssueProperties({
                       disabled={unarchiveFromInbox.isPending}
                     >
                       <ArchiveRestore className="h-3 w-3" />
-                      {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
+                      {unarchiveFromInbox.isPending ? t("task-components:unarchiving_80a70ba6") : t("task-components:unarchive_f565318d")}
                     </button>
                   </div>
                   {unarchiveErrorMessage ? (
@@ -3048,7 +3011,7 @@ export function IssueProperties({
           })()
         ) : null}
         {issue.requestDepth > 0 && (
-          <PropertyRow label="Depth">
+          <PropertyRow label={t("task-components:depth_f1dbc339")}>
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
@@ -3069,18 +3032,18 @@ export function IssueProperties({
   const hasReferencesTab = streamlinedPropertiesEnabled
     && (panelReferencedTasks.length > 0 || panelMentionedInTasks.length > 0);
   const availablePaneTabs: IssuePaneTabDescriptor[] = [
-    { value: "properties", label: "Properties", closable: false },
+    { value: "properties", label: t("task-components:properties_ae43692b"), closable: false },
     ...(hasSubtasksTab
-      ? [{ value: "subtasks" as const, label: "Subtasks", count: childIssues.length, closable: true }]
+      ? [{ value: "subtasks" as const, label: t("task-components:subtasks_7eff0a19"), count: childIssues.length, closable: true }]
       : []),
     ...(hasReferencesTab
-      ? [{ value: "references" as const, label: "References", closable: true }]
+      ? [{ value: "references" as const, label: t("task-components:references_69824d3b"), closable: true }]
       : []),
     ...(hasPlanTab
-      ? [{ value: "plans" as const, label: "Plan", closable: true }]
+      ? [{ value: "plans" as const, label: t("task-components:plan_fa8ed0bd"), closable: true }]
       : []),
     ...(hasArtifactsTab
-      ? [{ value: "artifacts" as const, label: "Artifacts", closable: true }]
+      ? [{ value: "artifacts" as const, label: t("task-components:artifacts_314ae71b"), closable: true }]
       : []),
   ];
   const visiblePaneTabs = availablePaneTabs.filter(
@@ -3095,7 +3058,7 @@ export function IssueProperties({
       <>
         {paneHeaderSlot
           ? streamlinedPropertiesEnabled ? createPortal(
-              <div className="flex items-center" role="tablist" aria-label="Properties panel sections">
+              <div className="flex items-center" role="tablist" aria-label={t("task-components:propertiesPanelSections_60eb8c4e")}>
                 <button
                   type="button"
                   role="tab"
@@ -3104,12 +3067,10 @@ export function IssueProperties({
                     STREAMLINED_PANE_TAB_CLASS,
                     "inline-flex flex-none items-center bg-muted px-3",
                   )}
-                >
-                  Properties
-                </button>
+                >{t("task-components:properties_ae43692b")}</button>
               </div>,
               paneHeaderSlot,
-            ) : createPortal(<span className="text-sm font-medium">Properties</span>, paneHeaderSlot)
+            ) : createPortal(<span className="text-sm font-medium">{t("task-components:properties_ae43692b")}</span>, paneHeaderSlot)
           : null}
         {propertiesBody}
       </>
@@ -3224,7 +3185,7 @@ export function IssueProperties({
               <button
                 type="button"
                 className="absolute right-2.5 top-1/2 z-20 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring group-hover/pane-tab:opacity-100 group-focus-within/pane-tab:opacity-100"
-                aria-label={`Close ${tab.label} tab`}
+                aria-label={t("task-components:closeTab_e6e6dac9", { value1: tab.label })}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -3253,8 +3214,8 @@ export function IssueProperties({
             size="icon-xs"
             className="size-6 shrink-0 text-muted-foreground"
             disabled={hiddenPaneTabs.length === 0}
-            aria-label="Open closed sidebar tab"
-            title={hiddenPaneTabs.length === 0 ? "All sidebar tabs are open" : "Open closed sidebar tab"}
+            aria-label={t("task-components:openClosedSidebarTab_a5dddc07")}
+            title={hiddenPaneTabs.length === 0 ? t("task-components:allSidebarTabsAreOpen_48d6f9cc") : t("task-components:openClosedSidebarTab_a5dddc07")}
           >
             <Plus className="size-3.5" aria-hidden />
           </Button>

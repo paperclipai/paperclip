@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
+import { i18n } from "@/i18n";
 import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
@@ -1961,6 +1962,20 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     expect(await aiMenu()).toBeUndefined();
     expect(setAiDefaultMock).not.toHaveBeenCalled();
+  });
+
+  it("localizes unavailable default accounts while retaining their crown", async () => {
+    aiFixture([{ status: "needs_attention" }, { status: "expired" }]);
+    await renderBrowse();
+    await aiMenu();
+    try {
+      await act(() => i18n.changeLanguage("zh-CN").then(() => undefined));
+      expect(container.textContent).toContain("默认账号不可用");
+      expect(container.textContent).not.toContain("Default unavailable");
+      expect(container.querySelector("svg.lucide-crown")).not.toBeNull();
+    } finally {
+      await act(() => i18n.changeLanguage("en").then(() => undefined));
+    }
   });
 
   it("keeps an unavailable default crowned and disables selection of an unavailable replacement", async () => {

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import type {
   ExternalObjectLivenessState,
@@ -39,8 +40,8 @@ function githubObjectLabel(url: string | null | undefined): string | null {
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return t("final-components-b:PR_number_166aa1", { number });
+    if (kind === "issues") return t("final-components-b:Issue_number_8f86d5", { number });
     return null;
   } catch {
     return null;

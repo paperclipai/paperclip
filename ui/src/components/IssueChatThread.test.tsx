@@ -424,6 +424,14 @@ describe("IssueChatThread", () => {
     expect(selector().value).toBe("agent:first");
     act(() => root.unmount());
   });
+  it("updates the empty conversation without sending on a locale round trip", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container); const add = vi.fn();
+    act(() => renderIssueThread(root, { onAdd: add }));
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("此任务对话为空，请在下方发送消息开始。"); expect(add).not.toHaveBeenCalled(); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); root.unmount(); }); }
+  });
   function renderIssueThread(root: ReturnType<typeof createRoot>, props: Partial<ComponentProps<typeof IssueChatThread>> = {}) {
     root.render(
       <MemoryRouter>
@@ -3303,6 +3311,54 @@ describe("IssueChatThread", () => {
     act(() => {
       remount.unmount();
     });
+  });
+
+  it("uploads file drops in Chinese and after switching back to English", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container);
+    const attach = vi.fn(async () => undefined);
+    await act(async () => renderIssueThread(root, { onAttachImage: attach }));
+    try {
+      for (const locale of ["zh-CN", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        const composer = container.querySelector('[data-testid="issue-chat-composer"]')!;
+        const file = new File(["raw"], `${locale}.txt`, { type: "text/plain" });
+        await act(async () => { composer.dispatchEvent(createFileDragEvent("dragenter", [file])); });
+        expect(container.querySelector('[data-testid="issue-chat-composer-drop-overlay"]')).not.toBeNull();
+        const drop = createFileDragEvent("drop", [file]);
+        await act(async () => { composer.dispatchEvent(drop); });
+        expect(drop.defaultPrevented).toBe(true);
+        expect(attach).toHaveBeenLastCalledWith(file);
+      }
+      expect(attach).toHaveBeenCalledTimes(2);
+    } finally { await act(async () => { root.unmount(); await i18n.changeLanguage("en"); }); }
+  });
+
+  it("uses the stable Intent detail as the tool title in Chinese without duplicating it", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container);
+    const intent = "Inspect raw user data 原文";
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      await act(async () => renderIssueThread(root, {
+        hasOutputForRun: () => true,
+        linkedRuns: [{ runId: "run-intent", agentId: "agent-1", agentName: "Agent 1", status: "succeeded", startedAt: "2026-04-06T12:00:00Z", finishedAt: "2026-04-06T12:01:00Z", createdAt: "2026-04-06T12:00:00Z", adapterType: "codex_local" }],
+        transcriptsByRunId: new Map([["run-intent", [
+          { kind: "tool_call", ts: "2026-04-06T12:00:10Z", name: "read_file", toolUseId: "intent-tool", input: { description: intent, path: "raw.txt" } },
+          { kind: "tool_result", ts: "2026-04-06T12:00:20Z", toolUseId: "intent-tool", toolName: "read_file", content: "raw result", isError: false },
+        ]]]),
+      }));
+      const header = [...container.querySelectorAll('button')].find(b => b.classList.contains("group"));
+      if (header) await act(async () => { header.click(); });
+      const work = [...container.querySelectorAll('button')].find(b => b.textContent?.includes("调用了 1 个工具"));
+      expect(work).toBeDefined();
+      await act(async () => { work!.click(); });
+      const button = [...container.querySelectorAll('button')].find(b => b.textContent?.trim() === intent);
+      expect(button).toBeDefined();
+      await act(async () => { button!.click(); });
+      expect([...container.querySelectorAll('dt')].some(dt => dt.textContent === "Intent")).toBe(false);
+      expect(container.textContent?.split(intent)).toHaveLength(2);
+    } finally { await act(async () => { root.unmount(); await i18n.changeLanguage("en"); }); }
   });
 
   it("shows full-composer drop instructions while dragging files over the issue composer", () => {

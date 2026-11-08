@@ -2,9 +2,12 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
 import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
+import { AgentChatPin } from "./AgentChatPin";
+import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
@@ -24,6 +27,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimenta
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => vi.fn(),
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
   NavLink: ({ to, children, className, state: _state, end: _end, ...props }: {
@@ -90,6 +94,52 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+
+  it("localizes contact search, unread counts, creation and agent pins after a language switch", async () => {
+    const agent = { id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent;
+    const toggle = vi.fn();
+    const pins = { keys: new Set<string>(), toggle, canPin: true, error: null };
+    await act(async () => root.render(<TooltipProvider><AgentConversationSidebar agents={[agent]}
+      unreadMessageCounts={new Map([[agent.id, 2]])} onCreateAgent={vi.fn()}
+      renderAgentAction={item => <AgentChatPin agent={item} pins={pins} />} /></TooltipProvider>));
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector("h2")?.textContent).toBe("聊天联系人");
+      expect(container.querySelector('input[aria-label="搜索聊天"]')?.getAttribute("placeholder")).toBe("搜索聊天");
+      expect(container.querySelector('[aria-label="来自 CTO 的 2 条未读消息"]')).not.toBeNull();
+      expect(container.textContent).toContain("创建新智能体");
+      const pin = container.querySelector<HTMLButtonElement>('button[aria-label="固定CTO"]');
+      expect(pin).not.toBeNull();
+      await act(async () => pin!.click());
+      expect(toggle).toHaveBeenCalledWith("agent-chat:company:cto");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('input[aria-label="Search chats"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="Pin CTO"]')).not.toBeNull();
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
+  it("localizes nested More destinations and pin actions when switching", async () => {
+    await renderSidebar();
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector('nav[aria-label="工作区导航"]')).not.toBeNull();
+      await click("更多工作区页面");
+      expect(document.querySelector('button[aria-label="固定项目"]')).not.toBeNull();
+      expect(document.querySelector('a[href="/routines"]')?.textContent).toContain("例行任务");
+      await click("固定项目");
+      expect(container.querySelector(".design-sidebar-pins")?.textContent).toContain("已固定");
+      expect(container.querySelector('button[aria-label="取消固定项目"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="调整已固定的项目顺序"]')?.getAttribute("title")).toBe("拖动以调整项目顺序");
+      expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("项目");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("Projects");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("builds hundreds of agent pins with input reads proportional to list size", () => {
     const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
     const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();

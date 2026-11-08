@@ -28,6 +28,7 @@ import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   canBoardManageRuntime,
@@ -1537,6 +1538,7 @@ describe("IssueDetail", () => {
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   describe.each(["read", "archive"] as const)("cached task %s account gate", action => {
@@ -2083,6 +2085,9 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "Chat" }]);
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "聊天" }]);
+    expect(mockNavigate).not.toHaveBeenCalled();
 
   });
 

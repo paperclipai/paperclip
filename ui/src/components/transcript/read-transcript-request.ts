@@ -1,3 +1,4 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
 export const TRANSCRIPT_REQUEST_TIMEOUT_MS = 15_000;
 
 /** Bound history reads, including body consumption, and release coalesced GETs
@@ -19,7 +20,7 @@ export function readTranscriptRequest<T>(request: (signal: AbortSignal) => Promi
       controller.abort();
     };
     const timer = window.setTimeout(() => {
-      finish(() => reject(new Error("Run history took too long to load. Retry to load it.")));
+      finish(() => reject(localizeUiError(new Error("Run history took too long to load. Retry to load it."), { key: "final-components-b:error.Run_history_took_too_long_to_load_Retry_to_load_it_46761b" })));
       controller.abort();
     }, TRANSCRIPT_REQUEST_TIMEOUT_MS);
     signal.addEventListener("abort", onAbort, { once: true });

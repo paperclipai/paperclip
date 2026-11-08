@@ -1,0 +1,23 @@
+{
+  "code": {
+    "tenant_app_unavailable": {"title": "Reconnecting to Paperclip", "body": "Paperclip is restarting or updating. Please try again in a moment."},
+    "tenant_app_starting": {"title": "Paperclip is starting", "body": "Paperclip is starting up. Please try again in a few seconds."},
+    "WORKER_UNAVAILABLE": {"title": "Plugin unavailable", "body": "This plugin is restarting. Please try again in a moment."},
+    "TIMEOUT": {"title": "Request timed out", "body": "This took too long to respond. Please try again in a moment."},
+    "interaction_audience_denied": {"title": "You can’t respond to this card", "body": "You are not in this card's resolver audience."},
+    "interaction_forbidden": {"title": "You can’t respond to this card", "body": "You do not have permission to respond to this card."},
+    "interaction_settled": {"title": "Already handled", "body": "This request is no longer waiting for a decision."},
+    "interaction_submit_failed": {"title": "Couldn't submit", "body": "Couldn't submit. Try again."}
+  },
+  "kind": {
+    "transient": {"title": "Connection interrupted", "body": "Paperclip is temporarily unavailable. Please try again in a moment."},
+    "auth": {"title": "Signed out", "body": "Your session has ended. Sign in again to continue."},
+    "forbidden": {"title": "Not allowed", "body": "You don’t have permission to do that."},
+    "not_found": {"title": "Not found", "body": "This item doesn’t exist or was moved."},
+    "conflict": {"title": "Out of date", "body": "This changed since you loaded it. Refresh and try again."},
+    "invalid": {"title": "Check your input", "body": "Some details aren’t valid. Review them and try again."},
+    "aborted": {"title": "Cancelled", "body": "The request was cancelled."},
+    "unknown": {"title": "Something went wrong", "body": "An unexpected error occurred. Please try again."}
+  },
+  "actionFailed": "Couldn't {{action}}"
+}

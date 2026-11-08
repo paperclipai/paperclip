@@ -1,3 +1,5 @@
+import { localizedOptions } from "./display-options";
+import { t } from "@/i18n";
 import type {
   Issue,
   IssueBlockedInboxAttention,
@@ -38,27 +40,27 @@ export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
 ];
 
 export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
-  needs_decision: "Needs decision",
-  stalled: "Blocked chain stalled",
-  needs_attention: "Needs attention",
-  recovery_required: "Recovery required",
-  external_wait: "External wait",
-  owner_paused: "Owner paused",
+  get "needs_decision"() { return t("display:meta_229276829a0f"); },
+  get "stalled"() { return t("display:meta_df8fc50b1792"); },
+  get "needs_attention"() { return t("display:meta_a126722ec044"); },
+  get "recovery_required"() { return t("display:meta_3d6d38a4bfc8"); },
+  get "external_wait"() { return t("display:meta_f06421d15591"); },
+  get "owner_paused"() { return t("display:meta_1e7c2fbd0e84"); },
 };
 
 const REASON_LABELS: Record<IssueBlockedInboxReason, string> = {
-  pending_board_decision: "Pending board decision",
-  pending_user_decision: "Pending user decision",
-  missing_successful_run_disposition: "Pick disposition",
-  blocked_chain_stalled: "Blocked chain stalled",
-  blocked_by_unassigned_issue: "Unassigned blocker",
-  blocked_by_assigned_backlog_issue: "Parked blocker",
-  blocked_by_cancelled_issue: "Cancelled blocker",
-  in_review_without_action_path: "Review without action path",
-  invalid_review_participant: "Invalid review participant",
-  open_recovery_issue: "Recovery in progress",
-  external_owner_action: "External owner action",
-  blocked_by_uninvokable_assignee: "Owner paused",
+  get "pending_board_decision"() { return t("display:meta_7f2c74fe26e9"); },
+  get "pending_user_decision"() { return t("display:meta_00de6c320cce"); },
+  get "missing_successful_run_disposition"() { return t("display:meta_c5a895897343"); },
+  get "blocked_chain_stalled"() { return t("display:meta_df8fc50b1792"); },
+  get "blocked_by_unassigned_issue"() { return t("display:meta_3df9c330e562"); },
+  get "blocked_by_assigned_backlog_issue"() { return t("display:meta_803f4d5f8990"); },
+  get "blocked_by_cancelled_issue"() { return t("display:meta_4b84136cf0b6"); },
+  get "in_review_without_action_path"() { return t("display:meta_14970f18d0b9"); },
+  get "invalid_review_participant"() { return t("display:meta_9d9d3ca3c9b6"); },
+  get "open_recovery_issue"() { return t("display:meta_c8f61cc412ed"); },
+  get "external_owner_action"() { return t("display:meta_8561cbcade03"); },
+  get "blocked_by_uninvokable_assignee"() { return t("display:meta_1e7c2fbd0e84"); },
 };
 
 const SEVERITY_RANK: Record<IssueBlockedInboxSeverity, number> = {
@@ -75,7 +77,7 @@ export function blockedReasonVariant(reason: IssueBlockedInboxReason): BlockedRe
 }
 
 export function blockedReasonLabel(reason: IssueBlockedInboxReason): string {
-  return REASON_LABELS[reason] ?? "Stopped";
+  return REASON_LABELS[reason] ?? t("display:copy_ac652f1676c7");
 }
 
 export function blockedVariantLabel(variant: BlockedReasonVariant): string {
@@ -109,16 +111,16 @@ export interface BlockedInboxIssueRow {
 export type BlockedInboxGroupBy = "blocker_type" | "none";
 export type BlockedInboxSort = "urgency" | "most_recent" | "longest_stopped";
 
-export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = [
-  ["blocker_type", "Blocker type"],
-  ["none", "None"],
-];
+export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = localizedOptions([
+  ["blocker_type", "option_188926af4da9"],
+  ["none", "option_6eef6648406c"],
+]);
 
-export const BLOCKED_SORT_OPTIONS: readonly [BlockedInboxSort, string][] = [
-  ["urgency", "Most urgent"],
-  ["most_recent", "Most recent"],
-  ["longest_stopped", "Longest stopped"],
-];
+export const BLOCKED_SORT_OPTIONS: readonly [BlockedInboxSort, string][] = localizedOptions([
+  ["urgency", "option_83922b9c177f"],
+  ["most_recent", "option_88ac2cf7230b"],
+  ["longest_stopped", "option_9a3ae7c71ed8"],
+]);
 
 export interface BlockedInboxGroup {
   variant: BlockedReasonVariant;
@@ -249,27 +251,27 @@ export function blockedBadgeTone(rows: readonly BlockedInboxIssueRow[]): Blocked
 }
 
 export function formatStoppedAge(stoppedSinceAt: string | null, now: number = Date.now()): string {
-  if (!stoppedSinceAt) return "stopped";
+  if (!stoppedSinceAt) return t("display:copy_9c54ae7d53c9");
   const then = new Date(stoppedSinceAt).getTime();
-  if (!Number.isFinite(then)) return "stopped";
+  if (!Number.isFinite(then)) return t("display:copy_9c54ae7d53c9");
   const seconds = Math.max(0, Math.round((now - then) / 1000));
-  if (seconds < 60) return "stopped just now";
+  if (seconds < 60) return t("display:copy_65a780d787ac");
   if (seconds < 3600) {
     const m = Math.floor(seconds / 60);
-    return `stopped ${m}m`;
+    return t("display:copy_a1b094a04fe2", { value0: m });
   }
   if (seconds < 86_400) {
     const h = Math.floor(seconds / 3600);
-    return `stopped ${h}h`;
+    return t("display:copy_c40325bbaf0e", { value0: h });
   }
   if (seconds < 86_400 * 7) {
     const d = Math.floor(seconds / 86_400);
-    return `stopped ${d}d`;
+    return t("display:copy_1e019cc72cfb", { value0: d });
   }
   if (seconds < 86_400 * 30) {
     const w = Math.floor(seconds / (86_400 * 7));
-    return `stopped ${w}w`;
+    return t("display:copy_80639280e572", { value0: w });
   }
   const mo = Math.floor(seconds / (86_400 * 30));
-  return `stopped ${mo}mo`;
+  return t("display:copy_54641a4cabcd", { value0: mo });
 }

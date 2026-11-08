@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -19,6 +20,7 @@ interface GoalPropertiesProps {
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+  useTranslation("task-components");
   return (
     <div className="flex items-start gap-3 py-1.5">
       <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
@@ -42,6 +44,7 @@ function PickerButton({
   onChange: (value: string) => void;
   children: React.ReactNode;
 }) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -71,6 +74,7 @@ function PickerButton({
 }
 
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
+  useTranslation("task-components");
   const { selectedCompanyId } = useCompany();
 
   const { data: agents } = useQuery({
@@ -96,7 +100,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("task-components:status_920e413c")}>
           {onUpdate ? (
             <PickerButton
               current={goal.status}
@@ -110,7 +114,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label="Level">
+        <PropertyRow label={t("task-components:level_1709305c")}>
           {onUpdate ? (
             <PickerButton
               current={goal.level}
@@ -124,7 +128,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label="Owner">
+        <PropertyRow label={t("task-components:owner_4b1b8aa3")}>
           {ownerAgent ? (
             <Link
               to={agentUrl(ownerAgent)}
@@ -133,12 +137,12 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
               {ownerAgent.name}
             </Link>
           ) : (
-            <span className="text-sm text-muted-foreground">None</span>
+            <span className="text-sm text-muted-foreground">{t("task-components:none_dc937b59")}</span>
           )}
         </PropertyRow>
 
         {goal.parentId && (
-          <PropertyRow label="Parent Goal">
+          <PropertyRow label={t("task-components:parentGoal_3c66fbe1")}>
             <Link
               to={`/goals/${goal.parentId}`}
               className="text-sm hover:underline"
@@ -152,10 +156,10 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
       <Separator />
 
       <div className="space-y-1">
-        <PropertyRow label="Created">
+        <PropertyRow label={t("task-components:created_d70b9e24")}>
           <span className="text-sm">{formatDate(goal.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
+        <PropertyRow label={t("task-components:updated_3a5ecca1")}>
           <span className="text-sm">{formatDate(goal.updatedAt)}</span>
         </PropertyRow>
       </div>

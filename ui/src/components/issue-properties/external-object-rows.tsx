@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
@@ -32,8 +33,8 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github PR";
-    if (pill.objectType === "issue") return "Github Issue";
+    if (pill.objectType === "pull_request") return t("final-components-b:issue-properties.external-object-rows.Github_PR_0a4b3a");
+    if (pill.objectType === "issue") return t("final-components-b:issue-properties.external-object-rows.Github_Issue_519a5c");
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
@@ -57,8 +58,8 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return t("final-components-b:PR_number_166aa1", { number });
+    if (kind === "issues") return t("final-components-b:Issue_number_8f86d5", { number });
     return null;
   } catch {
     return null;
@@ -101,6 +102,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
+  useTranslation("task-components");
   const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
@@ -167,6 +169,7 @@ export function ExternalObjectRows({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  useTranslation("task-components");
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -175,19 +178,15 @@ export function ExternalObjectRows({
 
   if (externalObjectsError) {
     return (
-      <PropertyRow label="External objects">
-        <span className="text-xs text-muted-foreground">
-          Couldn't load external objects.
-          {onRetryExternalObjects ? (
+      <PropertyRow label={t("task-components:externalObjects_9279c11d")}>
+        <span className="text-xs text-muted-foreground">{t("task-components:couldnTLoadExternalObjects_42d33ac2")}{onRetryExternalObjects ? (
             <>
               {" "}
               <button
                 type="button"
                 className="text-primary underline-offset-2 hover:underline"
                 onClick={onRetryExternalObjects}
-              >
-                Retry
-              </button>
+              >{t("task-components:retry_942087cc")}</button>
             </>
           ) : null}
         </span>
@@ -197,7 +196,7 @@ export function ExternalObjectRows({
 
   if (externalObjectsLoading) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("task-components:externalObjects_9279c11d")}>
         <span className="h-4 w-24 animate-pulse rounded bg-muted/40" />
       </PropertyRow>
     );
@@ -226,7 +225,7 @@ export function ExternalObjectRows({
           );
         })}
       {expanded || hiddenExternalObjectCount > 0 ? (
-        <PropertyRow label="References">
+        <PropertyRow label={t("task-components:references_69824d3b")}>
           <ExpandRelationListButton
             hiddenCount={hiddenExternalObjectCount}
             expanded={expanded}

@@ -1,0 +1,10 @@
+{
+  "jobTitle": "Title",
+  "types": {
+    "hire_agent": "Hire Agent",
+    "approve_ceo_strategy": "CEO Strategy",
+    "budget_override_required": "Budget Override",
+    "request_board_approval": "Board Approval"
+  },
+  "subject": "{{type}}: {{subject}}"
+}

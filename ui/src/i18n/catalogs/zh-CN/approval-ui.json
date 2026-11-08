@@ -1,0 +1,10 @@
+{
+  "jobTitle": "职务",
+  "types": {
+    "hire_agent": "聘用智能体",
+    "approve_ceo_strategy": "CEO 战略",
+    "budget_override_required": "预算例外审批",
+    "request_board_approval": "管理者审批"
+  },
+  "subject": "{{type}}：{{subject}}"
+}

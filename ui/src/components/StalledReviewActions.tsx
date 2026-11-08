@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, RotateCcw, Undo2 } from "lucide-react";
@@ -30,9 +31,9 @@ interface StalledReviewActionsProps {
 }
 
 const ACTION_PAST_TENSE: Record<StalledReviewDecisionAction, string> = {
-  approve: "Review approved — issue marked done.",
-  request_changes: "Changes requested — issue returned to the assignee.",
-  send_back: "Sent back to work — issue returned to the assignee.",
+  get approve() { return t("final-components-b:StalledReviewActions.Review_approved_issue_marked_done_8b8f0e"); },
+  get request_changes() { return t("final-components-b:StalledReviewActions.Changes_requested_issue_returned_to_the_assignee_e888d2"); },
+  get send_back() { return t("final-components-b:StalledReviewActions.Sent_back_to_work_issue_returned_to_the_assignee_161ec5"); },
 };
 
 /**
@@ -51,9 +52,10 @@ export function StalledReviewActions({
   footerSlot,
   onResolved,
   reviewPolicy,
-  approveLabel = "Approve",
+  approveLabel = t("final-components-b:StalledReviewActions.Approve_6007ac"),
   className,
 }: StalledReviewActionsProps) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [note, setNote] = useState("");
@@ -69,12 +71,13 @@ export function StalledReviewActions({
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
       setNote("");
-      pushToast({ title: ACTION_PAST_TENSE[action], tone: "success" });
+      pushToast({ title: ACTION_PAST_TENSE[action], presentation: { ...({ title: { key: ({"approve": "final-components-b:StalledReviewActions.Review_approved_issue_marked_done_8b8f0e", "request_changes": "final-components-b:StalledReviewActions.Changes_requested_issue_returned_to_the_assignee_e888d2", "send_back": "final-components-b:StalledReviewActions.Sent_back_to_work_issue_returned_to_the_assignee_161ec5"})[action] } }) }, tone: "success" });
       onResolved?.(action);
     },
     onError: (error) => {
       pushToast({
-        title: "Could not record the review decision",
+        presentation: { title: { key: "task-components:couldNotRecordTheReviewDecision_ac26aaec" }, ...(error instanceof Error ? { error: { cause: error } } : { body: { key: "final-components-b:feedback.Please_try_again_8a9261" } }) },
+        title: t("task-components:couldNotRecordTheReviewDecision_ac26aaec"),
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
       });
@@ -107,7 +110,7 @@ export function StalledReviewActions({
       <Textarea
         value={note}
         onChange={(event) => setNote(event.target.value)}
-        placeholder="Add a note — required to request changes, optional otherwise…"
+        placeholder={t("task-components:addANoteRequiredToRequestChanges_80f4b2f5")}
         className="min-h-16 text-sm"
         data-testid="stalled-review-note"
         disabled={pending}
@@ -128,16 +131,14 @@ export function StalledReviewActions({
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
             ) : (
               <Undo2 className="h-3.5 w-3.5" aria-hidden />
-            )}
-            Send back to work
-          </Button>
+            )}{t("task-components:sendBackToWork_8009553b")}</Button>
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="w-full border-amber-400/70 text-amber-900 hover:bg-amber-100 dark:border-amber-500/50 dark:text-amber-100 dark:hover:bg-amber-500/15 sm:w-auto sm:flex-1 @xl:flex-none"
             disabled={pending || noteEmpty}
-            title={noteEmpty ? "Add a note to request changes" : undefined}
+            title={noteEmpty ? t("task-components:addANoteToRequestChanges_83f340aa") : undefined}
             onClick={() => decide.mutate("request_changes")}
             data-testid="stalled-review-request-changes"
           >
@@ -145,9 +146,7 @@ export function StalledReviewActions({
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
             ) : (
               <RotateCcw className="h-3.5 w-3.5" aria-hidden />
-            )}
-            Request changes
-          </Button>
+            )}{t("task-components:requestChanges_cb5d9f98")}</Button>
           <Button
             type="button"
             size="sm"

@@ -75,6 +75,7 @@ import type {
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceCloseReasonPresentation,
   ExecutionWorkspaceConfig,
   WorkspaceOverviewResponse,
   WorkspaceOverviewItem,
@@ -954,9 +955,11 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
+  warningPresentations?: Record<number, ExecutionWorkspaceCloseReasonPresentation>;
   statusInspectionSucceeded: boolean;
 }> {
   const warnings: string[] = [];
+  const warningPresentations: Record<number, ExecutionWorkspaceCloseReasonPresentation> = {};
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
   const createdByRuntime = workspace.providerType === "git_worktree"
     ? isRuntimeOwnedGitBranch(workspace.metadata)
@@ -971,11 +974,13 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   if (!workspacePath) {
     warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
-    return { git: null, warnings, statusInspectionSucceeded: false };
+    warningPresentations[warnings.length - 1] = { code: "no_local_path" };
+    return { git: null, warnings, warningPresentations, statusInspectionSucceeded: false };
   }
 
   if (!(await pathExists(workspacePath))) {
     warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
+    warningPresentations[warnings.length - 1] = { code: "path_missing", params: { path: workspacePath } };
     return {
       git: {
         repoRoot: null,
@@ -992,6 +997,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         createdByRuntime,
       },
       warnings,
+      warningPresentations,
       statusInspectionSucceeded: true,
     };
   }
@@ -1026,6 +1032,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     warnings.push(
       `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
     );
+    warningPresentations[warnings.length - 1] = { code: "git_inspection_failed", params: { path: workspacePath, error: error instanceof Error ? error.message : String(error) } };
   }
 
   let branchName = workspace.branchName;
@@ -1065,6 +1072,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       warnings.push(
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
       );
+      warningPresentations[warnings.length - 1] = { code: "git_status_failed", params: { path: workspacePath, error: error instanceof Error ? error.message : String(error) } };
     }
   }
 
@@ -1085,6 +1093,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       warnings.push(
         `Could not compare this workspace against ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
       );
+      warningPresentations[warnings.length - 1] = { code: "git_comparison_failed", params: { baseRef, error: error instanceof Error ? error.message : String(error) } };
     }
   }
 
@@ -1104,6 +1113,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       createdByRuntime,
     },
     warnings,
+    warningPresentations,
     statusInspectionSucceeded,
   };
 }
@@ -1505,17 +1515,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const destroyRemoteLease: DestroyRemoteWorkspaceLease = input => opts.destroyRemoteWorkspaceLease
     ? opts.destroyRemoteWorkspaceLease(input)
     : import("./environment-runtime.js").then(({ environmentRuntimeService }) => environmentRuntimeService(db).destroyRemoteWorkspaceLease(input));
-  async function inspectWorkspace(workspace: ExecutionWorkspace, recoveryPullRequest?: { number: number; headSha: string }) {
+  async function inspectWorkspace(workspace: ExecutionWorkspace, recoveryPullRequest?: { number: number; headSha: string }): ReturnType<typeof inspectGitCloseReadiness> {
     if (readRemoteWorkspaceAuthority(workspace.metadata)) {
       const state = await inspectRemoteWorkspacePersistence(db, workspace);
-      return { statusInspectionSucceeded: state.ready, warnings: state.reason ? [state.reason] : [], git: null };
+      return { statusInspectionSucceeded: state.ready, warnings: state.reason ? [state.reason] : [],
+        warningPresentations: state.presentation ? { 0: state.presentation } : {}, git: null };
     }
     if (workspace.providerType !== "plugin") return (opts.inspectGitCloseReadiness ?? inspectGitCloseReadiness)(workspace);
     const [row] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspace.id), eq(executionWorkspaces.companyId, workspace.companyId)));
     if (!row) throw notFound("Workspace is unavailable");
     let state;
     try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row, recoveryPullRequest); }
-    catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."], git: null }; }
+    catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."],
+      warningPresentations: { 0: { code: "storage_inspection_unavailable" as const } }, git: null }; }
     return { statusInspectionSucceeded: true, warnings: [], git: {
       repoRoot: `/workspaces/${workspace.id}`, workspacePath: `/workspaces/${workspace.id}`,
       branchName: state.branchName, baseRef: workspace.baseRef,
@@ -3231,15 +3243,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const {
         git,
         warnings: gitWarnings,
+        warningPresentations: gitWarningPresentations,
         statusInspectionSucceeded,
       } = await inspectWorkspace(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      const presentation: NonNullable<ExecutionWorkspaceCloseReadiness["presentation"]> = {
+        warnings: { ...gitWarningPresentations }, blockingReasons: {},
+      };
       const remoteWorkspace = readRemoteWorkspaceAuthority(workspace.metadata);
       if (!statusInspectionSucceeded) {
         blockingReasons.push(remoteWorkspace ? gitWarnings[0] ?? "The remote workspace save is incomplete."
           : "Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+        // The remote branch forwards the first inspection warning verbatim; forward only its explicit identity.
+        const reasonPresentation = remoteWorkspace
+          ? (gitWarnings[0] != null ? gitWarningPresentations?.[0] : { code: "remote_save_incomplete" as const })
+          : { code: "git_status_unverified" as const };
+        if (reasonPresentation) presentation.blockingReasons[blockingReasons.length - 1] = reasonPresentation;
       }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
@@ -3265,13 +3286,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             : `This workspace is still linked to ${blockingIssues.length} open issues.`;
         if (isSharedWorkspace) {
           warnings.push(`${linkedIssueMessage} Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.`);
+          presentation.warnings[warnings.length - 1] = { code: "shared_linked_open_issues", params: { count: blockingIssues.length } };
         } else {
           blockingReasons.push(linkedIssueMessage);
+          presentation.blockingReasons[blockingReasons.length - 1] = { code: "linked_open_issues", params: { count: blockingIssues.length } };
         }
       }
 
       if (isSharedWorkspace && !remoteWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
+        presentation.warnings[warnings.length - 1] = { code: "shared_session_only" };
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {
@@ -3280,6 +3304,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? "Closing this workspace will stop 1 attached runtime service."
             : `Closing this workspace will stop ${runtimeServices.length} attached runtime services.`,
         );
+        presentation.warnings[warnings.length - 1] = { code: "stop_runtime_services", params: { count: runtimeServices.length } };
       }
 
       if (git?.hasDirtyTrackedFiles) {
@@ -3288,6 +3313,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? "The workspace has 1 modified tracked file."
             : `The workspace has ${git.dirtyEntryCount} modified tracked files.`,
         );
+        presentation.warnings[warnings.length - 1] = { code: "dirty_tracked_files", params: { count: git.dirtyEntryCount } };
       }
       if (git?.hasUntrackedFiles) {
         warnings.push(
@@ -3295,6 +3321,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? "The workspace has 1 untracked file."
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
         );
+        presentation.warnings[warnings.length - 1] = { code: "untracked_files", params: { count: git.untrackedEntryCount } };
       }
       if (
         git?.aheadCount
@@ -3307,6 +3334,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
             : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
         );
+        presentation.warnings[warnings.length - 1] = { code: "ahead_of_base", params: { count: git.aheadCount, baseRef: git.baseRef } };
       }
       if (git?.behindCount && git.behindCount > 0) {
         warnings.push(
@@ -3314,6 +3342,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? `This workspace is 1 commit behind ${git.baseRef ?? "the base ref"}.`
             : `This workspace is ${git.behindCount} commits behind ${git.baseRef ?? "the base ref"}.`,
         );
+        presentation.warnings[warnings.length - 1] = { code: "behind_base", params: { count: git.behindCount, baseRef: git.baseRef } };
       }
 
       const plannedActions: ExecutionWorkspaceCloseAction[] = [
@@ -3343,12 +3372,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           label: "Run workspace cleanup command",
           description: "Workspace-specific cleanup runs before teardown.",
           command: config?.cleanupCommand ?? null,
+          presentation: { variant: "workspace_cleanup" as const },
         },
         {
           kind: "cleanup_command" as const,
           label: "Run project workspace cleanup command",
           description: "Project workspace cleanup runs before execution workspace teardown.",
           command: projectWorkspace?.cleanupCommand ?? null,
+          presentation: { variant: "project_workspace_cleanup" as const },
         },
       ];
       for (const action of configuredCleanupCommands) {
@@ -3368,13 +3399,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       if (executionWorkspace.providerType === "plugin") {
         plannedActions.push({ kind: "remove_provider_workspace", label: "Remove provider workspace",
-          description: "The storage plugin will verify remote recovery and remove the workspace.", command: null });
+          description: "The storage plugin will verify remote recovery and remove the workspace.", command: null,
+          presentation: { variant: "plugin_storage_removal" } });
       }
       if (remoteWorkspace) {
         plannedActions.push({ kind: "remove_provider_workspace", label: "Release remote workspace compute",
-          description: "Release the sandbox and keep the saved workspace files.", command: null });
+          description: "Release the sandbox and keep the saved workspace files.", command: null,
+          presentation: { variant: "remote_compute_release" } });
         if (configuredCleanupCommands.some(action => action.command) || teardownCommand) {
           blockingReasons.push("Remote workspace close does not support custom cleanup or teardown commands.");
+          presentation.blockingReasons[blockingReasons.length - 1] = { code: "remote_custom_cleanup_unsupported" };
         }
       }
 
@@ -3407,6 +3441,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           : false;
         if (containsProjectWorkspace) {
           warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
+          presentation.warnings[warnings.length - 1] = { code: "keep_project_workspace", params: { path: workspacePath } };
         } else {
           plannedActions.push({
             kind: "remove_local_directory",
@@ -3430,6 +3465,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         state,
         blockingReasons,
         warnings,
+        presentation,
         linkedIssues: linkedIssueSummaries,
         plannedActions,
         isDestructiveCloseAllowed: blockingReasons.length === 0,

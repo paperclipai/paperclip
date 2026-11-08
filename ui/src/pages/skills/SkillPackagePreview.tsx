@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileImage, AlertTriangle } from 'lucide-react';
@@ -15,6 +16,7 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
   companyId: string; repository: SkillSourceDiscoveryRequest; commitSha: string | null;
   repositoryPackage?: SkillRepositoryPackage; skill: SkillTreeCandidate; initialFile?: string; onClose: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const inspection = repositoryPackage ? { ...repositoryPackage, references: [] } : skill.inspection;
   const [filePath, setFilePath] = useState(initialFile ?? (repositoryPackage ? skill.path : 'SKILL.md'));
   const nodes = buildFileTree(Object.fromEntries((inspection?.files ?? []).map(file => [file.path, null]))).sort((a, b) => Number(b.name === 'SKILL.md') - Number(a.name === 'SKILL.md'));
@@ -34,49 +36,49 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-y-auto p-4 sm:max-w-4xl sm:p-6">
       <DialogHeader>
-        <DialogTitle>{repositoryPackage ? 'Included repository files' : skill.name}</DialogTitle>
-        <DialogDescription className="break-all font-mono text-xs">{repositoryPackage ? 'Repository root' : root || 'Repository root'}/ · {inspection?.files.length ?? skill.fileCount ?? '?'} files{commitSha ? ` · ${commitSha.slice(0, 8)}` : ''}</DialogDescription>
+        <DialogTitle>{repositoryPackage ? translateAgentPage("agents:included_repository_files") : skill.name}</DialogTitle>
+        <DialogDescription className="break-all font-mono text-xs">{repositoryPackage ? translateAgentPage("agents:repository_root") : root || translateAgentPage("agents:repository_root")}/ · {inspection?.files.length ?? skill.fileCount ?? '?'}{" "}{translateAgentPage("agents:files_a1f13b")}{commitSha ? ` · ${commitSha.slice(0, 8)}` : ''}</DialogDescription>
       </DialogHeader>
-      {!inspection && <p role="status" className="text-sm text-muted-foreground">Refresh this source to inspect its complete package contents.</p>}
-      {skill.error && <p className="text-sm text-muted-foreground">Needs setup: {skill.error}</p>}
+      {!inspection && <p role="status" className="text-sm text-muted-foreground">{translateAgentPage("agents:refresh_this_source_to_inspect_its_complete_package")}</p>}
+      {skill.error && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:needs_setup")}{" "}{skill.error}</p>}
       {inspection?.requirements && <section className="rounded-md border border-border bg-muted/30 p-3 text-sm">
-        <h3 className="font-medium">Runtime requirements</h3>
+        <h3 className="font-medium">{translateAgentPage("agents:runtime_requirements")}</h3>
         <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{inspection.requirements}</p>
       </section>}
-      {Boolean(inspection?.references.length) && <section className="rounded-md border border-border p-3 text-sm" aria-label="Package reference warnings">
-        <h3 className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />Files not included</h3>
+      {Boolean(inspection?.references.length) && <section className="rounded-md border border-border p-3 text-sm" aria-label={translateAgentPage("agents:package_reference_warnings")}>
+        <h3 className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />{translateAgentPage("agents:files_not_included")}</h3>
         <ul className="mt-2 space-y-2">
           {inspection!.references.map(reference => <li key={`${reference.fromPath}:${reference.resolvedPath}`} className="break-all text-xs">
-            <span className="font-mono">{reference.target}</span> · {reference.kind === 'outside_package' ? 'Outside this package' : 'Not found'}
-            <span className="text-muted-foreground"> · referenced in {reference.fromPath}</span>
+            <span className="font-mono">{reference.target}</span> · {reference.kind === 'outside_package' ? translateAgentPage("agents:outside_this_package") : translateAgentPage("agents:not_found")}
+            <span className="text-muted-foreground">{" "}{translateAgentPage("agents:referenced_in")}{" "}{reference.fromPath}</span>
           </li>)}
         </ul>
       </section>}
       {Boolean(inspection?.warnings.length) && <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer">Content audit · {inspection!.warnings.length} {inspection!.warnings.length === 1 ? 'notice' : 'notices'}</summary>
+        <summary className="cursor-pointer">{translateAgentPage("agents:content_audit")}{" "}{translateAgentPage("agents:count_notice", { count: inspection!.warnings.length })}</summary>
         <ul className="mt-2 space-y-1">{inspection!.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
       </details>}
       {inspection && <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border md:flex-row">
         <div className="max-h-48 shrink-0 overflow-auto border-b border-border py-1 md:max-h-(--sz-480px) md:w-56 md:border-b-0 md:border-r">
           <FileTree nodes={nodes} selectedFile={filePath} expandedDirs={expanded} showCheckboxes={false} wrapLabels={false}
-            ariaLabel="Included package files" onSelectFile={setFilePath} onToggleDir={path => setCollapsed(previous => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; })} />
+            ariaLabel={translateAgentPage("agents:included_package_files")} onSelectFile={setFilePath} onToggleDir={path => setCollapsed(previous => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; })} />
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
             <span className="break-all font-mono">{filePath}</span>
-            {file && <span className="text-muted-foreground">{file.sizeBytes.toLocaleString()} bytes{file.executable ? ' · executable' : ''}</span>}
+            {file && <span className="text-muted-foreground">{file.sizeBytes.toLocaleString()}{" "}{translateAgentPage("agents:bytes")}{file.executable ? translateAgentPage("agents:executable") : ''}</span>}
           </div>
           <div className="max-h-(--sz-480px) min-h-40 overflow-auto p-3">
-            {(preview.isFetching || previewView.kind === 'reconnecting') && <p role="status" className="text-sm text-muted-foreground">Loading preview…</p>}
-            {previewView.kind === 'error' && <div className="space-y-2 text-sm"><QueryErrorState size="inline" error={preview.error} action="load the preview" onRetry={previewView.retry} retrying={previewView.isFetching} /> <Link to="/apps" className="underline">Manage GitHub access</Link></div>}
-            {skill.error && <p className="text-sm text-muted-foreground">Preview unavailable for a package that failed validation.</p>}
-            {preview.data?.file.encoding === 'base64' && <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground"><FileImage className="size-6" /><p>Binary asset · included without changes</p><p className="text-xs">Open on GitHub to preview or download this file.</p></div>}
+            {(preview.isFetching || previewView.kind === 'reconnecting') && <p role="status" className="text-sm text-muted-foreground">{translateAgentPage("agents:loading_preview")}</p>}
+            {previewView.kind === 'error' && <div className="space-y-2 text-sm"><QueryErrorState size="inline" error={preview.error} action={translateAgentPage("agents:load_the_preview")} onRetry={previewView.retry} retrying={previewView.isFetching} /> <Link to="/apps" className="underline">{translateAgentPage("agents:manage_github_access")}</Link></div>}
+            {skill.error && <p className="text-sm text-muted-foreground">{translateAgentPage("agents:preview_unavailable_for_a_package_that_failed_validation")}</p>}
+            {preview.data?.file.encoding === 'base64' && <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground"><FileImage className="size-6" /><p>{translateAgentPage("agents:binary_asset_included_without_changes")}</p><p className="text-xs">{translateAgentPage("agents:open_on_github_to_preview_or_download_this")}</p></div>}
             {preview.data?.content !== null && preview.data?.content !== undefined && <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{preview.data.content}</pre>}
-            {preview.data?.truncated && <p className="mt-3 text-xs text-muted-foreground">Showing the first 64 KB. The complete file is imported.</p>}
+            {preview.data?.truncated && <p className="mt-3 text-xs text-muted-foreground">{translateAgentPage("agents:showing_the_first_64_kb_the_complete_file")}</p>}
           </div>
         </div>
       </div>}
-      <div className="flex items-center justify-between gap-3"><Button type="button" variant="outline" onClick={onClose}>Back to selection</Button><Button asChild variant="ghost" size="sm"><a href={githubUrl} target="_blank" rel="noreferrer">Open on GitHub<ExternalLink className="size-3.5" /></a></Button></div>
+      <div className="flex items-center justify-between gap-3"><Button type="button" variant="outline" onClick={onClose}>{translateAgentPage("agents:back_to_selection")}</Button><Button asChild variant="ghost" size="sm"><a href={githubUrl} target="_blank" rel="noreferrer">{translateAgentPage("agents:open_on_github")}<ExternalLink className="size-3.5" /></a></Button></div>
     </DialogContent>
   </Dialog>;
 }

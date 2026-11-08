@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
@@ -54,6 +55,7 @@ function useOnboardingInProgress(companyId: string | null) {
 export type AnnouncementPlacement = "sidebar" | "floating";
 
 export function AnnouncementWell({ health, placement = "floating" }: { health?: HealthStatus; placement?: AnnouncementPlacement }) {
+  useTranslation("task-components");
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
@@ -64,9 +66,9 @@ export function AnnouncementWell({ health, placement = "floating" }: { health?: 
   const { announcement, dismiss } = useAnnouncement({
     userId, companyId: selectedCompanyId,
     enabled: Boolean(userId && !loading && selectedCompanyId && !onboardingOpen && !onboardingInProgress),
-    onSaveFailure: (savedLocally) => toastActions?.pushToast({
-      title: savedLocally ? "Dismissed in this browser" : "Dismissed for this visit",
-      body: "Couldn’t save across devices. We’ll retry when you reconnect or return.",
+    onSaveFailure: (savedLocally) => toastActions?.pushToast({ presentation: { title: savedLocally ? { key: "final-components-a:dismissedInThisBrowser_eaa3e484" } : { key: "final-components-a:dismissedForThisVisit_4f556bd8" }, body: { key: "final-components-a:couldnTSaveAcrossDevices_0dee8850" } },
+      title: savedLocally ? t("final-components-a:dismissedInThisBrowser_eaa3e484") : t("final-components-a:dismissedForThisVisit_4f556bd8"),
+      body: t("final-components-a:couldnTSaveAcrossDevices_0dee8850"),
       tone: "info", dedupeKey: "announcement-dismissal-sync",
     }),
   });
@@ -74,7 +76,7 @@ export function AnnouncementWell({ health, placement = "floating" }: { health?: 
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
     <aside
-      aria-label="Paperclip announcements"
+      aria-label={t("task-components:paperclipAnnouncements_0f9b3c82")}
       data-placement={placement}
       className={cn(
         "announcement-well",

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { isUuidLike } from "@paperclipai/shared";
@@ -85,8 +86,9 @@ export function AgentChatReadProvider({ issueId, companyId, userId, children }: 
     if (scope.exhausted) { scope.exhausted = false; scope.failures = 0; setError(false); }
     if (!scope.busy && scope.retryTimer === null) queueMicrotask(() => { void flush(); });
   }, [issueId, scope, flush]);
+  useTranslation("final-components-b");
   return <ChatReadContext.Provider value={issueId ? seen : null}>
-    {error && <p role="alert" className="text-sm text-destructive">Couldn’t mark this chat read.</p>}
+    {error && <p role="alert" className="text-sm text-destructive">{t("final-components-b:Couldn_t_mark_this_chat_read_aaed68")}</p>}
     {children}
   </ChatReadContext.Provider>;
 }

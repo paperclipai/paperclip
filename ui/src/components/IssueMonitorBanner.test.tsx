@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue, type IssueWorkProduct } from "@paperclipai/shared";
@@ -173,6 +174,30 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
       expect(Array.from(container.querySelectorAll("button")).filter(button => button.textContent === "Check now")).toHaveLength(2);
       if (offset < 0) expect(container.textContent).toContain("overdue by 2m");
     } finally { flushSync(() => root.unmount()); }
+  });
+
+  it("refreshes active-run wait copy across locales without offering a premature check", async () => {
+    const issue = { ...issueWithMonitor(new Date(NOW.getTime() + 120_000).toISOString()), status: "in_progress" as const };
+    const onCheckNow = vi.fn();
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<>
+        <IssueMonitorBanner issue={issue} hasActiveRun onCheckNow={onCheckNow} />
+        <IssueMonitorComposerStrip issue={issue} hasActiveRun onCheckNow={onCheckNow} />
+      </>));
+      expect(container.textContent).toContain("Monitor waits for current run");
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain("监控正在等待当前运行");
+      expect(container.textContent).toContain("当前运行完成保存工作后，即可开始检查。");
+      expect(container.textContent).not.toContain("Monitor waits for current run");
+      expect(container.querySelector("button")).toBeNull();
+      expect(onCheckNow).not.toHaveBeenCalled();
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.textContent).toContain("Monitor waits for current run");
+    } finally {
+      await act(async () => root.unmount());
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("requires confirmation, keeps the monitor on dismissal, and reports cancellation errors", async () => {

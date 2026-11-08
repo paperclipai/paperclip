@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent, type ReactNode, type Ref } from "react";
 import { X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -42,7 +43,8 @@ export function SidePanelTab({
   appearance = "default",
   className,
 }: SidePanelTabProps) {
-  const closeLabel = `Close ${label}`;
+  useTranslation("task-components");
+  const closeLabel = t("task-components:close_39f97a2f", { value1: label });
   const wrapperRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
   const [labelIsTruncated, setLabelIsTruncated] = useState(false);

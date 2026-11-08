@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentIdentity } from "./AgentIdentity";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -142,6 +143,7 @@ function clearDraft(draftKey: string) {
 }
 
 function BreakablePath({ text }: { text: string }) {
+  useTranslation("task-components");
   const parts: React.ReactNode[] = [];
   const segments = text.split(/(?<=[\/-])/);
   for (let i = 0; i < segments.length; i++) {
@@ -185,9 +187,9 @@ function formatTimelineAssigneeLabel(
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? t("task-components:board_4816cbfd");
   }
-  return "Unassigned";
+  return t("task-components:unassigned_14d33bd0");
 }
 
 function formatTimelineActorName(
@@ -200,9 +202,9 @@ function formatTimelineActorName(
     return agentMap?.get(actorId)?.name ?? actorId.slice(0, 8);
   }
   if (actorType === "system") {
-    return "System";
+    return t("task-components:system_6725e7bb");
   }
-  return formatAssigneeUserLabel(actorId, currentUserId) ?? "Board";
+  return formatAssigneeUserLabel(actorId, currentUserId) ?? t("task-components:board_4816cbfd");
 }
 
 function initialsForName(name: string) {
@@ -248,6 +250,7 @@ function runStatusClass(status: string) {
 }
 
 function CopyMarkdownButton({ text }: { text: string }) {
+  useTranslation("task-components");
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -271,7 +274,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
       )}
       title={label}
-      aria-label="Copy comment as markdown"
+      aria-label={t("task-components:copyCommentAsMarkdown_35d33330")}
       onClick={() => {
         void copyTextToClipboard(text)
           .then(() => setStatus("copied"))
@@ -325,6 +328,7 @@ function CommentCard({
   queued?: boolean;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  useTranslation("task-components");
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
@@ -356,14 +360,10 @@ function CommentCard({
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
-            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              Queued
-            </Badge>
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">{t("task-components:queued_661ff40a")}</Badge>
           ) : null}
           {followUpRequested ? (
-            <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
-              Follow-up
-            </Badge>
+            <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">{t("task-components:followUp_09b2d9cd")}</Badge>
           ) : null}
           {companyId && !isPending && !isDeleted ? (
             <PluginSlotOutlet
@@ -382,7 +382,7 @@ function CommentCard({
             />
           ) : null}
           {isPending ? (
-            <span className="text-xs text-muted-foreground">{isQueued ? "Queueing..." : "Sending..."}</span>
+            <span className="text-xs text-muted-foreground">{isQueued ? t("task-components:queueing_d6e3ff1a") : t("task-components:sending_286a3af7")}</span>
           ) : (
             <a
               href={`#comment-${comment.id}`}
@@ -395,7 +395,7 @@ function CommentCard({
         </span>
       </div>
       {isDeleted ? (
-        <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+        <div className="text-sm italic text-muted-foreground">{t("task-components:commentDeleted_7199a134")}</div>
       ) : (
         <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>{comment.body}</MarkdownBody>
       )}
@@ -429,13 +429,9 @@ function CommentCard({
               <Link
                 to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-              >
-                run {comment.runId.slice(0, 8)}
-              </Link>
+              ><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{comment.runId.slice(0, 8)}</> }} /></Link>
             ) : (
-              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
-                run {comment.runId.slice(0, 8)}
-              </span>
+              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{comment.runId.slice(0, 8)}</> }} /></span>
             )
           ) : undefined}
         />
@@ -446,13 +442,9 @@ function CommentCard({
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
               className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-            >
-              run {comment.runId.slice(0, 8)}
-            </Link>
+            ><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{comment.runId.slice(0, 8)}</> }} /></Link>
           ) : (
-            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
-              run {comment.runId.slice(0, 8)}
-            </span>
+            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{comment.runId.slice(0, 8)}</> }} /></span>
           )}
         </div>
       ) : null}
@@ -475,8 +467,9 @@ function TimelineEventCard({
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
 }) {
+  useTranslation("task-components");
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
-  const actionLabel = event.followUpRequested ? "requested follow-up" : "updated this task";
+  const actionLabel = event.followUpRequested ? t("task-components:requestedFollowUp_23f52c48") : t("task-components:updatedThisTask_9cc0b812");
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -498,9 +491,7 @@ function TimelineEventCard({
 
         {event.statusChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              Status
-            </span>
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:status_920e413c")}</span>
             <span className="text-muted-foreground">
               {humanizeValue(event.statusChange.from)}
             </span>
@@ -513,9 +504,7 @@ function TimelineEventCard({
 
         {event.assigneeChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              Assignee
-            </span>
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:assignee_5e20d20e")}</span>
             <span className="text-muted-foreground">
               {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId)}
             </span>
@@ -528,9 +517,7 @@ function TimelineEventCard({
 
         {event.workspaceChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              Workspace
-            </span>
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:workspace_87bb59ba")}</span>
             <span className="text-muted-foreground">
               {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
             </span>
@@ -585,8 +572,9 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  useTranslation("task-components");
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("task-components:noTimelineEntriesYet_a3f327b5")}</p>;
   }
 
   return (
@@ -633,7 +621,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">run</span>
+                  <span className="text-muted-foreground">{t("task-components:run_acba2551")}{" "}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -654,24 +642,16 @@ const TimelineList = memo(function TimelineList({
               {run.environment || run.environmentLease ? (
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-(length:--text-micro) text-muted-foreground">
                   {run.environment ? (
-                    <span>
-                      Environment <span className="text-foreground">{run.environment.name}</span>
-                      {/* The raw "sandbox" driver key stays off run details — the
-                          environment's name and the Provider entry below already
-                          identify it; other drivers (ssh, local) remain useful. */}
-                      {run.environment.driver !== "sandbox" ? (
+                    <span><Trans ns="task-components" i18nKey="sentence_c239c3b453cc" components={{ part1: <>{<span className="text-foreground">{run.environment.name}</span>}</>, part2: <>{run.environment.driver !== "sandbox" ? (
                         <span> · {run.environment.driver}</span>
-                      ) : null}
-                    </span>
+                      ) : null}</> }} /></span>
                   ) : null}
                   {run.environmentLease?.provider ? (
-                    <span>
-                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
+                    <span>{t("task-components:provider_472590ae")}{" "}<span className="text-foreground">{run.environmentLease.provider}</span>
                     </span>
                   ) : null}
                   {run.environmentLease ? (
-                    <span>
-                      Lease{" "}
+                    <span>{t("task-components:lease_a789e9e0")}{" "}
                       <span className="font-mono text-foreground">
                         {run.environmentLease.id.slice(0, 8)}
                       </span>
@@ -684,9 +664,7 @@ const TimelineList = memo(function TimelineList({
                     </span>
                   ) : null}
                   {run.environmentLease?.failureReason ? (
-                    <span className="text-destructive">
-                      Failure: {run.environmentLease.failureReason}
-                    </span>
+                    <span className="text-destructive"><Trans ns="task-components" i18nKey="sentence_8eb141c30c46" components={{ part1: <>{run.environmentLease.failureReason}</> }} /></span>
                   ) : null}
                 </div>
               ) : null}
@@ -749,6 +727,7 @@ export function CommentThread({
   composerDisabledReason = null,
   externalReferences,
 }: CommentThreadProps) {
+  useTranslation("task-components");
   const submitKey = useComposerSubmitKey();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -962,7 +941,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
+      <h3 className="text-sm font-semibold">{t("bounded-stabilization:timeline", { count: timeline.length + queuedComments.length })}</h3>
 
       <TimelineList
         timeline={timeline}
@@ -987,9 +966,7 @@ export function CommentThread({
       {queuedComments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
-            </h4>
+            <h4 className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300"><Trans ns="task-components" i18nKey="sentence_09330e668d59" components={{ part1: <>{queuedComments.length}</> }} /></h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
                 size="sm"
@@ -998,7 +975,7 @@ export function CommentThread({
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? t("task-components:interrupting_f60f33ed") : t("task-components:interrupt_b6252314")}
               </Button>
             ) : null}
           </div>
@@ -1029,7 +1006,7 @@ export function CommentThread({
             ref={editorRef}
             value={body}
             onChange={setBody}
-            placeholder="Leave a comment..."
+            placeholder={t("task-components:leaveAComment_4dff58ab")}
             mentions={mentions}
             onSubmit={handleSubmit}
             submitKey={submitKey}
@@ -1051,7 +1028,7 @@ export function CommentThread({
                   size="icon-sm"
                   onClick={() => attachInputRef.current?.click()}
                   disabled={attaching}
-                  title="Attach image"
+                  title={t("task-components:attachImage_2eacc5e0")}
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
@@ -1061,14 +1038,14 @@ export function CommentThread({
               <InlineEntitySelector
                 value={reassignTarget}
                 options={reassignOptions}
-                placeholder="Responsible"
+                placeholder={t("task-components:responsible_bc110a6d")}
                 noneLabel="No responsible"
-                searchPlaceholder="Search responsible..."
-                emptyMessage="No responsible found."
+                searchPlaceholder={t("task-components:searchResponsible_9cb8d79f")}
+                emptyMessage={t("task-components:noResponsibleFound_045a8ffe")}
                 onChange={selectAssignee}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
-                  if (!option) return <span className="text-muted-foreground">Responsible</span>;
+                  if (!option) return <span className="text-muted-foreground">{t("task-components:responsible_bc110a6d")}</span>;
                   const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                   const agent = agentId ? agentMap?.get(agentId) : null;
                   return (
@@ -1096,7 +1073,7 @@ export function CommentThread({
               />
             )}
             <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-              {submitting ? "Posting..." : "Comment"}
+              {submitting ? t("task-components:posting_e24da73e") : t("task-components:comment_44f5e3fb")}
             </Button>
           </div>
         </div>

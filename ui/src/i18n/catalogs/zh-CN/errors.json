@@ -1,0 +1,23 @@
+{
+  "code": {
+    "tenant_app_unavailable": {"title": "正在重新连接 Paperclip", "body": "Paperclip 正在重启或更新，请稍后重试。"},
+    "tenant_app_starting": {"title": "Paperclip 正在启动", "body": "Paperclip 正在启动，请几秒后重试。"},
+    "WORKER_UNAVAILABLE": {"title": "插件暂不可用", "body": "此插件正在重启，请稍后重试。"},
+    "TIMEOUT": {"title": "请求超时", "body": "响应时间过长，请稍后重试。"},
+    "interaction_audience_denied": {"title": "你无法处理此卡片", "body": "你不在此卡片允许处理的人员范围内。"},
+    "interaction_forbidden": {"title": "你无法处理此卡片", "body": "你没有处理此卡片的权限。"},
+    "interaction_settled": {"title": "已处理", "body": "此请求已不再等待决定。"},
+    "interaction_submit_failed": {"title": "无法提交", "body": "无法提交，请重试。"}
+  },
+  "kind": {
+    "transient": {"title": "连接中断", "body": "Paperclip 暂时不可用，请稍后重试。"},
+    "auth": {"title": "已退出登录", "body": "会话已结束，请重新登录以继续。"},
+    "forbidden": {"title": "操作未获允许", "body": "你没有执行此操作的权限。"},
+    "not_found": {"title": "未找到", "body": "此条目不存在或已被移动。"},
+    "conflict": {"title": "内容已更新", "body": "内容在加载后发生了更改，请刷新后重试。"},
+    "invalid": {"title": "请检查输入", "body": "部分内容无效，请检查后重试。"},
+    "aborted": {"title": "已取消", "body": "请求已取消。"},
+    "unknown": {"title": "操作出错", "body": "发生了意外错误，请重试。"}
+  },
+  "actionFailed": "无法{{action}}"
+}

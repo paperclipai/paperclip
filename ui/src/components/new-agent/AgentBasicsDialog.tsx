@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
@@ -37,6 +38,7 @@ export type AgentBasics = {
 export { AdapterMark } from "../AdapterMark";
 
 function AgentBasicsCharacter() {
+  useTranslation("agent-config");
   const { selectedCompanyId } = useCompany();
   const { appearance } = useAgentAppearanceDraft(`${selectedCompanyId}:new-agent`);
   return <AgentCharacter appearance={appearance} state="sleepy" muted size={256} className="size-48" trackingScope="page" />;
@@ -59,6 +61,7 @@ export function AgentBasicsDialog({
   setupAgentId?: string;
   onInvite?: () => void;
 }) {
+  const { t } = useTranslation("agent-config");
   const id = useId();
   const { selectedCompanyId: companyId } = useCompany();
   const cache = useQueryClient();
@@ -69,7 +72,8 @@ export function AgentBasicsDialog({
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveErrorState, setSaveError] = useState<string | { key: string } | null>(null);
+  const saveError = typeof saveErrorState === "object" && saveErrorState ? t(saveErrorState.key) : saveErrorState;
   const cloud = Boolean(useCloudInstance());
   const experimental = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -120,7 +124,7 @@ export function AgentBasicsDialog({
     setSaving(true);
     setSaveError(null);
     try {
-      if (!companyId) throw new Error("Select an organization to create an agent.");
+      if (!companyId) throw new Error(t("agent-config:selectAnOrganizationToCreateAnAgent_dba9520"));
       let agent = saved.current;
       if (!agent && setupAgentId) agent = await agentsApi.get(setupId.current, companyId);
       const creatingRecord = !agent;
@@ -129,7 +133,7 @@ export function AgentBasicsDialog({
         const leader = existing.find(item => item.role === "ceo" && item.status !== "terminated");
         const provisionalAdapter = adapters?.some(item => item.type === "process" && item.disabled)
           ? choices[0]?.type : "process";
-        if (!provisionalAdapter) throw new Error("No agent adapters are available on this instance.");
+        if (!provisionalAdapter) throw new Error(t("agent-config:noAgentAdaptersAreAvailableOnThisInstance_99d7c4b"));
         // This adapter is provisional; the setup hold prevents execution.
         agent = await agentsApi.create(companyId, {
           setupId: setupId.current, name: name.trim(), appearance: appearanceDraft.appearance,
@@ -175,7 +179,7 @@ export function AgentBasicsDialog({
       else onContinue({ name: agent.name, adapterType: nextAdapter, runnerProvider: nextProvider,
         runner: nextRunner, setupAgentId: agent.id });
     } catch (cause) {
-      if (active.current) setSaveError(cause instanceof Error ? cause.message : "Could not save agent setup.");
+      if (active.current) setSaveError(cause instanceof Error ? cause.message : { key: "final-configuration:feedback_couldNotSaveAgentSetup_dc28937" });
     } finally {
       busy.current = false;
       if (active.current) setSaving(false);
@@ -196,19 +200,15 @@ export function AgentBasicsDialog({
       >
         <div
           className="flex items-center gap-2 px-6 py-5 text-xs text-muted-foreground"
-          aria-label="New agent progress"
+          aria-label={t("agent-config:newAgentProgress_f86b33c")}
         >
           <span
             className={cn(step === "name" && "font-medium text-foreground")}
-          >
-            1. Name
-          </span>
+          >{t("agent-config:1Name_ae760c3")}</span>
           <ChevronRight className="size-3" />
           <span
             className={cn(step === "adapter" && "font-medium text-foreground")}
-          >
-            2. Adapter
-          </span>
+          >{t("agent-config:2Adapter_aaae30c")}</span>
         </div>
         <form
           className="flex min-h-0 flex-col"
@@ -223,27 +223,25 @@ export function AgentBasicsDialog({
               <div className="space-y-2">
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
-                    ? "Meet your next agent"
-                    : "Choose an adapter"}
+                    ? t("agent-config:meetYourNextAgent_8cdce8b")
+                    : t("agent-config:chooseAnAdapter_a728ddd")}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
-                    ? "Start with a name. Make them your own."
-                    : `How should ${name.trim()} work?`}
+                    ? t("agent-config:startWithANameMakeThemYourOwn_b63278d")
+                    : t("agent-config:howShouldValueWork_f6de924", { value1: name.trim() })}
                 </DialogDescription>
               </div>
             </div>
             {step === "name" ? (
               <div className="space-y-2">
-                <label htmlFor={id} className="text-sm font-medium">
-                  Agent name
-                </label>
+                <label htmlFor={id} className="text-sm font-medium">{t("agent-config:agentName_fc92420")}</label>
                 <Input
                   id={id}
                   autoFocus
                   disabled={saving}
                   maxLength={100}
-                  placeholder="e.g. Darnold"
+                  placeholder={t("agent-config:eGDarnold_d5ff413")}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   className="h-12 text-base"
@@ -254,24 +252,20 @@ export function AgentBasicsDialog({
                     variant="link"
                     className="px-0 text-muted-foreground"
                     onClick={onInvite}
-                  >
-                    Invite an external agent
-                  </Button>
+                  >{t("agent-config:inviteAnExternalAgent_a382ae6")}</Button>
                 )}
               </div>
             ) : (
               <fieldset className="space-y-4">
-                <legend className="sr-only">Adapter</legend>
+                <legend className="sr-only">{t("agent-config:adapter_e6b4616")}</legend>
                 {adaptersView.kind === "loading" || adaptersView.kind === "reconnecting" ? (
-                  <p role="status" className="text-sm text-muted-foreground">
-                    Loading adapters…
-                  </p>
+                  <p role="status" className="text-sm text-muted-foreground">{t("agent-config:loadingAdapters_945563b")}</p>
                 ) : null}
                 {adaptersView.kind === "error" ? (
                   <QueryErrorState
                     size="inline"
                     error={adaptersView.error}
-                    action="load the adapter list"
+                    action={t("agent-config:loadTheAdapterList_f075992")}
                     onRetry={adaptersView.retry}
                     retrying={adaptersView.isFetching}
                   />
@@ -306,7 +300,7 @@ export function AgentBasicsDialog({
                             {display.label}
                           </span>
                           {adapter.type === "antigravity_runtime" && !antigravityQualified && (
-                            <span className="text-xs text-muted-foreground">{antigravityCandidate ? "Candidate" : "Not available yet"}</span>
+                            <span className="text-xs text-muted-foreground">{antigravityCandidate ? t("agent-config:candidate_d769ded") : t("agent-config:notAvailableYet_a1db9d5")}</span>
                           )}
                           {adapterType === adapter.type && (
                             <Check className="absolute right-2 top-2 size-3.5" />
@@ -317,16 +311,16 @@ export function AgentBasicsDialog({
                   })}
                 </div>
                 {experimentalRunnerAvailable && <details className="space-y-3">
-                  <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                  <summary className="cursor-pointer text-sm text-muted-foreground">{t("agent-config:advanced_4d06472")}</summary>
                   <div className="space-y-2">
-                    <label className="text-sm text-muted-foreground">Experimental harness</label>
-                    <SelectPopover aria-label="Experimental harness"
+                    <label className="text-sm text-muted-foreground">{t("agent-config:experimentalHarness_ad251df")}</label>
+                    <SelectPopover aria-label={t("agent-config:experimentalHarness_ad251df")}
                       value={adapterType === "paperclip_runner" ? runnerProvider : ""}
-                      placeholder="Choose a native harness…"
+                      placeholder={t("agent-config:chooseANativeHarness_80b61f6")}
                       onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
                       options={[
-                        { value: "grok", label: "Grok Build (Paperclip Runner)" },
-                        { value: "opencode", label: "OpenCode (Paperclip Runner)" },
+                        { value: "grok", label: t("agent-config:grokBuildPaperclipRunner_3dac7eb") },
+                        { value: "opencode", label: t("agent-config:opencodePaperclipRunner_04db6e8") },
                       ]} />
                   </div>
                 </details>}
@@ -342,19 +336,17 @@ export function AgentBasicsDialog({
               onClick={() => (step === "name" ? onClose() : setStep("name"))}
             >
               {step === "name" ? (
-                "Cancel"
+                t("agent-config:cancel_77dfd21")
               ) : (
                 <>
-                  <ArrowLeft className="size-4" />
-                  Back
-                </>
+                  <ArrowLeft className="size-4" />{t("agent-config:back_b52b36b")}</>
               )}
             </Button>
             <Button
               type="submit"
               disabled={saving || !name.trim() || (step === "adapter" && !validAdapter)}
             >
-              {saving ? "Saving…" : step === "name" ? "Choose adapter" : "Configure agent"}
+              {saving ? t("agent-config:saving_56a2285") : step === "name" ? t("agent-config:chooseAdapter_f322ba4") : t("agent-config:configureAgent_3daf48a")}
               <ArrowRight className="size-4" />
             </Button>
           </div>

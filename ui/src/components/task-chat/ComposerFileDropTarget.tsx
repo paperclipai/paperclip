@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Upload } from "lucide-react";
@@ -29,6 +30,7 @@ export function ComposerFileDropTarget({
   newTask?: boolean;
   onFiles: (files: File[]) => void;
 }) {
+  useTranslation("task-components");
   const marker = useRef<HTMLSpanElement>(null);
   const current = useRef({ enabled, onFiles });
   const [dragging, setDragging] = useState(false);
@@ -100,8 +102,8 @@ export function ComposerFileDropTarget({
         className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur-(--blur-1px)">
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-primary bg-primary/5 text-foreground">
           <Upload className="h-10 w-10 text-primary" aria-hidden />
-          <p className="text-xl font-semibold">Drop files to attach</p>
-          <p className="text-sm text-muted-foreground">{newTask ? "Add images and files to your new task" : "Add images and files to your message"}</p>
+          <p className="text-xl font-semibold">{t("task-components:sentence_1ab1b095c1ed")}</p>
+          <p className="text-sm text-muted-foreground">{newTask ? t("task-chat-ui:dropNewTask") : t("task-chat-ui:dropMessage")}</p>
         </div>
       </div>, document.body,
     ) : null}

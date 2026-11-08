@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { ActivityEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeedCard } from "./FeedCard";
+import { i18n } from "@/i18n";
 
 const navigate = vi.fn();
 
@@ -48,6 +49,15 @@ describe("FeedCard", () => {
     act(() => root.render(<FeedCard event={{ ...event, details: { status: "in_review", externalConversationState: state } }} agentMap={new Map()} entityNameMap={new Map()} entityTitleMap={new Map()} />));
     expect(container.querySelector('[data-fc="verb"]')?.textContent).toBe(verb);
     act(() => root.unmount());
+  });
+
+  it("translates an activity while retaining the same user resource link", async () => {
+    const root = createRoot(container);
+    act(() => root.render(<FeedCard event={{ ...event, action: "issue.created" }} agentMap={new Map()} entityNameMap={new Map([["issue:issue-1", "PAP-1"]])} entityTitleMap={new Map([["issue:issue-1", "Raw title / 用户"]])} />));
+    const link = container.querySelector('a');
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("创建了"); expect(container.textContent).toContain("Raw title / 用户"); expect(container.querySelector('a')).toBe(link); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); root.unmount(); }); }
   });
 
   it("uses the whole visible card as the entity link", () => {

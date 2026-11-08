@@ -64,7 +64,7 @@ const queryClient = createAppQueryClient(
   {
     connectivity,
     reportError: (error) => captureBrowserException(error),
-    notifyMutationError: ({ title, body }) => pushMutationErrorToast?.({ title, body, tone: "error" }),
+    notifyMutationError: ({ title, body, presentation }) => pushMutationErrorToast?.({ title, body, presentation, tone: "error" }),
   },
   {
     defaultOptions: {

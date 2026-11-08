@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +25,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
   renderChat?: (agent: Agent) => ReactNode;
   renderStatus?: (agent: Agent) => ReactNode;
 }) {
+  const { t } = useTranslation("agent-config");
   const client = useQueryClient();
   const openingRef = useRef(false);
   const [opening, setOpening] = useState(false);
@@ -66,7 +68,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
       // The display cache excludes private runtime fields. Only complete,
       // freshly authorized agents can become the editor's optimistic base.
       if (complete.some(a => a.companyId !== companyId || bulkAgentHarness(a) !== harness || bulkAgentDisabledReason(a))) {
-        setOpenError("The selected agents changed. Refresh the roster and select them again.");
+        setOpenError(t("agent-config:theSelectedAgentsChangedRefreshTheRosterAnd_2aa474a"));
         return;
       }
       setEditing(complete);
@@ -79,45 +81,45 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
     <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center justify-between gap-3">
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="Filter agents" title={filter === "all" ? "Filter" : `Filter: ${getAdapterLabel(filter)}`}
+          <Button variant="ghost" size="icon" aria-label={t("agent-config:filterAgents_9b26f6c")} title={filter === "all" ? t("agent-config:filter_d7decf1") : t("agent-config:filterValue_378f3d4", { value1: getAdapterLabel(filter) })}
             className={cn("relative h-8 w-8 shrink-0", filter !== "all" && "text-blue-600 dark:text-blue-400")}>
             <Filter className="h-3.5 w-3.5" aria-hidden />
             {filter !== "all" && <span aria-hidden className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">1</span>}
           </Button>
         </PopoverTrigger>
-        <PopoverContent aria-label="Agent filters" align="start" className="w-64 space-y-3 p-3">
+        <PopoverContent aria-label={t("agent-config:agentFilters_e6daec4")} align="start" className="w-64 space-y-3 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Filters</span>
-            {filter !== "all" && <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setFilter("all")}>Clear</button>}
+            <span className="text-sm font-medium">{t("agent-config:filters_96e5782")}</span>
+            {filter !== "all" && <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setFilter("all")}>{t("agent-config:clear_719ea39")}</button>}
           </div>
-          <div role="group" aria-label="Harness" className="space-y-1">
-            <div className="px-2 text-xs font-medium text-muted-foreground">Harness</div>
+          <div role="group" aria-label={t("agent-config:harness_2b7cfd5")} className="space-y-1">
+            <div className="px-2 text-xs font-medium text-muted-foreground">{t("agent-config:harness_2b7cfd5")}</div>
             {["all", ...harnesses].map(h => <button key={h} type="button" aria-pressed={filter === h} onClick={() => setFilter(h)}
               className={cn("flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-sm", filter === h ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}>
-              {h === "all" ? "All harnesses" : getAdapterLabel(h)}{filter === h && <Check className="size-3.5" aria-hidden />}
+              {h === "all" ? t("agent-config:allHarnesses_ee34f89") : getAdapterLabel(h)}{filter === h && <Check className="size-3.5" aria-hidden />}
             </button>)}
           </div>
         </PopoverContent>
       </Popover>
-      <span className="text-xs text-muted-foreground">{visible.length} {visible.length === 1 ? "agent" : "agents"}</span>
+      <span className="text-xs text-muted-foreground">{t("countAgents", { count: visible.length })}</span>
     </div>
-    {createPortal(<div role="region" aria-label="Bulk actions" aria-hidden={selectedAgents.length === 0} inert={selectedAgents.length === 0}
+    {createPortal(<div role="region" aria-label={t("agent-config:bulkActions_3268f92")} aria-hidden={selectedAgents.length === 0} inert={selectedAgents.length === 0}
       data-state={selectedAgents.length > 0 ? "open" : "closed"} className="agent-selection-bar flex flex-wrap items-center gap-3 rounded-lg border bg-background p-3">
       <span className="text-sm font-medium">{actionAgents.length} selected</span>
       {hidden > 0 && <span className="text-xs text-muted-foreground">{hidden} hidden by filters</span>}
-      {groups.length > 1 && <span className="text-xs text-muted-foreground">Choose a harness to edit</span>}
+      {groups.length > 1 && <span className="text-xs text-muted-foreground">{t("agent-config:chooseAHarnessToEdit_f8e0d0a")}</span>}
       <div className="flex flex-1 flex-wrap items-center justify-end gap-2">{groups.map(h => <Button key={h} size="sm" variant="outline" disabled={opening} onClick={() => void openEditor(h)}>
-        <Pencil className="size-3.5" aria-hidden />{groups.length === 1 ? "Edit connection & model" : `Edit ${actionAgents.filter(a => bulkAgentHarness(a) === h).length} ${getAdapterLabel(h)}`}
-      </Button>)}<Button size="icon-sm" variant="ghost" aria-label="Clear selection" onClick={() => changeSelection([])}><X className="size-4" /></Button></div>
+        <Pencil className="size-3.5" aria-hidden />{groups.length === 1 ? t("agent-config:editConnectionModel_bb37d2b") : `Edit ${actionAgents.filter(a => bulkAgentHarness(a) === h).length} ${getAdapterLabel(h)}`}
+      </Button>)}<Button size="icon-sm" variant="ghost" aria-label={t("agent-config:clearSelection_247fd63")} onClick={() => changeSelection([])}><X className="size-4" /></Button></div>
     </div>, document.body)}
-    {opening && <p role="status" className="text-sm text-muted-foreground">Loading current agent settings…</p>}
+    {opening && <p role="status" className="text-sm text-muted-foreground">{t("agent-config:loadingCurrentAgentSettings_343812c")}</p>}
     {openError && <p role="alert" className="text-sm text-destructive">{openError}</p>}
     {notice && <p role="status" className="flex items-center gap-2 text-sm"><Check className="size-4" aria-hidden />{notice}</p>}
-    {accounts.error && <p className="text-xs text-destructive">Connection names couldn’t be loaded. <Button variant="link" size="sm" onClick={() => void accounts.refetch()}>Retry</Button></p>}
-    <div className="overflow-x-auto"><table aria-label="Agent roster" className="agent-roster w-full text-left text-sm">
+    {accounts.error && <p className="text-xs text-destructive">{t("agent-config:connectionNamesCouldnTBeLoaded_0a22b6e")} <Button variant="link" size="sm" onClick={() => void accounts.refetch()}>{t("agent-config:retry_9f5cd8a")}</Button></p>}
+    <div className="overflow-x-auto"><table aria-label={t("agent-config:agentRoster_dec33b6")} className="agent-roster w-full text-left text-sm">
       <thead className="text-xs text-muted-foreground [&_th]:px-3 [&_th]:py-3 [&_th]:font-normal"><tr>
-        <th className="w-10"><Checkbox aria-label="Select all visible editable agents" checked={all ? true : some ? "indeterminate" : false} disabled={!selectable.length} onCheckedChange={toggleAll} /></th>
-        <th scope="col">Agent</th>{renderChat && <th scope="col"><span className="sr-only">Chat</span></th>}<th scope="col">Status</th><th scope="col">Harness</th><th scope="col">Connection</th><th scope="col">Default model</th>
+        <th className="w-10"><Checkbox aria-label={t("agent-config:selectAllVisibleEditableAgents_342b6c7")} checked={all ? true : some ? "indeterminate" : false} disabled={!selectable.length} onCheckedChange={toggleAll} /></th>
+        <th scope="col">{t("agent-config:agent_5ce2e6f")}</th>{renderChat && <th scope="col"><span className="sr-only">Chat</span></th>}<th scope="col">Status</th><th scope="col">{t("agent-config:harness_2b7cfd5")}</th><th scope="col">{t("agent-config:connection_6512ee1")}</th><th scope="col">{t("agent-config:defaultModel_5fbae11")}</th>
       </tr></thead>
       <tbody>{visible.map(agent => {
         const pendingSetup = pendingAgentSetupDisplayAdapter(agent);
@@ -127,17 +129,17 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
         {renderChat && <td>{renderChat(agent)}</td>}
         <td>{renderStatus ? renderStatus(agent) : <AgentStatusBadge status={agent.status} />}</td>
         <td className="whitespace-nowrap text-xs">{getAdapterLabel(pendingSetup ?? bulkAgentHarness(agent))}</td>
-        <td className="text-xs">{pendingSetup ? "Not configured" : ["http", "process"].includes(agent.adapterType) ? "Managed externally" : bulkConnectionName(agentConnection(agent), accounts.data)}</td>
-        <td className="font-mono text-xs">{pendingSetup ? "Not available yet" : agentDefaultModel(agent) ?? "Harness default"}</td>
+        <td className="text-xs">{pendingSetup ? t("agent-config:notConfigured_811931b") : ["http", "process"].includes(agent.adapterType) ? t("agent-config:managedExternally_c44f15d") : bulkConnectionName(agentConnection(agent), accounts.data)}</td>
+        <td className="font-mono text-xs">{pendingSetup ? t("agent-config:notAvailableYet_a1db9d5") : agentDefaultModel(agent) ?? t("agent-config:harnessDefault_6dd2a2f")}</td>
       </tr>;
       })}</tbody>
     </table></div>
-    {!visible.length && <p className="py-8 text-center text-sm text-muted-foreground">No agents match these filters.</p>}
-    {editing && <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading editor…</p>}><AgentBulkSettingsSheet companyId={companyId} agents={editing} totalSelected={selectedAgents.length} onClose={(updatedIds, complete) => {
+    {!visible.length && <p className="py-8 text-center text-sm text-muted-foreground">{t("agent-config:noAgentsMatchTheseFilters_9fe7732")}</p>}
+    {editing && <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">{t("agent-config:loadingEditor_a31c117")}</p>}><AgentBulkSettingsSheet companyId={companyId} agents={editing} totalSelected={selectedAgents.length} onClose={(updatedIds, complete) => {
       setEditing(null);
       if (updatedIds.length) {
         changeSelection(ids => ids.filter(id => !(complete ? editing.map(a => a.id) : updatedIds).includes(id)));
-        setNotice(`Updated ${updatedIds.length} ${getAdapterLabel(bulkAgentHarness(editing[0]))} ${updatedIds.length === 1 ? "agent" : "agents"}.`);
+        setNotice(t("updatedHarnessAgents", { count: updatedIds.length, harness: getAdapterLabel(bulkAgentHarness(editing[0])) }));
       }
     }} /></Suspense>}
   </div>;
