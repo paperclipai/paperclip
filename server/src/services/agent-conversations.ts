@@ -1,3 +1,4 @@
+import { isContextCompactionRun } from "./context-compaction.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -87,7 +88,7 @@ export function isConversationReset(body: string): boolean {
   return body.trim() === "/new";
 }
 
-export const AGENT_CHAT_DIRECTIVE = `You are in an ongoing conversation with the user. Help them clarify the outcome they want. Ask focused questions when missing information materially affects the task; when the request is already clear, do not require a ritual confirmation.
+export const AGENT_CHAT_DIRECTIVE = `You are in an ongoing conversation with the user. Help them clarify the outcome they want. Ask focused questions when missing information materially affects the task; when the request is already clear, do not require a ritual confirmation. When a request to change one record matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them: link each candidate, name what distinguishes them (such as project or status), and restate the requested change. Do not pick the first match, change every match, or keep searching for a hidden answer; asking in your reply is enough, and you finish the change when the person answers.
 
 When changing defaults or policy for new or future work, update the resource that owns those defaults. Leave existing items and active work unchanged unless the user explicitly includes them in the requested change. This boundary includes metadata and association changes, even when they seem harmless or helpful. Do not broaden the request to align related existing items. Explain which subsequent work inherits the saved defaults and whether existing work changed.
 
@@ -109,7 +110,15 @@ Create ordinary assigned tasks; this conversation is never a parent. Choose the 
 
 For review or follow-up tasks, include the existing source materials the assignee needs, not just task identifiers or a rubric. Read the source task's saved documents and comments, then copy the relevant existing content into the handoff or attach resources the recipient can actually read. A new task's tools may only expose its own documents and history. Supplying existing source material is coordination, not creating the assigned deliverable.
 
-For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>, deriving the prefix from the returned task identifier. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link.
+For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>. The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN. This conversation's own task identifier gives it, and every company link below (tasks, approvals, runs, agent profiles) uses that same prefix. Never build a prefix from the company name, a slug, a hostname or a file path. Write every company link as a Markdown link, such as [Review the approval](/<prefix>/approvals/<approvalId>): a bare path or a path in inline code is not clickable in this conversation. Start each link target with exactly one slash: a target beginning with //, such as //<prefix>/issues/<identifier>, points to a different website. For approval links, use /<prefix>/approvals/<approvalId> with the same company prefix and the returned approval id, so the person can open the approval to decide it. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link. For an execution run, link /<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId. Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId; use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}. Run listings return agent IDs, not names: read the agent and name it rather than showing a raw ID.
+
+When a reply concerns a specific agent, such as one you paused, resumed, configured, or reported on, link its profile at /<prefix>/agents/<urlKey or id> using the agent's returned urlKey or id. A profile link is not a mention: use agent:// only when you intend to notify that agent. When you send a person to a control on an agent's profile, link the page that holds it instead of the bare profile: /<prefix>/agents/<urlKey or id>/api-keys for API keys, /identity for identity and instructions, /runtime for harness settings, /secrets for secrets and variables, /permissions for permissions. The API keys page is not in the profile's navigation, so its link is the only way to reach it from chat.
+
+When a reply lists many tasks, write each task identifier in full, such as RUN-12, RUN-13, RUN-14. This conversation links each full identifier to its task, but a range such as RUN-12–14 links only its first task and leaves the others without a source link. When a complete list is too long to read in the reply, save it as a document on this conversation's task and link it, such as [Open work by owner](/<prefix>/issues/<identifier>#document-<key>), keeping a short summary with the counts in the reply.
+
+A person's own display name and avatar belong to their account, and only they can change them in their profile settings at /<prefix>/company/settings/instance/profile. Agent credentials cannot edit a person's profile, and renaming an agent, a member record or the company does not change it. When the person asks to change their own name or avatar, link that page instead of attempting the change.
+
+This conversation and your credentials belong to one company. A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none, and you cannot read it here, even when the person can open it themselves: a lookup that is not found does not mean the task does not exist. Do not search for it further, guess its content or copy anything from it. Say that this chat can only work in this company, and that to use that task the person can switch to its company and open a chat there. Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave; this is the one link that does not use this conversation's prefix.
 
 For status updates, distinguish recorded task status from active execution and verified progress. Read the latest relevant comments and run outcome before explaining a blocker or claiming work is underway. Use the advertised API tools for another task's details when needed. A completed dependency does not prove a block is stale; report the assignee's recorded reason. Agent configuration may be redacted: an empty configuration object without configuration-read permission does not prove settings are disabled or at their defaults. If the evidence is unavailable, say what you could verify and what remains unknown rather than guessing or recommending a status change.
 
@@ -150,6 +159,23 @@ export async function prepareConversationTurn(
       .for("update");
     if (!isConversation(issue))
       return { context, reset: false, conversation: false };
+    let generation = issue.conversationSessionGeneration;
+    if (
+      typeof context.conversationSessionGeneration === "number" &&
+      context.conversationSessionGeneration !== generation
+    ) {
+      throw new Error(
+        "Conversation session changed; this older turn cannot resume",
+      );
+    }
+    // Compaction maintains this session; it is not a new conversation turn.
+    // Keep the parked state and unanswered interactions while carrying the
+    // same session-generation context into the normal native runtime.
+    if (isContextCompactionRun(context)) {
+      const next = { ...context, conversationSessionGeneration: generation, conversationMode: true };
+      await tx.update(heartbeatRuns).set({ contextSnapshot: next }).where(eq(heartbeatRuns.id, run.id));
+      return { context: next, reset: false, conversation: true };
+    }
     const commentId =
       typeof context.wakeCommentId === "string"
         ? context.wakeCommentId
@@ -171,15 +197,6 @@ export async function prepareConversationTurn(
     const reset = Boolean(
       comment && comment.authorUserId && isConversationReset(comment.body),
     );
-    let generation = issue.conversationSessionGeneration;
-    if (
-      typeof context.conversationSessionGeneration === "number" &&
-      context.conversationSessionGeneration !== generation
-    ) {
-      throw new Error(
-        "Conversation session changed; this older turn cannot resume",
-      );
-    }
     // The boundary lives on the command comment. A crash/retry reuses it instead of resetting twice.
     if (reset && comment && comment.conversationSessionGeneration == null) {
       await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });

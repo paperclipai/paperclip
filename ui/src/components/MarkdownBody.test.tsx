@@ -14,7 +14,7 @@ import {
   appearanceForPalette,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
-import { MarkdownBody } from "./MarkdownBody";
+import { companyPathFromProtocolRelativeHref, MarkdownBody } from "./MarkdownBody";
 import { StatusIcon } from "./StatusIcon";
 import { taskStatusIconProps } from "../lib/task-status-presentation";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
@@ -102,6 +102,29 @@ function renderMarkdown(
 }
 
 describe("MarkdownBody", () => {
+  it("renders a company link written as //PREFIX/... as that company path", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "RUN" }] });
+    const html = renderMarkdown("[Failed run](//RUN/agents/agent-1/runs/run-1)");
+    expect(html).toContain('href="/RUN/agents/agent-1/runs/run-1"');
+    expect(html).not.toContain('href="//RUN');
+    expect(html).not.toContain('target="_blank"');
+  });
+
+  it("keeps the query and fragment of a normalized company link", () => {
+    expect(companyPathFromProtocolRelativeHref("//RUN/issues/RUN-1#document-plan", ["RUN"])).toBe("/RUN/issues/RUN-1#document-plan");
+    expect(companyPathFromProtocolRelativeHref("//RUN", ["RUN"])).toBe("/RUN");
+    expect(companyPathFromProtocolRelativeHref("/RUN/issues/RUN-1", ["RUN"])).toBe("/RUN/issues/RUN-1");
+    expect(companyPathFromProtocolRelativeHref("https://RUN/x", ["RUN"])).toBe("https://RUN/x");
+  });
+
+  it("leaves protocol-relative links to other hosts unchanged", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "RUN" }] });
+    expect(renderMarkdown("[Docs](//docs.example.com/RUN/guide)")).toContain('href="//docs.example.com/RUN/guide"');
+    expect(renderMarkdown("[Other](//OTHER/agents/a/runs/r)")).toContain('href="//OTHER/agents/a/runs/r"');
+    mockUseOptionalCompany.mockReturnValue(null);
+    expect(renderMarkdown("[Unknown](//RUN/agents/a/runs/r)")).toContain('href="//RUN/agents/a/runs/r"');
+  });
+
   it("preserves a saved document anchor in an explicit task link", () => {
     // Hover/focus can resolve the issue to its plain identifier. Both the old
     // fragment-bearing cache key and the corrected plain key model that load.

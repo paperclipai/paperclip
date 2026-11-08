@@ -1,20 +1,31 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
-import { managedProjectSourceIdentity } from "./workspace-source-lock.js";
+import { assertCurrentWorkspaceSourceHeld, managedProjectSourceIdentity, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
+import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, type WorkspaceSnapshotRef } from "./remote-workspace-snapshot-storage.js";
 
 type ReadDb = Pick<Db, "select">;
 type Workspace = typeof executionWorkspaces.$inferSelect;
+type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type NestedVerificationInput = {
+  db: Db; storage: StorageService; workspace: Workspace; scratch: string; signal?: AbortSignal;
+  recordedChildren?: ImportedWorkspaceChild[]; gitSourceRoots?: string[];
+};
+type NestedVerification = {
+  abort(error: unknown): void;
+  immutable(reference: WorkspaceSnapshotRef, children: ImportedWorkspaceChild[], operationId: string,
+    archivePath: string, restored: string): Promise<void>;
+};
 export type ImportedWorkspaceChild = {
   workspaceId: string; snapshotId: string; operationId: string; relativePath: string; manifestDigest: string;
 };
@@ -50,6 +61,12 @@ export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
     .where(offlineMigrationExecutionWhere()).limit(1);
   return active ? ["active_execution_requires_drain"] : [];
 }
+
+export type WorkspaceMigrationCohort = {
+  schema: "paperclip.remote-workspace-cohort.v1";
+  id: string; companyId: string; sourceProof: string;
+  members: Array<{ workspaceId: string; operationId: string }>;
+};
 
 export type WorkspaceSourceScope = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
@@ -142,12 +159,16 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
 }
 
 export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, companyId: string,
-  source: WorkspaceSourceScope, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string): Promise<string[]> {
+  source: WorkspaceSourceScope, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string, cohort?: WorkspaceMigrationCohort): Promise<string[]> {
   const workspaceIds = sql.join(source.workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
   const issueIds = sql.join(source.issueIds.map(id => sql`${id}::uuid`), sql`, `);
   const settledWorkspaces = sql.join((source.settledPreparedWorkspaceIds?.length ? source.settledPreparedWorkspaceIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}`), sql`, `);
   const settledFinalizers = sql.join((source.settledFinalizationRunIds?.length ? source.settledFinalizationRunIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
   const settledRecoveries = sql.join((source.settledRecoveryIssueIds?.length ? source.settledRecoveryIssueIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
+  const admitted = cohort ? sql`o.phase='remote_workspace_migration' and o.metadata->'cohortMigration'=${JSON.stringify(cohort)}::jsonb
+    and exists (select 1 from jsonb_to_recordset(${JSON.stringify(cohort.members)}::jsonb) as m("workspaceId" uuid,"operationId" uuid)
+      where m."workspaceId"=o.execution_workspace_id and m."operationId"=o.id)` : sql`false`;
+  const otherOperation = cohort ? sql`true` : sql`(${operationId ?? null}::uuid is null or o.id<>${operationId ?? null}::uuid)`;
   const rows = await db.execute<{ reason: string }>(sql`
     select 'active_execution' reason where exists (select 1 from heartbeat_runs r where r.company_id=${companyId}::uuid
       and r.status in ('queued','running') and (r.issue_id in (${issueIds}) or r.native_issue_id in (${issueIds})
@@ -156,8 +177,8 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
     union all select 'task_writer_bound' where exists (select 1 from issues i where i.company_id=${companyId}::uuid
       and i.id in (${issueIds}) and (i.execution_run_id is not null or i.checkout_run_id is not null))
     union all select 'workspace_operation_unresolved' where exists (select 1 from workspace_operations o where o.company_id=${companyId}::uuid
-      and o.execution_workspace_id in (${workspaceIds}) and (${operationId ?? null}::uuid is null or o.id<>${operationId ?? null}::uuid)
-      and (o.status in ('running','pending') or o.metadata->>'uncertain'='true'))
+      and o.execution_workspace_id in (${workspaceIds}) and ${otherOperation}
+      and not coalesce((${admitted}),false) and (o.status in ('running','pending') or o.metadata->>'uncertain'='true'))
     union all select 'workspace_runtime_owned' where exists (select 1 from execution_workspace_runtime_leases l where l.company_id=${companyId}::uuid
       and l.execution_workspace_id in (${workspaceIds}) and l.expires_at>clock_timestamp())
     union all select 'workspace_runtime_service_unsettled' where exists (select 1 from workspace_runtime_services s where s.company_id=${companyId}::uuid
@@ -281,16 +302,84 @@ export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace:
 /** Runtime-created nested task folders can be omitted only after an exact
  * committed import covers their current bytes. Ordinary user folders stay in
  * the parent archive. The snapshot owner retains the resulting dependencies. */
-export async function prepareNestedWorkspaceImports(input: {
-  db: Db; storage: StorageService; workspace: Workspace; scratch: string; signal?: AbortSignal;
-  recordedChildren?: ImportedWorkspaceChild[]; gitSourceRoots?: string[];
-}): Promise<ImportedWorkspaceChild[]> {
+export function createNestedWorkspaceImportVerifier(input: {
+  db: Db; storage: StorageService; companyId: string; sourceLock: SourceTransaction;
+  projectIds: readonly string[]; issueIds: readonly string[]; signal?: AbortSignal;
+}) {
+  const stop = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, stop.signal]) : stop.signal;
+  const proofs = new Map<string, { etag: string; checked: Promise<boolean> }>();
+  let closed = false, current: Promise<ImportedWorkspaceChild[]> | undefined;
+  const objectHead = async (reference: WorkspaceSnapshotRef) => {
+    try { return await input.storage.headObject(reference.companyId, reference.objectKey, { signal }); }
+    catch { signal.throwIfAborted(); return null; }
+  };
+  const assertOwner = async () => {
+    if (closed) throw new Error("nested_workspace_verifier_closed");
+    signal.throwIfAborted();
+    await withWorkspaceSourceLocks(input.db, { companyId: input.companyId, projectIds: input.projectIds, issueIds: input.issueIds }, async lock => {
+      if (lock !== input.sourceLock) throw new Error("nested_workspace_source_fence_changed");
+      await lock.execute(sql`select 1`);
+    }, true);
+  };
+  const verification: NestedVerification = {
+    abort: error => stop.abort(error),
+    immutable: async (reference, children, operationId, archivePath, restored) => {
+      const head = await objectHead(reference);
+      const etag = head?.exists && head.contentLength === reference.byteSize && typeof head.etag === "string"
+        && head.etag.replace(/^"|"$/g, "").trim() && !/^W\//i.test(head.etag) ? head.etag : null;
+      const key = createHash("sha256").update(JSON.stringify([reference, children, operationId])).digest("hex");
+      const previous = proofs.get(key);
+      if (previous && etag === previous.etag
+        && await previous.checked) return;
+      proofs.delete(key);
+      const checked = (async () => {
+        await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal });
+        await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal });
+        if (!etag) return false;
+        const after = await objectHead(reference);
+        return after !== null && after.exists && after.etag === etag && after.contentLength === reference.byteSize;
+      })();
+      const proof = etag ? { etag, checked } : null;
+      if (proof) proofs.set(key, proof);
+      try { if (!await checked && proofs.get(key) === proof) proofs.delete(key); }
+      catch (error) { if (proofs.get(key) === proof) proofs.delete(key); throw error; }
+    },
+  };
+  return {
+    prepare(options: Omit<NestedVerificationInput, "db" | "storage" | "signal">): Promise<ImportedWorkspaceChild[]> {
+      if (closed || current) return Promise.reject(new Error("nested_workspace_verifier_unavailable"));
+      const work = (async () => {
+        await assertOwner();
+        if (options.workspace.companyId !== input.companyId) throw new Error("workspace_source_company_mismatch");
+        const sourceRoot = rootOf(options.workspace);
+        if (sourceRoot) await assertCurrentWorkspaceSourceHeld(sourceRoot);
+        const result = await prepareNestedWorkspaceImportsWithVerification({ ...options, db: input.db, storage: input.storage, signal }, verification);
+        await assertOwner();
+        return result;
+      })().catch(error => { stop.abort(error); throw error; });
+      current = work;
+      return work.finally(() => { current = undefined; });
+    },
+    async close() {
+      closed = true; stop.abort(new Error("nested_workspace_verifier_closed"));
+      if (current) await Promise.allSettled([current]);
+      proofs.clear();
+    },
+  };
+}
+
+export function prepareNestedWorkspaceImports(input: NestedVerificationInput): Promise<ImportedWorkspaceChild[]> {
+  return prepareNestedWorkspaceImportsWithVerification(input);
+}
+
+async function prepareNestedWorkspaceImportsWithVerification(input: NestedVerificationInput, verification?: NestedVerification): Promise<ImportedWorkspaceChild[]> {
   const sourceRoot = rootOf(input.workspace);
   if (!sourceRoot || input.recordedChildren && !input.recordedChildren.length) return [];
   const root = await physicalPath(sourceRoot);
   const candidates = (await importedWorkspaceCandidates(input.db, input.workspace)).filter(row =>
     !input.recordedChildren || input.recordedChildren.some(child => child.operationId === row.operation.id));
   const covered: ImportedWorkspaceChild[] = [];
+  const selected: typeof candidates = [];
   for (const { operation, snapshot, sourcePath } of candidates) {
     input.signal?.throwIfAborted();
     const relativePath = path.relative(root, sourcePath).split(path.sep).join("/");
@@ -298,10 +387,26 @@ export async function prepareNestedWorkspaceImports(input: {
     const entry = await fs.lstat(sourcePath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
     if (!entry) { if (input.recordedChildren) throw new Error("nested_workspace_source_changed"); continue; }
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("nested_workspace_source_changed");
-    await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
+    if (!verification) await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
       expectedDigest: operation.metadata?.manifestDigest, depth: 0 });
+    else selected.push({ operation, snapshot, sourcePath });
     covered.push({ workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id, operationId: operation.id,
       relativePath, manifestDigest: snapshot.manifestDigest! });
+  }
+  if (verification) {
+    let next = 0, failure: unknown;
+    const worker = async () => {
+      while (!input.signal?.aborted && next < selected.length) {
+        const { operation, snapshot, sourcePath } = selected[next++];
+        try { await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
+          expectedDigest: operation.metadata?.manifestDigest, depth: 0 }, verification); }
+        catch (error) { failure ??= error; verification.abort(error); }
+      }
+    };
+    const peers = await Promise.allSettled(Array.from({ length: Math.min(2, selected.length) }, worker));
+    for (const peer of peers) if (peer.status === "rejected") failure ??= peer.reason;
+    if (failure) throw failure;
+    input.signal?.throwIfAborted();
   }
   if (input.recordedChildren && !isDeepStrictEqual(covered, input.recordedChildren)) throw new Error("nested_workspace_scope_changed");
   return covered;
@@ -310,7 +415,7 @@ export async function prepareNestedWorkspaceImports(input: {
 async function verifyCoveredWorkspace(input: {
   db: Db; storage: StorageService; sourcePath: string; snapshot: typeof executionWorkspaceSnapshots.$inferSelect;
   operationId: string; expectedDigest: unknown; scratch: string; signal?: AbortSignal; depth: number; gitSourceRoots?: string[];
-}) {
+}, verification?: NestedVerification) {
   input.signal?.throwIfAborted();
   if (input.depth > 32) throw new Error("nested_workspace_coverage_invalid");
   const { snapshot } = input;
@@ -331,11 +436,14 @@ async function verifyCoveredWorkspace(input: {
     const sourcePath = path.join(input.sourcePath, child.relativePath);
     if (!saved?.operation.cwd || await physicalPath(saved.operation.cwd) !== sourcePath) throw new Error("nested_workspace_coverage_invalid");
     await verifyCoveredWorkspace({ ...input, sourcePath, snapshot: saved.snapshot, operationId: child.operationId,
-      expectedDigest: child.manifestDigest, scratch: area, depth: input.depth + 1 });
+      expectedDigest: child.manifestDigest, scratch: area, depth: input.depth + 1 }, verification);
   }
   const archivePath = path.join(area, "saved.pcws"), restored = path.join(area, "restored");
-  await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal: input.signal });
-  await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal: input.signal });
+  if (verification) await verification.immutable(reference, children, input.operationId, archivePath, restored);
+  else {
+    await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal: input.signal });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal: input.signal });
+  }
   const current = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath: path.join(area, "current.pcws"),
     exclude: children.map(child => child.relativePath), gitSourceRoots: input.gitSourceRoots, signal: input.signal });
   if (current.manifestDigest !== reference.manifestDigest) throw new Error("nested_workspace_source_changed");

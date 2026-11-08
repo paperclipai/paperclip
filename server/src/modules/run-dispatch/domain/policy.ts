@@ -145,6 +145,8 @@ export type QueuedRunFacts = {
   issueCheckoutRunId?: string | null;
 
   isResolvedInteractionContinuation: boolean;
+  /** Verified under the issue lock: an answer to a question no run asked, on a todo task that has never started. */
+  isUnstartedTaskQuestionAnswer?: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
@@ -510,9 +512,11 @@ export function decideQueuedRunStaleness(
   }
 
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
+    // A todo task that has never started has no parked execution to protect.
+    const startsUnstartedTask = facts.issueStatus === "todo" && facts.isUnstartedTaskQuestionAnswer === true;
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: facts.issueStatus !== "in_review",
+      requiresInProgress: facts.issueStatus !== "in_review" && !startsUnstartedTask,
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {

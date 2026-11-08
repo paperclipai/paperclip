@@ -7,9 +7,11 @@ import {
   ListObjectsV2Command,
   ListObjectVersionsCommand,
 } from "@aws-sdk/client-s3";
-import { putS3Multipart } from "./s3-multipart.js";
+import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile } from "./s3-multipart.js";
+import { createReadStream } from "node:fs";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { addAbortSignal, Readable } from "node:stream";
+import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -79,6 +81,17 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
   });
+  retryS3RequestTimeouts(client);
+  // File sources carry Content-MD5 as their integrity check. Send plain bodies
+  // so the backend verifies that digest directly; the default client wraps
+  // bodies in aws-chunked framing with its own trailing checksum.
+  const fileClient = new S3Client({
+    region,
+    endpoint: config.endpoint,
+    forcePathStyle: Boolean(config.forcePathStyle),
+    requestChecksumCalculation: "WHEN_REQUIRED",
+  });
+  retryS3RequestTimeouts(fileClient);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();
@@ -138,6 +151,24 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
     async putObject(input) {
       const key = buildKey(prefix, input.objectKey);
+      const sourceFile = input.sourceFile;
+      if (sourceFile && input.contentLength > 16 * 1024 * 1024) {
+        return putS3MultipartFile(fileClient, bucket, key, { ...input, sourceFile });
+      }
+      if (sourceFile) {
+        // Content-MD5 makes the backend reject any byte it did not receive intact.
+        if (input.body instanceof Readable) input.body.destroy();
+        await assertSourceFileSize(sourceFile, input.contentLength);
+        const contentMd5 = await fileRangeMd5(sourceFile, 0, input.contentLength - 1, input.signal);
+        const body = createReadStream(sourceFile);
+        try {
+          await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
+            Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
+            ContentLength: input.contentLength, ContentMD5: contentMd5,
+          }), { abortSignal: input.signal }));
+        } finally { body.destroy(); }
+        return { integrity: "server_verified_md5" } as const;
+      }
       if (input.contentLength > 16 * 1024 * 1024) {
         await putS3Multipart(client, bucket, key, input);
         return;

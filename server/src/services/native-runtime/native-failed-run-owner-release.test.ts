@@ -17,6 +17,8 @@ import {
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
+import { readProcessStartedAt } from "../hot-restart.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { environmentService } from "../environments.js";
 import { executionControlSchedule } from "../execution-control-work.js";
@@ -249,6 +251,58 @@ describe("failed native run owner release", () => {
     } finally {
       const exited = once(unrelated, "exit");
       unrelated.kill("SIGKILL");
+      await exited;
+    }
+  });
+
+  // Phase 2: run processes and controllers are judged by the shared prover.
+  it("never releases on a dead PID recorded in another PID space", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_001, processGroupId: null,
+      processStartedAt: new Date(Date.now() - 60_000), processHostHash: "another-pid-space" })
+      .where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(0);
+    expect(await coordinator(runId)).toMatchObject({ phase: "observed" });
+    await db.update(heartbeatRuns).set({ processHostHash: currentProcessSpaceHash() }).where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+      eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")))).toEqual([]);
+  });
+
+  it("keeps the one-release fallback for a run process saved before its PID space, and records it", async () => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_001, processGroupId: null,
+      processStartedAt: new Date(Date.now() - 60_000), processHostHash: null }).where(eq(heartbeatRuns.id, runId));
+    await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(1);
+    const proofs = await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+      eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")));
+    expect(proofs.map(proof => proof.details)).toEqual([{ reason: "pid_dead", source: "native_failed_run_process" }]);
+  });
+
+  // `ps -o lstart` on macOS reports whole seconds, while a recorded start can
+  // carry milliseconds. A sub-second gap must not be read as a recycled PID.
+  it.each(["controller", "run process"])("keeps the owner when the live %s start time differs by under a second", async (holder) => {
+    const { runId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    const live = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore", detached: true });
+    await once(live, "spawn");
+    try {
+      const observed = new Date((await readProcessStartedAt(live.pid!))!);
+      const recorded = new Date(observed.getTime() + 500);
+      if (holder === "controller") {
+        await db.update(nativeRunFinalizations).set({ controllerPid: live.pid!, controllerBootId: randomUUID(),
+          controllerProcessStartedAt: recorded }).where(eq(nativeRunFinalizations.runId, runId));
+      } else {
+        await db.update(heartbeatRuns).set({ processPid: live.pid!, processGroupId: live.pid!, processStartedAt: recorded })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+      await expect(releaseAbandonedNativeOwners(db)).resolves.toBe(0);
+      expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
+    } finally {
+      const exited = once(live, "exit");
+      live.kill("SIGKILL");
       await exited;
     }
   });

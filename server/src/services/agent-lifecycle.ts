@@ -1,3 +1,4 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -49,6 +50,9 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       return plugin !== null && !selectedPluginIds?.includes(plugin.id);
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
+    beforeConnectionEligibilityRestore: async (tx, companyId, agentId) => {
+      await notifyMuseContactVerification(tx, { companyId, agentId });
+    },
     async beforeStatusChange(tx, companyId, agentId, before, after) {
       await notifyAttentionRetentionWork(tx, { companyId });
       if (before !== after) {

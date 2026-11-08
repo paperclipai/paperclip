@@ -46,7 +46,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
   const tests = agentEnvironmentTestService(db, manager);
   const secrets = secretService(db);
   const environments = environmentService(db);
-  async function verify(snapshot: LifecycleAgent): Promise<"complete" | "pending"> {
+  async function verify(snapshot: LifecycleAgent): Promise<"complete" | "pending" | "waiting"> {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, snapshot.id), eq(agents.lifecycleVersion, snapshot.lifecycleVersion)));
     if (!agent) return "pending";
     if (agent.adapterType === "paperclip_runner" && ["openai_dot", "grok_bot"].includes(String(agent.adapterConfig.provider))) {
@@ -55,7 +55,9 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     }
     if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse") {
       const binding = await museRunnerBroker(db).bindingForAgent(agent.companyId,agent.id);
-      return binding?.status === "ready" && binding.paired && binding.receiverDetected && binding.backgroundReplyVerified && binding.id === agent.adapterConfig.museBindingId ? "complete" : "pending";
+      // A successful read of these external facts has no retry deadline. The
+      // real confirmation/configuration producer rechecks this phase durably.
+      return binding?.status === "ready" && binding.paired && binding.receiverDetected && binding.backgroundReplyVerified && binding.id === agent.adapterConfig.museBindingId ? "complete" : "waiting";
     }
     const providerApi = resolveProviderApiPlacement({ agent });
     if (providerApi) assertProviderApiPlacementPolicy(await instanceSettingsService(db).getGeneral());

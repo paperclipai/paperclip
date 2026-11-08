@@ -17,6 +17,7 @@ import { getExecutionBlocker } from "./execution-blocker.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -185,7 +186,10 @@ describe("task Retry after inherited native cleanup quarantine", () => {
         }));
       }
       if (mode === "worker_alive") {
-        await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid })
+        // This test process, with its real start time: the shared prover then
+        // sees the same live worker, not a reused PID.
+        const startedAt = new Date((await currentProcessStartedAtMs())!);
+        await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid, processStartedAt: startedAt })
           .where(eq(heartbeatRuns.companyId, f.companyId));
         const [owner] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.ownerId));
         await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.ownerId, agentId: f.agentId,
@@ -238,6 +242,31 @@ describe("task Retry after inherited native cleanup quarantine", () => {
         expect(proof!.retire()).toBe(false);
       } else expect(proof).toBeNull();
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["stopped", "source_launch_requested", "owner_running"])(
+    "certifies a quarantined source that never launched from the previous owner's stop (%s)", async mode => {
+    // s7532/t04: the quarantine fence refused the source before it asked for
+    // a runner, so it has no process record at all. Only the owner can prove
+    // the retained session stopped.
+    const base = await mkdtemp(join(tmpdir(), "quarantined-never-launched-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base);
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, f.sourceId));
+      if (mode === "source_launch_requested") await appendHeartbeatRunEvent(db, {
+        companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: PROCESS_START_REQUESTED });
+      if (mode === "owner_running") await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.ownerId));
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
+      const proof = await verifyStoppedNativeSessionForContinuation(db, source);
+      if (mode === "stopped") expect(proof).not.toBeNull();
+      else expect(proof).toBeNull();
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });

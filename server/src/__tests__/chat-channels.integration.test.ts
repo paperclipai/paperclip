@@ -35,7 +35,7 @@ import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
 import * as adapterModule from "../adapters/index.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
-import { budgetPolicies } from "@paperclipai/db";
+import { budgetPolicies, costEvents } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleLocalWork } from "../services/idle-local-work.js";
@@ -30541,6 +30541,82 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it.each([
+    { isDM: true, threaded: true, status: "done", state: "active" },
+    { isDM: true, threaded: true, status: "cancelled", state: "active" },
+    { isDM: true, threaded: true, status: "in_review", state: "completed" },
+    { isDM: false, threaded: true, status: "done", state: "completed" },
+    { isDM: true, threaded: false, status: "done", state: "completed" },
+  ] as const)(
+    "preserves Slack thread history across completion ($isDM, $threaded, $status, $state)",
+    async ({ isDM, threaded, status, state }) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
+      const channelId = isDM ? "D-HISTORY" : "C-HISTORY";
+      const thread = makeThread({
+        channelId,
+        id: `slack:${channelId}:${threaded ? "1000.1" : ""}`,
+        isDM,
+      }).thread;
+      const send = (id: string, text: string) => deliverMessage({
+        callbacks, endpointId: endpoint.id, thread,
+        message: makeMessage({ id, text, mentioned: !isDM, userId: "UBOARD" }),
+        trigger: isDM ? "direct_message" : "mention",
+      });
+      await send("1000.1", "Keep this context for my next request");
+      const [original] = await readChatConversationsByEndpointId(endpoint.id);
+      await db.insert(issueComments).values({
+        companyId: fixture.companyId, issueId: original.issueId,
+        authorType: "agent", authorAgentId: fixture.assignedAgentId,
+        body: "I kept the original request.",
+      });
+      await db.update(issues).set({ status }).where(eq(issues.id, original.issueId));
+      await db.update(chatConversations).set({ state }).where(eq(chatConversations.id, original.id));
+
+      await send("1000.2", "Is it done?");
+      await send("1000.2", "Is it done?");
+      const conversations = await readChatConversationsByEndpointId(endpoint.id);
+      expect(conversations).toHaveLength(threaded ? 1 : 2);
+      const generation = threaded ? original.sessionGeneration : original.sessionGeneration + 1;
+      const continued = conversations.find(row => row.sessionGeneration === generation)!;
+      expect(continued.issueId === original.issueId).toBe(threaded);
+      expect(continued.state).toBe("active");
+      expect((await issueService(db).getById(continued.issueId))?.status).toBe(status === "in_review" ? "in_review" : "todo");
+      const comments = await readIssueCommentsByIssueId(continued.issueId)
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+      expect(comments.map(row => row.body)).toEqual(threaded
+        ? ["Keep this context for my next request", "I kept the original request.", "Is it done?"]
+        : ["Is it done?"]);
+      expect(wakeup).toHaveBeenCalledTimes(2);
+      const resources = await db.select().from(chatEndpointResources)
+        .where(eq(chatEndpointResources.endpointId, endpoint.id));
+      expect(resources.find(row => row.providerResourceId === channelId)?.type).toBe(isDM ? "direct_message" : "channel");
+      if (isDM) {
+        await service.update(endpoint.id, { allowDirectMessages: false });
+        await send("1000.3", "This must be rejected");
+        expect(wakeup).toHaveBeenCalledTimes(2);
+        expect(await readIssueCommentsByIssueId(continued.issueId)).toHaveLength(threaded ? 3 : 1);
+      }
+    },
+  );
+
+  it("keeps separate Slack DM thread roots on separate tasks", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
+    for (const root of ["1000.1", "1000.2"]) {
+      await deliverMessage({
+        callbacks, endpointId: endpoint.id,
+        thread: makeThread({ channelId: "D-ROOTS", id: `slack:D-ROOTS:${root}`, isDM: true }).thread,
+        message: makeMessage({ id: root, text: "A separate request" }),
+        trigger: "direct_message",
+      });
+    }
+    const conversations = await readChatConversationsByEndpointId(endpoint.id);
+    expect(conversations).toHaveLength(2);
+    expect(new Set(conversations.map(row => row.issueId)).size).toBe(2);
+    expect(conversations.map(row => row.sessionGeneration)).toEqual([1, 1]);
+  });
+
   it("deduplicates inbound events, keeps one task per thread, and enables newly discovered Slack channels", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } =
@@ -36300,10 +36376,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await resumed.service.shutdown();
   });
 
-  it("returns two answered Slack turns to Idle in the same thread", async () => {
+  it.each([false, true])("returns two answered Slack turns to Idle in the same thread (DM=%s)", async (isDM) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
-    const thread = makeThread({ channelId: "C-IDLE", id: "slack:C-IDLE:4049.1", name: "idle" });
+    const channelId = isDM ? "D-IDLE" : "C-IDLE";
+    const thread = makeThread({ channelId, id: `slack:${channelId}:4049.1`, name: "idle", isDM });
     let issueId: string | undefined;
     let conversationId: string | undefined;
     for (const [index, text] of ["@maya are you there?", "what is your name?"].entries()) {
@@ -58532,7 +58609,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("binds Slack DM slash controls to the native root returned for the latest task", async () => {
+  it.each([
+    { control: "new", status: "todo", state: "active" },
+    { control: "close", status: "todo", state: "active" },
+    { control: "new", status: "done", state: "active" },
+    { control: "close", status: "cancelled", state: "active" },
+    { control: "new", status: "done", state: "completed" },
+    { control: "close", status: "cancelled", state: "completed" },
+  ] as const)("binds Slack DM slash controls to the latest task ($control, $status, $state)", async ({ control, status, state }) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -58589,18 +58673,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     const [conversation] = await service.listConversations(endpoint.id);
     expect(conversation.externalThreadId).toBe(starterThreadId);
+    await db.update(issues).set({ status }).where(eq(issues.id, conversation.issueId));
+    await db.update(chatConversations).set({ state }).where(eq(chatConversations.id, conversation.id));
 
     await invoke("status");
     await service.processPendingPublications();
     expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)).toMatchObject({
       threadId: starterThreadId,
-      text: expect.stringMatching(/— todo$/),
+      text: expect.stringMatching(new RegExp(`— ${status}$`)),
     });
-    await invoke("close");
-    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+    await invoke(control);
+    await expect(readChatConversationsByEndpointId(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
         externalThreadId: starterThreadId,
-        state: "active",
+        state,
       }),
     ]);
     await service.processPendingPublications();
@@ -58610,9 +58696,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "completed",
       }),
     ]);
-    expect(
-      await readIssuesByCompanyId(fixture.companyId),
-    ).toHaveLength(1);
+    const [completion] = await db.select().from(chatPublications).where(and(
+      eq(chatPublications.conversationId, conversation.id),
+      like(chatPublications.idempotencyKey, `control:${control}:%`),
+    ));
+    expect(completion?.state).toBe("published");
+    expect(await readIssuesByCompanyId(fixture.companyId)).toHaveLength(1);
+    const providerTime = Date.now();
+    const providerTimestamp = `${Math.floor(providerTime / 1_000)}.${String((providerTime % 1_000) * 1_000).padStart(6, "0")}`;
+    await deliverMessage({
+      callbacks, endpointId: endpoint.id,
+      thread: makeThread({ channelId: "D09SLASHTASK", id: starterThreadId, isDM: true }).thread,
+      message: makeMessage({ id: providerTimestamp, raw: { ts: providerTimestamp }, text: "An explicitly requested new task", userId: "U-DM-SLASH-TASK" }),
+      trigger: "direct_message",
+    });
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toHaveLength(2);
+    expect(conversations.find(row => row.state === "active")).toMatchObject({
+      externalThreadId: starterThreadId, sessionGeneration: 2,
+    });
+    expect(await readIssuesByCompanyId(fixture.companyId)).toHaveLength(2);
   });
 
   it("acknowledges a Slack retry while one durable worker owns the unrecorded command root", async () => {
@@ -66470,9 +66573,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (mode === "legacy_no_prior") await db.delete(chatActions).where(and(
         eq(chatActions.deliveryId, context.action.deliveryId!), eq(chatActions.kind, "github_response_comment")));
       if (realBudgetIngress) {
-        await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, context.runId));
+        // A reached hard stop the board later lifts. Pending accounting is no
+        // longer a budget hold (invariant 3).
         await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: context.fixture.assignedAgentId,
           metric: "billed_cents", windowKind: "lifetime", amount: 100, notifyEnabled: false });
+        await db.insert(costEvents).values({ companyId, agentId: context.fixture.assignedAgentId, provider: "openai", model: "gpt",
+          costCents: 100, occurredAt: new Date() });
         context.wakeup.mockImplementation(heartbeatService(db).wakeup);
       } else context.wakeup.mockImplementation(async (agentId, opts) => {
         const request = opts.durableChatRequest!;

@@ -493,7 +493,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #workingDirectory: string;
   readonly #runnerInstanceId: string;
   readonly #model: string;
-  readonly #taskEnvelope: CodexTaskEnvelope;
+  #taskEnvelope: CodexTaskEnvelope;
   readonly #systemInstructions: string;
   readonly #dynamicToolHandler?: DynamicToolHandler;
   readonly #completionFeedback?: OpenCodeCompletionFeedback;
@@ -657,11 +657,29 @@ class OpenCodeHarnessSession implements HarnessSession {
     };
   }
 
-  attachRun(input: { runId: string }): void {
+  attachRun(input: { runId: string; completionContract?: { revision: string; criterionIds: readonly string[] } }): void {
     if (this.#activeTurnId !== null)
       throw new Error("opencode_run_attach_busy");
     if (!input.runId) throw new Error("opencode_run_attach_invalid");
+    const contract = input.completionContract;
+    if (contract !== undefined && (!contract.revision.trim() || contract.criterionIds.length === 0
+      || contract.criterionIds.some((id) => typeof id !== "string" || !id.trim())))
+      throw new Error("opencode_run_attach_invalid");
     this.#runId = input.runId;
+    // A retained process serves later runs. Each run's finish claim must name
+    // that run's own contract revision, not the first run's.
+    if (contract !== undefined) {
+      this.#taskEnvelope = {
+        ...this.#taskEnvelope,
+        completionContract: {
+          revision: contract.revision.trim(),
+          criteria: contract.criterionIds.map((id) => ({
+            id: id.trim(),
+            requirement: `Satisfy the Paperclip completion criterion ${id.trim()}.`,
+          })),
+        },
+      };
+    }
     this.#result = null;
     this.#resultFingerprint = null;
     this.#resultCallId = null;
@@ -1214,8 +1232,10 @@ class OpenCodeHarnessSession implements HarnessSession {
           validation.result.completionClaim.contractRevision !==
           this.#taskEnvelope.completionContract.revision
         ) {
+          // Name the expected revision so the provider can repair its claim
+          // in this turn, as the criteria error below does.
           throw new Error(
-            "Semantic result completion contract revision does not match",
+            `Semantic result completion contract revision does not match. Use contractRevision ${JSON.stringify(this.#taskEnvelope.completionContract.revision)}.`,
           );
         }
         const expectedIds = this.#taskEnvelope.completionContract.criteria.map((criterion) => criterion.id);

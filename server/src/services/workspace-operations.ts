@@ -11,7 +11,9 @@ import { asc, desc, eq, gte, inArray, isNull, lt, or, and } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, processExists, sameProcessSpace } from "./controller-process-identity.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -71,6 +73,8 @@ type RuntimeControlOwnerStamp = {
   pid: number;
   action: string;
   heartbeatAt: string;
+  /** PID space of `pid`. Absent on stamps written before it was recorded. */
+  hostHash?: string;
 };
 
 function readRuntimeControlAction(metadata: unknown): string | null {
@@ -91,6 +95,7 @@ function readRuntimeControlOwner(metadata: unknown): RuntimeControlOwnerStamp | 
     pid: typeof record.pid === "number" ? record.pid : 0,
     action: typeof record.action === "string" ? record.action : "start",
     heartbeatAt: typeof record.heartbeatAt === "string" ? record.heartbeatAt : new Date(0).toISOString(),
+    ...(typeof record.hostHash === "string" ? { hostHash: record.hostHash } : {}),
   };
 }
 
@@ -100,6 +105,17 @@ function readRuntimeControlOwner(metadata: unknown): RuntimeControlOwnerStamp | 
  * so it is safe to terminalize immediately instead of waiting out the staleness window.
  */
 const liveRuntimeControlOperationIds = new Set<string>();
+
+/**
+ * Workspace-finalize operations this process is driving. A finalize row stamped
+ * by this process (`finalizeOwner`) but absent here was left by a request that
+ * died without unwinding. The ownership settle never touches an id in this set.
+ */
+const liveWorkspaceFinalizeOperationIds = new Set<string>();
+
+export function isWorkspaceFinalizeOperationLive(operationId: string): boolean {
+  return liveWorkspaceFinalizeOperationIds.has(operationId);
+}
 
 type NativeFinalizationActivityScope = {
   operationId: string;
@@ -118,20 +134,17 @@ export function isNativeWorkspaceFinalizationOperationActive(scope: NativeFinali
 }
 
 /**
- * Whether the process that stamped an operation is still alive on this host. A dead owner can
- * never heartbeat again, so its operation is recoverable immediately instead of after the
- * staleness window — which is what makes recovery after a crash or restart prompt. Signal 0
- * only probes; it never touches the process.
+ * Whether the process that stamped an operation has provably exited. A dead owner can never
+ * heartbeat again, so its operation is recoverable immediately instead of after the staleness
+ * window — which is what makes recovery after a crash or restart prompt. The PID is judged only
+ * in the PID space that recorded it: an owner on another host or namespace, an unreadable
+ * space, or a stamp without a recorded space is never proven gone here and waits out the
+ * staleness window instead. Signal 0 only probes; EPERM means the process exists.
  */
-function ownerProcessIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the pid exists but belongs to another user: treat it as alive.
-    return (error as NodeJS.ErrnoException)?.code === "EPERM";
-  }
+function ownerProcessProvenGone(owner: RuntimeControlOwnerStamp): boolean {
+  if (!sameProcessSpace(owner.hostHash)) return false;
+  if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+  return !processExists(owner.pid);
 }
 
 /**
@@ -153,6 +166,7 @@ function updatedAtUnchanged(updatedAt: Date) {
 
 export function resetWorkspaceRuntimeControlStateForTests() {
   liveRuntimeControlOperationIds.clear();
+  liveWorkspaceFinalizeOperationIds.clear();
 }
 
 export function workspaceRuntimeControlOwnerIdForTests() {
@@ -336,7 +350,7 @@ export function workspaceOperationService(db: Db) {
       const ownedHereAndLive = ownedByThisProcess && liveRuntimeControlOperationIds.has(candidate.id);
       // A previous server process that no longer exists cannot heartbeat again, so its
       // operations are recoverable at once instead of after the staleness window.
-      const ownerProcessGone = owner !== null && !ownedByThisProcess && !ownerProcessIsAlive(owner.pid);
+      const ownerProcessGone = owner !== null && !ownedByThisProcess && ownerProcessProvenGone(owner);
 
       if (ownedHereAndLive) {
         // This process is driving it right now; its own time budget is what terminalizes it.
@@ -543,11 +557,19 @@ export function workspaceOperationService(db: Db) {
                 runtimeControlOwner: {
                   ownerId: RUNTIME_CONTROL_OWNER_ID,
                   pid: process.pid,
+                  hostHash: currentProcessSpaceHash(),
                   action: runtimeControlAction,
                   heartbeatAt: startedAt.toISOString(),
                 } satisfies RuntimeControlOwnerStamp,
               }
             : recordInput.metadata ?? null;
+          // Finalize attempts record the process that runs them (no I/O), so
+          // the shared ownership path can settle one whose owner died mid-copyback.
+          const finalizeAttempt = recordInput.phase === "workspace_finalize";
+          if (finalizeAttempt) {
+            currentMetadata = { ...(currentMetadata ?? {}), finalizeOwner: currentControllerProcessStamp() };
+            liveWorkspaceFinalizeOperationIds.add(id);
+          }
 
           // Claim in-process before the row exists, so there is no ordering in which a recovery
           // sweep can observe an operation stamped by this process but not yet tracked by it —
@@ -580,10 +602,14 @@ export function workspaceOperationService(db: Db) {
             if (!published) throw new Error("Workspace operation admission did not publish its running row");
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
+            liveWorkspaceFinalizeOperationIds.delete(id);
             throw insertError;
           }
           createdIds.push(id);
-          if (recordInput.phase === "workspace_finalize") hasFinalization = true;
+          if (recordInput.phase === "workspace_finalize") {
+            hasFinalization = true;
+            crashPoint("workspace.finalize.after_start_before_copyback");
+          }
 
           let heartbeatTimer: NodeJS.Timeout | null = null;
           let timeoutTimer: NodeJS.Timeout | null = null;
@@ -594,6 +620,7 @@ export function workspaceOperationService(db: Db) {
                 runtimeControlOwner: {
                   ownerId: RUNTIME_CONTROL_OWNER_ID,
                   pid: process.pid,
+                  hostHash: currentProcessSpaceHash(),
                   action: runtimeControlAction,
                   heartbeatAt: heartbeatAt.toISOString(),
                 } satisfies RuntimeControlOwnerStamp,
@@ -664,6 +691,7 @@ export function workspaceOperationService(db: Db) {
 
           try {
             const result = await settle();
+            if (recordInput.phase === "workspace_finalize") crashPoint("workspace.finalize.after_copyback_before_done");
             await append("system", result.system ?? null);
             await append("stdout", result.stdout ?? null);
             await append("stderr", result.stderr ?? null);
@@ -734,6 +762,7 @@ export function workspaceOperationService(db: Db) {
             if (heartbeatTimer) clearInterval(heartbeatTimer);
             if (timeoutTimer) clearTimeout(timeoutTimer);
             liveRuntimeControlOperationIds.delete(id);
+            liveWorkspaceFinalizeOperationIds.delete(id);
           }
         },
       };

@@ -54,8 +54,10 @@ const support = await getEmbeddedPostgresTestSupport();
         assigneeAgentId: f.agentId, status: "backlog", workspaceSelection: { kind: "existing", workspaceId: workspace.id } }),
     });
     const response = await create(f.issueId), body = await response.json();
+    // The selection passes the trust checks, but the workspace is the parent's,
+    // so the child gets its own workspace instead of sharing it.
     expect({ status: response.status, body }).toMatchObject({ status: 201, body: {
-      parentId: f.issueId, executionWorkspaceId: workspace.id,
+      parentId: f.issueId, executionWorkspaceId: null,
       executionPolicy: { authorizationPolicy: { trustBoundary: policy.authorizationPolicy.trustBoundary } },
     } });
     const denied = await create(f.blockerId);
