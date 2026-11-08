@@ -30,7 +30,8 @@ export async function deliverAgentUnblockNotification(input: {
     payload: { issueId: string; action: string };
     contextSnapshot: { wakeReason: "issue_unblock_requested"; issueId: string; taskId: string };
   }) => Promise<unknown>;
-  markNotified: (notifiedAt: Date) => Promise<unknown>;
+  claimNotification: (notifiedAt: Date) => Promise<boolean>;
+  releaseNotification: (notifiedAt: Date) => Promise<unknown>;
   now?: () => Date;
 }) {
   const { issue } = input;
@@ -41,14 +42,20 @@ export async function deliverAgentUnblockNotification(input: {
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
 
-  await input.wakeup(owner.agentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_unblock_requested",
-    idempotencyKey: `issue-unblock:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
-    payload: { issueId: issue.id, action: issue.unblockDescriptor.action },
-    contextSnapshot: { wakeReason: "issue_unblock_requested", issueId: issue.id, taskId: issue.id },
-  });
-  await input.markNotified((input.now ?? (() => new Date()))());
+  const notifiedAt = (input.now ?? (() => new Date()))();
+  if (!(await input.claimNotification(notifiedAt))) return false;
+  try {
+    await input.wakeup(owner.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      idempotencyKey: `issue-unblock:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+      payload: { issueId: issue.id, action: issue.unblockDescriptor.action },
+      contextSnapshot: { wakeReason: "issue_unblock_requested", issueId: issue.id, taskId: issue.id },
+    });
+  } catch (error) {
+    await input.releaseNotification(notifiedAt);
+    throw error;
+  }
   return true;
 }

@@ -15479,24 +15479,35 @@ export function issueRoutes(
 
       if (issue.status === "blocked") {
         const blockedIssue = issue;
+        const episode = and(
+          eq(issueRows.id, blockedIssue.id),
+          eq(issueRows.companyId, blockedIssue.companyId),
+          eq(issueRows.status, "blocked"),
+          blockedIssue.blockedTransitionAt
+            ? eq(issueRows.blockedTransitionAt, blockedIssue.blockedTransitionAt)
+            : isNull(issueRows.blockedTransitionAt),
+        );
         let ownerNotifiedAt: Date | null = null;
-        await deliverAgentUnblockNotification({
+        const delivered = await deliverAgentUnblockNotification({
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
-          markNotified: async (blockedOwnerNotifiedAt) => {
-            ownerNotifiedAt = blockedOwnerNotifiedAt;
+          claimNotification: async (notifiedAt) => {
+            const claimed = await db
+              .update(issueRows)
+              .set({ blockedOwnerNotifiedAt: notifiedAt })
+              .where(and(episode, isNull(issueRows.blockedOwnerNotifiedAt)))
+              .returning({ id: issueRows.id });
+            if (claimed.length > 0) ownerNotifiedAt = notifiedAt;
+            return claimed.length > 0;
+          },
+          releaseNotification: async (notifiedAt) => {
+            await db
+              .update(issueRows)
+              .set({ blockedOwnerNotifiedAt: null })
+              .where(and(episode, eq(issueRows.blockedOwnerNotifiedAt, notifiedAt)));
           },
         });
-        if (ownerNotifiedAt) {
-          await db
-            .update(issueRows)
-            .set({ blockedOwnerNotifiedAt: ownerNotifiedAt })
-            .where(
-              and(
-                eq(issueRows.id, blockedIssue.id),
-                eq(issueRows.companyId, blockedIssue.companyId),
-              ),
-            );
+        if (delivered && ownerNotifiedAt) {
           issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
         }
       }
