@@ -141,9 +141,13 @@ validate Windows ACLs.
 Native Codex uses the executable from its matching Windows platform package.
 Keep that optional dependency installed with the main Codex package. A missing
 or mismatched platform package fails setup instead of using another executable.
-Managed account probes use the account home prepared by the server. This does
-not qualify ambient credential homes or the full native credential refresh path
-on Windows; those paths retain their existing platform restrictions.
+Managed account probes use the account home prepared by the server. Windows
+credential reads check regular files and path identity without Unix uid/mode
+bits. Unbound credential links remain refused. The native observer detects
+credential refreshes without putting credential content in its durable events.
+Assigned skill snapshots use Windows write-deny ACLs, applied with the built-in
+System32 whoami and icacls tools. A failed ACL operation refuses publication;
+cleanup removes the snapshot's deny rules before deleting the owned tree.
 
 ## Dependency Lockfile Policy
 
