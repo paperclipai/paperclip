@@ -103,6 +103,9 @@ export function gradeR3(record: TaskRecord): RuleResult {
   return { verdict: "pass", detail: "one Retry started a run that completed the task" };
 }
 
+/** Run cancellations decided before adapter dispatch: the run never executed. */
+const PRE_DISPATCH_CANCELLATIONS = new Set(["continuation_task_ownership_changed"]);
+
 /**
  * R4 is about duplicate execution. A queued or scheduled wake waiting behind a
  * running run (for example a follow-up comment, cancelled when the running run
@@ -114,22 +117,32 @@ export function gradeR3(record: TaskRecord): RuleResult {
  * after a successful run is a replay.
  */
 export function gradeR4(record: TaskRecord): RuleResult {
-  for (const sample of reachable(record.samples)) {
-    const running = (sample.runs ?? []).filter(run => run.status === "running");
-    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => `${run.id}(${run.status})`).join(",")}` };
-  }
   const finalRuns = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
   for (const sample of reachable(record.samples)) for (const run of sample.runs ?? []) finalRuns.set(run.id, run);
+  // Claiming marks a run running before dispatch, so a run that ended as a
+  // pre-dispatch cancellation never executed, whatever a poll saw.
+  const neverExecuted = (id: string) => {
+    const final = finalRuns.get(id);
+    return final?.status === "cancelled" && PRE_DISPATCH_CANCELLATIONS.has(final.errorCode ?? "");
+  };
+  for (const sample of reachable(record.samples)) {
+    const running = (sample.runs ?? []).filter(run => run.status === "running" && !neverExecuted(run.id));
+    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => `${run.id}(${run.status})`).join(",")}` };
+  }
   const begun = [...finalRuns.values()].filter(run => run.startedAt)
     .sort((a, b) => (ms(a.createdAt) || 0) - (ms(b.createdAt) || 0));
+  // A continuation cancelled as stale before adapter dispatch was claimed but
+  // never executed (chaos s9401/t72), so it cannot overlap another run. Its
+  // message is saved and delivered by a later run, counted once below.
+  const executed = begun.filter(run => !(run.status === "cancelled" && PRE_DISPATCH_CANCELLATIONS.has(run.errorCode ?? "")));
   // Execution windows seen between polls: started → finished (or still going at the last sample).
   const lastAt = Math.max(0, ...reachable(record.samples).map(sample => sample.at));
   const window = (run: (typeof begun)[number]) => ({ start: ms(run.startedAt) || 0,
     end: run.finishedAt ? ms(run.finishedAt) || 0 : ACTIVE_RUN_STATUSES.has(run.status) ? lastAt : ms(run.startedAt) || 0 });
-  for (let index = 0; index < begun.length; index += 1) for (let other = index + 1; other < begun.length; other += 1) {
-    const [a, b] = [window(begun[index]!), window(begun[other]!)];
+  for (let index = 0; index < executed.length; index += 1) for (let other = index + 1; other < executed.length; other += 1) {
+    const [a, b] = [window(executed[index]!), window(executed[other]!)];
     if (a.start < b.end && b.start < a.end) {
-      return { verdict: "fail", detail: `concurrent_runs: ${begun[index]!.id}(${begun[index]!.status}),${begun[other]!.id}(${begun[other]!.status}) executed together` };
+      return { verdict: "fail", detail: `concurrent_runs: ${executed[index]!.id}(${executed[index]!.status}),${executed[other]!.id}(${executed[other]!.status}) executed together` };
     }
   }
   const consumers = new Map<string, typeof begun>();
