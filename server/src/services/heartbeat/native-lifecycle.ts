@@ -15,6 +15,15 @@ function defaultsToWarmLocally(backend: string): boolean {
   return backend === "codex_app_server" || backend === "opencode_server";
 }
 
+/**
+ * On a remote sandbox the follow-up's dominant cost is a new sandbox and a full
+ * workspace upload (doc/plans/2026-11-08-large-workspace-speed.md), so Claude
+ * gains from warm there too: its provider relaunch is small next to the upload.
+ */
+export function defaultsToWarmOnRemoteSandbox(backend: string, acpxAgent: unknown): boolean {
+  return defaultsToWarmLocally(backend) || (backend === "acpx_runtime" && acpxAgent === "claude");
+}
+
 export function resolveHeartbeatNativeLifecyclePolicy(input: {
   adapterType: string;
   backend: Parameters<typeof supportsManagedNativeWarmSession>[0]["backend"];
@@ -28,12 +37,15 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   taskOwned: boolean;
   /** The run executes on this controller's host (no remote transport). */
   localTarget?: boolean;
+  /** The run executes in a remote sandbox (not a plugin task). */
+  remoteSandboxTarget?: boolean;
 }): NativeLifecyclePolicy {
   // An explicit choice wins. With none, a local measured harness keeps its
   // runner and provider session for the default idle window so a follow-up
   // turn skips the launch and session load.
   const agentMode = input.agentMode === "warm" || input.agentMode === "per_turn" ? input.agentMode
-    : input.adapterType === "paperclip_runner" && input.localTarget === true && defaultsToWarmLocally(input.backend)
+    : input.adapterType === "paperclip_runner" && ((input.localTarget === true && defaultsToWarmLocally(input.backend))
+      || (input.remoteSandboxTarget === true && defaultsToWarmOnRemoteSandbox(input.backend, input.acpxAgent)))
       ? "warm" : "per_turn";
   const agentPolicy: NativeLifecyclePolicy = agentMode === "warm"
     ? { mode: "warm", idleTimeoutMs: input.agentMode === "warm"
