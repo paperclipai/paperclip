@@ -726,6 +726,21 @@ export async function execute(
     executionResult.usage = parsed.usage;
   }
 
+  // Attribute the run to the provider/model Hermes actually used. Without
+  // this the server's cost events fall back to "auto"/"unknown", which makes
+  // the by-model breakdown unreadable. The ledger's own model column says
+  // "auto" for unpinned sessions, so prefer the adapter resolution chain:
+  // explicit config model → detected profile default.
+  const effectiveModel = model !== DEFAULT_MODEL ? model : (detectedConfig?.model ?? null);
+  const effectiveProvider = resolvedProvider !== "auto" ? resolvedProvider : (detectedConfig?.provider ?? null);
+  if (effectiveProvider) {
+    executionResult.provider = effectiveProvider;
+    executionResult.biller = effectiveProvider;
+  }
+  if (effectiveModel) {
+    executionResult.model = effectiveModel;
+  }
+
   if (parsed.costUsd !== undefined) {
     executionResult.costUsd = parsed.costUsd;
   }
