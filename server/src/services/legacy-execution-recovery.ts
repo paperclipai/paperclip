@@ -392,6 +392,36 @@ export async function settleInterruptedNativeBootstrap(
   });
 }
 
+/**
+ * Re-judges preparation holds once their proof can exist. A graceful shutdown
+ * terminalizes a run still in preparation inside the draining process: its own
+ * controller is live and its sandbox lease may still be cleaning up, so the
+ * no-provider-work proof (`isInterruptedNativePreparation`) cannot hold yet and
+ * the run is held for reconciliation. Once the owning process is gone and the
+ * leases are released with confirmed stops, that proof decides: a run with no
+ * provider execution is settled and its preparation is replayed in its own
+ * uncharged lane. Anything with possible provider work, or without proof, stays
+ * held. Recovery runs this after every restart.
+ */
+export async function settleHeldInterruptedPreparations(db: Db, options: { limit?: number } = {}): Promise<number> {
+  const candidates = await db.select().from(heartbeatRuns).where(and(
+    inArray(heartbeatRuns.status, ["interrupted", "failed"]), eq(heartbeatRuns.runtimeMode, "legacy"),
+    isNull(heartbeatRuns.runtimeModeResolvedAt), eq(heartbeatRuns.executionStage, "preparing"),
+    sql`exists (select 1 from issue_recovery_actions hold where hold.company_id = ${heartbeatRuns.companyId}
+      and hold.cause = ${LEGACY_RECOVERY_CAUSE} and hold.fingerprint = 'legacy-execution:' || ${heartbeatRuns.id}::text
+      and hold.evidence->>'runId' = ${heartbeatRuns.id}::text and not (hold.evidence ? 'executionReconciliation')
+      and (hold.status in ('active', 'escalated') or (hold.status = 'resolved' and hold.outcome = 'blocked'
+        and hold.evidence->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'
+        and hold.evidence->'automaticRecovery'->>'replay' = 'blocked')))`,
+  )).orderBy(heartbeatRuns.finishedAt).limit(options.limit ?? 50);
+  let settled = 0;
+  for (const run of candidates) {
+    if (!await isInterruptedNativePreparation(db, run)) continue;
+    if (await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false })) settled += 1;
+  }
+  return settled;
+}
+
 /** The source stays discoverable until normal admission records a successor.
  * Known admission gates wait for eligibility events; unresolved writes retain
  * the pending delivery deadline. Concurrent successful delivery never regresses. */

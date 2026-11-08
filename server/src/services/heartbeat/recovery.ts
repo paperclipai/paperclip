@@ -46,7 +46,7 @@ import {
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, settleHeldInterruptedPreparations, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -2861,6 +2861,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     });
     if (!opts?.skipRetainedNativeSessionCleanup) scheduleRetainedNativeSessionCleanup();
     await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
+    // A shutdown can hold a run it interrupted in preparation before the proof
+    // that no provider work started exists; once it does, replay that run.
+    await settleHeldInterruptedPreparations(db).catch(error => {
+      logger.warn({ err: error }, "failed to re-judge held interrupted preparations");
+    });
     if (!opts?.skipNativeStatusWakeIntents) await dispatchPendingNativeStatusWakeups().catch((error) => {
       logger.warn(
         { err: error },
