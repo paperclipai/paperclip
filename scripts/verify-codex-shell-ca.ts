@@ -43,7 +43,7 @@ try {
   const legacyKeys = codexShellEnvironmentKeys({}, {}, false);
   const injected = { SSL_CERT_FILE: certificate, GIT_SSL_CAINFO: certificate, HOST_SECRET: "unselected", OPENAI_API_KEY: "unselected-provider" };
   const environment = { PATH: process.env.PATH, HOME: directory, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", NO_PROXY: "localhost", GH_ENTERPRISE_TOKEN: "fixture-token", GH_CONFIG_DIR: directory };
-  const commands = [["git", ["ls-remote", `https://${host}/repo.git`]], ["gh", ["api", "--hostname", host, "/probe"]]] as const;
+  const commands = [["git", ["ls-remote", `https://${host}/repo.git`]], ["gh", ["api", `https://${host}/api/v3/probe`]]] as const;
   for (const keys of [legacyKeys, nativeKeys]) {
     const runtime = keys === nativeKeys ? createSanitizedCodexEnvironment(injected) : injected;
     const shell = Object.fromEntries(Object.entries(runtime).filter(([key]) => keys.includes(key)));
