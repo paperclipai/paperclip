@@ -239,6 +239,22 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     await expect(readFile(path.join(home, ".credentials.json"))).rejects.toThrow();
   });
 
+  it("starts the provider in a terminal with a real window size, not 0 by 0", async () => {
+    // pty.fork() alone leaves the terminal at 0 rows by 0 columns, and the Claude
+    // login screen is a terminal UI that prints no sign-in link at that size.
+    const home = await fakeCli("claude", 'stty size > "$CLAUDE_CONFIG_DIR/pty-size"\nexec sleep 60');
+    const login = startLocalBrowserLogin("anthropic", home);
+    try {
+      await vi.waitFor(async () => {
+        const size = (await readFile(path.join(home, "pty-size"), "utf8")).trim();
+        expect(size).toBe("50 200");
+      }, { timeout: 5000 });
+    } finally {
+      login.abort();
+    }
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+  });
+
   it("returns a fixed failure without exposing provider error output", async () => {
     const home = await fakeCli("codex", 'echo "private-provider-error" >&2\nexit 1');
     const login = startLocalBrowserLogin("openai", home);
