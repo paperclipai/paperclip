@@ -5748,7 +5748,11 @@ async function migrateRunnerdStateRootForExecution(input: {
       // holds no provider work (RC-29d).
       if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })
         || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
-        if (remoteSandbox) await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
+        if (remoteSandbox) {
+          const stopped = await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
+          // A runner that could not be stopped may still own the session: no fresh claim over it.
+          if (stopped !== "stop_failed") noteRemoteBootstrapRestartProven(input.execution.binding.runId, stopped);
+        }
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
       }
@@ -6287,6 +6291,23 @@ const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
  * runner can be verified there is nothing to stop, and a remaining conflict is
  * still caught by the bounded same-run bootstrap retry.
  */
+/**
+ * Remote bootstrap restarts the pre-phase proved: the restored controller record shows no turn was
+ * sent, and the interrupted runner was stopped (or none with this run's identity was alive). A
+ * reusable sandbox lease then resumes with that runner's not-suspended state still on disk; this
+ * proof lets the resumed check move it aside and claim a fresh session, for this run only.
+ */
+const provenRemoteBootstrapRestarts = new Map<string, "no_prior_runner" | "stopped" | "killed">();
+
+export function noteRemoteBootstrapRestartProven(runId: string, stopped: "no_prior_runner" | "stopped" | "killed"): void {
+  provenRemoteBootstrapRestarts.set(runId, stopped);
+}
+
+/** Consumes the proof for `runId` (one fresh bootstrap per proof). */
+export function takeRemoteBootstrapRestartProof(runId: string): boolean {
+  return provenRemoteBootstrapRestarts.delete(runId);
+}
+
 export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -15073,6 +15094,8 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
     incompleteReason: "unavailable" | "not_suspended" | null;
+    /** `not_suspended`: the run that wrote the on-disk runner state. */
+    notSuspendedRunId?: string | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
       return {
@@ -15140,6 +15163,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerState: null,
         providerSessionIdentity: null,
         incompleteReason: "not_suspended",
+        notSuspendedRunId: typeof runnerState.runId === "string" ? runnerState.runId : null,
       };
     }
     let providerState: Record<string, unknown>;
@@ -15204,6 +15228,23 @@ async function createRunnerdBackendWithinSessionClaim(
       timeoutMs: 10_000,
     });
     return probe.exitCode === 0 && !probe.timedOut;
+  };
+
+  /**
+   * A proven bootstrap restart: move the interrupted runner's remote session folder aside (kept as
+   * evidence, never deleted) so the fresh bootstrap can claim the session.
+   */
+  const moveInterruptedBootstrapSessionAside = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteSessionRoot) return false;
+    const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
+    const escapedArchive = `${remoteSessionRoot}.bootstrap-restart-${Date.now()}-${randomUUID()}`.replaceAll("'", "'\\''");
+    const moved = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c", `test -d '${escapedSource}' && test ! -L '${escapedSource}' && mv '${escapedSource}' '${escapedArchive}'`],
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    return moved.exitCode === 0 && !moved.timedOut;
   };
 
   const recordInPlaceHarnessReuse = async (
@@ -15481,7 +15522,15 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      if (state.incompleteReason !== "unavailable" || backupAvailable ||
+                      // A reusable lease resumes the sandbox of a bootstrap a restart interrupted:
+                      // its runner state is this run's, never suspended, and the pre-phase proved
+                      // no turn was sent and stopped that runner. Start the bootstrap again.
+                      const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
+                        && input.restartRecovery?.kind === "bootstrap_incomplete"
+                        && state.notSuspendedRunId === input.execution.binding.runId
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await moveInterruptedBootstrapSessionAside();
+                      if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
                           !(await claimUntouchedRemoteSession())) {
                         throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);
                       }
