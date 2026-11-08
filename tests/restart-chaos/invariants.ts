@@ -10,9 +10,15 @@
  *   I3, I4, I7  one more pass with the clock moved past every grace window
  *           (accounting closure 10 min, next action 5 min). The tasks are at
  *           rest, so anything still waiting then would wait forever.
- *   I5, I6, I8  not measurable by the reconciler yet; reported as coverage
- *           gaps with its own reasons. The chaos graders cover part of them:
- *           R3 (one Retry at most) bounds I5 and R1 (finished in budget) I8.
+ *   I6      run-log proxy: a run that failed on a stale-generation event.
+ *           Since #19960 an earlier generation's event is history and never
+ *           fails the current turn (runner code `stale_generation_event`).
+ *   I8      run-log check: every `run.performance.budget_exceeded` event the
+ *           speed budgets wrote (TTFT, agent boot, restart recovery; #19863).
+ *   I5      not measured: see I5_GAP. R3 (one Retry at most) bounds it.
+ *
+ * I6 and I8 are company-wide scans keyed by run or event id, so the per-point
+ * baseline diff in main.ts charges each one to the point that produced it.
  */
 import { createDb, type Db } from "../../packages/db/src/index.js";
 import {
@@ -23,8 +29,23 @@ import {
 
 export type PlanInvariant = "I1" | "I2" | "I3" | "I4" | "I5" | "I6" | "I7" | "I8";
 
+export type SuiteRule = InvariantViolation["rule"] | "I6_generation_fencing" | "I8_fast_turns";
+
 /** A violation with the state of its record and run, so a failure is diagnosable after the instance is gone. */
-export type EvidencedViolation = InvariantViolation & { evidence?: Record<string, unknown> };
+export type EvidencedViolation = Omit<InvariantViolation, "rule"> & { rule: SuiteRule; evidence?: Record<string, unknown> };
+
+/**
+ * Why I5 (work-based budgets) is not asserted. A charge is decided per restart
+ * claim from the attempt's event window (provider-attempt-outcome.ts, #19948)
+ * and recorded only indirectly in the finalization's bounded recovery
+ * history (progressAttempt, attemptKeptForProgress). Asserting it needs either
+ * an explicit per-claim charge record or reading that history per run. The
+ * cheap check that exists is R3, and the pre-spawn and pre-accept points
+ * (native.process_start.*, runner.process.*, runner.turn_start.*) recover
+ * without a Retry today.
+ */
+export const I5_GAP = "Charge decisions are not recorded per restart claim; needs an explicit charge record (section F follow-up). "
+  + "R3 bounds it: no point needed a Retry.";
 
 export interface InvariantCheck {
   violations: EvidencedViolation[];
@@ -37,9 +58,9 @@ export interface InvariantCheck {
 /** Grace windows the shifted pass must exceed (ownership-invariant-report.ts). */
 export const GRACE_SHIFT_MS = 15 * 60_000;
 
-export const invariantOf = (violation: Pick<InvariantViolation, "rule">): PlanInvariant => violation.rule.slice(0, 2) as PlanInvariant;
+export const invariantOf = (violation: Pick<EvidencedViolation, "rule">): PlanInvariant => violation.rule.slice(0, 2) as PlanInvariant;
 
-export function summarizeViolations(violations: readonly InvariantViolation[]): Partial<Record<PlanInvariant, number>> {
+export function summarizeViolations(violations: readonly Pick<EvidencedViolation, "rule">[]): Partial<Record<PlanInvariant, number>> {
   const counts: Partial<Record<PlanInvariant, number>> = {};
   for (const violation of violations) counts[invariantOf(violation)] = (counts[invariantOf(violation)] ?? 0) + 1;
   return counts;
@@ -65,12 +86,40 @@ async function withWaveInstance<T>(instance: { paperclipHome: string; instanceId
 
 const clip = (value: unknown) => typeof value === "string" ? value.slice(0, 300) : value ?? null;
 
-async function withEvidence(db: Db, violations: InvariantViolation[]): Promise<EvidencedViolation[]> {
+type Row = Record<string, unknown>;
+const text = (value: unknown) => (typeof value === "string" ? value : "");
+
+/** I6 and I8 from the run log of `companyId` (all companies when null). */
+export async function runLogViolations(db: Db, companyId: string | null): Promise<EvidencedViolation[]> {
+  const breaches = await db.$client.unsafe(
+    `select e.id::text as id, e.company_id::text as "companyId", e.run_id::text as "runId", r.issue_id::text as "issueId", e.payload
+       from heartbeat_run_events e join heartbeat_runs r on r.id = e.run_id
+      where e.event_type = 'run.performance.budget_exceeded' and ($1::text is null or e.company_id::text = $1)`, [companyId]) as Row[];
+  const stale = await db.$client.unsafe(
+    `select id::text as id, company_id::text as "companyId", issue_id::text as "issueId", status, error_code as "errorCode", error
+       from heartbeat_runs
+      where status in ('failed', 'timed_out', 'interrupted')
+        and (coalesce(error_code, '') ~* 'generation' or coalesce(error, '') ~* 'stale_generation|earlier generation')
+        and ($1::text is null or company_id::text = $1)`, [companyId]) as Row[];
+  return [
+    ...breaches.map(row => {
+      const payload = (row.payload ?? {}) as Record<string, unknown>;
+      return { rule: "I8_fast_turns" as const, kind: "speed_budget", recordId: text(row.id), companyId: text(row.companyId) || null,
+        runId: text(row.runId) || null, issueId: text(row.issueId) || null, reason: `${text(payload.metric) || "unknown"}_over_p95`,
+        evidence: { budget: { metric: payload.metric, measuredMs: payload.measuredMs, budgetP95Ms: payload.budgetP95Ms,
+          adapter: payload.adapter, startKind: payload.startKind } } };
+    }),
+    ...stale.map(row => ({ rule: "I6_generation_fencing" as const, kind: "run", recordId: text(row.id),
+      companyId: text(row.companyId) || null, runId: text(row.id), issueId: text(row.issueId) || null,
+      reason: "run_failed_on_earlier_generation_event" })),
+  ];
+}
+
+async function withEvidence(db: Db, violations: EvidencedViolation[]): Promise<EvidencedViolation[]> {
   if (!violations.length) return violations;
   const wakeIds = violations.filter(violation => violation.kind === "wake_request" || violation.kind === "wake_request_claimed")
     .map(violation => violation.recordId);
   const runIds = [...new Set(violations.flatMap(violation => violation.runId ? [violation.runId] : []))];
-  type Row = Record<string, unknown>;
   const wakes = (wakeIds.length ? await db.$client.unsafe(
     "select id::text, status, reason, error, run_id::text as \"runId\" from agent_wakeup_requests where id::text = any($1)", [wakeIds]) : []) as Row[];
   const runs = (runIds.length ? await db.$client.unsafe(
@@ -115,16 +164,17 @@ export async function checkPlanInvariants(input: {
       || violation.companyId === input.companyId;
     const fromClock = second.violations.filter(violation => violation.rule === "I1_owned" || violation.rule === "I2_settled");
     const fromShift = shifted.violations.filter(violation => violation.rule !== "I1_owned" && violation.rule !== "I2_settled");
+    let runLog: EvidencedViolation[] = [];
+    try { runLog = await runLogViolations(db, input.companyId); } catch (error) {
+      errors.push(`I6/I8 run-log check: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const violations = await withEvidence(db, [...fromClock, ...fromShift].filter(ownCompany));
+    violations.push(...runLog);
     const inProgress = Object.fromEntries(second.kinds.filter(kind => kind.inProgress > 0)
       .map(kind => [kind.kind, { inProgress: kind.inProgress, ...kind.verdicts }]));
     return {
       violations, byInvariant: summarizeViolations(violations), inProgress, errors,
-      notMeasured: {
-        I5: second.coverageGaps.I5_work_based_budgets ?? "not measured",
-        I6: second.coverageGaps.I6_generation_fencing ?? "not measured",
-        I8: second.coverageGaps.I8_fast_turns ?? "not measured",
-      },
+      notMeasured: { I5: I5_GAP },
     };
   } finally {
     await db.$client.end({ timeout: 5 }).catch(() => undefined);

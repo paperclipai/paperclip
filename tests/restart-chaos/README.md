@@ -245,9 +245,16 @@ The suite runs one wave, `main.ts --crash-point <a>:<nth>,<b>:<nth>,...`:
    - two passes at the real clock for I1 (owned) and I2 (settled);
    - one pass with the clock moved 15 minutes ahead for I3 (admission), I4
      (exactly-once intents) and I7 (visible next action).
-   Each violation carries its wake and run state as evidence. I5, I6 and I8
-   are reported as not measured, with the reconciler's reasons; R3 and R1
-   cover part of I5 and I8.
+   Each violation carries its wake and run state as evidence. Two run-log
+   checks complete the set:
+   - I6: a run that failed on a stale-generation event. Since #19960 an
+     earlier generation's event is history and must never fail the current
+     turn.
+   - I8: every `run.performance.budget_exceeded` event the speed budgets
+     wrote (TTFT, agent boot, restart recovery).
+   I5 (work-based budgets) is a known gap: charge decisions are not recorded
+   per restart claim, so the suite cannot tell a charged restart from an
+   uncharged one. R3 bounds it (no point may need a Retry).
 5. Every task is graded R1–R6 and T at the end, as in any wave.
 
 The first full local run (14 points, codex A1) took 11.8 minutes: one boot,
@@ -266,6 +273,16 @@ violations with evidence). Outcomes: `pass`, `fail` (a task failed R1–R6/T or 
 violated, or the wave exited 1 for a wave-level reason such as a Daytona
 sandbox left after cleanup), `not_reached` (the chosen workloads never crossed the point: pick a
 workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
+
+**Daytona points.** Six points are reachable only with `--env daytona`
+(`node scripts/crash-points.mjs --list --env daytona`). The run needs
+`DAYTONA_API_KEY` and an image matching this checkout (`--daytona-image` or
+`PAPERCLIP_E2E_DAYTONA_IMAGE`; see "Daytona" above), and refuses to start
+without them. A plain task reaches both `sandbox.create.*` points and
+`environment.lease_release.after_provider_before_lease`. The other three print
+what they need (`needs:` in `--list` and in a `not_reached` result): a failed
+release (teardown claim), a reusable lease (reusable destroy), or a
+stop-and-retain export.
 
 **CI.** `.github/workflows/crash-points.yml` runs the same command on demand
 (`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).
