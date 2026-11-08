@@ -8,7 +8,12 @@ Inventory: [`2026-11-07-ownership-inventory.md`](2026-11-07-ownership-inventory.
 
 Phase 1's light waves showed zero invariant violations. Five harsher local waves, all unmasked, change the picture in three ways:
 
-1. **The existing per-subsystem paths settle the run-lifecycle kinds within 45 s of `ready`.** Every owner that was proven gone was seen while the control plane was down or recovering. The Phase 1 report-only reconciler never saw one stay unsettled after the next report pass, except in the case below.
+1. **The existing per-subsystem paths settle most run-lifecycle records within 45 s of `ready`, but this is not a bound.** Most owners proven gone were seen while the control plane was down or recovering, and they were settled before the first sampler pass more than 45 s after `ready`. There are three exceptions:
+   - one active environment lease of a terminal run settled 119 s after `ready`;
+   - in the s9204 storm, six native claims were still proven gone during the load-61 window;
+   - the leak in finding 2.
+
+   The 20 s sampling interval limits all of these numbers.
 2. **One kind leaks: a claimed wake whose run ended without settling it.** Native restart recovery blocked a run (`native_restart_recovery_blocked`, `execution_recovery_budget_exhausted`) and ended it, but left the run's assignment wake `claimed`. It stayed that way for more than 24 minutes, until the wave ended. Nothing releases it. Rule I2 caught it. This is the first Phase 2 settle target the data found. Its PR is listed under "Step 2" below.
 3. **Unowned and unstamped records are the main I1 finding:**
    - `environment_pending_cleanup` (61 records across the valid waves). These are cleanup jobs that are queued but not claimed, so they have no owner by design.
@@ -17,9 +22,9 @@ Phase 1's light waves showed zero invariant violations. Five harsher local waves
 
 Long holds (K4 up to 579 s, so outages up to 588 s, past the Runner's 7-minute reconnect grace) all recovered: 6 of 6 tasks passed. Crash loops passed too (6 of 6).
 
-TTFT, boot and restart recovery stay within the p50 budgets for cold starts and for recovery. The exceptions are claude cold TTFT, at the budget (16.3–17.5 s against 16.5 s), and warm follow-ups on all three adapters (see "Speed").
+TTFT, boot and restart recovery stay within the p50 budgets for cold starts and for recovery. The exceptions are claude cold TTFT, at the budget (16.3–17.5 s against 16.5 s), and warm follow-ups on claude (about 3×) and codex (slightly over). See "Speed".
 
-Daytona did not run. The local image content ID does not match the one CI built for the same commit, and no image is published for CI's ID. See "Not covered".
+Daytona did not run in this pass. A follow-up adds one Daytona wave. See "Not covered".
 
 ## Waves
 
@@ -38,7 +43,7 @@ Failure classes:
 - **Harness (T):** the first K4 run failed 3 tasks on R1. Its outage receipt required `ready` within 420 s of the stop, so every hold over about 405 s failed the fault. #19797 raised the hold cap to 600 s but never made it usable. The fix is in this PR: runner suites keep the 420 s bound, and chaos passes hold + 420 s.
 - **Storm shape (not P):** 8 B5 tasks failed R1 across both storms. Each crossed 10–16 faults. A 4-minute `bench.sh` killed every 2–4 minutes cannot finish within its budget, and every one of these issues still ended `done`. This is the long-tool boundary (B6) under a storm, not an ownership record.
 - **Agent quality (Q):** 3 T-oracle failures (`brief_contains_followup_marker`). Two crossed no fault.
-- **Load (E):** in the s9204 storm, fault f12 fired at load 61 and f13 at load 24. f13's server did not become healthy within 180 s. My own concurrent test run caused the load. The last A1 R1 failure and the restart-recovery p95 of that storm fall in this window.
+- **Load (E):** in the s9204 storm, fault f12 fired at load 61 and f13 at load 24. f13's server did not become healthy within 180 s. My own concurrent test run caused the load. The last A1 R1 failure falls in this window, and so do the sampler's I2 hits on six native claims.
 - **Product (P), new:** the stuck claimed wake (finding 2).
 
 ## Per-kind data
@@ -83,11 +88,11 @@ Gone owners seen while the server was down or recovering, in record-passes over 
 | `wake_request_claimed` | 61 (K4 rerun) |
 | `native_accepted_result_lease` | 3 |
 
-Except for the claimed wake, existing paths settled all of them before the first pass more than 45 s after `ready`. Pending-cleanup leases were retried and released 46–58 s after their run finished. That is far below the inventory's 5-minute age rule, which never fired.
+Except for the claimed wake, one environment lease (119 s after `ready`) and the load window above, existing paths settled them before the first pass more than 45 s after `ready`. Pending-cleanup leases were retried and released 46–58 s after their run finished. That is far below the inventory's 5-minute age rule, which never fired.
 
 What this does and does not show:
 - These waves reach the run-lifecycle kinds, the issue locks and the wake queue. They do not reach the remote, workspace-operation, sandbox or accounting kinds that hurt the overnight campaign most: teardown claims, create intents, writer lanes and the age-only list in the inventory. Those need Daytona waves or the crash-point suite.
-- "Settled within 45 s" is a sampling bound (20 s passes), not a measured latency.
+- "Within 45 s" describes most records, with the exceptions above. It is a sampling observation (20 s passes), not a measured latency or a guarantee.
 
 ## Speed against the #19863 budgets
 
@@ -104,19 +109,22 @@ Runs that no fault crossed, merged over both storms (n in brackets), in seconds:
 
 Ranges give the two storms' values. The crash-loop and outage waves had only 1–2 uncrossed runs per cell, all inside these ranges.
 
-Restart recovery, from `ready` to the recovered run's next provider event:
+Restart recovery, from `ready` to the recovered run's next provider event. A sample counts only when that event comes before the next fault starts. Otherwise the run has no next event for this fault, because a later event measures a later fault.
 
 | Adapter | p50 s1 / s2 (budget 15.0 / 6.5 / 25.5) | p95 s1 / s2 (budget 22.5 / 8.0 / 38.5) | Samples |
 |---|---|---|---|
-| claude | 5.0 / 4.2 | 9.4 / 42.9* | 21 / 18 |
-| codex | 4.5 / 4.6 | 9.1 / 41.7* | 36 / 27 |
-| opencode | 10.8 / 10.5 | 14.3 / 48.7* | 28 / 20 |
+| claude | 5.0 / 4.2 | 9.4 / 5.4 | 21 / 17 |
+| codex | 4.5 / 4.6 | 9.1 / 9.1 | 36 / 24 |
+| opencode | 10.8 / 10.3 | 14.3 / 13.4 | 28 / 18 |
 
-\* The p95 values marked * come from the load-61 window of the s9204 storm, so they are load-suspect. In the K4 rerun, recovery after a 5–10 minute outage is dominated by the hold itself, so those samples are not compared with the budget.
+Crash loop (s9202): claude 3.4 / 4.7 s (n 5), opencode 9.5 / 10.4 s (n 6); no codex run crossed a fault.
+
+K4 rerun (s9203, outages 306–588 s): of 10 runs in flight at a fault, only 2 emitted a provider event before the next fault: claude 5.8 s and opencode 10.8 s, both within budget. The other 8 (all 4 codex runs included) had no event before the next fault. After an outage past the reconnect grace, the run continues through a retry or a new run, not by reattaching, so this metric does not measure it. A first version of this table counted events after later faults, which inflated the s9204 p95 to 42–49 s.
 
 Findings:
 - **Warm follow-up TTFT is over budget on claude (about 3×) and slightly on codex.** In C1 the follow-up comment is posted while the first turn is still running. TTFT is anchored at message acceptance, so it includes waiting for the live turn to finish. The baseline measured idle follow-ups. This needs a TTFT anchor that separates "queued behind the live turn" from "turn start to first token" before it is called a regression.
-- Codex restart-recovery p95 (9.1 s) is just over its 8.0 s budget even without load, with 4 run-log breaches (max 9.4 s) in the first storm.
+- Codex restart-recovery p95 (9.1 s in both storms) is just over its 8.0 s budget, with 4 run-log breaches (max 9.4 s) in the first storm.
+- Recovery after an outage past the reconnect grace needs its own metric: from `ready` to the first provider event of the run that continues the task (the retry), not of the interrupted run.
 - No change in this phase adds work before `turn.start`. The settle paths run in restart recovery and in the background reconciler.
 
 ## Step 2: kinds moved to the shared path
@@ -141,12 +149,10 @@ Phase 3 is not started. It needs a separate go-ahead.
 
 ## Not covered
 
-- **Daytona.** The harness requires the image's `io.paperclip.runner.content-id` to equal the local content ID:
-  - for master `94718ce168`, this Mac computes `0a65c1e5…`;
-  - the CI image job for the same commit (run 42422571919) used the tag `e2e-content-b598d087…`;
-  - neither tag exists in GHCR.
-
-  A Daytona wave needs a signed image built for a content ID that a local checkout reproduces. Credentials and the paid gate were not the blocker.
+- **Daytona.** No signed runner image existed for the tested commit.
+  - An apparent content-ID mismatch with CI run 42422571919 was a misreading: that run was dispatched from master but built target commit `a37a2e4`, and its Daytona image step was skipped.
+  - Local content IDs reproduce CI's for the same commit; for example, `35d41f11` gives `11475796…` on both.
+  - A follow-up builds an `image_only` image and adds one Daytona wave.
 - The remote, workspace-operation, sandbox and accounting kinds (see "Per-kind data").
 - Crash points that sit between two durable writes. Random waves hit 20 ms–1 s windows only by luck. The crash-point suite (Phase 5) is the tool for those.
 
