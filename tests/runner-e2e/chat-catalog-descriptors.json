@@ -790,7 +790,8 @@
       "invariantCheckIds": [
         "lead-ready",
         "real-active-assignment",
-        "truthful-historical-work"
+        "truthful-historical-work",
+        "historical-record-starts-no-work"
       ]
     },
     "runPolicy": {

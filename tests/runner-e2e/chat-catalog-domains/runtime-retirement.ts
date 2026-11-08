@@ -47,7 +47,7 @@ export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", 
   sourceFiles: ["chat-catalog-domains/runtime-retirement.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
   expectedRunCount: 2, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 1 } },
-  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-active-assignment", "truthful-historical-work"] },
+  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-active-assignment", "truthful-historical-work", "historical-record-starts-no-work"] },
   async verifySetup(ctx, state) {
     const c = checks(); const worker = state.worker as RuntimeAgent;
     const lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);
@@ -61,6 +61,9 @@ export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", 
     c.add("truthful-historical-work", historical.status === "done" && historical.assigneeAgentId === worker.id
       && historical.companyId === ctx.input.fixtures.company.id && !historical.createdByAgentId && !historical.createdByRunId,
     "The independently read prior completed record has genuine human provenance, without forged model history.");
+    const workerRuns = (await ctx.allRuns()).filter(row => row.agentId === worker.id);
+    c.add("historical-record-starts-no-work", workerRuns.length === 1 && workerRuns[0]?.id === state.workerRunId,
+    "Recording finished work starts no run: Morgan's only run is the active assignment.");
     return c.result();
   },
   async act(ctx, state) {
