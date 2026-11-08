@@ -122,7 +122,6 @@
     "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [
-    "@openai/codex-native",
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
     "@chat-adapter/discord",

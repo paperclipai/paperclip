@@ -38,7 +38,10 @@ export function materializeWindowsCodexRuntime(binary: string, cacheBase = join(
     if (dirname(path) === path) break;
   }
   for (const path of parents.reverse()) {
-    if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
+    if (!existsSync(path)) {
+      try { mkdirSync(path, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    }
     const entry = lstatSync(path);
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Native Codex cache must not contain directory links");
   }
@@ -76,9 +79,15 @@ export function materializeWindowsCodexRuntime(binary: string, cacheBase = join(
       if (digest(target) !== file.digest) throw new Error("Native Codex runtime changed while copying");
     }
     writeFileSync(join(staged, "runtime.json"), JSON.stringify({ schema: 1, files: expected }), { mode: 0o600 });
-    try { renameSync(staged, root); }
-    catch (error) {
-      if (!["EEXIST", "ENOTEMPTY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") || !existsSync(root)) throw error;
+    for (let attempt = 0; ; attempt++) {
+      try { renameSync(staged, root); break; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (["EEXIST", "ENOTEMPTY", "EPERM"].includes(code) && existsSync(root)) break;
+        if (process.platform !== "win32" || code !== "EPERM" || attempt >= 4) throw error;
+        // Windows scanners can briefly retain a just-written executable handle.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
     }
     return verify();
   } finally { rmSync(staged, { recursive: true, force: true }); }
