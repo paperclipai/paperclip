@@ -1710,7 +1710,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
-    await managedMcpProfile?.cleanup();
+    await managedMcpProfile?.cleanup().catch(async (error) => {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to remove managed Codex MCP profile "${managedMcpProfile?.configPath}": ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    });
     // Remove the staged CODEX_HOME allowlist temp dir on every exit path
     // (teardown AND error), never only the happy path. Cleanup failure is
     // logged, not fatal — a leaked temp dir must not crash the run.
