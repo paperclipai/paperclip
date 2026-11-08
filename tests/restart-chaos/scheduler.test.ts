@@ -47,9 +47,10 @@ describe("scheduler determinism", () => {
   });
 
   it("pairs R1 with --workspace-repo, locally, without the chaoscli fixture workloads", () => {
-    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "../paperclip-clone"]);
+    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "."]);
     if (command.mode !== "wave") throw new Error("expected a wave");
-    expect(command.options.workspaceRepo!.endsWith("paperclip-clone")).toBe(true);
+    expect(command.options.workspaceRepo).toBe(process.cwd());
+    expect(command.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(() => parseCommand(["--workloads", "R1"])).toThrow(/go together/);
     expect(() => parseCommand(["--workloads", "A1", "--workspace-repo", "x"])).toThrow(/go together/);
     expect(() => parseCommand(["--workloads", "R1,B1", "--workspace-repo", "x"])).toThrow(/chaoscli fixture/);

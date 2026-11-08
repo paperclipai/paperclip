@@ -17,6 +17,12 @@ describe("oracle sandbox", () => {
     expect(profile.indexOf('(allow file-read* (subpath "/w")')).toBeGreaterThan(profile.indexOf("(deny file-read*"));
   });
 
+  it("re-allows only the named readable roots, such as the node install, under a protected root", () => {
+    const profile = oracleSandboxProfile({ workspace: "/w", scratch: "/s", protectedRoots: ["/Users/me"], readableRoots: ["/Users/me/.nvm/versions/node/v26"] });
+    expect(profile.indexOf('(allow file-read* (subpath "/Users/me/.nvm/versions/node/v26"))')).toBeGreaterThan(profile.indexOf('(deny file-read* (subpath "/Users/me"))'));
+    expect(oracleSandboxProfile({ workspace: "/w", scratch: "/s", protectedRoots: ["/Users/me"] })).not.toContain(".nvm");
+  });
+
   it("refuses to run unsandboxed on other platforms unless allowed", async () => {
     const result = await runOracleCommand(["true"], "/", { platform: "linux" });
     expect(result.exitCode).toBeNull();

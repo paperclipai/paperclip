@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -179,6 +180,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (env !== "local") throw new Error("--workspace-repo runs only with --env local");
     if (options.workloads.some(id => id === "B1" || id === "B5")) throw new Error("--workspace-repo replaces the chaoscli fixture that B1 and B5 need");
     options.workspaceRepo = path.resolve(workspaceRepo);
+    options.workspaceCommit = execFileSync("git", ["-C", options.workspaceRepo, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   }
   // H1 pauses the whole company when its budget hard stop is crossed: no other task can share its
   // wave, its tasks run one at a time, and the hard stop must be on.

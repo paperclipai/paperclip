@@ -73,6 +73,7 @@ export interface WaveOptions {
    */
   upgradeFrom?: string;
   workspaceRepo?: string;
+  workspaceCommit?: string;
 }
 
 export interface StormFault {

@@ -115,8 +115,12 @@ describe("cloneWorkspaceRepository", () => {
       const clone = cloneWorkspaceRepository(source, path.join(root, "clone"));
       expect(existsSync(path.join(clone, "chaoscli/cli.py"))).toBe(true);
       expect(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: clone, encoding: "utf8" }).trim()).toBe("true");
-      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }))
-        .toBe(execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }));
+      const first = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(first);
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "later"], { cwd: source });
+      const pinned = cloneWorkspaceRepository(source, path.join(root, "pinned"), first);
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: pinned, encoding: "utf8" }).trim()).toBe(first);
+      expect(() => cloneWorkspaceRepository(source, path.join(root, "missing"), "0".repeat(40))).toThrow(/no longer has commit/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

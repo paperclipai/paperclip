@@ -40,6 +40,12 @@ const benchFile = (nonce: string) => `bench-result-${nonce}.txt`;
 const benchRecord = (nonce: string) => `.bench/run-${nonce}.txt`;
 const r1Module = (nonce: string) => `packages/shared/src/chaos/slug-${nonce}.ts`;
 const r1Test = (nonce: string) => `packages/shared/src/chaos/slug-${nonce}.test.ts`;
+
+export function r1TestChecksSlug(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const assertions = text.match(/\bassert(\.\w+)?\s*\(/g)?.length ?? 0;
+  return text.includes("node:test") && text.includes("node:assert") && text.includes("chaosSlug(") && assertions >= 3;
+}
 /** bench.sh must have actually run: at least this long between start and finish. */
 export const BENCH_MIN_SECONDS = 200;
 /** B5: distinct progress values the harness must have observed itself while polling. */
@@ -286,9 +292,9 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
       documents: [],
       files: nonce => [r1Module(nonce), r1Test(nonce)],
       commands: [
-        { name: "node_test", argv: nonce => ["node", "--test", r1Test(nonce)] },
-        { name: "slug", argv: nonce => ["node", "--input-type=module", "-e",
-          `import { chaosSlug } from "./${r1Module(nonce)}"; console.log(chaosSlug("  R1 -- Paperclip__Chaos 2026! "));`] },
+        { name: "node_test", argv: nonce => [process.execPath, "--test", r1Test(nonce)] },
+        { name: "slug", argv: nonce => [process.execPath, "--input-type=module", "-e",
+          `import { chaosSlug } from "./${r1Module(nonce)}"; console.log(JSON.stringify(["Hello Chaos World", "  R1 -- Paperclip__Chaos 2026! "].map(chaosSlug)));`] },
       ],
     },
     grade(nonce, artifacts) {
@@ -298,9 +304,10 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
         statusCheck(artifacts),
         { name: "workspace_located", ok: artifacts.workspacePath !== null },
         { name: "module_present", ok: typeof artifacts.files[r1Module(nonce)] === "string" },
-        { name: "test_present", ok: (artifacts.files[r1Test(nonce)] ?? "").includes("node:test") },
+        { name: "test_checks_chaos_slug", ok: r1TestChecksSlug(artifacts.files[r1Test(nonce)]) },
         { name: "node_test_passes", ok: tests?.exitCode === 0, detail: `exit=${tests?.exitCode ?? "not run"}` },
-        { name: "hidden_case", ok: slug?.exitCode === 0 && slug.stdout.trim() === "r1-paperclip-chaos-2026", detail: JSON.stringify(slug?.stdout.trim() ?? null) },
+        { name: "required_and_hidden_cases", ok: slug?.exitCode === 0 && slug.stdout.trim() === JSON.stringify(["hello-chaos-world", "r1-paperclip-chaos-2026"]),
+          detail: JSON.stringify(slug?.stdout.trim() ?? null) },
       ]);
     },
   },
