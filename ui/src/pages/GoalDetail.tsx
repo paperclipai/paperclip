@@ -158,7 +158,12 @@ export function GoalDetail() {
           key={"goal:" + goal.id + ":title"}
           value={goal.title}
           draftKey={"goal:" + goal.id + ":title"}
-          readCurrentValue={async () => (await goalsApi.get(goal.id)).title}
+          readCurrentValue={async () =>
+            (await goalsApi.get(goal.id, {
+              fresh: true,
+              cache: "no-store",
+            })).title
+          }
           onSave={(title) => updateGoal.mutateAsync({
             goalId: goal.id,
             companyId: goal.companyId,
@@ -172,7 +177,12 @@ export function GoalDetail() {
           key={"goal:" + goal.id + ":description"}
           value={goal.description ?? ""}
           draftKey={"goal:" + goal.id + ":description"}
-          readCurrentValue={async () => (await goalsApi.get(goal.id)).description ?? ""}
+          readCurrentValue={async () =>
+            (await goalsApi.get(goal.id, {
+              fresh: true,
+              cache: "no-store",
+            })).description ?? ""
+          }
           onSave={(description) => updateGoal.mutateAsync({
             goalId: goal.id,
             companyId: goal.companyId,

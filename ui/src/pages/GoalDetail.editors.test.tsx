@@ -180,7 +180,16 @@ describe("GoalDetail inline editors", () => {
     mockGoalsApi.get.mockResolvedValueOnce({ ...makeGoal("goal-a", "company-a"), title: "Fresh title" });
     mockGoalsApi.get.mockResolvedValueOnce({ ...makeGoal("goal-a", "company-a"), description: "Fresh description" });
     await expect(titleA.readCurrentValue?.()).resolves.toBe("Fresh title");
+    expect(mockGoalsApi.get).toHaveBeenLastCalledWith("goal-a", {
+      fresh: true,
+      cache: "no-store",
+    });
+
     await expect(descriptionA.readCurrentValue?.()).resolves.toBe("Fresh description");
+    expect(mockGoalsApi.get).toHaveBeenLastCalledWith("goal-a", {
+      fresh: true,
+      cache: "no-store",
+    });
 
     const invalidate = vi.spyOn(page.client, "invalidateQueries");
     mockRoute.goalId = "goal-b";
