@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { resolveCodexCommand } from "./codex-command.js";
+import { createSanitizedCodexEnvironment } from "./app-server-transport.js";
 import { codexCommandEnvironment, codexExecutableReadOnlyRoots, createIsolatedCodexAppServerArgs } from "./codex-security-config.js";
 
 it.runIf(process.platform === "win32")("projects required Windows environment variables regardless of source casing", () => {
@@ -28,7 +29,8 @@ it.runIf(process.platform === "win32" && process.env.PAPERCLIP_LIVE_WINDOWS_MXC 
       mkdirSync(home); mkdirSync(cwd);
       writeFileSync(join(root, "private.txt"), "private fixture");
       const command = resolveCodexCommand();
-      const environment = { ...process.env, HOME: home, CODEX_HOME: home, NODE_OPTIONS: "", NODE_PATH: "", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" };
+      const environment = createSanitizedCodexEnvironment({ ...process.env, HOME: home, CODEX_HOME: home, NODE_OPTIONS: "", NODE_PATH: "", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" });
+      expect(environment.SystemDrive).toBeTruthy();
       const args = createIsolatedCodexAppServerArgs(environment, codexExecutableReadOnlyRoots(environment, command)).slice(0, -1);
       const script = 'const fs=require("fs");fs.writeFileSync("inside.txt","ok");let denied=false;try{fs.readFileSync("../private.txt")}catch{denied=true}if(!denied)throw Error("outside read was permitted");console.log("MXC_CONFINED")';
       const output = execFileSync(command, [...args, "sandbox", "--permission-profile", "paperclip-runner-workspace-only", "--", process.execPath, "-e", script],

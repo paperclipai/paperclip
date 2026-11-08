@@ -206,6 +206,7 @@ export function codexCommandEnvironment(
     "PATHEXT",
     "SystemRoot",
     "SystemDrive",
+    "LOCALAPPDATA",
     "WINDIR",
     "LANG",
     "LC_ALL",

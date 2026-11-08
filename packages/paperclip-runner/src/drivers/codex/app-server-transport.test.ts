@@ -232,11 +232,11 @@ describe("Codex app-server transport limits", () => {
 
   it("fails pending and future requests when stdout closes cleanly", async () => {
     const transport = nodeTransport(
-      "process.stdin.resume(); process.stdout.end(); setInterval(() => {}, 1000)",
+      `process.stdin.resume(); process.stdout.${process.platform === "win32" ? "destroy" : "end"}(); setInterval(() => {}, 1000)`,
     );
     const pending = transport.request("pending", {});
     await expect(pending).rejects.toThrow(
-      "codex app-server stdout ended before transport closure",
+      /codex app-server stdout (ended|closed) before transport closure/,
     );
     await expect(transport.request("after-stdout-end", {})).rejects.toThrow(
       "codex app-server transport is closed",
@@ -246,7 +246,7 @@ describe("Codex app-server transport limits", () => {
 
   it("fails closed when stdout is destroyed without a usable response channel", async () => {
     const transport = nodeTransport(
-      'process.stdin.resume(); require("node:fs").closeSync(1); setInterval(() => {}, 1000)',
+      `process.stdin.resume(); ${process.platform === "win32" ? "process.stdout.destroy()" : 'require("node:fs").closeSync(1)'}; setInterval(() => {}, 1000)`,
     );
     await expect(transport.request("pending", {})).rejects.toThrow(/stdout (ended|closed)/u);
     await expect(transport.request("after-stdout-close", {})).rejects.toThrow(
@@ -326,7 +326,7 @@ describe("Codex app-server transport limits", () => {
   it("routes an asynchronous child-stdin failure through deterministic closure", async () => {
     const diagnostics: string[] = [];
     const transport = nodeTransport(
-      `require("node:fs").closeSync(0); process.stdout.write(JSON.stringify({ method: "ready", params: {} }) + "\\n"); setInterval(() => {}, 1000)`,
+      `${process.platform === "win32" ? "process.stdin.destroy()" : 'require("node:fs").closeSync(0)'}; process.stdout.write(JSON.stringify({ method: "ready", params: {} }) + "\\n"); setInterval(() => {}, 1000)`,
       { onDiagnostic: (message) => diagnostics.push(message) },
     );
     const notifications = transport.notifications()[Symbol.asyncIterator]();
