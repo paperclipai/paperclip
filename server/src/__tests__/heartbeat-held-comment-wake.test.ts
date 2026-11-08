@@ -19,11 +19,11 @@ if (!recoveryPostgresSupport.supported) console.warn(`Skipping held comment wake
 
 /**
  * RC-37: a follow-up comment saved behind a run is promoted when that run ends.
- * A temporary company admission hold (accounting that is still settling after a
- * restart) can refuse the promoted run before it starts. The comment must stay
- * saved and be delivered exactly once after the hold clears.
+ * Another run's unfinished accounting used to hold company admission and
+ * refuse it. Since Phase 3 accounting never gates admission (invariant 3), and
+ * each saved intent is delivered exactly once (invariant 4).
  */
-describePostgres("a promoted comment refused by a temporary admission hold", () => {
+describePostgres("saved intents while another run's accounting is pending", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
@@ -121,119 +121,76 @@ describePostgres("a promoted comment refused by a temporary admission hold", () 
     await heartbeat.drainActiveRunExecutions();
   }
 
-  it("keeps the comment saved through the hold and delivers it exactly once after the hold clears", async () => {
+  // Phase 3 (invariant 3): another run's unfinished accounting never holds
+  // admission. Each intent that used to wait out the accounting hold is now
+  // delivered at once, exactly once, and settling accounting later never
+  // delivers it again. Before Phase 3 every one of these waited.
+  it("delivers a saved comment once while another run's accounting is still pending", async () => {
     const f = await seedHeldComment();
-    // The source run has ended: the saved comment is promoted while the hold lasts.
-    await settle(f); await settle(f);
-    expect(deliveries(f.commentId)).toHaveLength(0);
-    // The comment stays pending: either saved or on an unstarted queued run.
-    const held = await readWake(f.wakeId);
-    expect(["deferred_issue_execution", "queued"]).toContain(held.status);
-    const pending = held.runId ? (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, held.runId)))[0] : null;
-    if (pending) expect(pending).toMatchObject({ status: "queued", startedAt: null });
-    expect((await issueRuns(f)).filter(run => run.status === "cancelled")).toEqual([]);
-    const [waiting] = await db.select().from(issues).where(eq(issues.id, f.issueId));
-    expect(waiting.status).not.toBe("blocked");
-
-    // Accounting settles and the hold clears. Settlement wakes the held work.
-    expect(await settleAccounting(f)).toEqual(new Set([DELIVERY_QUEUES.queuedRunDispatch,
-      DELIVERY_QUEUES.deferredExecutionReceipts, DELIVERY_QUEUES.strandedAssignments]));
-    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
-      .where(eq(agentWakeupRequests.id, f.wakeId));
     await settle(f); await settle(f);
     expect(deliveries(f.commentId)).toHaveLength(1);
-
-    // Later sweeps never deliver it again.
-    await settle(f);
+    expect((await issueRuns(f)).filter(run => run.status === "cancelled")).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.pendingRunId)))[0].costAccountingPending).toBe(true);
+    await settleAccounting(f);
+    await settle(f); await settle(f);
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
-  it("saves a comment whose wake the hold refuses at enqueue and delivers it once after the hold clears", async () => {
-    // s7532/t06: the comment arrived during the hold; its wake was refused
-    // before admission and written as a terminal skip, so it was lost.
+  it("admits a comment posted during pending accounting at enqueue and delivers it once", async () => {
+    // s7532/t06: the enqueue gate refused the comment during the hold.
     const f = await seedHeldComment();
     await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
-      authorUserId: f.userId, body: "Posted during the hold." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      authorUserId: f.userId, body: "Posted while accounting is pending." }).returning();
+    await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
-      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toThrow(/await accounting/);
-    const saved = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      requestedByActorType: "user", requestedByActorId: f.userId });
+    const wakes = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
       .filter(wake => (wake.payload as { commentId?: string }).commentId === comment.id);
-    expect(saved).toEqual([expect.objectContaining({ status: "deferred_issue_execution", runId: null,
-      payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: "budget.blocked" }) }) })]);
-    await settle(f);
-    expect(deliveries(comment.id)).toHaveLength(0);
-
-    await settleAccounting(f);
-    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) }).where(eq(agentWakeupRequests.id, saved[0].id));
+    expect(wakes.map(wake => wake.status)).not.toContain("skipped");
     await settle(f); await settle(f);
     expect(deliveries(comment.id)).toHaveLength(1);
+    await settleAccounting(f);
     await settle(f);
     expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
-  it("keeps a Retry clicked during the hold pending and starts it exactly once after the hold clears", async () => {
+  it("starts a Retry clicked while another run's accounting is pending exactly once", async () => {
     const f = await seedHeldComment();
-    // The run the user retries failed; its saved comment was already discarded.
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, f.sourceRunId));
     await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
     const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.userId,
       idempotencyKey: randomUUID(), observedRunId: f.sourceRunId });
     expect(retry).toMatchObject({ accepted: true });
     await settle(f); await settle(f);
-    const retried = () => dispatched.filter(turn => turn.context.wakeReason === "task_retry"
-      || (turn.context.taskRetry as { generationId?: string } | undefined)?.generationId === retry.requestId);
-    expect(retried()).toHaveLength(0);
-    const held = await readWake(retry.requestId!);
-    expect(["deferred_issue_execution", "queued"]).toContain(held.status);
-    expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.status === "cancelled")).toEqual([]);
-
-    // Nothing polls a held Retry: settling accounting must wake its owner.
-    expect(await settleAccounting(f)).toContain(DELIVERY_QUEUES.deferredExecutionReceipts);
-    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
-      .where(eq(agentWakeupRequests.id, retry.requestId!));
-    await settle(f); await settle(f);
-    const started = (await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.startedAt);
-    expect(started).toHaveLength(1);
+    const started = () => issueRuns(f).then(runs => runs.filter(run => run.id !== f.sourceRunId && run.startedAt));
+    expect(await started()).toHaveLength(1);
+    await settleAccounting(f);
     await settle(f);
-    expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.startedAt)).toHaveLength(1);
+    expect(await started()).toHaveLength(1);
   }, 180_000);
 
-  it("starts a new task whose assignment was refused during the hold once accounting settles", async () => {
+  it("starts a new task assigned while another run's accounting is pending", async () => {
     const f = await seedHeldComment();
-    // A second task is created and assigned while the hold lasts.
-    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Created during the hold", status: "todo",
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Created during pending accounting", status: "todo",
       assigneeAgentId: f.agentId, responsibleUserId: f.userId, issueNumber: 2 }).returning();
-    await expect(queueIssueAssignmentWakeup({ heartbeat, issue: { id: task.id, assigneeAgentId: f.agentId, status: "todo" },
+    await queueIssueAssignmentWakeup({ heartbeat, issue: { id: task.id, assigneeAgentId: f.agentId, status: "todo" },
       reason: "issue_assigned", mutation: "create", contextSource: "issue.create",
-      requestedByActorType: "user", requestedByActorId: f.userId, rethrowOnError: true })).rejects.toMatchObject({ status: 409 });
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
-    expect((await issueRuns({ companyId: f.companyId, issueId: task.id }))).toHaveLength(0);
-    // Nothing polls a refused assignment: settling accounting must wake its recovery.
-    expect(await settleAccounting(f)).toContain(DELIVERY_QUEUES.strandedAssignments);
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+      requestedByActorType: "user", requestedByActorId: f.userId, rethrowOnError: true });
     await heartbeat.drainActiveRunExecutions();
     const started = (await issueRuns({ companyId: f.companyId, issueId: task.id })).filter(run => run.startedAt);
     expect(started).toHaveLength(1);
   }, 180_000);
 
-  it("waits out the hold instead of blocking a task whose continuation it refused", async () => {
+  it("continues a task whose run ended while another run's accounting is pending", async () => {
     const f = await seedHeldComment();
-    // The task's run ended without settling the task; its comment was already consumed.
     await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
-    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
-    const [waiting] = await db.select().from(issues).where(eq(issues.id, f.issueId));
-    expect(waiting.status).toBe("in_progress");
-    expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId)).toHaveLength(0);
-
-    await settleAccounting(f);
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     await heartbeat.drainActiveRunExecutions();
     expect((await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.startedAt)).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).not.toBe("blocked");
   }, 180_000);
 
   it.each([
