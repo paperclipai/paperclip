@@ -562,7 +562,15 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         if (!(error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status))) throw error;
       }
     }
-    for (const identity of [...new Set([...memberIdentities.values(), ...(legacySourceIdentity ? [legacySourceIdentity] : [])])].sort()) {
+    let failedAuthIdentity: string | null = null;
+    if (input.failureKind === "auth" && pin.member.binding.mode !== "responsible_user") {
+      const binding = pin.member.binding;
+      const [source] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
+        .innerJoin(toolConnections, and(eq(toolConnections.companyId, connectionGrants.companyId), eq(toolConnections.id, connectionGrants.connectionId)))
+        .where(and(eq(connectionGrants.companyId, input.companyId), eq(connectionGrants.id, binding.grantId), eq(toolConnections.id, binding.connectionId)));
+      if (source) failedAuthIdentity = await quotaIdentity(source, input.companyId);
+    }
+    for (const identity of [...new Set([...memberIdentities.values(), ...(legacySourceIdentity ? [legacySourceIdentity] : []), ...(failedAuthIdentity ? [failedAuthIdentity] : [])])].sort()) {
       await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.companyId + ":" + identity}, 0))`);
     }
     if (legacySourceIdentity) {
@@ -601,7 +609,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         if (!identity || identity !== memberIdentities.get(member.id)) continue;
         const cooldown = await accountCooldown(input.companyId, member.binding.connectionId, identity, row.pool.config.kind === "harness_pool" && (input.environmentId !== undefined || input.expectedSelection.runnerScope) ? { config: effective.config, scope: { environmentId: input.environmentId ?? input.expectedSelection.runnerScope?.environmentId ?? null } } : undefined);
         if (cooldown) {
-          if (input.failureKind === "auth" && (!memberIdentities.get(pin.member.id) || identity === memberIdentities.get(pin.member.id))) continue;
+          if (input.failureKind === "auth" && (!failedAuthIdentity || identity === failedAuthIdentity)) continue;
           cooling.push(cooldown); coolingMembers.push({ member, effective, retryAt: cooldown }); continue;
         }
       } catch (error) {

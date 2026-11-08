@@ -599,6 +599,22 @@ describe("durable, authorized connection routing", () => {
       await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     }
   }, 60_000);
+  it.each([false, true])("retains an independent native auth backup deadline when the source is already attempted (revoked=%s)", async revoked => {
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const taskKey = randomUUID(); const selected = await resolve(pool.id, taskKey);
+    const sourceDeadline = new Date(Date.now() + 2 * 60 * 60_000), backupDeadline = new Date(Date.now() + 3 * 60 * 60_000);
+    await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(members[0]!.binding.grantId), sourceDeadline);
+    await service().recordQuotaCooldown(companyId, members[1]!.binding.connectionId, await identityFor(members[1]!.binding.grantId), backupDeadline);
+    if (revoked) await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+    try {
+      const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({ companyId, poolId: pool.id, agentId, taskKey, expectedSelection: selected, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [selected.memberId], failureKind: "auth" }));
+      expect(result).toEqual({ kind: "cooldown", retryAt: backupDeadline });
+    } finally {
+      await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+      await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
+    }
+  });
   it("normalizes runtime snapshots without interpreting user identifiers", () => {
     const grant = randomUUID(), secret = randomUUID();
     expect(quotaIdentityFromSessionSnapshot(grant, `${grant}:user:with:colons:${secret}:4`)).toBe(`secret:${secret}:4`);
