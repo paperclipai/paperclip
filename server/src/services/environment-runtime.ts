@@ -4321,7 +4321,10 @@ export function environmentRuntimeService(
         .where(
           and(
             eq(environmentLeases.environmentId, input.environmentId),
-            eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+            // Reusable sandboxes, and retain-on-failure sandboxes kept stopped as
+            // workspace-restore sources: both outlive their run, so a deleted
+            // environment must tear them down or they are orphaned.
+            inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "retain_on_failure"]),
             // A failed run may have stopped its reusable sandbox without
             // destroying it; that provider handle still needs scoped teardown.
             inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
@@ -4360,7 +4363,8 @@ export function environmentRuntimeService(
           skippedLiveRun += 1;
           continue;
         }
-        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason });
+        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason, anyLeasePolicy: true,
+          scopeCondition: and(inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "retain_on_failure"])) });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
