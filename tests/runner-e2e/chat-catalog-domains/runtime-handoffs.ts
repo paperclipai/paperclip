@@ -5,11 +5,15 @@ import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { observeCompletionUpdate } from "../completion-update-flow.js";
 import { completionDelivery } from "../completion-updates.js";
+import { collectRunEvents } from "../run-observations.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { openStandingChat } from "./identity-support.js";
 import { prepareRuntimeWorkerGate, readRuntimeTaskGate, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
 
+/** Product tools that read a task, its history/documents or its runs. Event outputs can be redacted, so a name match also counts. */
+const TASK_STATUS_READ = /^paperclip_(?:get_task|get_task_context|get_task_history|list_task_documents|read_task_document|search_tasks|get_run|list_runs|call_api)$/;
+export interface QueryToolRead { runId: string; name: string; mentionsTask: boolean }
 export function gradeTrackDelegatedWork(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("native-conversation-handoff-evidence", !!o, "The prior genuine handoff, real busy worker, canonical reply and eventual source update must all be observed."); if (!o) return c.result();
@@ -18,43 +22,62 @@ export function gradeTrackDelegatedWork(value: unknown) {
     && o.tasks.length === 1 && o.tasks[0]?.id === task.id && o.tasks[0]?.assigneeAgentId === worker.id
     && o.state.originalSourceRetained === true,
   "A real prior source-chat native turn created exactly this task, with Morgan as its sole assignee; the standing chat remains the same conversation.");
+  // Wording is not graded: the answer's accuracy against the running state is semantic review.
+  const reads = Array.isArray(o.state.queryToolReads) ? o.state.queryToolReads as QueryToolRead[] : [];
   c.add("canonical-status-uses-current-execution", o.state.workerStatusAtQueryReply === "running"
-    && /running|working|waiting|in progress|underway/i.test(String(o.state.queryReply))
-    && !/(?:has|is) (?:already )?(?:finished|complete)|I (?:built|implemented|finished)/i.test(String(o.state.queryReply))
+    && String(o.state.queryReply ?? "").trim().length > 0
+    && reads.some(read => read.mentionsTask || TASK_STATUS_READ.test(read.name))
     && hasLink({ ...o, links: o.state.queryLinks as string[] }, "issues", task),
-  "The canonical query's actual attributed answer links the existing task and describes its observed running state instead of claiming completion.");
+  "While Morgan's run was still active, the canonical query's attributed answer was produced after the run read the task or its runs, and links the existing task.");
   const delivery = o.state.delivery as ReturnType<typeof completionDelivery> | undefined;
   c.add("completion-returns-to-original-request", o.state.completionDelivered === true && !!delivery && delivery.checks.every(check => check.passed)
     && o.tasks[0]?.status === "done" && o.runs.find(run => run.id === o.state.workerRunId)?.status === "succeeded"
-    && o.documents.some(doc => (doc.body ?? "").includes(String(o.state.marker)))
-    && /done|complete|finished|ready/i.test(String(delivery.response?.body ?? ""))
-    && !/published|deployed|emailed|sent.*email|pushed.*(?:GitHub|remote)/i.test(String(delivery.response?.body ?? "")),
+    && o.documents.some(doc => (doc.body ?? "").includes(String(o.state.marker))),
   "Independent completed output and the unsolicited source-scoped completion delivery agree after the genuine worker finishes.");
   c.add("no-duplicate-or-parent-execution", o.runs.length === 4 && o.runs.filter(run => run.agentId === worker.id).length === 1
     && o.runs.every(run => run.status === "succeeded") && o.state.sourceAssigneePreserved === true,
   "The only native work is the prior handoff, one Morgan execution, the canonical status reply and one automatic source update.");
   return c.result();
 }
+async function queryToolReads(ctx: Parameters<typeof prepareRuntimeWorkerGate>[0], runIds: string[], task: Entity): Promise<QueryToolRead[]> {
+  const reads: QueryToolRead[] = [];
+  for (const runId of runIds) {
+    const events = await collectRunEvents<{ seq?: number; payload?: Record<string, unknown> | null }>((afterSeq, limit) =>
+      ctx.input.api.getRunObservation(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
+    for (const event of events) {
+      const prp = event.payload?.prpEvent as { eventType?: string; payload?: { name?: unknown; status?: unknown; output?: unknown } } | undefined;
+      if (prp?.eventType !== "tool.execution.completed" || prp.payload?.status !== "completed" || typeof prp.payload.name !== "string") continue;
+      const output = typeof prp.payload.output === "string" ? prp.payload.output : JSON.stringify(prp.payload.output ?? "");
+      reads.push({ runId, name: prp.payload.name, mentionsTask: [task.id, task.identifier].some(id => !!id && output.includes(String(id))) });
+    }
+  }
+  return reads;
+}
 export const runtimeHandoffCases = [runtimeDefinition("agent-chat.track-delegated-work", async ctx => {
   const prepared = await prepareRuntimeWorkerGate(ctx, { taskBound: true }); const source = await openStandingChat(ctx);
   const marker = `Tracked website delivery ${ctx.input.nonce}`;
   const instructions = `For the website assignment, first run ${prepared.gate.command} once and wait for the real human brief. Do not invent the brief or change the script. Once it returns, save a short website deliverable document with key website-delivery on the assigned task containing the supplied reference and complete that same task normally. Do not create other tasks or perform external actions.`;
   await ctx.input.api.saveAgentInstructions(prepared.worker.id, instructions);
-  const prompt = `Create one task titled Website, assigned to Morgan, to draft our launch page. Morgan is waiting for the human brief, which will include the reference ${marker}. Let Morgan implement it on that separate work task. Track the result here and tell me here when the work is complete, with access to the actual result. You may begin that one handoff now; no additional task or project is needed.`;
+  const prompt = `Create one task titled Website, assigned to Morgan, to draft our launch page, and have Morgan start on it right away (ready to work, not parked in backlog). I am giving Morgan the brief directly, outside this chat, and Morgan already knows how to receive it; it will include the reference ${marker}. Let Morgan implement it on that separate work task. Track the result here and tell me here when the work is complete, with access to the actual result. No additional task or project is needed.`;
   await sendChatMessage(ctx.input.page, prompt);
   const phase = await pollUntil({ label: "Actual conversation-created Morgan handoff", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000),
     load: async () => {
       await ctx.refreshIssue();
       const tasks = await ctx.input.api.get<Entity[]>(`${prepared.company}/issues?includeAgentCreatedTasks=true&limit=1000`);
       const candidates = tasks.filter(task => task.id !== source.id && task.assigneeAgentId === prepared.worker.id);
-      return { source: ctx.issue(), tasks, runs: await ctx.allRuns(),
-        waiting: candidates.length === 1 ? await readRuntimeTaskGate(ctx, prepared.gate, candidates[0]!.id, prepared.worker.id) : "" };
+      const runs = await ctx.allRuns();
+      // The task has no execution workspace until Morgan's run starts, so only then can the gate be bound.
+      const workerStarted = runs.some(run => run.agentId === prepared.worker.id);
+      return { source: ctx.issue(), tasks, runs, candidates,
+        waiting: candidates.length === 1 && workerStarted ? await readRuntimeTaskGate(ctx, prepared.gate, candidates[0]!.id, prepared.worker.id) : "" };
     },
     accept: value => chatCatalogNativePhaseIsTimely(ctx) && value.source?.conversationState === "waiting" && value.waiting === "waiting" && value.runs.length === 2
       && value.runs.some(run => run.agentId === prepared.worker.id && run.status === "running")
       && value.runs.some(run => run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded")
       && value.tasks.filter(task => task.id !== source.id).length === 1,
-    reject: value => value.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Prior native handoff failed" : undefined });
+    reject: value => value.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Prior native handoff failed"
+      : value.runs.every(run => run.agentId !== prepared.worker.id && run.status === "succeeded") && value.candidates.length === 1
+        && ["backlog", "blocked", "cancelled", "done"].includes(String(value.candidates[0]!.status)) ? `Prior native handoff left the Website task ${value.candidates[0]!.status}; Morgan never started` : undefined });
   const task = phase.tasks.find(task => task.id !== source.id)!;
   const created = await ctx.input.api.get<Entity[]>(`${prepared.company}/issues?createdFromIssueId=${source.id}&includeAgentCreatedTasks=true&limit=1000`);
   if (task.assigneeAgentId !== prepared.worker.id || created.length !== 1 || created[0]?.id !== task.id) throw new Error("The saved work task is not the actual source conversation handoff");
@@ -63,7 +86,8 @@ export const runtimeHandoffCases = [runtimeDefinition("agent-chat.track-delegate
   return { worker: prepared.worker, gate: prepared.gate, task, marker, prompt, sourceBefore: source,
     sourceId: source.id, setupRunIds: phase.runs.map(run => run.id), workerRunId: workerRun.id, workerWasReallyWaiting: true, createdFromSource: true };
 }, gradeTrackDelegatedWork, {
-  sourceFiles: ["chat-catalog-domains/runtime-handoffs.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "completion-update-flow.ts", "completion-updates.ts", "chat-scenarios/agent-chat.yaml"],
+  oracleVersion: "paperclip.chat-catalog.track-delegated-work.v1",
+  sourceFiles: ["chat-catalog-domains/runtime-handoffs.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "completion-update-flow.ts", "completion-updates.ts", "run-observations.ts", "chat-scenarios/agent-chat.yaml"],
   setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "native-handoff-owner", "real-source-provenance"] },
   async verifySetup(ctx, state) {
@@ -92,6 +116,7 @@ export const runtimeHandoffCases = [runtimeDefinition("agent-chat.track-delegate
     const links: string[] = [];
     for (const reply of replies) links.push(...await ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}] a[href]`).evaluateAll(nodes => nodes.map(node => node.getAttribute("href")!)));
     state.queryLinks = links; state.workerStatusAtQueryReply = phase.runs.find(run => run.id === state.workerRunId)!.status;
+    state.queryToolReads = await queryToolReads(ctx, queryIds, state.task as Entity);
     await writeFile((state.gate as { gate: string }).gate, `The real website brief: use a blue page with concise copy. Save a short task delivery document that includes exactly ${state.marker}, then complete this existing Website task.`, "utf8");
     const delivered = await observeCompletionUpdate({ page: ctx.input.page, api: ctx.input.api, sourceId: String(state.sourceId), workerId: (state.task as Entity).id,
       marker: String(state.marker), fixtureRequest: String(state.prompt), originalObservationDeadlineAt: chatCatalogOriginalPhaseDeadline(ctx), allRuns: () => ctx.allRuns(), evidence: ctx.input.evidence, capture: ctx.input.capture });
