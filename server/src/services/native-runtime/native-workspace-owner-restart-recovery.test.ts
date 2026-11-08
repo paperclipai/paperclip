@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog, agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns,
@@ -173,5 +173,119 @@ describe("native workspace owner recovery after a restart", () => {
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: legacy } }).where(eq(heartbeatRuns.id, seeded.runId));
     expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async () => "must not run"))
       .toEqual({ acquired: false, reason: "owner_unverified" });
+  });
+
+  // Staging 2026-11-07: a deploy restarted the server while three accepted
+  // results were being saved. The receipts name the previous Railway deployment
+  // on another container (e2d490c61 shape). A volume-backed service cannot run
+  // two deployments at once, so this server running on a newer deployment of the
+  // same service proves the previous one, and all its copyback children, exited.
+  describe("after a deploy on a volume-backed service", () => {
+    const worker = { provider: "railway" as const, projectId: randomUUID(), environmentId: randomUUID(),
+      serviceId: randomUUID(), deploymentId: randomUUID() };
+    function currentDeployment(overrides: Partial<Record<string, string>> = {}) {
+      const env = { RAILWAY_PROJECT_ID: worker.projectId, RAILWAY_ENVIRONMENT_ID: worker.environmentId,
+        RAILWAY_SERVICE_ID: worker.serviceId, RAILWAY_DEPLOYMENT_ID: randomUUID(),
+        RAILWAY_VOLUME_ID: randomUUID(), RAILWAY_VOLUME_MOUNT_PATH: "/paperclip", ...overrides };
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value ?? "");
+    }
+    afterEach(() => vi.unstubAllEnvs());
+
+    async function previousDeploymentOwner() {
+      const seed = await seedAbandonedCopyback();
+      const owner = { pid: 3, token: randomUUID(), worker, hostname: "3f58b3426ddc",
+        controllerBootId: randomUUID(), processStartedAt: "2026-11-07T16:32:33.070Z" };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner, preserved: "workspace descriptor" } })
+        .where(eq(heartbeatRuns.id, seed.runId));
+      await db.update(issueRecoveryActions).set({ fingerprint: nativeSha256({ runId: seed.runId, owner }),
+        evidence: { runId: seed.runId, owner, workspaceOwnerRecovery: { state: "operator_required" } } })
+        .where(eq(issueRecoveryActions.id, seed.actionId));
+      return { ...seed, owner };
+    }
+
+    it("resumes the interrupted save automatically, with no board action", async () => {
+      currentDeployment();
+      const seed = await previousDeploymentOwner();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, seed.issueId));
+      const work = vi.fn(async () => {
+        const [recovery] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
+        expect(recovery.evidence?.workspaceOwnerRecovery).toEqual({ state: "resuming" });
+        expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", userAction: null });
+        return "saved workspace copied";
+      });
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: true, value: "saved workspace copied" });
+      expect(work).toHaveBeenCalledOnce();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+      expect(run.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeUndefined();
+      expect(run.runnerProfileJson?.preserved).toBe("workspace descriptor");
+      const verified = await db.select().from(activityLog).where(and(eq(activityLog.entityId, seed.issueId),
+        eq(activityLog.action, "issue.workspace_owner_stop_verified")));
+      expect(verified).toHaveLength(1);
+      expect(verified[0].details).toMatchObject({ deploymentProof: { reason: "deployment_replaced",
+        previousDeploymentId: worker.deploymentId } });
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+    });
+
+    it("records the volume on a new receipt only when the volume is fully configured", async () => {
+      const seed = await seedAbandonedCopyback();
+      await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, seed.runId));
+      currentDeployment({ RAILWAY_VOLUME_ID: "half-configured", RAILWAY_VOLUME_MOUNT_PATH: "" });
+      let recorded: Record<string, unknown> | undefined;
+      await withNativeWorkspaceFinalizationOwnership(seed, async () => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+        recorded = run.runnerProfileJson?.nativeWorkspaceFinalizationOwner as Record<string, unknown>;
+      });
+      expect(recorded).toBeDefined();
+      expect(recorded!.volumeId).toBeUndefined();
+      expect(recorded!.exclusiveVolume).toBe(false);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, seed.runId));
+      currentDeployment({ RAILWAY_VOLUME_ID: "mounted-volume" });
+      await withNativeWorkspaceFinalizationOwnership(seed, async () => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+        recorded = run.runnerProfileJson?.nativeWorkspaceFinalizationOwner as Record<string, unknown>;
+      });
+      expect(recorded!.volumeId).toBe("mounted-volume");
+      expect(recorded!.exclusiveVolume).toBe(true);
+    });
+
+    it("keeps a receipt from a deployment that was not volume-exclusive fenced", async () => {
+      currentDeployment();
+      const seed = await previousDeploymentOwner();
+      const owner = { ...seed.owner, exclusiveVolume: false };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } })
+        .where(eq(heartbeatRuns.id, seed.runId));
+      const work = vi.fn(async () => "second physical writer");
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "owner_unverified" });
+      expect(work).not.toHaveBeenCalled();
+    });
+
+    it("keeps the save fenced when the receipt names a different volume", async () => {
+      currentDeployment();
+      const seed = await previousDeploymentOwner();
+      const owner = { ...seed.owner, volumeId: randomUUID() };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } })
+        .where(eq(heartbeatRuns.id, seed.runId));
+      const work = vi.fn(async () => "second physical writer");
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "owner_unverified" });
+      expect(work).not.toHaveBeenCalled();
+      const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, seed.issueId),
+        eq(issueRecoveryActions.fingerprint, nativeSha256({ runId: seed.runId, owner }))));
+      expect(action.nextAction).toContain("Resume saved result");
+      expect(action.nextAction).not.toMatch(/\bverify\b|\binspect\b/i);
+    });
+
+    it.each([
+      ["the same deployment", () => ({ RAILWAY_DEPLOYMENT_ID: worker.deploymentId })],
+      ["a service without a volume", () => ({ RAILWAY_VOLUME_ID: "", RAILWAY_VOLUME_MOUNT_PATH: "" })],
+      ["another service", () => ({ RAILWAY_SERVICE_ID: randomUUID() })],
+      ["another environment", () => ({ RAILWAY_ENVIRONMENT_ID: randomUUID() })],
+      ["a half-configured volume", () => ({ RAILWAY_VOLUME_MOUNT_PATH: "" })],
+    ] as const)("keeps the save fenced on %s", async (_case, overrides) => {
+      currentDeployment(overrides());
+      const seed = await previousDeploymentOwner();
+      const work = vi.fn(async () => "second physical writer");
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "owner_unverified" });
+      expect(work).not.toHaveBeenCalled();
+    });
   });
 });

@@ -9,6 +9,21 @@ export interface PutObjectInput {
   body: Buffer | Readable;
   contentType: string;
   contentLength: number;
+  /**
+   * Absolute path of a private file whose bytes are exactly `body`. A provider
+   * may read ranges of it instead of the stream, so parts can upload in
+   * parallel and be resent after a transient failure.
+   */
+  sourceFile?: string;
+}
+
+/**
+ * The backend verified every uploaded byte against a digest the client sent
+ * with it (Content-MD5 on each request), so a read-back is not needed to
+ * prove the stored content.
+ */
+export interface PutObjectReceipt {
+  integrity: "server_verified_md5";
 }
 
 export interface GetObjectInput {
@@ -46,7 +61,7 @@ export interface HeadObjectResult {
 
 export interface StorageProvider {
   id: StorageProviderId;
-  putObject(input: PutObjectInput): Promise<void>;
+  putObject(input: PutObjectInput): Promise<void | PutObjectReceipt>;
   getObject(input: GetObjectInput): Promise<GetObjectResult>;
   headObject(input: GetObjectInput): Promise<HeadObjectResult>;
   deleteObject(input: DeleteObjectInput): Promise<void>;
@@ -70,7 +85,7 @@ export type PutFileInput = {
   namespace: string;
   originalFilename: string | null;
   contentType: string;
-} & ({ body: Buffer } | { body: Readable; byteSize: number; sha256: string });
+} & ({ body: Buffer } | { body: Readable; byteSize: number; sha256: string; sourceFile?: string });
 
 export interface PutFileResult {
   provider: StorageProviderId;
@@ -79,6 +94,8 @@ export interface PutFileResult {
   byteSize: number;
   sha256: string;
   originalFilename: string | null;
+  /** Present only when the backend verified every byte on receipt. */
+  integrity?: PutObjectReceipt["integrity"];
 }
 
 export interface StorageService {
