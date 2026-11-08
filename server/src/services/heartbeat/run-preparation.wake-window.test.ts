@@ -6,25 +6,9 @@ import { buildPaperclipWakePayload } from "./run-preparation.js";
 const COMPANY = "company-1";
 const ISSUE = "issue-1";
 
-type WakeComment = {
-  id: string;
-  companyId: string;
-  issueId: string;
-  body: string;
-  origin: null;
-  authorType: "user";
-  authorAgentId: null;
-  authorUserId: string;
-  presentation: null;
-  metadata: null;
-  deletedAt: null;
-  deletedByType: null;
-  deletedByAgentId: null;
-  deletedByUserId: null;
-  deletedByRunId: null;
-  sourceTrust: null;
-  createdAt: Date;
-};
+type WakeComment = NonNullable<
+  Parameters<typeof buildPaperclipWakePayload>[0]["wakeCommentRows"]
+>[number];
 
 type StoredAttachment = {
   id: string;
@@ -101,7 +85,7 @@ function comment(id: string, body: string, createdAt: string): WakeComment {
     companyId: COMPANY,
     issueId: ISSUE,
     body,
-    origin: null,
+    origin: "comment",
     authorType: "user",
     authorAgentId: null,
     authorUserId: "user-1",
@@ -148,6 +132,11 @@ async function wake(ids: string[], rows: WakeComment[]) {
 
 function commentIds(payload: Awaited<ReturnType<typeof wake>>) {
   return (payload?.comments ?? []).map((entry) => entry.id);
+}
+
+function attachmentIds(value: unknown): string[] {
+  expect(Array.isArray(value)).toBe(true);
+  return (value as { id: string }[]).map((entry) => entry.id);
 }
 
 describe("wake comment window", () => {
@@ -282,13 +271,13 @@ describe("wake comment window", () => {
     attachments = stored.slice(0, 2);
     const short = await wake(["c1"], commentsFor(["c1"], () => "body"));
     expect(countQueries).toBe(0);
-    expect(short?.comments?.[0]?.attachments?.map((entry: { id: string }) => entry.id)).toEqual(["a01", "a02"]);
+    expect(attachmentIds(short?.comments?.[0]?.attachments)).toEqual(["a01", "a02"]);
     expect(renderPaperclipWakePrompt(short)).not.toContain("cut attachments");
 
     attachments = stored;
     const payload = await wake(["c1"], commentsFor(["c1"], () => "body"));
     expect(countQueries).toBe(1);
-    const kept = (payload?.comments?.[0]?.attachments ?? []).map((entry: { id: string }) => entry.id);
+    const kept = attachmentIds(payload?.comments?.[0]?.attachments);
     expect(kept).toEqual(stored.slice(1).map((entry) => entry.id));
     expect(payload?.commentWindow).toMatchObject({ cutAttachmentCount: 1, cutCount: 0 });
     const prompt = renderPaperclipWakePrompt(payload);
