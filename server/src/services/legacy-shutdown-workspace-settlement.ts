@@ -5,6 +5,8 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { logger } from "../middleware/logger.js";
+import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
+import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-proof.js";
 
 const SCHEMA = "paperclip.legacy-shutdown-workspace-settlement.v1";
 type Lease = Pick<typeof environmentLeases.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "metadata">;
@@ -61,6 +63,25 @@ export function pendingLegacyShutdownWorkspaceSettlement(lease: Lease) {
     && typeof marker.deadlineAt === "string" ? marker : null;
 }
 
+/**
+ * The process that committed the fence, as a shared ownership stamp. Markers
+ * written before `controller` was recorded name only a boot id; their owner
+ * is never proven gone, and the renewed deadline stays their release.
+ */
+export function legacyShutdownSettlementOwnerStamp(metadata: unknown): LocalOwnerStamp | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const marker = (metadata as Record<string, unknown>).legacyShutdownWorkspaceSettlement;
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+  const controller = readControllerProcess((marker as Record<string, unknown>).controller);
+  if (!controller) return null;
+  return { kind: "local", scope: "legacy_shutdown_settlement_fence", generation: null, host: null,
+    processSpace: controller.hostHash, bootId: controller.bootId, pid: controller.pid,
+    processStartedAt: controller.processStartedAt, processGroupId: null };
+}
+
+const sameOwner = (left: LocalOwnerStamp, right: LocalOwnerStamp) => left.bootId === right.bootId
+  && left.pid === right.pid && left.processSpace === right.processSpace && left.processStartedAt === right.processStartedAt;
+
 /** Historical reuse rows may name the same allocation as the fenced source. */
 export async function legacyShutdownWorkspaceResourceProtected(db: Db,
   lease: Pick<typeof environmentLeases.$inferSelect, "provider" | "providerLeaseId">) {
@@ -84,6 +105,42 @@ export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new 
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' <= ${now.toISOString()}`,
   )).orderBy(sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt'`).limit(50);
   for (const lease of rows) await allowLegacyShutdownWorkspaceCleanup(db, lease, now, { onDeferredDeadline: scope.onDeferredDeadline });
+  // A fence whose committing process is proven gone (shared prover) cannot be
+  // renewed or joined by its owner, so it settles without waiting out the deadline.
+  const held = await db.select().from(environmentLeases).where(and(
+    scope.companyId ? eq(environmentLeases.companyId, scope.companyId) : undefined,
+    scope.leaseId ? eq(environmentLeases.id, scope.leaseId) : undefined,
+    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
+    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
+    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' > ${now.toISOString()}`,
+    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'controllerBootId' <> ${legacyControllerBootId}`,
+    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement' ? 'controller'`,
+  )).limit(50);
+  for (const lease of held) {
+    const owner = legacyShutdownSettlementOwnerStamp(lease.metadata);
+    if (!owner || (await proveOwnerGone(owner)).verdict !== "gone") continue;
+    await allowLegacyShutdownWorkspaceCleanup(db, lease, now, { onDeferredDeadline: scope.onDeferredDeadline,
+      ownerProvenGone: owner });
+  }
+}
+
+/**
+ * Settle of the `legacy_shutdown_settlement_fence` ownership kind (plan Phase 2).
+ * The reconciler calls this only after the process that committed the fence was
+ * proven gone. It takes the same path as an expired deadline, so the source is
+ * preserved and the restore failure recorded; it never deletes provider files.
+ */
+export async function settleLegacyShutdownSettlementFence(db: Db, record: { recordId: string; owner: { kind: string; stamp?: unknown } },
+  context: { now: Date; proof: OwnerProof }): Promise<{ settled: boolean; reason: string }> {
+  if (record.owner.kind !== "process") return { settled: false, reason: "owner_not_provable" };
+  const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, record.recordId));
+  if (!lease || !pendingLegacyShutdownWorkspaceSettlement(lease)) return { settled: false, reason: "fence_no_longer_pending" };
+  const owner = legacyShutdownSettlementOwnerStamp(lease.metadata);
+  if (!owner || !sameOwner(owner, record.owner.stamp as LocalOwnerStamp)) return { settled: false, reason: "owner_changed_since_proof" };
+  if (!await allowLegacyShutdownWorkspaceCleanup(db, lease, context.now, { ownerProvenGone: owner })) {
+    return { settled: false, reason: "source_not_settleable_yet" };
+  }
+  return { settled: true, reason: context.proof.reason };
 }
 
 /** Commit the fence while the run is still live, before exposing interruption. */
@@ -92,7 +149,8 @@ export async function beginLegacyShutdownWorkspaceSettlement(db: Db, run: Run, d
     await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
     await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ||
     ${JSON.stringify({ legacyShutdownWorkspaceSettlement: { schema: SCHEMA, state: "pending", runId: run.id,
-      controllerBootId: legacyControllerBootId, deadlineAt: deadlineAt.toISOString() } })}::jsonb`,
+      controllerBootId: legacyControllerBootId, controller: currentControllerProcessStamp(),
+      deadlineAt: deadlineAt.toISOString() } })}::jsonb`,
   }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     eq(environmentLeases.status, "active"), ne(environmentLeases.provider, "local"),
     or(sql`${environmentLeases.metadata}->>'driver' = 'sandbox'`, sql`${environmentLeases.metadata}->>'sandboxProviderPlugin' = 'true'`)));
@@ -115,7 +173,12 @@ export async function finishLegacyShutdownWorkspaceSettlement(db: Db, run: Run, 
 
 /** A restart or another cleanup worker must never infer saved files from timeout. */
 export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, now = new Date(),
-  options: { ownerStopOnly?: boolean; onDeferredDeadline?: (at: number) => void } = {}) {
+  options: {
+    ownerStopOnly?: boolean; onDeferredDeadline?: (at: number) => void;
+    /** The fence's committing process, proven gone by the shared prover. It
+     * replaces the deadline only while the marker still names that process. */
+    ownerProvenGone?: LocalOwnerStamp;
+  } = {}) {
   if (!pendingLegacyShutdownWorkspaceSettlement(lease)) return true;
   return db.transaction(async tx => {
     const [hint] = await tx.select().from(environmentLeases).where(and(
@@ -144,8 +207,11 @@ export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, 
     if (options.ownerStopOnly && marker.controllerBootId === legacyControllerBootId
       && adapterExecutionControls.get(run.id)?.controller.signal.aborted) return true;
     if (marker.controllerBootId === legacyControllerBootId && adapterExecutionControls.has(run.id)) return false;
+    const markerOwner = legacyShutdownSettlementOwnerStamp(current.metadata);
+    const ownerGone = !!options.ownerProvenGone && marker.controllerBootId !== legacyControllerBootId
+      && !!markerOwner && sameOwner(markerOwner, options.ownerProvenGone);
     const deadline = Date.parse(marker.deadlineAt as string);
-    if (!Number.isFinite(deadline) || deadline > now.getTime()) return false;
+    if (!ownerGone && (!Number.isFinite(deadline) || deadline > now.getTime())) return false;
     // A killed container cannot certify export. Preserve source and hold in
     // this same transaction before any worker may perform provider cleanup.
     if (current.status !== "active") {
