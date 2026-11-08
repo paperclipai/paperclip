@@ -328,7 +328,11 @@ export async function terminalizeLegacyExecution(input: {
 }
 
 export async function settleInterruptedNativeBootstrap(
-  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+  db: Db, input: { run: Run; providerDispatchStarted: boolean;
+    /** Owner proof that authorized this settle, recorded in the activity log. */
+    proof?: string;
+    /** Called inside the transaction with the number of holds this call resolved. */
+    onHoldsResolved?: (count: number) => void },
 ): Promise<Run | null> {
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
@@ -386,40 +390,12 @@ export async function settleInterruptedNativeBootstrap(
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
-      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
+      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id),
+        ...(input.proof ? { ownerProof: input.proof } : {}) },
     });
+    input.onHoldsResolved?.(resolved.length);
     return settled;
   });
-}
-
-/**
- * Re-judges preparation holds once their proof can exist. A graceful shutdown
- * terminalizes a run still in preparation inside the draining process: its own
- * controller is live and its sandbox lease may still be cleaning up, so the
- * no-provider-work proof (`isInterruptedNativePreparation`) cannot hold yet and
- * the run is held for reconciliation. Once the owning process is gone and the
- * leases are released with confirmed stops, that proof decides: a run with no
- * provider execution is settled and its preparation is replayed in its own
- * uncharged lane. Anything with possible provider work, or without proof, stays
- * held. Recovery runs this after every restart.
- */
-export async function settleHeldInterruptedPreparations(db: Db, options: { limit?: number } = {}): Promise<number> {
-  const candidates = await db.select().from(heartbeatRuns).where(and(
-    inArray(heartbeatRuns.status, ["interrupted", "failed"]), eq(heartbeatRuns.runtimeMode, "legacy"),
-    isNull(heartbeatRuns.runtimeModeResolvedAt), eq(heartbeatRuns.executionStage, "preparing"),
-    sql`exists (select 1 from issue_recovery_actions hold where hold.company_id = ${heartbeatRuns.companyId}
-      and hold.cause = ${LEGACY_RECOVERY_CAUSE} and hold.fingerprint = 'legacy-execution:' || ${heartbeatRuns.id}::text
-      and hold.evidence->>'runId' = ${heartbeatRuns.id}::text and not (hold.evidence ? 'executionReconciliation')
-      and (hold.status in ('active', 'escalated') or (hold.status = 'resolved' and hold.outcome = 'blocked'
-        and hold.evidence->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'
-        and hold.evidence->'automaticRecovery'->>'replay' = 'blocked')))`,
-  )).orderBy(heartbeatRuns.finishedAt).limit(options.limit ?? 50);
-  let settled = 0;
-  for (const run of candidates) {
-    if (!await isInterruptedNativePreparation(db, run)) continue;
-    if (await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false })) settled += 1;
-  }
-  return settled;
 }
 
 /** The source stays discoverable until normal admission records a successor.
