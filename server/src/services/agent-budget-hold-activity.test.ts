@@ -25,7 +25,10 @@ describe.skipIf(!support.supported)("agent budget hold activity", () => {
   it("records the budget pause and its release with the reason", async () => {
     const [company] = await db.insert(companies).values({ name: "Hold", issuePrefix: "HLD" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker" }).returning();
-    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, company.id, agent.id, true));
+    const publications: unknown[] = [];
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, company.id, agent.id, true, publications as never));
+    // The entry is handed to the caller's post-commit publications.
+    expect(publications).toEqual([expect.objectContaining({ companyId: company.id })]);
     const [paused] = await db.select().from(agents).where(eq(agents.id, agent.id));
     expect(paused).toMatchObject({ pauseReason: "budget", lifecycleHolds: ["budget"] });
     const entries = () => db.select({ action: activityLog.action, details: activityLog.details }).from(activityLog)

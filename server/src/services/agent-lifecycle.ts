@@ -11,7 +11,7 @@ import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notific
 import { logger } from "../middleware/logger.js";
 import { agents, companies, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import { persistActivity } from "./activity-log.js";
+import { persistActivity, type ActivityPublication } from "./activity-log.js";
 import * as lifecycle from "../modules/agent-lifecycle/index.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
@@ -111,7 +111,10 @@ export function startAgentLifecycle(db: Db, driver: lifecycle.LifecycleDriver, c
 }
 
 /** Budget evaluation owns the transaction and supplies the aggregate agent decision. */
-export async function applyAgentBudgetHoldInTransaction(tx: Db, companyId: string, agentId: string, blocked: boolean) {
+/** Pass the transaction's post-commit `publications` so the entry reaches live
+ * subscribers after commit; without them it publishes nothing until reload. */
+export async function applyAgentBudgetHoldInTransaction(tx: Db, companyId: string, agentId: string, blocked: boolean,
+  publications?: ActivityPublication[]) {
   const [before] = await tx.select({ holds: agents.lifecycleHolds }).from(agents)
     .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
   const updated = await applyAgentPolicyHoldsInTransaction(tx, createAgentLifecycleEffects(), companyId, agentId, { budget: blocked });
@@ -119,9 +122,12 @@ export async function applyAgentBudgetHoldInTransaction(tx: Db, companyId: strin
   // reason, in the transaction that applies it.
   const had = before?.holds?.includes("budget") ?? false;
   const has = updated?.lifecycleHolds?.includes("budget") ?? had;
-  if (updated && had !== has) await persistActivity(tx, { companyId, actorType: "system", actorId: "budget",
-    agentId, action: has ? "agent.paused" : "agent.resumed", entityType: "agent", entityId: agentId,
-    details: { reason: "budget", lifecycleState: updated.lifecycleState, holds: updated.lifecycleHolds } });
+  if (updated && had !== has) {
+    const { publication } = await persistActivity(tx, { companyId, actorType: "system", actorId: "budget",
+      agentId, action: has ? "agent.paused" : "agent.resumed", entityType: "agent", entityId: agentId,
+      details: { reason: "budget", lifecycleState: updated.lifecycleState, holds: updated.lifecycleHolds } });
+    if (publication) publications?.push(publication);
+  }
   return updated;
 }
 
