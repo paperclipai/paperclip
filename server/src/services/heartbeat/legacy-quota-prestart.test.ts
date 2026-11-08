@@ -8,6 +8,8 @@ import { and, eq } from "drizzle-orm";
 import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, toolInvocations, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { secretService } from "../secrets.js";
+import { observeLegacyPoolAccountFailure, isCurrentLegacyPoolAccountProof } from "./legacy-pool-account-proof.js";
 import { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { aiConnectionService } from "../ai-connections.js";
@@ -133,7 +135,7 @@ describe("legacy quota prestart retry", () => {
     if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(Math.ceil(Date.parse(observedReset) / 1000) * 1000);
     expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
   }, 30_000);
-  it.each(["healthy", "offline", "confirmed", "reconnected"] as const)("requires account-owned evidence for Codex auth text (%s)", async mode => {
+  it.each(["healthy", "offline", "confirmed", "reconnected", "refreshed"] as const)("requires account-owned evidence for Codex auth text (%s)", async mode => {
     const f = await fixture(true, false, "openai");
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
@@ -144,6 +146,11 @@ describe("legacy quota prestart retry", () => {
     else if (mode === "healthy") vi.mocked(globalThis.fetch).mockImplementation(async () => new Response(JSON.stringify({ rate_limit: { allowed: true, primary_window: { used_percent: 10 } }, credits: { has_credits: false, unlimited: false } })));
     else vi.mocked(globalThis.fetch).mockImplementation(async () => {
       if (mode === "reconnected") await db.update(companySecrets).set({ aiSessionEpoch: Number(f.credentialIdentity.split(":").at(-1)) + 1 }).where(eq(companySecrets.id, f.credentialIdentity.split(":").at(-2)!));
+      if (mode === "refreshed") {
+        const secretId = f.credentialIdentity.split(":").at(-2)!;
+        await secretService(db).rotate(secretId, { value: JSON.stringify({ tokens: { access_token: "refreshed-working-token", account_id: "fixture-account" } }), preserveAiSessionEpoch: true });
+        expect((await db.select().from(companySecrets).where(eq(companySecrets.id,secretId)))[0].aiSessionEpoch).toBe(Number(f.credentialIdentity.split(":").at(-1)));
+      }
       return new Response("unauthorized", { status: 401 });
     });
     const now = new Date();
@@ -153,6 +160,14 @@ describe("legacy quota prestart retry", () => {
     expect(cooldowns).toHaveLength(mode === "confirmed" ? 1 : 0);
     if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(now.getTime() + 2 * 60 * 60_000);
     expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
+  }, 30_000);
+  it.each(["auth", "quota"] as const)("revalidates %s evidence refreshed before the final credential lock", async kind => {
+    const f = await fixture(true, false, "openai");
+    vi.mocked(globalThis.fetch).mockImplementation(async () => kind === "auth" ? new Response("unauthorized", { status: 401 }) : new Response(JSON.stringify({ rate_limit: { allowed: false, limit_reached: true, primary_window: { used_percent: 100, reset_at: Math.floor(Date.now() / 1000) + 3600 } }, credits: { has_credits: false, unlimited: false } })));
+    const scope = {companyId:f.companyId,agentId:f.agent.id,userId:f.userId,selection:f.selected,credentialIdentity:f.credentialIdentity};
+    const proof = await observeLegacyPoolAccountFailure(db,scope,new Date(),kind); expect(proof).not.toBeNull();
+    await secretService(db).rotate(f.credentialIdentity.split(":").at(-2)!,{value:JSON.stringify({tokens:{access_token:"working-new-token",account_id:"fixture-account"}}),preserveAiSessionEpoch:true});
+    expect(await db.transaction(tx=>isCurrentLegacyPoolAccountProof(tx as unknown as Db,scope,proof!))).toBe(kind === "quota");
   }, 30_000);
   it("refuses a historical legacy auth receipt without account evidence", async () => {
     const f = await fixture(true, false, "openai");

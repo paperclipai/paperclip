@@ -7,7 +7,7 @@ import { POOL_ACCOUNT_DEFAULT_COOLDOWN_MS } from "../ai-connection-pool-cooldown
 
 type Scope = { companyId: string; agentId: string; userId: string | null;
   selection: AiConnectionRouterSelection; credentialIdentity: string | undefined };
-export type LegacyPoolAccountProof = { secretId: string; epoch: number; retryAt: Date; providerEvidence: "anthropic_oauth_usage_v1" | "codex_wham_v1" | "saved_account_http_401_v1" };
+export type LegacyPoolAccountProof = { secretId: string; epoch: number; version: number; retryAt: Date; providerEvidence: "anthropic_oauth_usage_v1" | "codex_wham_v1" | "saved_account_http_401_v1" };
 
 async function selectedCredential(db: Db, input: Scope, lock = false) {
   const binding = input.selection.binding;
@@ -17,11 +17,11 @@ async function selectedCredential(db: Db, input: Scope, lock = false) {
     userId: input.userId, adapterType: binding.provider === "openai" ? "codex_local" : "claude_local", binding, model: input.selection.runtimeConfig.model });
   const ref = selected.grant.credentialSecretRefs.find(item => item.configPath === "ai.credential");
   if (!ref) return null;
-  const query = db.select({ id: companySecrets.id, epoch: companySecrets.aiSessionEpoch }).from(companySecrets)
+  const query = db.select({ id: companySecrets.id, epoch: companySecrets.aiSessionEpoch, latestVersion: companySecrets.latestVersion }).from(companySecrets)
     .where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, ref.secretId)));
   const [secret] = await (lock ? query.for("share") : query);
   return secret && quotaIdentityFromSessionSnapshot(selected.grant.id, input.credentialIdentity) === `secret:${secret.id}:${secret.epoch}`
-    ? secret : null;
+    ? { ...secret, version: typeof ref.versionSelector === "number" ? ref.versionSelector : secret.latestVersion } : null;
 }
 
 /** CLI text is model-visible. Only an observation using the saved credential
@@ -52,15 +52,16 @@ export async function observeLegacyPoolAccountFailure(db: Db, input: Scope, now:
       retryAt = new Date(resets.length ? Math.max(...resets) : now.getTime() + POOL_ACCOUNT_DEFAULT_COOLDOWN_MS);
     }
     const after = await selectedCredential(db, input);
-    if (!after || after.id !== before.id || after.epoch !== before.epoch) return null;
-    return { secretId: before.id, epoch: before.epoch, providerEvidence, retryAt };
+    if (!after || after.id !== before.id || after.epoch !== before.epoch || (kind === "auth" && after.version !== before.version)) return null;
+    return { secretId: before.id, epoch: before.epoch, version: before.version, providerEvidence, retryAt };
   } catch { return null; }
 }
 
 export async function isCurrentLegacyPoolAccountProof(db: Db, input: Scope, proof: LegacyPoolAccountProof) {
   try {
     const current = await selectedCredential(db, input, true);
-    return current?.id === proof.secretId && current.epoch === proof.epoch;
+    return current?.id === proof.secretId && current.epoch === proof.epoch &&
+      (proof.providerEvidence !== "saved_account_http_401_v1" || current.version === proof.version);
   } catch { return false; }
 }
 

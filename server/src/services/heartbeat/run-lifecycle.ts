@@ -3071,8 +3071,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   async function classifyAndPersistRunLiveness(
     run: typeof heartbeatRuns.$inferSelect,
     resultJson?: Record<string, unknown> | null,
+    options?: { deferAuthenticationRepair?: boolean },
   ) {
-    const authRepair = run.status === "failed"
+    const authRepair = run.status === "failed" && !options?.deferAuthenticationRepair
       ? await connectionIntentService(db).requestForRunAuthFailure(run.id).catch(() => {
           logger.warn({ runId: run.id }, "Could not attach provider authentication repair; run failure remains available");
           return null;

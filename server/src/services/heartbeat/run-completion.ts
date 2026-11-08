@@ -866,10 +866,23 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       await measureRunPhase("completion.cost", () => accountRunCost(db, persistedRun!.id, budgetHooks)).catch((err) => {
         logger.error({ err, runId: run.id }, "Run accounting queued for recovery");
       });
+      const nativeQuotaFailure = adapterResult.errorCode === "native_provider_usage_limit"
+        ? readProviderFailure(adapterResult.resultJson?.providerFailure) : null;
+      const poolFailure = persistedRun ? poolFailureKind(persistedRun) : null;
+      if (persistedRun && outcome === "failed" &&
+        (poolFailure || adapterResult.errorFamily === "provider_quota" || adapterResult.errorCode === "provider_quota" || isConfirmedProviderQuotaFailure(nativeQuotaFailure))) {
+        await recordVerifiedRouterQuotaCooldown(db, {
+          runId: persistedRun.id, companyId: persistedRun.companyId, agentId: persistedRun.agentId,
+          credentialIdentity: sessionConfigMetadata.aiCredentialIdentity,
+          retryNotBefore: adapterResult.retryNotBefore ?? providerQuotaRetryAt(nativeQuotaFailure),
+          ...(poolFailure ? { failureKind: poolFailure } : {}),
+        }).catch(err => logger.warn({ err, runId: run.id }, "failed to record router quota cooldown"));
+      }
       persistedRun =
         (await measureRunPhase("completion.liveness", () => classifyAndPersistRunLiveness(
           persistedRun!,
           persistedResultJson,
+          { deferAuthenticationRepair: persistedRun!.runtimeMode !== "native" && poolFailure === "auth" },
         ))) ?? persistedRun;
     }
 
@@ -883,18 +896,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     );
 
     const finalizedRun = persistedRun ?? (await getRun(run.id));
-    const nativeQuotaFailure = adapterResult.errorCode === "native_provider_usage_limit"
-      ? readProviderFailure(adapterResult.resultJson?.providerFailure) : null;
-    const poolFailure = persistedRun ? poolFailureKind(persistedRun) : null;
-    if (persistedRun && outcome === "failed" &&
-      (poolFailure || adapterResult.errorFamily === "provider_quota" || adapterResult.errorCode === "provider_quota" || isConfirmedProviderQuotaFailure(nativeQuotaFailure))) {
-      await recordVerifiedRouterQuotaCooldown(db, {
-        runId: persistedRun.id, companyId: persistedRun.companyId, agentId: persistedRun.agentId,
-        credentialIdentity: sessionConfigMetadata.aiCredentialIdentity,
-        retryNotBefore: adapterResult.retryNotBefore ?? providerQuotaRetryAt(nativeQuotaFailure),
-        ...(poolFailure ? { failureKind: poolFailure } : {}),
-      }).catch(err => logger.warn({ err, runId: run.id }, "failed to record router quota cooldown"));
-    }
     const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
       keepIdleOnFailure:
         outcome === "failed" &&
@@ -934,7 +935,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
-      const livenessRun = finalizedRun;
+      let livenessRun = finalizedRun;
       await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
       if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
         // The returning agent must resume its own settled session with the
@@ -1105,7 +1106,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         outcome === "failed" &&
         (readTransientRecoveryContractFromRun(livenessRun) || poolFailureKind(livenessRun))
       ) {
-        await scheduleBoundedRetryForRun(livenessRun, agent);
+        const retry = await scheduleBoundedRetryForRun(livenessRun, agent);
+        if (retry.outcome !== "scheduled" && livenessRun.runtimeMode !== "native" && poolFailureKind(livenessRun) === "auth") {
+          livenessRun = (await classifyAndPersistRunLiveness(livenessRun, persistedResultJson)) ?? livenessRun;
+        }
       } else if (
         outcome === "failed" &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))

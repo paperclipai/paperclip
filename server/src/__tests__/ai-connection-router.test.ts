@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
@@ -503,7 +503,12 @@ describe("durable, authorized connection routing", () => {
       expect((await heartbeat.getRun(run!.id))?.error).toContain("manual affinity fixture");
     } finally { await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter("codex_local"); }
   }, 30_000);
-  it.each([false, true])("continues a quota-interrupted Claude turn on Codex through the public heartbeat lifecycle (reconnect=%s)", async reconnect => {
+  it.each([
+    { failureKind: "quota", reconnect: false, noBackup: false },
+    { failureKind: "quota", reconnect: true, noBackup: false },
+    { failureKind: "auth", reconnect: false, noBackup: false },
+    { failureKind: "auth", reconnect: false, noBackup: true },
+  ] as const)("handles $failureKind through the public heartbeat lifecycle (reconnect=$reconnect, noBackup=$noBackup)", async ({ failureKind, reconnect, noBackup }) => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Isolated continuation", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
@@ -517,7 +522,7 @@ describe("durable, authorized connection routing", () => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: true });
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
-      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!, members[0]!],
+      name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: noBackup ? [members[1]!] : [members[1]!, members[0]!],
     } }, "alice");
     const workdir = path.join(home, `continuation-${randomUUID()}`);
     await mkdir(workdir, { recursive: true });
@@ -533,7 +538,7 @@ describe("durable, authorized connection routing", () => {
       await ctx.onLog("stdout", "Completed marker file. Quota interrupted the remaining work.\n");
       if (reconnect) await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId,
         await identityFor(members[0]!.binding.grantId), new Date(Date.now() + 3 * 60 * 60_000));
-      return { exitCode: 1, signal: null, timedOut: false, errorCode: "provider_quota", errorFamily: "provider_quota", errorMessage: "Provider quota exhausted",
+      return { exitCode: 1, signal: null, timedOut: false, errorCode: failureKind === "auth" ? "claude_auth_required" : "provider_quota", errorFamily: failureKind === "auth" ? "refresh_token_expired" : "provider_quota", errorMessage: "Provider stopped",
         sessionId: randomUUID(), summary: "Completed marker file. Remaining work needs another turn.",
         executionSettlement: { providerStopped: true, workspaceSettled: true, actionOutcomes: "unknown" } };
     });
@@ -552,15 +557,25 @@ describe("durable, authorized connection routing", () => {
     registerServerAdapter({ ...getServerAdapter("claude_local"), execute: primary });
     registerServerAdapter({ ...getServerAdapter("codex_local"), execute: backup });
     const observedReset = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
-    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => failureKind === "auth" && primary.mock.calls.length ? new Response("unauthorized", { status: 401 }) : new Response(JSON.stringify({
       five_hour: { utilization: primary.mock.calls.length ? 100 : 10, resets_at: observedReset }, extra_usage: { is_enabled: false },
     })));
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
     try {
       const source = await heartbeat.wakeup(agent!.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, responsibleUserId: "alice" }, triggerDetail: "system" });
       await heartbeat.drainActiveRunExecutions();
+      if (noBackup) {
+        const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue!.id));
+        expect(cards).toHaveLength(1);
+        expect(cards[0]).toMatchObject({ kind: "connection_intent", status: "pending", sourceRunId: source!.id });
+        expect(primary).toHaveBeenCalledOnce(); expect(backup).not.toHaveBeenCalled();
+        expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, claude.grantId)))[0].status).toBe("needs_reauthorization");
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id))).toHaveLength(0);
+        return;
+      }
       await expect.poll(async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id))).length, { timeout: 20_000 }).toBe(1);
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id));
+      if (failureKind === "auth") expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue!.id))).toHaveLength(0);
       expect(successor?.contextSnapshot).toMatchObject({ previousRunId: source!.id, forceFreshSession: true, aiRouterSelection: { adapterType: reconnect ? "claude_local" : "codex_local", memberId: members[reconnect ? 1 : 0]!.id } });
       if (reconnect) {
         expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);

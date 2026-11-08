@@ -115,7 +115,7 @@ export async function switchFailedPoolPin(db: Db, input: {
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
     adapterType: agent.adapterType, attemptedMemberIds: [], failureKind: kind,
     sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
-    allowCoolingSelection: true });
+    allowCoolingSelection: kind !== "auth" });
 }
 
 /** Reconsider a waiting allocation before any adapter admission, under Stop's locks. */
