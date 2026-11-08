@@ -16,6 +16,7 @@ import {
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
+  removeRemoteRecoveryAttachment,
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
@@ -57,6 +58,46 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     if (state === "missing" || state === "present") await expect(probe).resolves.toBe(state === "present");
     else await expect(probe).rejects.toThrow("remote_workspace_operation_failed");
     if (state !== "missing") expect(await fs.readFile(path.join(directory, "user.txt"), "utf8")).toBe("preserved user edit\n");
+  });
+
+  it.each(["missing", "present", "foreign", "directory_symlink"])(
+    "removes a retired recovery attachment only with its exact provenance: %s", async state => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const directory = path.join(parent, operationId), provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    const sibling = path.join(parent, randomUUID());
+    if (state !== "missing") {
+      // A read-only directory, as a restored dependency cache can be, must still go.
+      await fs.mkdir(path.join(directory, "files", "locked"), { recursive: true });
+      await fs.writeFile(path.join(directory, "files", "locked", "cache.bin"), "cached\n");
+      await fs.chmod(path.join(directory, "files", "locked"), 0o555);
+      await fs.writeFile(path.join(directory, "provenance.json"), state === "foreign" ? "foreign proof" : provenance);
+      await fs.mkdir(sibling);
+    }
+    let outside = "";
+    if (state === "directory_symlink") {
+      outside = path.join(scratch, "outside-attachment");
+      await fs.rename(directory, outside); await fs.symlink(outside, directory);
+    }
+    const removal = removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance });
+    if (state === "missing" || state === "present") await expect(removal).resolves.toBe(state === "present");
+    else await expect(removal).rejects.toThrow("remote_workspace_operation_failed");
+    if (state === "present") {
+      expect(await fs.lstat(directory).catch(() => null)).toBeNull();
+      expect((await fs.lstat(sibling)).isDirectory()).toBe(true);
+    }
+    if (state === "foreign") expect(await fs.readFile(path.join(directory, "files", "locked", "cache.bin"), "utf8")).toBe("cached\n");
+    if (state === "directory_symlink") expect(await fs.readFile(path.join(outside, "files", "locked", "cache.bin"), "utf8")).toBe("cached\n");
+    for (const kept of [directory, outside].filter(Boolean)) await fs.chmod(path.join(kept, "files", "locked"), 0o755).catch(() => undefined);
+  });
+
+  it("removes the empty recovery folder with its last attachment", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    await fs.mkdir(path.join(parent, operationId), { recursive: true });
+    await fs.writeFile(path.join(parent, operationId, "provenance.json"), provenance);
+    await expect(removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance }))
+      .resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
   });
 
   async function git(cwd: string, ...args: string[]) {
