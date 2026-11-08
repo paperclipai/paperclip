@@ -1028,6 +1028,13 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
+  it("routes a person's own profile change to their profile settings instead of an agent write", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("only they can change them in their profile settings at /<prefix>/company/settings/instance/profile");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link that page instead of attempting the change");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
+  });
+
   it("gives chat replies a usable route for both task and approval sources", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
