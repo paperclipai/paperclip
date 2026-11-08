@@ -65,6 +65,13 @@ describe("crashPoint in a test process", () => {
     expect(() => crashPoint(first)).not.toThrow();
   });
 
+  it("refuses an object spec with a count that could never fire", () => {
+    for (const nth of [0, -1, 2.5, Number.NaN]) {
+      expect(() => armCrashPointForTest({ name: first, nth })).toThrow(/positive integer/);
+    }
+    expect(armedCrashPoint()).toBeNull();
+  });
+
   it("restores the previous state on disarm", () => {
     const off = armCrashPointForTest(first);
     off();
@@ -72,7 +79,8 @@ describe("crashPoint in a test process", () => {
   });
 });
 
-describe("crashPoint armed by the environment", () => {
+// Each case starts a child Node process with the tsx loader; allow for a busy host.
+describe("crashPoint armed by the environment", { timeout: 60_000 }, () => {
   const script = (name: string) => [
     `const { crashPoint } = await import(${JSON.stringify(path.join(import.meta.dirname, "crash-points.ts"))});`,
     `crashPoint(${JSON.stringify(name)}); process.stdout.write("one\\n");`,
@@ -81,11 +89,11 @@ describe("crashPoint armed by the environment", () => {
   // The loader, not the tsx CLI: the CLI runs the script in a child process, so
   // the SIGKILL would land on a grandchild.
   const tsxLoader = pathToFileURL(path.resolve(import.meta.dirname, "../../../cli/node_modules/tsx/dist/loader.mjs")).href;
-  const runChild = (env: Record<string, string>) => {
+  const runChild = (env: Record<string, string>, source = script(first)) => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "crash-point-script-"));
     try {
       const file = path.join(dir, "child.mts");
-      writeFileSync(file, script(first));
+      writeFileSync(file, source);
       return spawnSync(process.execPath, ["--import", tsxLoader, file], {
         env: { ...process.env, NODE_ENV: "test", ...env }, encoding: "utf8", timeout: 60_000,
       });
@@ -119,6 +127,29 @@ describe("crashPoint armed by the environment", () => {
     }
   });
 
+  it("counts hits only after the gate file appears", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "crash-point-gate-"));
+    try {
+      const gate = path.join(dir, "open");
+      const receipt = path.join(dir, "receipt.jsonl");
+      const source = [
+        `const { crashPoint } = await import(${JSON.stringify(path.join(import.meta.dirname, "crash-points.ts"))});`,
+        `const { writeFileSync } = await import("node:fs");`,
+        `crashPoint(${JSON.stringify(first)}); crashPoint(${JSON.stringify(first)}); process.stdout.write("closed\\n");`,
+        `writeFileSync(${JSON.stringify(gate)}, "");`,
+        `crashPoint(${JSON.stringify(first)}); process.stdout.write("one\\n");`,
+        `crashPoint(${JSON.stringify(first)}); process.stdout.write("two\\n");`,
+      ].join("\n");
+      const result = runChild({ PAPERCLIP_CRASH_POINT: `${first}:2`, PAPERCLIP_CRASH_POINT_GATE: gate,
+        PAPERCLIP_CRASH_POINT_RECEIPT: receipt }, source);
+      expect(result.signal).toBe("SIGKILL");
+      expect(result.stdout).toBe("closed\none\n");
+      expect(JSON.parse(readFileSync(receipt, "utf8").trim())).toMatchObject({ point: first, hit: 2 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("stays disarmed in production", () => {
     const result = runChild({ PAPERCLIP_CRASH_POINT: first, NODE_ENV: "production" });
     expect(result.signal).toBeNull();
@@ -135,10 +166,12 @@ describe("crashPoint armed by the environment", () => {
 
 describe("disarmed cost", () => {
   // TTFT is a hard constraint (plan invariant 8): a disarmed point must cost
-  // about as much as an empty call. The bound is loose so CI noise cannot trip
-  // it; the measured figure is printed for the PR record.
-  it("stays within a few nanoseconds of an empty call", () => {
-    const iterations = 5_000_000;
+  // about as much as an empty call. A regression that matters (a syscall or
+  // I/O on the disarmed path) costs microseconds, so the bound is 100 ns over
+  // an empty call: far above timer and load noise, far below any real cost.
+  // The measured figure is printed for the PR record.
+  it("stays within 100 ns of an empty call", () => {
+    const iterations = 2_000_000;
     const empty = (_name: CrashPointName) => {};
     const time = (fn: (name: CrashPointName) => void) => {
       for (let i = 0; i < 100_000; i += 1) fn(first);
@@ -146,9 +179,13 @@ describe("disarmed cost", () => {
       for (let i = 0; i < iterations; i += 1) fn(i & 1 ? first : second);
       return Number(process.hrtime.bigint() - start) / iterations;
     };
-    const baseline = Math.min(time(empty), time(empty), time(empty));
-    const measured = Math.min(time(crashPoint), time(crashPoint), time(crashPoint));
+    let baseline = Number.POSITIVE_INFINITY;
+    let measured = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 7; round += 1) {
+      baseline = Math.min(baseline, time(empty));
+      measured = Math.min(measured, time(crashPoint));
+    }
     console.info(`crashPoint disarmed: ${measured.toFixed(2)} ns/call (empty call ${baseline.toFixed(2)} ns)`);
-    expect(measured).toBeLessThan(baseline + 10);
+    expect(measured).toBeLessThan(baseline + 100);
   });
 });

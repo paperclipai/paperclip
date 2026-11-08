@@ -130,7 +130,9 @@ function reach(current: Armed): void {
  * Returns a disarm function; call it in `afterEach`. Replaces any armed point.
  */
 export function armCrashPointForTest(spec: string | CrashPointSpec): () => void {
-  const parsed = typeof spec === "string" ? parseCrashPointSpec(spec) : spec;
+  // One parser for both forms, so an object with a bad name or count is refused
+  // instead of arming a point that can never fire.
+  const parsed = parseCrashPointSpec(typeof spec === "string" ? spec : `${spec.name}:${spec.nth}`);
   if (!parsed) throw new Error("armCrashPointForTest needs a crash point name");
   const previous = armed;
   const current: Armed = { spec: parsed, hits: 0, mode: "throw", receiptPath: null, gatePath: null };
