@@ -3109,6 +3109,13 @@
       "when": 1794104103100,
       "tag": "0445_native_accepted_result_lease_index",
       "breakpoints": true
+    },
+    {
+      "idx": 446,
+      "version": "7",
+      "when": 1794105010331,
+      "tag": "0446_native_lease_holder",
+      "breakpoints": true
     }
   ]
 }

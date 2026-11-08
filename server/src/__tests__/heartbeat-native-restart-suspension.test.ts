@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, authUsers, budgetReservations, issueRecoveryActions, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -10,11 +12,12 @@ import type { NativeSessionBackend } from "@paperclipai/paperclip-runner";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
-import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { proveOwnerGone } from "../services/owner-proof.js";
 
 
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
@@ -572,4 +575,119 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       await coordinator.stop();
     }
   }, 180_000);
+
+  // Phase 2: the token-only finalizer and cleanup leases record their holder
+  // process (`lease_holder`, bound to the token) and settle on the shared
+  // ownership path when it is proven gone, never by lease age.
+  type Holder = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+  const deadHolder = (hostHash = currentProcessSpaceHash()): Holder => ({ bootId: randomUUID(), pid: 2_000_000_001,
+    hostHash, processStartedAt: new Date(Date.now() - 60_000).toISOString() });
+  async function heldBy(f: Awaited<ReturnType<typeof seedAcceptedResult>>, holder: Holder, token?: string) {
+    const [row] = await f.db.select({ leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ leaseHolder: { token: token ?? row.leaseOwner, ...holder } })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+  }
+  const tokenKindId = (prefix: string) => prefix === "native-finalizer" ? "native_finalizer_lease" : "native_cleanup_lease";
+  /** This run's record of the kind and its proof (the fixture database is shared across cases). */
+  async function proofOf(f: Awaited<ReturnType<typeof seedAcceptedResult>>, prefix: string) {
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === tokenKindId(prefix))!;
+    const records = await kind.listForRuns!(f.db, [f.runId]);
+    if (!records.length) return null;
+    const owner = records[0]!.owner;
+    if (owner.kind === "process") return { owner: owner.kind, ...await proveOwnerGone(owner.stamp) };
+    if (owner.kind === "fence") return { owner: owner.kind, ...await proveOwnerGone(owner.stamp, owner.fence) };
+    return { owner: owner.kind };
+  }
+  async function leaseOf(f: Awaited<ReturnType<typeof seedAcceptedResult>>) {
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    return owner;
+  }
+
+  it("finalizes promptly when a hard kill left the finalizer lease to its dead holder, and stamps the next holder", async () => {
+    // Crash point: the finalizer claimed the accepted result (lease written)
+    // and the server was killed before it committed. The 5-minute lease must
+    // not hold the run `running`; the next boot proves the holder gone.
+    const f = await seedAcceptedResult("FINALIZER-THEN-SIGKILL", () => `native-finalizer:${randomUUID()}`);
+    await heldBy(f, deadHolder());
+    // A claim wakes the ownership worker, which may have gone quiet, so it
+    // watches the new holder.
+    const ownershipWakes: string[] = [];
+    const stop = subscribeDatabaseWork(f.db, DELIVERY_QUEUES.ownershipInvariantReport, (event, hints) => {
+      if (event === "settled") ownershipWakes.push(...(hints ?? []));
+    });
+    const { run, owner } = await restart(f).finally(stop);
+    expect(ownershipWakes.some(hint => hint.includes(f.runId))).toBe(true);
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+    // This boot's own finalizer claim recorded itself as the holder of its token,
+    // without rewriting the executor's controller identity.
+    expect(owner.leaseHolder).toMatchObject({ token: expect.stringMatching(/^native-finalizer:/),
+      bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash() });
+    expect(owner.controllerPid).toBe((await currentNativeControllerIdentity()).pid);
+  }, 90_000);
+
+  it.each(["native-finalizer", "native-cleanup"])("settles a dead %s holder in the reconciler pass, never in a read-only pass", async (prefix) => {
+    const f = await seedAcceptedResult(`TOKEN-PASS-${prefix}`, () => `${prefix}:${randomUUID()}`);
+    await heldBy(f, deadHolder());
+    expect(await proofOf(f, prefix)).toEqual({ owner: "process", verdict: "gone", reason: "pid_dead" });
+    await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState(), record: false });
+    expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
+    const pass = await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    expect(pass.kinds.find(kind => kind.kind === tokenKindId(prefix))!.settled).toBeGreaterThanOrEqual(1);
+    const released = await leaseOf(f);
+    expect(released.leaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // Ownership only: the accepted result and its workspace work are untouched.
+    expect({ phase: released.phase, resultId: released.resultId }).toEqual({ phase: "workspace_finalizing",
+      resultId: expect.any(String) });
+    // An expired lease is free for the next claim and no longer in progress.
+    expect(await proofOf(f, prefix)).toBeNull();
+  }, 60_000);
+
+  it.each([
+    { label: "live earlier-boot holder", proof: { verdict: "alive", reason: "pid_alive" }, holder: async (): Promise<Holder> => ({ bootId: randomUUID(),
+      pid: process.pid, hostHash: currentProcessSpaceHash(),
+      processStartedAt: (await currentNativeControllerIdentity()).processStartedAt.toISOString() }) },
+    { label: "current boot", proof: { verdict: "alive", reason: "current_process" }, holder: async (): Promise<Holder> => ({ bootId: currentControllerBootId(),
+      pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null }) },
+    { label: "dead PID in another PID space", proof: { verdict: "unprovable", reason: "different_process_space" }, holder: async () => deadHolder("another-pid-space") },
+  ])("keeps a finalizer lease held by a $label", async ({ holder, proof }) => {
+    const f = await seedAcceptedResult(`FINALIZER-KEPT-${randomUUID()}`, () => `native-finalizer:${randomUUID()}`);
+    await heldBy(f, await holder());
+    expect(await proofOf(f, "native-finalizer")).toEqual({ owner: "process", ...proof });
+    await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    await restart(f);
+    expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
+  }, 60_000);
+
+  it("never lets a later lease inherit an earlier holder, and keeps holderless leases of the previous release", async () => {
+    // A holder written for another token names nobody; a row saved by the
+    // previous release has none. Both stay token fences until expiry, also on
+    // an ephemeral server.
+    const f = await seedAcceptedResult("FINALIZER-STALE-HOLDER", () => `native-finalizer:${randomUUID()}`);
+    await heldBy(f, deadHolder(), `native-finalizer:${randomUUID()}`);
+    const legacy = await seedAcceptedResult("FINALIZER-PREVIOUS-RELEASE", () => `native-finalizer:${randomUUID()}`);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    try {
+      for (const row of [f, legacy]) {
+        expect(await proofOf(row, "native-finalizer")).toEqual({ owner: "fence", verdict: "alive", reason: "fence_held" });
+      }
+      await runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState() });
+    } finally { vi.unstubAllEnvs(); }
+    await restart(f);
+    expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
+    expect((await leaseOf(legacy)).leaseExpiresAt).toEqual(legacy.leaseExpiresAt);
+  }, 90_000);
+
+  it("settles only the exact lease it proved: a takeover after the proof is kept", async () => {
+    const f = await seedAcceptedResult("FINALIZER-TAKEN-OVER", () => `native-finalizer:${randomUUID()}`);
+    await heldBy(f, deadHolder());
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_finalizer_lease")!;
+    const [record] = await kind.listForRuns!(f.db, [f.runId]);
+    const successor = `native-finalizer:${randomUUID()}`;
+    await f.db.update(nativeRunFinalizations).set({ leaseOwner: successor,
+      leaseHolder: { token: successor, ...deadHolder() } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const outcome = await kind.settle!(f.db, record!, { now: new Date(), proof: { verdict: "gone", reason: "pid_dead" } });
+    expect(outcome).toEqual({ settled: false, reason: "owner_changed_since_proof" });
+    expect((await leaseOf(f)).leaseExpiresAt).toEqual(f.leaseExpiresAt);
+  }, 60_000);
 });
