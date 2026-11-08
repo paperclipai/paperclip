@@ -550,6 +550,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
+  "refresh_token_invalidated",
   "agent_not_invokable",
   "agent_not_found",
   "budget_blocked",

@@ -204,6 +204,18 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toBe(false);
   });
 
+  it("does not retry an invalidated provider refresh token", () => {
+    expect(classifyContinuationFailure({
+      errorCode: "refresh_token_invalidated",
+      resultJson: { errorFamily: "refresh_token_invalidated" },
+    } as never)).toEqual({
+      kind: "non_retryable",
+      maxAttempts: 0,
+      baseBackoffMs: 0,
+      errorCode: "refresh_token_invalidated",
+    });
+  });
+
   it("does not treat a generic capacity limit as provider quota", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",
