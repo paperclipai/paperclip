@@ -108,8 +108,14 @@ describe("concurrent git worktree creation", () => {
     try {
       await expect(realize(repoRoot, "PAP-930")).rejects.toThrow(/timed out/);
       const pid = Number((await fs.readFile(pidFile, "utf8")).trim());
-      const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-      expect(alive()).toBe(false);
+      // Gone or a zombie (exited, not yet reaped) both mean it no longer runs.
+      const running = async () => {
+        const state = await execFileAsync("ps", ["-o", "stat=", "-p", String(pid)]).then(result => result.stdout.trim(), () => "");
+        return state !== "" && !state.startsWith("Z");
+      };
+      const deadline = Date.now() + 5_000;
+      while (await running() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      expect(await running()).toBe(false);
     } finally {
       worktreeCreateLimits.timeoutMs = original;
     }
