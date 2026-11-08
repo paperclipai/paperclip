@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -1000,6 +1001,23 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain('payload.target to { type: "issue_document", key: "plan", revisionId: latestRevisionId }');
     expect(AGENT_CHAT_DIRECTIVE).toContain("ordinary conversation replies and draft planning do not need confirmation");
     expect(AGENT_CHAT_DIRECTIVE).toContain("In Ask mode, discuss the plan without creating or revising documents or approval cards");
+  });
+
+  it("tells chat how to link execution runs to the registered run route and name their agents", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="agents\/:agentId\/runs\/:runId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId.");
+    // Issue run listings expose the run ID as runId, not id; the guidance must name the field each response returns.
+    const activity = readFileSync(new URL("../services/activity.ts", import.meta.url), "utf8");
+    const listing = activity.match(/runsForIssue:\s*async\b[\s\S]*?\.select\(\{([\s\S]*?)\n\s*\}\)/)?.[1] ?? "";
+    expect(listing).toMatch(/^\s*runId:\s*heartbeatRuns\.id\s*,/m);
+    expect(listing).not.toMatch(/^\s*id:/m);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("returned agentId and id");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("read the agent and name it rather than showing a raw ID");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
   it("gives chat replies a usable route for both task and approval sources", () => {
