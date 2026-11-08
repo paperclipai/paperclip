@@ -3,7 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import type { AnchorHTMLAttributes } from "react";
 import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => <a href={to} {...props}>{children}</a>,
+}));
 
 const failed: TaskInterruptionPresentation = {
   intentId: "intent", responsibility: "system", state: "failed", nextRetryAt: null,
@@ -45,6 +50,16 @@ describe("ordinary task interruption", () => {
     await render({ ...failed, state: "working", canRetry: false, sourceRunIds: [], observedRunId: null,
       retryWait: { reason: "budget.blocked", message: "Waiting for the budget to allow new work. The task starts automatically when it does." } });
     expect(container.textContent).toBe("Waiting for the budget to allow new work. The task starts automatically when it does.");
+    expect(container.querySelector("button")).toBeNull();
+  });
+  it("names and links the blocked subtask a saved Retry waits on, with no second Retry (restart chaos t05)", async () => {
+    const message = "Retry is waiting on blocked subtask CHA-10. Retry or unblock it; this task continues when it is done. Your Retry is saved.";
+    await render({ ...failed, state: "working", canRetry: false, retryWait: { reason: "dependency_blocked", message },
+      waitingOn: [{ issueId: "child", identifier: "CHA-10", title: "Part 2", status: "blocked", relation: "subtask" }] });
+    expect(container.textContent).toContain(message);
+    const link = container.querySelector<HTMLAnchorElement>("[data-testid='retry-waiting-on'] a");
+    expect(link?.getAttribute("href")).toContain("CHA-10");
+    expect(container.textContent).toContain("Blocked: open it to Retry");
     expect(container.querySelector("button")).toBeNull();
   });
   it("names the saved-work recovery step instead of a bare queue", async () => {

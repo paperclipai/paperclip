@@ -1,6 +1,8 @@
 import { describeError } from "../api/errors";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { AlertCircle } from "lucide-react";
+import { Link } from "@/lib/router";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { useSecondTick } from "../hooks/useSecondTick";
@@ -46,9 +48,23 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
-  // A task that has not started yet names the admission hold it waits for.
+  // A task that has not started yet names the admission hold it waits for. A
+  // saved Retry held by unfinished blockers links each one, where its own
+  // Retry or unblocking is.
   if (!optimistic && presentation?.state === "working" && presentation.retryWait) return <div role="status"
-    aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>{presentation.retryWait.message}</div>;
+    aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>
+    <p>{presentation.retryWait.message}</p>
+    {presentation.waitingOn?.length ? <ul className="mt-1 space-y-0.5" data-testid="retry-waiting-on">
+      {presentation.waitingOn.map(dependency => <li key={dependency.issueId} className="flex min-w-0 items-center gap-2">
+        <Link to={createIssueDetailPath(dependency.identifier ?? dependency.issueId)}
+          className="font-mono text-xs text-foreground underline-offset-2 hover:underline">
+          {dependency.identifier ?? "Task"}
+        </Link>
+        <span className="min-w-0 truncate">{dependency.title}</span>
+        <span className="shrink-0 text-xs">{dependency.status === "blocked" ? "Blocked: open it to Retry" : dependency.status.replace(/_/g, " ")}</span>
+      </li>)}
+    </ul> : null}
+  </div>;
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   return (

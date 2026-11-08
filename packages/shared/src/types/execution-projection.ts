@@ -115,6 +115,16 @@ export interface ExecutionReconciliation {
       | { state: "unreadable"; reason: string };
   };
 }
+/** An unresolved blocker a saved Retry waits on. */
+export interface TaskRetryDependency {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  /** `subtask` when the blocker is also a child of the waiting task. */
+  relation: "subtask" | "blocker";
+}
+
 /** A task-level view of one interruption. Diagnostics keep the underlying runs
  * and recovery records; ordinary product surfaces render this projection. */
 export interface TaskInterruptionPresentation {
@@ -122,6 +132,12 @@ export interface TaskInterruptionPresentation {
   workspaceFailure?: { message: string };
   /** A persisted Retry admission wait, normalized to public text by the server. */
   retryWait?: { reason: string; message: string };
+  /**
+   * The unresolved blockers a saved Retry waits on (`retryWait.reason`
+   * `dependency_blocked`). The Retry runs once they are done; a blocked one
+   * needs its own Retry or unblocking first. Private blockers are omitted.
+   */
+  waitingOn?: TaskRetryDependency[];
   intentId: string | null;
   responsibility: "system" | "user";
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
