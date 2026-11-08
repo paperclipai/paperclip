@@ -243,6 +243,8 @@ export function connectionIntentService(db: Db) {
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        title: issues.title,
+        description: issues.description,
         assigneeAgentId: issues.assigneeAgentId,
       }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).then((rows) => rows[0] ?? null),
       db.select({ id: agents.id, companyId: agents.companyId, name: agents.name })
