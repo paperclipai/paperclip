@@ -53,11 +53,17 @@ function alwaysHeldSql() {
     or coalesce(${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending', false)
     or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
       and run.status not in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))
-    -- A prepared native workspace that has not been exported yet (the settle
-    -- re-checks the exact export state under the row lock).
+    -- A prepared native workspace bound to this exact sandbox, for a run with
+    -- workspace access. This is deliberately no wider than the settle's own
+    -- export check: an orphan the settle would release must never be hidden
+    -- here. Narrower cases (a prepared remote workspace, an observed failure)
+    -- are listed and held by the settle until their export settles.
     or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
-      and run.runtime_mode = 'native' and (run.runner_profile_json#>>'{nativeWorkspaceSync,state}' = 'prepared'
-        or run.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
+      and run.runtime_mode = 'native'
+      and run.runner_profile_json#>>'{nativeWorkspaceSync,state}' = 'prepared'
+      and run.runner_profile_json#>>'{nativeWorkspaceSync,leaseId}' = ${environmentLeases.id}::text
+      and run.runner_profile_json#>>'{nativeWorkspaceSync,providerLeaseId}' = ${environmentLeases.providerLeaseId}
+      and coalesce(run.runner_profile_json#>>'{nativeExecutionInput,workspace,access}', '') <> 'none')
     or exists (select 1 from environment_leases other where other.id <> ${environmentLeases.id}
       and other.provider = ${environmentLeases.provider} and other.provider_lease_id = ${environmentLeases.providerLeaseId}
       and other.status in ('active', 'retained', 'pending_cleanup')))`;

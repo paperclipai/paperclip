@@ -220,6 +220,35 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     expect(await row(leaseId)).toEqual(lease);
   });
 
+  it("releases a workspace-less native run's orphan whose descriptor stays prepared", async () => {
+    const runId = await run("failed");
+    const leaseId = await retainedOrphan(runId);
+    const lease = await row(leaseId);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: {
+      nativeExecutionInput: { workspace: { access: "none", cwd: null } },
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+        baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId,
+        providerLeaseId: lease.providerLeaseId, remoteCwd: "/workspace", resourceDisposition: "destroy" } } })
+      .where(eq(heartbeatRuns.id, runId));
+    // Listed (no export obligation is visible to the listing); the settle
+    // decides with the exact export check.
+    const { kind } = await pass(false);
+    expect(kind).toMatchObject({ inProgress: 1 });
+  });
+
+  it("releases an orphan whose run's prepared descriptor names another sandbox", async () => {
+    const runId = await run("failed");
+    const leaseId = await retainedOrphan(runId);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: {
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+        baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId: randomUUID(),
+        providerLeaseId: "sandbox://fake/other", remoteCwd: "/workspace", resourceDisposition: "destroy" } } })
+      .where(eq(heartbeatRuns.id, runId));
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ settled: 1 });
+    expect((await row(leaseId)).status).toBe("pending_cleanup");
+  });
+
   it("leaves an ordinary retained sandbox (no orphan marker) alone", async () => {
     const leaseId = await retainedOrphan(await run("failed"));
     const { [ORPHANED_SANDBOX_RECOVERY_KEY]: _marker, ...metadata } = (await row(leaseId)).metadata!;
