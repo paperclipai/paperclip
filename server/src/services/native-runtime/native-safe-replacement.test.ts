@@ -60,6 +60,8 @@ import { aiConnectionRouterService } from "../ai-connection-router.js";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
 import { reopenNativeQuotaPoolWaits } from "./native-quota-wake.js";
+import { connectionIntentService } from "../connection-intents.js";
+import { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
@@ -269,12 +271,18 @@ const support = externalDatabaseUrl
       let selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
         userId, adapterType: "paperclip_runner", taskKey: source.issueId });
       let currentId: string = source.runId;
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
+        const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
+          responsibleUserId: userId, adapterType: "paperclip_runner", binding: selection.binding, config: selection.runtimeConfig });
         await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, runtimeMode: "native", nativeIssueId: source.issueId,
           status: "failed", errorCode: "native_provider_auth_failed", responsibleUserId: userId,
           resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "authentication", message: "Unauthorized", retryability: "requires_action" } },
           runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
-          contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, currentId));
+          contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection,
+            aiConnection: { ...runtime.attribution, identity: runtime.identity } } }).where(eq(heartbeatRuns.id, currentId));
+        await runtime.cleanup();
+        await accounts.markAuthenticationFailed({ companyId: source.companyId, agentId: source.agentId, runId: currentId,
+          runStartedAt: new Date(), attribution: { ...runtime.attribution, identity: runtime.identity } });
         if (i === 0) await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" }).where(eq(nativeRunFinalizations.runId, currentId));
         else await db.insert(nativeRunFinalizations).values({ runId: currentId, companyId: source.companyId, issueId: source.issueId,
           phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1 });
@@ -283,6 +291,8 @@ const support = externalDatabaseUrl
         const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
         expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
           credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
+        expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toBeNull();
+        expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
         if (i === 0) {
           let release!: () => void, ready!: () => void;
           const held = new Promise<void>(resolve => { ready = resolve; });
@@ -300,7 +310,25 @@ const support = externalDatabaseUrl
           expect(pending.failureDetail?.replacementDenied).toBeUndefined();
           expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId))).toHaveLength(0);
         }
-        expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null })).scheduled).toBe(1);
+        if (i === 4) {
+          await expect(reconcileSafeNativeReplacements(db, new Date(), {
+            verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null,
+            failpoint: phase => { if (phase === "authentication_repair_requested") throw new Error("repair transaction interrupted"); },
+          })).rejects.toThrow("repair transaction interrupted");
+          expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
+          expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId)))[0].failureDetail?.replacementDenied).toBeUndefined();
+        }
+        const recovered = await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null });
+        if (i === 4) {
+          expect(recovered.scheduled).toBe(0);
+          const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId));
+          expect(finalization.failureDetail?.replacementDenied).toBe("quota_failover_unavailable");
+          expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(1);
+          expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toMatchObject({ state: "needs_user_action", service: "openai" });
+          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, currentId)))[0].livenessState).toBe("blocked");
+          break;
+        }
+        expect(recovered.scheduled).toBe(1);
         const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId));
         expect(next.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: members[i + 1].id });
         expect(next.contextSnapshot?.aiPoolFailover).toEqual({ sourceRunId: currentId, reason: "auth" });

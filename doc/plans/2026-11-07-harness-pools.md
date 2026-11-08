@@ -248,3 +248,17 @@ verifications through the lifecycle module's existing transactional wake contrac
 rollback and an update arriving during defer cannot lose that wake. The existing
 scheduler reconstructs the saved deadline after restart. No new polling loop or
 parallel lifecycle store is introduced.
+
+Native authentication repair waits for the durable no-backup decision. A healthy
+backup must not be blocked by an early reconnect interaction. When all eligible
+accounts fail, the decision, repair card, and blocked projection commit together;
+a failed transaction retains the pending recovery obligation. Lost user authority
+retains the operator hold. The five-account regression covers both outcomes and
+an interrupted repair transaction.
+
+The real Windows managed-account probe remains unqualified. After correcting
+credential-home propagation, UID assumptions, executable selection, and bounded
+long arguments, the live probe stops at credential-observer state persistence.
+Its file/directory durability and confined credential access require Windows
+qualification. The passing controlled-provider tests do not establish this path.
+The temporary UI pool is disabled and its synthetic agent is paused after testing.

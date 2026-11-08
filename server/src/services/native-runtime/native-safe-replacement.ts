@@ -5,6 +5,8 @@ import { notifyNativeStatusReassessment } from "../native-status-reassessment-no
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
+import { HttpError } from "../../errors.js";
+import { connectionIntentService } from "../connection-intents.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { stat } from "node:fs/promises";
@@ -362,7 +364,7 @@ export async function reconcileSafeNativeReplacements(
       retire: () => boolean;
     } | null>;
     /** Test fault injection at durability boundaries; never exposed by an API. */
-    failpoint?: (phase: "successor_inserted" | "lineage_committed") => void | Promise<void>;
+    failpoint?: (phase: "successor_inserted" | "lineage_committed" | "authentication_repair_requested") => void | Promise<void>;
   } = {},
 ) {
   const quotaCandidates = await db
@@ -415,6 +417,16 @@ export async function reconcileSafeNativeReplacements(
             cause, fingerprint: `native-replacement:${run.id}`, evidence: { runId: run.id, attempts: current.attempt },
             nextAction, wakePolicy: null, maxAttempts: 3, supersedeOnIdentityChange: true,
           });
+          if (poolFailure === "auth" && cause === "quota_failover_unavailable") {
+            try {
+              await connectionIntentService(tx as unknown as Db).requestForRunAuthFailure(run.id);
+            } catch (error) {
+              // Lost user authority leaves the operator hold in place. Storage
+              // failures roll back the decision so the durable worker retries.
+              if (!(error instanceof HttpError) || ![403, 404, 409, 422].includes(error.status)) throw error;
+            }
+            await options.failpoint?.("authentication_repair_requested");
+          }
         });
     };
     try {

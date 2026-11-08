@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
@@ -1236,6 +1236,13 @@ describe("durable, authorized connection routing", () => {
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "failed", runtimeMode: "native", nativeIssueId: issue!.id, errorCode: native ? "native_provider_auth_failed" : "acpx_auth_required", responsibleUserId: "alice", startedAt: new Date(), contextSnapshot: { issueId: issue!.id, aiRouterTaskKey: issue!.id, aiRouterSelection: selection, aiConnection: { ...runtime!.attribution, identity: runtime!.identity } } }).returning();
     try {
       const intents = connectionIntentService(db);
+      if (native) {
+        expect(await intents.requestForRunAuthFailure(run!.id)).toBeNull();
+        await db.insert(nativeRunFinalizations).values({ runId: run!.id, companyId, issueId: issue!.id,
+          phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1,
+          failureDetail: { replacementDenied: "quota_failover_unavailable" },
+        });
+      }
       const card = await intents.requestForRunAuthFailure(run!.id);
       expect(card?.service).toBe("anthropic"); expect(card?.state).toBe("needs_user_action");
       const options = await intents.setupOptions(card!.interactionId!);
