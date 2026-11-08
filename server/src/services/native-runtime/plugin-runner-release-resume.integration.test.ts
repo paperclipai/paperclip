@@ -41,9 +41,9 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
   const environment = nativeRestartFixture();
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "idle", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
-    const adopted = mode.startsWith("adopted"), cancellation = mode.includes("cancellation"), qualifiedCancellation = mode === "adopted cancellation";
+    const adopted = mode.startsWith("adopted"), idle = mode === "idle", cancellation = mode.includes("cancellation"), qualifiedCancellation = mode === "adopted cancellation";
     const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
@@ -69,7 +69,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       task: { identifier: "RELEASE-ENTRY", title: issue!.title, description: null, prompt: "Complete the controlled task.", workMode: "standard" },
       workspace: { cwd: workspace, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: native.normalizedSessionId, driverKind: harness === "codex" ? "codex_app_server" : "acpx_runtime", protocolVersion: 1,
-        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted ? 5_000 : 60_000 } },
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted || idle ? 5_000 : 60_000 } },
       completionContract: { id: contract!.id, sha256: contract!.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) }, interactionResponses: [], credentialBindings: [] });
     const resultFile = join(root, "result.json"), calls = join(root, "provider-calls");
@@ -212,6 +212,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const adoption = vi.spyOn(remoteWarmRecovery, "inspectRemoteWarmSessionRecovery");
     try {
       setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+      if (adopted) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
@@ -223,8 +224,9 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       expect(await heartbeatService(db).prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
         .toEqual({ closed: 0, busy: 0, failed: 0 });
       expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
-      if (adopted) {
+      if (idle || adopted) {
         await new Promise(done => setTimeout(done, 5_200));
+        if (adopted) await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
         expect(await proof()).toMatchObject({ source: releases[0], taskId });
       }
@@ -300,6 +302,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     } finally {
       releaseClaimReply();
       await pendingFollowup?.catch(() => undefined);
+      vi.useRealTimers();
       try {
         const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), host.close()]);
         for (const socket of sockets) socket.terminate(); websocket.close();

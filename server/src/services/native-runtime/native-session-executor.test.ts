@@ -16203,13 +16203,14 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each((["codex", "claude"] as const).flatMap(provider => [[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], ...(provider === "codex" ? [[false, false, false, true]] : [])].map(([unknown, shutdown, journalFailure, deadline]) => [provider, unknown, shutdown, journalFailure, deadline] as const)))(
-    "releases settled %s only under its current owner and detaches its cache locally (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s)", async (provider, unknown, shutdown, journalFailure, deadline) => {
+    "releases settled %s only under its current owner and keeps its cache past the idle timeout (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s)", async (provider, unknown, shutdown, journalFailure, deadline) => {
       await closeIdleWarmNativeSessionsForRestart();
       expect(readNativeSessionIdleWork()).toBe("none");
       const previousHome = process.env.PAPERCLIP_HOME;
       process.env.PAPERCLIP_HOME = isolatedStateDirectory;
       const current = scopedNativeExecution(`released-${provider}-${unknown}`);
-      current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: unknown ? 750 : 250 };
+      const idleTimeoutMs = unknown ? 750 : 250;
+      current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs };
       if (provider === "claude") current.provider = { kind: "acpx", agent: "claude", model: "fixture", permissionMode: "deny-all" } as never;
       const source = { runnerInstanceId: "released-runner", environmentLeaseId: "released-lease", runId: current.binding.runId,
         normalizedSessionId: current.session.normalizedSessionId!, turnId: "settled-turn", itemId: "settled-item" };
@@ -16252,6 +16253,7 @@ describe("runnerd provider runtime wiring", () => {
           normalizedSessionId: source.normalizedSessionId, providerSessionId: "provider-session", driverKind: "test", driverVersion: "1",
           nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
       });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       const execute = executePaperclipNativeSession({ db: leaseDb(current, {}, {}, updates), execution: current,
         runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true, runnerExecutionTarget: target,
         managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account",
@@ -16347,6 +16349,10 @@ describe("runnerd provider runtime wiring", () => {
           expect(state.execute).toHaveBeenCalledTimes(1);
           expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
         }
+        await new Promise(resolve => setTimeout(resolve, 2 * idleTimeoutMs));
+        expect(detachControllerForRestart).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
         await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce());
         expect(close).not.toHaveBeenCalled();
         expect(task.mock.calls.map(([operation]) => (operation as { kind: string }).kind)).toEqual(["describe"]);
@@ -16380,10 +16386,71 @@ describe("runnerd provider runtime wiring", () => {
         await expect(owners.mock.calls.at(-1)![0].onResumed!(source)).rejects.toThrow("released_source_mismatch");
         expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(replacement.releasedRunner);
       } finally {
-        allowRelease(); allowPhysicalStop(); await execute.catch(() => undefined); await closeIdleWarmNativeSessionsForRestart(); owners.mockRestore();
+        allowRelease(); allowPhysicalStop(); await execute.catch(() => undefined); vi.useRealTimers(); await closeIdleWarmNativeSessionsForRestart(); owners.mockRestore();
         if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
       }
     });
+
+  it.each([false, true])("retires a settled plugin Runner's idle cache by its host release state (released=%s)", async released => {
+    await closeIdleWarmNativeSessionsForRestart();
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = isolatedStateDirectory;
+    const current = scopedNativeExecution(`idle-retirement-${released}`);
+    current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 250 };
+    const source = { runnerInstanceId: "unreleased-runner", environmentLeaseId: "unreleased-lease", runId: current.binding.runId,
+      normalizedSessionId: current.session.normalizedSessionId!, turnId: "settled-turn", itemId: "settled-item" };
+    const root = await initializeScopedRunnerRoot(current, source.runnerInstanceId);
+    await writeRunnerAuthority(root, source, "ready");
+    const home = join(isolatedStateDirectory, "unreleased-account");
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+    const task = vi.fn(async (_operation: unknown) => ({ kind: "description", taskId: "unreleased-task",
+      launchPreparationVersion: 1, projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }));
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: ".", environmentId: "unreleased-environment",
+      leaseId: source.environmentLeaseId, runnerTask: task, sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId: "unreleased-task" } };
+    const release = vi.fn(async () => released ? structuredClone(source) : false as const);
+    const close = vi.fn(async () => undefined), detachControllerForRestart = vi.fn(async () => undefined);
+    const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+      summary: "Completed", completionClaim: { contractRevision: current.completionContract.contract.revision,
+        objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [], artifacts: [], attentionRequests: [] });
+    if (!validated.ok) throw new Error("Invalid completion fixture");
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onCheckpoint?.({ backendKind: "runner", driverKind: current.session.driverKind, sessionId: "driver-session",
+        identity: { ...current.binding, sessionId: source.normalizedSessionId }, providerSessionId: "provider-session",
+        activeTurnId: null, pendingRuntimeRequests: [] });
+      await options.onSession?.({ release, close, detachControllerForRestart });
+      return { result: validated.result, terminal: { runTerminalState: "succeeded" }, turnId: source.turnId,
+        normalizedSessionId: source.normalizedSessionId, providerSessionId: "provider-session", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current,
+        runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true, runnerExecutionTarget: target,
+        managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account" }))
+        .resolves.toMatchObject({ sessionId: source.normalizedSessionId });
+      await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+      if (released) {
+        expect(readNativeSessionIdleWork()).toBe("none");
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+        expect(close).not.toHaveBeenCalled();
+        expect(detachControllerForRestart).not.toHaveBeenCalled();
+        expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+        expect(detachControllerForRestart).toHaveBeenCalledOnce();
+        expect(close).not.toHaveBeenCalled();
+        return;
+      }
+      expect(readNativeSessionIdleWork()).toBe("present");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledWith({ reason: "warm native session idle timeout" }));
+      expect(detachControllerForRestart).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(readNativeSessionIdleWork()).toBe("none"));
+    } finally {
+      vi.useRealTimers();
+      await closeIdleWarmNativeSessionsForRestart();
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+    }
+  });
 
   it.each((["codex", "claude"] as const).flatMap(provider => (["current", "stale", ...(provider === "codex" ? ["foreign runner", "foreign lease"] : [])] as const)
     .map(receipt => [provider, receipt] as const)))(

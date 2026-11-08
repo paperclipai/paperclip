@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { eq } from "drizzle-orm";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, plugins, agents } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
@@ -279,13 +279,14 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     };
     try {
       setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+      if (detached) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
       expect(await proof()).toMatchObject({ source: releases[0], taskId: taskA });
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
-      if (detached) await new Promise(done => setTimeout(done, 5_200));
+      if (detached) await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
       expect(readNativeSessionIdleWork()).toBe("none");
       await reconcileNativeFinalizations(db, [runId]);
       const evict = async () => {
@@ -393,6 +394,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     } finally {
       cleaning = true;
       await pendingFollowup?.catch(() => undefined);
+      vi.useRealTimers();
       try {
         const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
         for (const socket of sockets) socket.terminate(); websocket.close();
