@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { createDb, executionWorkspaces, heartbeatRuns, issues } from "@paperclipai/db";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
@@ -29,7 +29,7 @@ function providerRefusal() {
 
   async function setup() {
     const f = await createPluginWorkspaceFixture(db);
-    const failures = { inspect: false, remove: false, unboundRemove: false };
+    const failures = { inspect: false, remove: false, unboundRemove: false, reopenFirst: false };
     const workers = { ...f.workers, call: async (...args: Parameters<WorkspaceWorkers["call"]>) => {
       const params = args[2] as { agentId: string | null; operation: { kind: string; binding?: unknown } };
       if (params.operation.kind === "prepare" && params.agentId === null) {
@@ -44,6 +44,9 @@ function providerRefusal() {
       }
       if ((params.operation.kind === "inspect" && failures.inspect) || (params.operation.kind === "remove" && failures.remove)) {
         f.calls.push(params);
+        if (failures.reopenFirst) await db.update(executionWorkspaces).set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata},
+          '{lifecycleGeneration}', to_jsonb(coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) + 1))` })
+          .where(eq(executionWorkspaces.id, (params as unknown as { executionWorkspaceId: string }).executionWorkspaceId));
         throw new Error("provider outage");
       }
       return f.workers.call(...args);
@@ -198,6 +201,20 @@ function providerRefusal() {
     clock += MINUTE;
     await svc.sweepTerminalWorkspaces(100);
     expect(await retryAfter()).toEqual({ failures: 1, delay: 5 * MINUTE });
+  });
+
+  it("drops a cleanup failure when the workspace moves to a new lifecycle before it is recorded", async () => {
+    const s = await setup();
+    const workspace = (await preparePluginWorkspace(db, s.workers, s.f.input))!;
+    await s.finishTask();
+    s.f.dirty();
+    s.failures.inspect = true;
+    s.failures.reopenFirst = true;
+    await executionWorkspaceService(db, { pluginWorkerManager: s.workers, workspaceReaperCooldownDays: 0 }).sweepTerminalWorkspaces(100);
+    expect(s.callsFor(workspace.id, "inspect")).toHaveLength(1);
+    const moved = await s.read(workspace.id);
+    expect(moved.metadata?.lifecycleGeneration).toBe(((workspace.metadata?.lifecycleGeneration as number) ?? 0) + 1);
+    expect(moved.metadata).not.toHaveProperty("terminalCleanupRetry");
   });
 
   it("backs off a pending storage removal that keeps failing", async () => {
