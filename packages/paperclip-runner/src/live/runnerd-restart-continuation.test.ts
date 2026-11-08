@@ -524,7 +524,7 @@ it("starts a new turn when the lost turn's start reached the runner only after t
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
-    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn", "--turn-started-delay-ms", "1000"],
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn", "--turn-started-gate", join(root, "release-turn-started")],
     stateDirectory: root,
     turnStartTimeoutMs: 8_000,
     prpIdentity: { runnerInstanceId: "runner-late-start", environmentLeaseId: "lease-late-start", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-late-start", itemId: "item-late-start" },
@@ -555,6 +555,7 @@ it("starts a new turn when the lost turn's start reached the runner only after t
     // Graceful drain: the controller detaches while the runner and provider live on.
     await first.detachControllerForRestart();
     await starting;
+    await writeFile(join(root, "release-turn-started"), "");
     // The provider starts the accepted turn while no controller is attached.
     await vi.waitFor(async () => {
       expect(await readFile(join(root, "runner", "runner-state.json"), "utf8")).toContain("turn.started");
