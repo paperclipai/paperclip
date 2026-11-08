@@ -1029,10 +1029,7 @@ impl AcpxCommandExecutor {
     // A deploy changes the provider-pack authority and the sidecar and Node
     // artifact digests, so a saved digest from the previous build never
     // matches. The digest is a hash, so restore cannot tell which part
-    // changed. Re-bind only when no provider work is in flight:
-    // - The session is suspended. No turn, request, undelivered event, or
-    //   unconfirmed provider exit remains. Nothing from the old provider
-    //   process continues; the next launch only loads the conversation.
+    // changed.
     // - The startup is ordinary. Candidate admission carries company, model
     //   and expiry authority in the digest, so candidate sessions stay
     //   exactly bound.
@@ -1041,17 +1038,25 @@ impl AcpxCommandExecutor {
     // validate() still binds the descriptor to this build's qualified agent
     // profile (ACPX, agent server and command digest), and session start
     // still verifies every artifact and the restored provider identity.
-    fn rebinds_settled_session(&self, state: &AcpxDurableState) -> bool {
+    fn rebinds_to_upgraded_launch_profile(&self, state: &AcpxDurableState) -> bool {
         self.launch_profile.as_ref().is_some_and(|profile| {
             profile.candidate_admission.is_none()
                 && state.descriptor.sidecar_command == profile.command
                 && state.descriptor.sidecar_args == profile.args
-        }) && state.lifecycle == "suspended"
-            && state.identity.is_some()
-            && state.active_turn_id.is_none()
+        }) && state.identity.is_some()
             && !state.provider_exit_unconfirmed
             && state.pending_events.is_empty()
             && state.pending_runtime_requests.is_empty()
+            && match state.lifecycle.as_str() {
+                "suspended" => state.active_turn_id.is_none(),
+                "turn_starting" | "turn_active" => {
+                    state.descriptor.run_id == self.context.run_id
+                        && state.semantic_result.is_none()
+                        && (state.goal_projection.is_null()
+                            || goal_is_dormant(&state.goal_projection))
+                }
+                _ => false,
+            }
     }
 
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
@@ -1120,7 +1125,7 @@ impl AcpxCommandExecutor {
         })?;
         let launch_profile_digest = self.restore_launch_profile_digest(&state)?;
         if state.launch_profile_digest != launch_profile_digest
-            && self.rebinds_settled_session(&state)
+            && self.rebinds_to_upgraded_launch_profile(&state)
         {
             state.launch_profile_digest = launch_profile_digest.clone();
         }
@@ -6147,6 +6152,41 @@ mod tests {
             attached.descriptor.command_digest,
             prior.descriptor.command_digest
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_turn_of_the_same_run_with_a_pending_request_keeps_its_strict_binding() {
+        let (directory, config, _, saved) =
+            settled_session_after_runner_upgrade("upgrade-active-turn");
+        let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+        let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
+        state.descriptor.run_id = config.run_id.clone();
+        state.lifecycle = "turn_active".into();
+        state.active_turn_id = Some("turn-1".into());
+        state
+            .push(NormalizedProviderEvent {
+                event_type: "runtime_request.created".into(),
+                priority: EventPriority::P0,
+                payload: json!({"request":pending_input_request("input-1")}),
+            })
+            .unwrap();
+        state.pending_events.clear();
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let retained = fs::read(&state_path).unwrap();
+
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let error = recovered.restore().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("launch profile digest does not match runner startup"));
+        assert_eq!(
+            error.classification(),
+            Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
+        );
+        assert!(recovered.state.is_none());
+        assert_eq!(fs::read(&state_path).unwrap(), retained);
         fs::remove_dir_all(directory).unwrap();
     }
 
