@@ -28,6 +28,9 @@ import {
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "../native-runtime/native-runner-ownership.js";
 import type { LocalOwnerStamp, OwnerProof, RemoteFenceState, RemoteOwnerStamp } from "../owner-proof.js";
+import { OPERATOR_ATTESTED_PROCESS_SPACE } from "../owner-proof.js";
+import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { OWNER_GONE_ATTESTATION_KEY, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
   settleNativeAcceptedResultLease,
@@ -148,6 +151,9 @@ export type OwnableKind = {
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
   onUnprovable?: UnprovableAction;
+  /** Records the board's confirmation that this record's unrecorded owner stopped, so its
+   * owner proves gone (`operator_attested`). Returns false when the record no longer qualifies. */
+  attestOwnerGone?: (tx: Db, target: { companyId: string; recordId: string }, proof: Record<string, unknown>) => Promise<boolean>;
   /** When a record of this kind next becomes settleable without a signal
    * (a retention window ending). The reconciler wakes then. */
   nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
@@ -320,6 +326,10 @@ function runLeaseOwner(row: RunLeaseRow): RecordOwner {
   if (row.runStatus !== null && !TERMINAL_RUN_STATUSES.includes(row.runStatus)) return runOwner(row.heartbeatRunId);
   const holder = controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_run_lease_active");
   if (holder.kind !== "none") return holder;
+  // The board confirmed that the server holding this unstamped lease stopped.
+  if (json(row.metadata)[OWNER_GONE_ATTESTATION_KEY]) return { kind: "process", stamp: { kind: "local",
+    scope: "environment_run_lease_active", generation: null, host: null, processSpace: OPERATOR_ATTESTED_PROCESS_SPACE,
+    bootId: null, pid: null, processStartedAt: null, processGroupId: null } };
   return ephemeralServerEnabled() ? { kind: "none" } : runOwner(row.heartbeatRunId);
 }
 
@@ -336,6 +346,16 @@ function runLeaseKind(): OwnableKind {
   return {
     id: "environment_run_lease_active", title: "Run lease (active)", obligation: "ownership", storage: "database",
     invariantChecks: [1, 2], settle: settleEnvironmentRunLease,
+    onUnprovable: requestOwnerGoneConfirmation("environment_run_lease_active"),
+    // Only an unstamped lease of a finished run: a stamped holder is judged by its stamp.
+    attestOwnerGone: async (tx, target, proof) => (await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
+      .set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ [OWNER_GONE_ATTESTATION_KEY]: proof })}::jsonb` })
+      .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId),
+        eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId),
+        sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
+        sql`exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
+          and run.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`))
+      .returning({ id: environmentLeases.id }), { companyId: target.companyId, leaseId: target.recordId })).length > 0,
     listInProgress: async (db, limit, offset) => {
       const rows = await select(db).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);

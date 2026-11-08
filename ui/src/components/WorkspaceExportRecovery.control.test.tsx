@@ -9,9 +9,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { writePendingSend } from "../lib/pending-send";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
-const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn(), confirmController: vi.fn() }));
+const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn(), confirmController: vi.fn(), confirmOwnerGone: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover,
-  resumeWorkspaceFinalization: api.resume, confirmControllerStopped: api.confirmController } }));
+  resumeWorkspaceFinalization: api.resume, confirmControllerStopped: api.confirmController, confirmOwnerGone: api.confirmOwnerGone } }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const action = {
@@ -493,6 +493,30 @@ describe("governed retained-file recovery", () => {
         stopEvidence: "The old server container was replaced and is not running." });
       expect(api.resume).not.toHaveBeenCalled();
       expect(container.textContent).toContain("Resuming the run…");
+    });
+
+    it("confirms the unrecorded server holding a stuck resource, for board owners only", async () => {
+      api.confirmOwnerGone.mockResolvedValue({ recordId: "lease-1", status: "queued" });
+      const ownerGoneAction = { ...action, cause: "ownership_owner_unprovable", ownerType: "board",
+        evidence: { kind: "environment_run_lease_active", recordId: "lease-1", runId: "run-1" } } as unknown as IssueRecoveryAction;
+      // An operator sees the wait but cannot attest the stop.
+      await mount(ownerGoneAction);
+      expect(container.textContent).toContain("before Paperclip stored which server held it");
+      expect(button("Confirm the previous server stopped")).toBeUndefined();
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      await mount(ownerGoneAction);
+      await click("Confirm the previous server stopped");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(textarea, "The old server container was replaced and is not running.");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click("Confirm and resume");
+      expect(api.confirmOwnerGone).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", recordId: "lease-1",
+        stopEvidence: "The old server container was replaced and is not running." });
+      expect(container.textContent).toContain("Releasing the resource…");
     });
 
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
