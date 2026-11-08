@@ -181,6 +181,9 @@ function makeIssue() {
   };
 }
 
+const finalDenial = "Only the author of a queued comment can discard it, from that queued message's menu on [PAP-1353](/PAP/issues/PAP-1353). "
+  + "This denial is final: no board, admin or agent override exists, so do not try other routes. Tell the author to discard it there.";
+
 function makeComment(overrides: Record<string, unknown> = {}) {
   return {
     id: "comment-1",
@@ -366,8 +369,31 @@ describe("issue comment cancel routes", () => {
       .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Only the comment author can cancel queued comments");
+    expect(res.body.error).toBe(finalDenial);
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("tells an agent that discarding a person's queued comment is author-only and final, with the task link", async () => {
+    const agent = { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", companyId: "company-1", runId: "run-1", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe(finalDenial);
+    expect(res.body.error).not.toBe("Board access required");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal another company's task through the agent queued-comment denial", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), companyId: "company-2" });
+    const agent = { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", companyId: "company-1", runId: "run-1", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain("PAP-1353");
   });
 
   it("deletes a normal authored comment as a tombstone without returning the original body", async () => {
