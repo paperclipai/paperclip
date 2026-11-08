@@ -5881,7 +5881,7 @@
       "chat-scenarios/tasks.yaml",
       "chat-catalog-domains/internal-task-inventory.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.organize-open-work.v5",
+    "oracleVersion": "paperclip.chat-catalog.internal.organize-open-work.v6",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

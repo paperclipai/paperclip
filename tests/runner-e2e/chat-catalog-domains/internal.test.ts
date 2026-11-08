@@ -605,6 +605,41 @@ describe("multi-page open inventory calibration", () => {
     const unlinked = asFile(fileBody(o)); unlinked.reply = "501 open tasks; see the attached file.";
     expect(gradeInternal(unlinked).passed).toBe(false);
   });
+  describe("an inventory document on the conversation, sectioned by owner then status", () => {
+    const docHref = "/ACORN/issues/ACORN-505#document-launch_open_work";
+    const owned = () => {
+      const o = valid("tasks.organize-open-work");
+      o.tasks.forEach((row, index) => { row.identifier = `ACORN-${index + 1}`; row.assigneeAgentId = index % 3 === 0 ? "riley" : index % 3 === 1 ? "morgan" : null;
+        row.status = index % 5 === 0 ? "blocked" : "todo"; });
+      o.state.originalTasks = structuredClone(o.tasks); o.state.ownerLabels = { riley: "Riley", morgan: "Morgan", unassigned: "Unassigned" };
+      return o;
+    };
+    const ids = (o: ReturnType<typeof valid>, owner: string | null, blocked: boolean) =>
+      o.tasks.filter(row => row.assigneeAgentId === owner && (row.status === "blocked") === blocked).map(row => row.identifier).join(", ");
+    const sectioned = (o: ReturnType<typeof valid>, heading: (label: string) => string, status: (label: string) => string) =>
+      "# Open Launch work\n\n" + ([["riley", "Riley"], ["morgan", "Morgan"], [null, "Unassigned"]] as const).map(([owner, label]) =>
+        `${heading(label)}\n\n${status("Blocked")}: ${ids(o, owner, true)}\n${status("Todo")}: ${ids(o, owner, false)}`).join("\n\n");
+    const asDoc = (o: ReturnType<typeof valid>, body: string) => {
+      o.links = [docHref]; o.reply = `501 open tasks by owner, blocked first. Every task is listed in [Open Launch work by owner](${docHref}).`;
+      return Object.assign(o, { deliverables: [{ id: "doc", href: docHref, body }] });
+    };
+    it("accepts owner headings with bold status sub-labels, and reworded heading levels", () => {
+      const o = owned();
+      expect(gradeInternal(asDoc(o, sectioned(o, label => `## ${label} — 167 open`, label => `**${label}**`))).passed).toBe(true);
+      const reworded = owned();
+      expect(gradeInternal(asDoc(reworded, sectioned(reworded, label => `### Owner: ${label}`, label => `#### ${label} items`))).passed).toBe(true);
+    });
+    it("rejects a task placed under another owner's heading", () => {
+      const o = owned(); const body = sectioned(o, label => `## ${label}`, label => `**${label}**`);
+      expect(gradeInternal(asDoc(o, body.replace("## Unassigned", "## Morgan (continued)"))).passed).toBe(false);
+    });
+    it("rejects blocked work listed after other work in an owner section", () => {
+      const o = owned();
+      const late = ([["riley", "Riley"], ["morgan", "Morgan"], [null, "Unassigned"]] as const).map(([owner, label]) =>
+        `## ${label}\n\n**Todo**: ${ids(o, owner, false)}\n**Blocked**: ${ids(o, owner, true)}`).join("\n\n");
+      expect(gradeInternal(asDoc(o, late)).passed).toBe(false);
+    });
+  });
   it("rejects unassigned work presented under a named owner in a deliverable", () => {
     const o = asFile("## Morgan\n" + valid("tasks.organize-open-work").tasks.map(row => `- ${row.id}`).join("\n"));
     o.state.ownerLabels = { morgan: "Morgan", unassigned: "Unassigned" };
