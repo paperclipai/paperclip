@@ -46,6 +46,10 @@ export function unseenReturnedToolCalls(
     if (input.turnId && typeof event.turnId === "string" && event.turnId !== input.turnId) continue;
     const payload = record(event.payload);
     const type = event.eventType;
+    if (type === "turn.started") {
+      calls.clear();
+      continue;
+    }
     if ((type === "tool.execution.started" || type === "tool.execution.completed") && payload.transport === "dynamic") {
       const id = typeof payload.executionId === "string" ? payload.executionId : null;
       if (!id) continue;
