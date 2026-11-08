@@ -72,8 +72,6 @@ type ChatWebhookRouteOptions = {
 const CHAT_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60_000;
 const CHAT_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 600;
 
-// A malformed id would reach a uuid column and fail in PostgreSQL (22P02) as a
-// 500. isUuidLike accepts surrounding whitespace, but PostgreSQL UUID inputs do not.
 function uuidParam(req: ExpressRequest, name: string, label: string): string {
   const value = req.params[name];
   if (typeof value !== "string" || value !== value.trim() || !isUuidLike(value)) {
