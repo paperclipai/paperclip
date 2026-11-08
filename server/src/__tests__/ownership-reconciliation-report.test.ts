@@ -134,7 +134,7 @@ describe("report-only ownership reconciliation", () => {
     const names = OWNABLE_KINDS.map(kind => kind.id);
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
-    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(["native_accepted_result_lease"]);
+    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(["native_accepted_result_lease", "wake_request_claimed"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -219,6 +219,50 @@ describe("report-only ownership reconciliation", () => {
       expect(kindReport(ephemeral, "native_executor_claim")).toMatchObject({ inProgress: 2,
         verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, process_space_unrecorded: 1 } });
     } finally { vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", ""); }
+  });
+
+  it("settles a claimed wake whose run finished without settling it, and only that one", async () => {
+    // K4 wave (2026-11-07): native restart recovery blocked a run and ended it
+    // without settling its assignment wake, which stayed `claimed` for good.
+    const issueId = randomUUID(); const pendingIssueId = randomUUID();
+    await db.insert(issues).values([{ id: issueId, companyId, title: "Blocked" }, { id: pendingIssueId, companyId, title: "Pending" }]);
+    const run = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, companyId, agentId, status,
+      invocationSource: "manual", ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }), ...extra });
+    const runs = { blocked: randomUUID(), pending: randomUUID(), legacyDone: randomUUID(), live: randomUUID() };
+    await db.insert(heartbeatRuns).values([
+      run(runs.blocked, "failed", { runtimeMode: "native", nativeIssueId: issueId, issueId, error: "execution_recovery_budget_exhausted",
+        errorCode: "native_restart_recovery_blocked" }),
+      // Native projection still pending: the run's own projection settles it.
+      run(runs.pending, "failed", { runtimeMode: "native", nativeIssueId: pendingIssueId, issueId: pendingIssueId }),
+      run(runs.legacyDone, "succeeded"),
+      run(runs.live, "running"),
+    ]);
+    await db.insert(nativeRunFinalizations).values([
+      { runId: runs.blocked, companyId, issueId, phase: "terminal_failure", failureCode: "native_restart_recovery_blocked" },
+      { runId: runs.pending, companyId, issueId: pendingIssueId, phase: "observed" },
+    ]);
+    const wakes = Object.fromEntries(Object.entries(runs).map(([name, runId]) => [name, { id: randomUUID(), runId }]));
+    await db.insert(agentWakeupRequests).values(Object.values(wakes).map(wake => ({ id: wake.id, companyId, agentId,
+      source: "assignment", status: "claimed", runId: wake.runId, claimedAt: minutesAgo(5) })));
+    const statusOf = async () => Object.fromEntries((await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)).map(row => [Object.keys(wakes).find(name => wakes[name].id === row.id), row.status]));
+
+    // A read-only pass never settles.
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(await statusOf()).toEqual({ blocked: "claimed", pending: "claimed", legacyDone: "claimed", live: "claimed" });
+
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state });
+    expect(kindReport(first, "wake_request_claimed")).toMatchObject({ inProgress: 4, settled: 2 });
+    expect(await statusOf()).toEqual({ blocked: "failed", pending: "claimed", legacyDone: "completed", live: "claimed" });
+    const [blocked] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakes.blocked.id));
+    expect(blocked).toMatchObject({ error: "execution_recovery_budget_exhausted" });
+    expect(blocked.finishedAt).not.toBeNull();
+    // Settled claims are no longer in progress; the pending one is not a stuck
+    // record yet, but rule I2 still names it if its projection never comes.
+    const second = await runOwnershipReconciliationPass(db, { state });
+    expect(second.violations.filter(violation => violation.kind === "wake_request_claimed").map(violation => violation.recordId))
+      .toEqual([wakes.pending.id]);
   });
 
   it("writes nothing when recording is off", async () => {

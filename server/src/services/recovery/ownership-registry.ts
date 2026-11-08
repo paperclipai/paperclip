@@ -31,6 +31,7 @@ import {
   requestNativeAcceptedResultLeaseOperatorAction,
   settleNativeAcceptedResultLease,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
+import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -649,7 +650,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Wake queue and recovery
   {
     id: "wake_request_claimed", title: "Wake request (claimed)", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [2, 4],
+    // Shared path since Phase 2: a claim whose run finished is settled with
+    // that run's outcome, so a path that ends a run without it cannot strand it.
+    settle: settleClaimedWakeRequest, invariantChecks: [2, 4],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
         runId: agentWakeupRequests.runId, updatedAt: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)

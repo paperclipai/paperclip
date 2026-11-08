@@ -897,7 +897,8 @@ export function registerOwnershipReconciliationWork(
           inProgress: report.inProgress,
           violations: report.violations.length,
           kinds: Object.fromEntries(report.kinds.filter(kind => kind.inProgress > 0 || kind.error)
-            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.truncated ? { truncated: true } : {}),
+            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.settled ? { settled: kind.settled } : {}),
+              ...(kind.truncated ? { truncated: true } : {}),
               ...(kind.error ? { error: kind.error } : {}) }])),
         }, "ownership reconciliation pass");
       }
