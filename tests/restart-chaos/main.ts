@@ -207,6 +207,7 @@ async function main(): Promise<number> {
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: plan.options.env, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       daytonaReuseLease: plan.options.daytonaReuseLease,
+      daytonaWarm: plan.options.daytonaWarm, daytonaInherit: plan.options.daytonaInherit,
       adapters: [...new Set(plan.tasks.map(task => task.adapter))],
       concurrency: plan.options.concurrency, budgetCents: plan.options.budgetCents, masks: plan.options.masks,
       fixtureRoot: path.join(supervisor.paths.temporaryRoot, "fixtures"), waveId: plan.waveId, timeline,

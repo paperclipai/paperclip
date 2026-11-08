@@ -16,7 +16,7 @@ export interface BaselineRun {
   adapter: string;
   environment: string;
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
-  phase: "cold" | "warm" | "restart" | "midturn" | "verify";
+  phase: "cold" | "warm" | "restart" | "midturn" | "verify" | "postfault";
   events: BaselineEvent[];
 }
 
@@ -149,8 +149,8 @@ export interface BaselineRow { adapter: string; environment: string; warmth: "co
 export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
   const groups = new Map<string, { adapter: string; environment: string; warmth: "cold" | "warm"; metrics: RunMetrics[] }>();
   for (const run of runs) {
-    // Restart samples and new-agent verification samples are reported on their own.
-    if (run.phase === "restart" || run.phase === "verify") continue;
+    // Restart, post-restart and new-agent verification samples are reported on their own.
+    if (run.phase === "restart" || run.phase === "verify" || run.phase === "postfault") continue;
     const warmth = runWarmth(run);
     const key = `${run.adapter}|${run.environment}|${warmth}`;
     const group = groups.get(key) ?? { adapter: run.adapter, environment: run.environment, warmth, metrics: [] };

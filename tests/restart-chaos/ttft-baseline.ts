@@ -20,11 +20,13 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi } from "./api.js";
-import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
+import { CREDENTIAL_FOR_ADAPTER, DAYTONA_VCPU_BUDGET } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
 import { chaosLifecycleOverrides, seedChaosLab, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { createDb } from "../../packages/db/src/index.js";
+import { prepareDaytonaController } from "./daytona-controller.js";
+import { DaytonaWaveSweeper } from "./daytona-sweep.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
@@ -88,9 +90,13 @@ async function steerQueuedComment(api: ChaosApi, issueId: string, commentId: str
   return { acknowledgedAt: null, disposition };
 }
 
+/** Set by --workspace-repo: tasks then run in the project's isolated workspace of that repository. */
+let projectScopedTasks = false;
+
 async function createTask(api: ChaosApi, lab: ChaosLab, adapter: AdapterId, title: string, description: string) {
   const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
     title, description, status: "todo", priority: "medium", assigneeAgentId: lab.agents[adapter].id,
+    ...(projectScopedTasks ? { projectId: lab.projectId } : {}),
   });
   return String(issue.id);
 }
@@ -200,6 +206,11 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
     lines.push("", "New agent behind harness verification (TTFT counts from run creation; the verification wait precedes it):", "", lines[0]!, lines[1]!);
     for (const row of baselineRows(verifyRuns)) lines.push(rowLine(row));
   }
+  const postfault = runs.filter(run => run.phase === "postfault").map(run => ({ ...run, phase: "cold" as const }));
+  if (postfault.length) {
+    lines.push("", "First follow-up after an idle control-plane restart (K1):", "", lines[0]!, lines[1]!);
+    for (const row of baselineRows(postfault)) lines.push(rowLine(row));
+  }
 
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
@@ -236,6 +247,17 @@ async function main() {
     "midturn-fault": { type: "string" },
     // verify phase: fault the control plane while a newly hired agent runs harness verification.
     "verify-fault": { type: "string" },
+    // A real repository (for example a fresh clone of paperclip) as the project's
+    // primary workspace; every task then runs in its isolated git worktree.
+    "workspace-repo": { type: "string" },
+    // local (default) or daytona; daytona needs --daytona-image (the signed Runner image).
+    env: { type: "string", default: "local" },
+    "daytona-image": { type: "string" },
+    "daytona-cpu": { type: "string", default: "4" },
+    // Use the reusable warm Daytona environment (reuseLease, warm runner) instead of the per-turn one.
+    "daytona-warm": { type: "boolean", default: false },
+    // A Daytona environment as a user creates it by default: lifecycle inherited, lease reuse unset.
+    "daytona-inherit": { type: "boolean", default: false },
     "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
@@ -247,7 +269,27 @@ async function main() {
   const requested = values.adapters!.split(",").map(value => value.trim()) as AdapterId[];
   const samples = Math.max(1, Number(values.samples));
   const restarts = Math.max(0, Number(values.restarts));
-  const missing = requested.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]).filter(key => !process.env[key]);
+  const env = values.env === "daytona" ? "daytona" as const : "local" as const;
+  if (env === "daytona" && !values["daytona-image"]) throw new Error("--env daytona needs --daytona-image");
+  if (env === "daytona") {
+    // A warm sandbox (the warm fixture, or the inheriting default) outlives its task for
+    // the idle window and no other task reuses it, so count one per sampled task.
+    const budget = Number(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET ?? DAYTONA_VCPU_BUDGET);
+    const perTaskPhases = ["coldwarm", "midturn", "verify"].filter(phase => phases.has(phase)).length
+      + (phases.has("restart") ? Math.max(1, Number(values.restarts)) : 0);
+    const cpu = Number(values["daytona-cpu"]);
+    // The default fixture releases each sandbox after its turn; only a warm one is retained.
+    const retainsSandboxes = values["daytona-warm"] === true || values["daytona-inherit"] === true;
+    const holders = retainsSandboxes
+      ? requested.length * Math.max(1, Number(values.samples)) * Math.max(1, perTaskPhases)
+      : requested.length;
+    if (holders * cpu > budget) {
+      throw new Error(`${holders} ${retainsSandboxes ? "sampled tasks (warm sandboxes outlive their task)" : "concurrent tasks"} × --daytona-cpu ${cpu} vCPU can be held at once, `
+        + `exceeding the Daytona vCPU budget of ${budget}. Lower --samples, --adapters or --daytona-cpu (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).`);
+    }
+  }
+  const missing = [...requested.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]), ...(env === "daytona" ? ["DAYTONA_API_KEY"] : [])]
+    .filter(key => !process.env[key]);
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}; run: set -a; source ~/.secrets; set +a`);
   const midturnMode = values["midturn-mode"];
   if (midturnMode !== "queue" && midturnMode !== "steer") throw new Error("--midturn-mode must be queue or steer");
@@ -276,10 +318,34 @@ async function main() {
   const agentLifecycles: Record<string, string> = {};
   const midturn: Json[] = [];
   const timedOutIssues = new Set<string>();
+  let sweeper: DaytonaWaveSweeper | null = null;
+  const workspaceOperations: Array<{ runId: string; adapter: string; phase: string; operation: string; status: string;
+    durationMs: number | null; command: string | null }> = [];
+  const followUpTasks = new Map<AdapterId, { issueId: string; nonce: string; runs: number }>();
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
   let stopping: Promise<void> | null = null;
-  const shutdown = () => (stopping ??= supervisor.stop().catch(error => {
+  // Daytona resources are released while the server still runs, before it stops;
+  // the same path serves normal completion and SIGINT/SIGTERM.
+  const releaseDaytona = async () => {
+    if (!sweeper) return;
+    const owned = sweeper as DaytonaWaveSweeper;
+    sweeper = null;
+    try {
+      const cleanup = await owned.cleanUp();
+      timeline.add("daytona_cleanup", cleanup);
+      await writeFile(path.join(outDir, "sandbox-cleanup.json"), `${JSON.stringify(cleanup, null, 2)}\n`, { mode: 0o600 });
+      if (cleanup.remainingSandboxes.length || cleanup.errors.length || cleanup.environmentDeleteBlocked || !cleanup.environmentDeleted) {
+        process.stderr.write(`Daytona cleanup incomplete: remaining ${cleanup.remainingSandboxes.join(", ") || "none"}; `
+          + `environment deleted ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? ` (blocked: ${String(cleanup.environmentDeleteBlocked)})` : ""}; ${cleanup.errors.join("; ")}\n`);
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      timeline.add("daytona_cleanup_failed", { error: String(error) });
+      process.exitCode = 1;
+    }
+  };
+  const shutdown = () => (stopping ??= releaseDaytona().then(() => supervisor.stop()).catch(error => {
     process.stderr.write(`supervisor stop: ${String(error)}\n`);
   }));
   const onSignal = (signal: NodeJS.Signals) => {
@@ -289,10 +355,18 @@ async function main() {
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    await supervisor.start();
+    await supervisor.start(env === "daytona"
+      ? await prepareDaytonaController({ image: values["daytona-image"]!, repositoryRoot, timeline }) : {});
     const api = new ChaosApi(supervisor.baseUrl);
-    const lab = await seedChaosLab({ api, env: "local", adapters: requested, concurrency: requested.length, budgetCents: 3000,
-      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides });
+    const repositoryPath = values["workspace-repo"] ? path.resolve(values["workspace-repo"]) : undefined;
+    projectScopedTasks = Boolean(repositoryPath);
+    const lab = await seedChaosLab({ api, env, daytonaImage: values["daytona-image"], daytonaCpu: Number(values["daytona-cpu"]),
+      daytonaWarm: values["daytona-warm"], daytonaInherit: values["daytona-inherit"],
+      adapters: requested, concurrency: requested.length, budgetCents: 3000,
+      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides, repositoryPath,
+      onEnvironment: owned => {
+        sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
+      } });
     const adapters = await readyAdapters(api, lab, requested, timeline);
     if (!adapters.length) throw new Error("No agent passed lifecycle verification");
     // Record what each agent actually stores: "unset" means the server resolves
@@ -328,6 +402,7 @@ async function main() {
           continue;
         }
         timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
+        followUpTasks.set(adapter, { issueId, nonce, runs: warm.runs.length });
       }
     }));
 
@@ -381,6 +456,29 @@ async function main() {
         if (fault) faults.push({ kind: verifyFault!, readyAt: fault.readyAt ?? Date.now(), runIds: settled.runs.map(runIdOf) });
         timeline.add("baseline_verify_done", { adapter, agentId, issueId, faulted: Boolean(fault), runs: settled.runs.length });
       }
+    }
+
+    // First turn after an idle control-plane restart: K1 while nothing runs,
+    // then one more follow-up on each task the cold/warm phase left at rest.
+    // The fault must be idle: no timed-out sample may still be running.
+    const allAtRest = timedOutIssues.size === 0 && (await Promise.all(tasks.map(async task =>
+      (await runsFor(api, task.issueId)).every(run => !ACTIVE_RUN_STATUSES.has(String(run.status)))))).every(Boolean);
+    if (phases.has("postfault") && followUpTasks.size && !allAtRest) {
+      timeline.add("baseline_postfault_skipped", { reason: "work_not_at_rest", timedOut: timedOutIssues.size });
+    }
+    if (phases.has("postfault") && followUpTasks.size && allAtRest) {
+      const receipt = await supervisor.fault("K1", 0, "ttft-baseline-postfault");
+      faults.push({ kind: "K1", readyAt: receipt.readyAt ?? Date.now(), runIds: [] });
+      await Promise.all([...followUpTasks.entries()].map(async ([adapter, entry]) => {
+        await api.post(`/api/issues/${entry.issueId}/comments`, { body: warmFollowUp(`${entry.nonce}-postfault`), reopen: true });
+        const after = await waitForRest(api, supervisor, entry.issueId, entry.runs + 1);
+        for (const run of after.runs) if (!runPhase.has(runIdOf(run))) runPhase.set(runIdOf(run), "postfault");
+        if (after.timedOut) {
+          timedOutIssues.add(entry.issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId: entry.issueId, phase: "postfault" });
+        }
+        else timeline.add("baseline_postfault_done", { adapter, issueId: entry.issueId });
+      }));
     }
 
     // Mid-turn follow-up: a comment posted while the agent is inside a long
@@ -472,15 +570,34 @@ async function main() {
       if (timedOutIssues.has(task.issueId)) continue;
       for (const run of await runsFor(api, task.issueId)) {
         const runId = runIdOf(run);
-        runs.push({ runId, adapter: task.adapter, environment: "local",
+        runs.push({ runId, adapter: task.adapter, environment: env,
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
+        // Workspace commands (worktree, provision, sync) the run waited on, with their durations.
+        const operations = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 10_000).catch((error: unknown) => {
+          // A failed read is recorded as such, never as "no workspace operations".
+          workspaceOperations.push({ runId, adapter: task.adapter, phase: runPhase.get(runId) ?? task.phase,
+            operation: "read_failed", status: error instanceof Error ? error.message.slice(0, 160) : String(error), durationMs: null, command: null });
+          return [] as Json[];
+        });
+        for (const operation of operations) workspaceOperations.push({ runId, adapter: task.adapter,
+          phase: runPhase.get(runId) ?? task.phase, operation: String(operation.phase), status: String(operation.status),
+          durationMs: operation.startedAt && operation.finishedAt
+            ? Date.parse(String(operation.finishedAt)) - Date.parse(String(operation.startedAt)) : null,
+          command: typeof operation.command === "string" ? operation.command.slice(0, 120) : null });
       }
     }
-    const data = { waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+    const data = { workspaceOperations, waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
       timedOutTasks: timedOutIssues.size, samples, restarts, midturn, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
     process.stdout.write(report(runs, faults));
+    if (workspaceOperations.length) {
+      const table = ["", "| Run phase | Adapter | Workspace operation | Status | Duration | Command |", "|---|---|---|---|---|---|",
+        ...workspaceOperations.slice().sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))
+          .map(op => `| ${op.phase} | ${op.adapter} | ${op.operation} | ${op.status} | ${op.durationMs === null ? "—" : `${(op.durationMs / 1000).toFixed(2)} s`} | ${op.command ? `\`${op.command}\`` : "—"} |`)].join("\n");
+      process.stdout.write(`${table}\n`);
+      await writeFile(path.join(outDir, "workspace-operations.md"), `${table}\n`, { mode: 0o600 });
+    }
     if (timedOutIssues.size) process.stdout.write(`\n${timedOutIssues.size} sample(s) timed out and were left out.\n`);
     // Every answered mid-turn comment must be answered exactly once.
     const wrongReplies = midturn.filter(sample => sample.replyCount !== 1);
@@ -491,7 +608,8 @@ async function main() {
     if (wrongReplies.length) process.exitCode = 1;
     process.stdout.write(`\nWrote ${outDir}\n`);
   } finally {
-    // Always stop the wrapper-owned embedded Postgres (SysV shared memory is scarce).
+    // Every Daytona sandbox this run created is archived or destroyed before the server
+    // stops, then the wrapper-owned embedded Postgres stops (SysV shared memory is scarce).
     await shutdown();
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
