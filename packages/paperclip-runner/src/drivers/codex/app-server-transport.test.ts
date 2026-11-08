@@ -229,13 +229,15 @@ describe("Codex app-server transport limits", () => {
     await transport.close();
   });
 
-  it("fails pending and future requests when stdout closes cleanly", async () => {
+  // Windows keeps standard handles independently of Node's POSIX descriptor
+  // table. Exercise native pipe disconnection separately below.
+  it.skipIf(process.platform === "win32")("fails pending and future requests when stdout closes cleanly", async () => {
     const transport = nodeTransport(
-      `process.stdin.resume(); process.stdout.${process.platform === "win32" ? "destroy" : "end"}(); setInterval(() => {}, 1000)`,
+      "process.stdin.resume(); process.stdout.end(); setInterval(() => {}, 1000)",
     );
     const pending = transport.request("pending", {});
     await expect(pending).rejects.toThrow(
-      /codex app-server stdout (ended|closed) before transport closure/,
+      "codex app-server stdout ended before transport closure",
     );
     await expect(transport.request("after-stdout-end", {})).rejects.toThrow(
       "codex app-server transport is closed",
@@ -243,9 +245,9 @@ describe("Codex app-server transport limits", () => {
     await transport.close();
   });
 
-  it("fails closed when stdout is destroyed without a usable response channel", async () => {
+  it.skipIf(process.platform === "win32")("fails closed when stdout is destroyed without a usable response channel", async () => {
     const transport = nodeTransport(
-      `process.stdin.resume(); ${process.platform === "win32" ? "process.stdout.destroy()" : 'require("node:fs").closeSync(1)'}; setInterval(() => {}, 1000)`,
+      'process.stdin.resume(); require("node:fs").closeSync(1); setInterval(() => {}, 1000)',
     );
     await expect(transport.request("pending", {})).rejects.toThrow(/stdout (ended|closed)/u);
     await expect(transport.request("after-stdout-close", {})).rejects.toThrow(
@@ -322,10 +324,10 @@ describe("Codex app-server transport limits", () => {
     await transport.close();
   });
 
-  it("routes an asynchronous child-stdin failure through deterministic closure", async () => {
+  it.skipIf(process.platform === "win32")("routes an asynchronous child-stdin failure through deterministic closure", async () => {
     const diagnostics: string[] = [];
     const transport = nodeTransport(
-      `${process.platform === "win32" ? "process.stdin.destroy()" : 'require("node:fs").closeSync(0)'}; process.stdout.write(JSON.stringify({ method: "ready", params: {} }) + "\\n"); setInterval(() => {}, 1000)`,
+      `require("node:fs").closeSync(0); process.stdout.write(JSON.stringify({ method: "ready", params: {} }) + "\\n"); setInterval(() => {}, 1000)`,
       { onDiagnostic: (message) => diagnostics.push(message) },
     );
     const notifications = transport.notifications()[Symbol.asyncIterator]();
@@ -337,5 +339,26 @@ describe("Codex app-server transport limits", () => {
     await expect(transport.request("after-stdin-close", {})).rejects.toThrow();
     expect(diagnostics.some((message) => /EPIPE|closed|write/u.test(message))).toBe(true);
     await transport.close();
+  });
+
+  it.runIf(process.platform === "win32").each(["stdin", "stdout"] as const)("closes after a Windows %s pipe disconnect", async channel => {
+    const originalSpawn = ChildProcess.prototype.spawn;
+    let child: ChildProcess | undefined;
+    const spawnSpy = vi.spyOn(ChildProcess.prototype, "spawn").mockImplementation(function (this: ChildProcess, ...args) {
+      child = this;
+      return originalSpawn.apply(this, args);
+    });
+    let transport: ProcessCodexAppServerTransport | undefined;
+    try {
+      transport = nodeTransport("process.stdin.resume(); setInterval(() => {}, 1000)");
+      const pending = transport.request("pending", {});
+      const failure = expect(pending).rejects.toThrow("Windows pipe disconnected");
+      child![channel]!.destroy(new Error("Windows pipe disconnected"));
+      await failure;
+      await expect(transport.request("after-disconnect", {})).rejects.toThrow("codex app-server transport is closed");
+    } finally {
+      await transport?.close();
+      spawnSpy.mockRestore();
+    }
   });
 });
