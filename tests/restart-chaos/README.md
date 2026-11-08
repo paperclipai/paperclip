@@ -280,11 +280,12 @@ workload or `--nth` that does) and `harness_error`. Exit code 0, 1, 3 and 2.
 (`node scripts/crash-points.mjs --list --env daytona`). The run needs
 `DAYTONA_API_KEY` and an image matching this checkout (`--daytona-image` or
 `PAPERCLIP_E2E_DAYTONA_IMAGE`; see "Daytona" above), and refuses to start
-without them. A plain task reaches both `sandbox.create.*` points and
-`environment.lease_release.after_provider_before_lease`. The other three print
-what they need (`needs:` in `--list` and in a `not_reached` result): a failed
-release (teardown claim), a reusable lease (reusable destroy), or a
-stop-and-retain export.
+without them. A plain codex task reaches both `sandbox.create.*` points and
+both `environment.teardown.*` points (a native run releases its sandbox through
+teardown). `environment.lease_release.after_provider_before_lease` (the plain
+release path) and `environment.stop_retain.after_claim_before_stop` (a
+stop-and-retain export) were not reached by any workload on 2026-11-08; a
+`not_reached` result prints what each needs.
 
 **CI.** `.github/workflows/crash-points.yml` runs the same command on demand
 (`workflow_dispatch`, inputs `points`, `kinds`, `adapters`, `workloads`, `nth`).

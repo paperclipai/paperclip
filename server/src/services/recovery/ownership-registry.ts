@@ -54,6 +54,7 @@ import {
   pendingCleanupDeadlineSql,
   recoveredOrphanFirstAttemptSql,
 } from "../environment-cleanup-state.js";
+import { settleEnvironmentLoginProbeLease } from "../environment-login-probe-lease-settlement.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
 import { settleSandboxCreationIntent } from "../sandbox-creation-intent-settlement.js";
@@ -429,6 +430,8 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
   return { kind: "process", stamp: {
     kind: "local", scope, generation: null, host: null, processSpace: controller.hostHash,
     bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
+    ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
+      volumeId: controller.deployment.volumeId } : {}),
   } };
 }
 
@@ -706,11 +709,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     nextDueAt: nextRetainedOrphanDueAt,
   },
   spoolKind("sandbox_orphan_cleanup_spool", "Orphan cleanup buffer/spool", "ownership", idleOrphanSpoolPath),
-  leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
-    and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
-    // Stamped by the write that makes the lease active. A lease saved before
-    // the stamp existed names no owner; it ends with its login session.
-    row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
+  {
+    ...leaseKind("environment_login_probe_lease", "Login/probe lease", "ownership",
+      and(eq(environmentLeases.status, "active"), isNull(environmentLeases.heartbeatRunId)),
+      row => controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_login_probe_lease")),
+    settle: settleEnvironmentLoginProbeLease,
+  },
 
   // Workspaces
   {

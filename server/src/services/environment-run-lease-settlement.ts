@@ -91,7 +91,7 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
 
 /** The proof judged a holder stamp (or its absence, for a legacy row); a lease
  * re-stamped since then belongs to someone else. */
-function holderUnchanged(lease: LeaseRow, record: InProgressRecord): boolean {
+export function holderUnchanged(lease: LeaseRow, record: InProgressRecord): boolean {
   const holder = readEnvironmentLeaseController(lease.metadata);
   if (record.owner.kind === "run") return holder === null;
   if (record.owner.kind !== "process") return false;
