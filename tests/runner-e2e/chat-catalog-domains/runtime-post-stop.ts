@@ -11,7 +11,7 @@ import { openStandingChat } from "./identity-support.js";
 import { prepareRuntimeWorkerGate, readRuntimeTaskGate } from "./runtime-busy-worker.js";
 import { suspendOwnedProviderForCleanup, releaseOwnedCleanupProvider, ownedCleanupProviderHasExited, ownedCleanupProviderIsHeld } from "./runtime-provider-cleanup.js";
 import type { NativeFaultRun } from "./runtime-native-fault.js";
-import { hasSimplerWebsite, renderRuntimeArtifact } from "./runtime-rendered-artifact.js";
+import { hasSimplerWebsite, renderRuntimeArtifact, simplerWebsiteChecks } from "./runtime-rendered-artifact.js";
 import { observeRuntime, runtimeDefinition, runtimeObservation, type RuntimeAgent } from "./runtime-support.js";
 interface StopIntent { schema?: string; intentId?: string; intentAuditId?: string; companyId?: string; runId?: string; issueId?: string; scope?: string; dispatchState?: string; dispatched?: boolean; recordedAt?: string; acknowledgedAt?: string; acknowledgementAuditId?: string }
 interface StopHandle { page: Page; completed?: Promise<number> }
@@ -126,7 +126,11 @@ export const runtimePostStopCases = [runtimeDefinition("recovery.post-stop-messa
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
     if (state.successorRunId) { const [artifact] = await readRegisteredArtifacts(ctx.input.api, String(state.sourceId), String(state.successorRunId), ["website.html"]);
-      state.artifactRunBound = artifact?.contentVerified === true; state.actualSimplePage = !!artifact?.contentVerified && hasSimplerWebsite(await renderRuntimeArtifact(ctx, artifact.content)); }
+      state.artifactRunBound = artifact?.contentVerified === true;
+      const nodes = artifact?.contentVerified ? await renderRuntimeArtifact(ctx, artifact.content) : [];
+      state.actualSimplePage = !!artifact?.contentVerified && hasSimplerWebsite(nodes);
+      await ctx.input.evidence("runtime-post-stop-artifact.json", { contentVerified: artifact?.contentVerified === true, bytes: artifact ? Buffer.byteLength(artifact.content) : 0,
+        checks: simplerWebsiteChecks(nodes), visibleTags: [...new Set(nodes.map(node => node.tag))].sort(), content: artifact?.content ?? null }); }
     return o;
   },
   async verifyResult(ctx) { await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
