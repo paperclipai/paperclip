@@ -9,6 +9,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
@@ -51,8 +52,6 @@ describe("heartbeat queue module boundary", () => {
   });
 
   it.each(["startNextQueuedRunForAgent", "resumeQueuedRuns"] as const)("starts no run once shutdown closed run admission (%s)", async (operation) => {
-    // A graceful drain closes run admission before the HTTP listener: a wake promoted while the
-    // server shuts down stays queued for the next boot instead of starting with no callback origin.
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     deps.isRunAdmissionClosed = () => true;
@@ -61,6 +60,19 @@ describe("heartbeat queue module boundary", () => {
     expect(database.access).not.toHaveBeenCalled();
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("honors the process-wide run admission gate in every heartbeat instance", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    closeProcessRunAdmission();
+    try {
+      await createHeartbeatQueue(database.db, deps).startNextQueuedRunForAgent("agent");
+    } finally {
+      resetProcessRunAdmissionForTests();
+    }
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.getAgent).not.toHaveBeenCalled();
   });
 
   it("tracks pending wakes across instances and clears each rejected wake", async () => {

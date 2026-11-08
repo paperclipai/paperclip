@@ -1,4 +1,5 @@
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
@@ -227,10 +228,6 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   runTaskKey: (run: HeartbeatRun) => string | null;
   filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null, live: { has(id: string): boolean }) => T | null;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
-  /**
-   * True once a graceful shutdown closed run admission (before its HTTP listener closes). No queued
-   * run starts after that: it stays queued for the next boot. Wakes are still recorded.
-   */
   isRunAdmissionClosed?: () => boolean;
   canStartNewExternalBotWork: (agent: typeof agents.$inferSelect) => Promise<boolean>;
   executeRun: (runId: string) => Promise<void>;
@@ -416,7 +413,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
-    isRunAdmissionClosed = () => false,
+    isRunAdmissionClosed = isProcessRunAdmissionClosed,
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,

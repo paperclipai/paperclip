@@ -1,5 +1,6 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -1321,7 +1322,7 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
-    isRunAdmissionClosed: () => shutdownInProgress,
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -4407,8 +4408,6 @@ export function heartbeatService(
       }),
 
     prepareHotRestartShutdown,
-    /** Graceful shutdown: no queued run starts from here on (called before the HTTP listener closes). */
-    closeRunAdmissionForShutdown: () => { shutdownInProgress = true; },
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,

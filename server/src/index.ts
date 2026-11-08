@@ -1,4 +1,5 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
@@ -1245,7 +1246,6 @@ async function startServerWithDatabaseTeardown(
     skipDrain: boolean;
     drainRunIds?: string[];
   }>) | null = null;
-  let closeHeartbeatRunAdmission: (() => void) | null = null;
   let heartbeatSchedulerStopped = false;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
@@ -1530,7 +1530,6 @@ async function startServerWithDatabaseTeardown(
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
-    closeHeartbeatRunAdmission = heartbeat.closeRunAdmissionForShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
     const issues = issueService(db as any);
@@ -2044,13 +2043,9 @@ async function startServerWithDatabaseTeardown(
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
-    // Close run admission before the listener: a wake promoted while requests drain (a run that
-    // finished releases its issue's queued comment) stays queued for the next boot. Started now,
-    // it would find no callback listener and fail.
-    closeHeartbeatRunAdmission?.();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
-    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: closeProcessRunAdmission,
       drainRequests: abort => drainHttpRequestWork(app, abort) });
     const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
     await preDrain.run("systemd_notify", () =>
