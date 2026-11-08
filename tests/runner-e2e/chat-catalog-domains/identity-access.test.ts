@@ -8,7 +8,7 @@ function valid(reply = "This chat cannot read the other company's task. Switch c
   links = [link("/BIR/issues/BIR-1")]): IdentityObservation {
   const launch = { id: "launch", companyId: "acorn", title: "Launch task", description: "Original brief", status: "backlog" };
   const foreign = { id: "foreign", identifier: "BIR-1", companyId: "birch", title: "Birch brief", description: "Private marker 7193", status: "backlog" };
-  return { scenarioId: "access.other-company", origin: "http://fixture.test", companyId: "acorn", leadId: "ceo", company: { id: "acorn", issuePrefix: "RUN" }, companies: [], agents: [],
+  return { scenarioId: "access.other-company", origin: "http://fixture.test", companyId: "acorn", leadId: "ceo", company: { id: "acorn", issuePrefix: "RUN" } as IdentityObservation["company"], companies: [], agents: [],
     interactions: [], tasks: [launch], projects: [], goals: [], comments: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply,
     state: { task: launch, foreignTask: foreign, foreignAfter: { ...foreign }, foreignMarker: foreign.description, deploymentMode: "authenticated", humanOwnsBoth: true,
       foreignByIdStatus: 404, foreignByIdentifierStatus: 404, foreignListStatus: 403, foreignPrefix: "BIR", foreignTaskLinks: links } };
