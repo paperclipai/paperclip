@@ -43,6 +43,21 @@ describe("ttft baseline statistics", () => {
     ]);
   });
 
+  it("reports the wait behind a live turn as its own step and the TTFT the budget judges", () => {
+    // A follow-up comment posted during the previous turn waits 40 s for its run.
+    const followUp = run("f", "warm", [
+      reuse("reused"),
+      span("comment.to_run_created", 0, 40_000),
+      span("heartbeat.queue", 40_000, 100),
+      span("runner.session.resume", 40_100, 2_000),
+      span("task.time_to_first_token", 0, 45_000, { anchor: "comment" }),
+    ]);
+    expect(runMetrics(followUp)).toMatchObject({ ttftMs: 45_000, inputWaitMs: 40_000, ttftAfterRunCreatedMs: 5_000 });
+    expect(runMetrics(coldRun("c"))).toMatchObject({ inputWaitMs: null, ttftAfterRunCreatedMs: 6_000 });
+    const [row] = baselineRows([followUp]);
+    expect(row).toMatchObject({ ttft: { p50: 45_000 }, inputWait: { n: 1, p50: 40_000 }, ttftAfterRunCreated: { p50: 5_000 } });
+  });
+
   it("uses runner.session.resume as the turn boundary for a resumed session", () => {
     const resumed = run("r", "warm", [reuse("reused"), span("heartbeat.queue", 0, 50), span("runner.session.resume", 60, 940)]);
     expect(runWarmth(resumed)).toBe("warm");
