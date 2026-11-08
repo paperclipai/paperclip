@@ -3,7 +3,7 @@ import { remainingIdentityObservationBudget } from "./identity-support.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { makeDefinition, fixtureWorker } from "./internal-definition.js";
 import { checks, companyPath, entity, hasLink, observation, observeInternal, project, sameTask, task, type Entity, type InternalObservation } from "./internal-support.js";
-import type { IssueAttachment } from "../../../packages/shared/src/types/issue.js";
+import type { DocumentRevision, IssueAttachment } from "../../../packages/shared/src/types/issue.js";
 
 interface InventoryOwner extends Entity { companyId?: string; lifecycleState?: string; lifecycleVersion?: number; lifecycleHolds?: string[]; lifecycleError?: unknown }
 export interface InventoryOwnerPause { before: InventoryOwner; requested: InventoryOwner }
@@ -49,13 +49,24 @@ function presentations(o: InventoryObservation, row: Entity) {
 }
 /** A stated count: not digits inside a task identifier (RUN-491) or an element of a number list (RUN-1, 4, 7). */
 const statesCount = (text: string, count: number) => new RegExp(`(?<![\\w-]|,\\s?)${count}(?![\\w-]|,)`).test(text);
-function groupContext(text: string, at: number) {
+/**
+ * The labels an item sits under: its own line, then each enclosing label of higher rank (a bold line
+ * outranks plain lines, a heading outranks bold lines and deeper headings). The walk stops at the
+ * first label naming an owner, so "## Riley" then "**Blocked (167)**: RUN-1" groups RUN-1 under Riley,
+ * while "**Unassigned — 18 blocked:** RUN-18" below "**Morgan — 166 blocked:**" stays its own group.
+ */
+function groupContext(text: string, at: number, ownerLabels: readonly string[]) {
   const lineStart = text.lastIndexOf("\n", at) + 1; const lineEnd = text.indexOf("\n", at);
   const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
-  const label = (candidate: string) => /^\s*(?:#{1,6}\s+|\*\*)/.test(candidate);
-  // A line that opens with its own group label ("**Unassigned — 18 blocked:** RUN-18, …") is its own group.
-  const prior = label(line) ? "" : text.slice(0, lineStart).split("\n").reverse().find(label) ?? "";
-  return `${line} ${prior}`.toLowerCase();
+  const rank = (candidate: string) => { const heading = /^\s*(#{1,6})\s+/.exec(candidate);
+    return heading ? heading[1]!.length : /^\s*\*\*/.test(candidate) ? 7 : 8; };
+  const namesOwner = (candidate: string) => ownerLabels.some(label => candidate.toLowerCase().includes(label));
+  const chain = [line]; let current = rank(line);
+  for (const prior of text.slice(0, lineStart).split("\n").reverse()) {
+    if (namesOwner(chain[chain.length - 1]!) || current === 1) break;
+    if (rank(prior) < current) { chain.push(prior); current = rank(prior); }
+  }
+  return chain.join(" ").toLowerCase();
 }
 export function gradeOpenInventory(value: unknown) {
   const c = checks(); const o = observation(value) as InventoryObservation | undefined;
@@ -84,9 +95,10 @@ export function gradeOpenInventory(value: unknown) {
     "Completed, cancelled and other-project work is not presented as open work.");
   const owners = o.state.ownerLabels as Record<string, string>;
   const named = Object.entries(owners ?? {}).filter(([key]) => key !== "unassigned").map(([, label]) => label.toLowerCase());
+  const allLabels = Object.values(owners ?? {}).map(label => label.toLowerCase());
   let correctlyGrouped = !!owners;
   for (const row of shown) for (const at of placed.get(row.id)!) {
-    const context = groupContext(at.text, at.at); const key = row.assigneeAgentId ?? "unassigned";
+    const context = groupContext(at.text, at.at, allLabels); const key = row.assigneeAgentId ?? "unassigned";
     const owner = owners?.[key]?.toLowerCase();
     if (!owner) correctlyGrouped = false;
     else if (key === "unassigned" ? named.some(label => context.includes(label)) : !context.includes(owner)) correctlyGrouped = false;
@@ -116,6 +128,20 @@ export async function observeOpenInventory(ctx: ChatCatalogContext, state: Recor
     const href = o.links.find(link => new URL(link, o.origin).pathname === `/api/attachments/${file.id}/content`);
     if (!href || file.createdByAgentId !== o.leadId || !runIds.has(file.originatingRunId ?? "") || file.byteSize > 1024 * 1024) continue;
     deliverables.push({ id: file.id, href, body: (await ctx.input.api.getAttachmentContent(file.id)).toString("utf8") });
+  }
+  // A document on this conversation, linked from the reply as /<prefix>/issues/<conversation>#document-<key>,
+  // counts when its current revision was written by the answering agent in this conversation's run.
+  if (source) for (const href of o.links) {
+    const url = new URL(href, o.origin); const key = /^#document-(.+)$/.exec(url.hash)?.[1];
+    const parts = url.pathname.split("/").map(decodeURIComponent);
+    if (url.origin !== new URL(o.origin).origin || !key || parts.length !== 4 || parts[2] !== "issues"
+      || ![source.id, source.identifier].includes(parts[3])) continue;
+    const endpoint = `/api/issues/${source.id}/documents/${encodeURIComponent(decodeURIComponent(key))}`;
+    const doc = await ctx.input.api.get<{ id: string; latestRevisionId?: string | null }>(endpoint).catch(() => undefined);
+    const revisions = doc ? await ctx.input.api.get<DocumentRevision[]>(`${endpoint}/revisions`).catch(() => []) : [];
+    const latest = revisions.find(revision => revision.id === doc?.latestRevisionId);
+    if (!doc || !latest || latest.createdByAgentId !== o.leadId || !runIds.has(latest.createdByRunId ?? "") || latest.body.length > 1024 * 1024) continue;
+    deliverables.push({ id: doc.id, href, body: latest.body });
   }
   return { ...o, sourceIssueId: source?.id, deliverables };
 }
@@ -194,7 +220,7 @@ function openInventory(): ChatCatalogCase {
     if ((await ctx.allRuns()).length) throw new Error("Seeding the paused-owner inventory unexpectedly admitted work");
     return { project: p, originalTasks, workerIds: [worker.id, secondWorker.id], ownerPauseReceipts, ownerLabels: { [worker.id]: "Morgan", [secondWorker.id]: "Riley", unassigned: "Unassigned" } };
   }, gradeOpenInventory);
-  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v5",
+  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v6",
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"], attemptTimeoutMs: 600_000,
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["inventory-owners-paused", "lead-ready", "inventory-settled"] },
     async verifySetup(ctx, state) {
