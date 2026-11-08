@@ -1838,6 +1838,24 @@ impl AcpxCommandExecutor {
     }
 
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        let reopenable = self.session.is_none()
+            && self.state.as_ref().is_some_and(|state| {
+                state.identity.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+                    && matches!(state.lifecycle.as_str(), "prepared" | "suspended" | "session_open")
+            });
+        let reopened = if reopenable { Some(self.open_session()?) } else { None };
+        let mut execution = self.start_turn_in_open_session(payload)?;
+        if let Some(opened) = reopened {
+            let mut events = opened.events;
+            events.append(&mut execution.events);
+            execution.events = events;
+        }
+        Ok(execution)
+    }
+
+    fn start_turn_in_open_session(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         let text = payload
             .get("text")
             .and_then(Value::as_str)
