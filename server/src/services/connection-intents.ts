@@ -1369,16 +1369,6 @@ export function connectionIntentService(db: Db) {
       const saved = aiConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
       const router = aiConnectionRouterBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
       const nativePoolRepair = Boolean(router && run.runtimeMode === "native" && run.errorCode === "native_provider_auth_failed");
-      if (nativePoolRepair) {
-        const [decision] = await db.select().from(nativeRunFinalizations).where(and(
-          eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
-          eq(nativeRunFinalizations.issueId, context.issue.id),
-        ));
-        // A repair interaction blocks automatic continuation. Let native
-        // recovery decide whether a healthy backup can run before creating it.
-        if (decision?.phase !== "terminal_failure" || decision.failureCode !== "native_provider_auth_failed"
-          || decision.failureDetail?.successorRunId || decision.failureDetail?.replacementDenied !== "quota_failover_unavailable") return null;
-      }
       const selected = router ? record(run.contextSnapshot?.aiRouterSelection) : null;
       const managed = router && selected ? await managedAgent(run.companyId, run.agentId, String(record(selected.binding)?.provider), { sourceRunId: run.id }) : null;
       const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
@@ -1400,6 +1390,16 @@ export function connectionIntentService(db: Db) {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
           runStartedAt: run.startedAt ?? run.createdAt,
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
+      }
+      if (nativePoolRepair) {
+        const [decision] = await db.select().from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
+          eq(nativeRunFinalizations.issueId, context.issue.id),
+        ));
+        // A repair interaction blocks automatic continuation. Let native
+        // recovery decide whether a healthy backup can run before creating it.
+        if (decision?.phase !== "terminal_failure" || decision.failureCode !== "native_provider_auth_failed"
+          || decision.failureDetail?.successorRunId || decision.failureDetail?.replacementDenied !== "quota_failover_unavailable") return null;
       }
       const requested = await requestWithContext(context, binding.provider, { purpose: "ai" });
       if (nativePoolRepair && requested.interactionId) {

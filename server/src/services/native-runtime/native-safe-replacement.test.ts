@@ -275,14 +275,12 @@ const support = externalDatabaseUrl
         const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
           responsibleUserId: userId, adapterType: "paperclip_runner", binding: selection.binding, config: selection.runtimeConfig });
         await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, runtimeMode: "native", nativeIssueId: source.issueId,
-          status: "failed", errorCode: "native_provider_auth_failed", responsibleUserId: userId,
+          status: "failed", startedAt: new Date(), errorCode: "native_provider_auth_failed", responsibleUserId: userId,
           resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "authentication", message: "Unauthorized", retryability: "requires_action" } },
           runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
           contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection,
             aiConnection: { ...runtime.attribution, identity: runtime.identity } } }).where(eq(heartbeatRuns.id, currentId));
         await runtime.cleanup();
-        await accounts.markAuthenticationFailed({ companyId: source.companyId, agentId: source.agentId, runId: currentId,
-          runStartedAt: new Date(), attribution: { ...runtime.attribution, identity: runtime.identity } });
         if (i === 0) await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" }).where(eq(nativeRunFinalizations.runId, currentId));
         else await db.insert(nativeRunFinalizations).values({ runId: currentId, companyId: source.companyId, issueId: source.issueId,
           phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1 });
@@ -292,6 +290,7 @@ const support = externalDatabaseUrl
         expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
           credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
         expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toBeNull();
+        expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved[i].grantId)))[0].status).toBe("needs_reauthorization");
         expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
         if (i === 0) {
           let release!: () => void, ready!: () => void;
