@@ -7922,6 +7922,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it("keeps a cancelled blocker's relationship and adds no open child when recording a dependency-cancelled wait", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      retryReason: null,
+      runErrorCode: "issue_dependencies_blocked",
+      runError: "Run cancelled because issue dependencies are still blocked",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const openBlockerId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: openBlockerId,
+        companyId,
+        title: "Open blocker",
+        status: "in_review",
+        priority: "medium",
+        issueNumber: 21,
+        identifier: `${issuePrefix}-21`,
+      },
+      {
+        id: cancelledBlockerId,
+        companyId,
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "medium",
+        issueNumber: 22,
+        identifier: `${issuePrefix}-22`,
+      },
+      {
+        id: childId,
+        companyId,
+        parentId: issueId,
+        title: "Open child",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 23,
+        identifier: `${issuePrefix}-23`,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: openBlockerId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: cancelledBlockerId, relatedIssueId: issueId, type: "blocks" },
+    ]);
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("blocked");
+    expect((await sourceBlockerIssueIds(companyId, issueId)).sort()).toEqual(
+      [openBlockerId, cancelledBlockerId].sort(),
+    );
+    const comments = await selectRecoveryCommentsForIssue(issueId);
+    expect(comments[0]?.body).toContain(`${issuePrefix}-21`);
+    expect(comments[0]?.body).not.toContain(`${issuePrefix}-23`);
+  });
+
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

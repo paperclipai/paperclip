@@ -2986,9 +2986,13 @@ export function recoveryService(
       | "continuation_waiting_on_review"
       | "dispatch_cancelled_by_dependencies" = "continuation_waiting_on_review",
   ) {
+    // Dispatch refused the run because of the saved blockers, so those
+    // relationships are already correct: keep them as they are (including
+    // cancelled or finalizing blockers) and do not add open children.
+    const preserveRelations = cause === "dispatch_cancelled_by_dependencies";
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
-      openChildIssues(issue),
+      preserveRelations ? Promise.resolve([]) : openChildIssues(issue),
     ]);
     const blockedByIssueIds = [
       ...new Set([
@@ -2998,10 +3002,12 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(issue.id, {
-      status: "blocked",
-      blockedByIssueIds,
-    });
+    const updated = await issuesSvc.update(
+      issue.id,
+      preserveRelations
+        ? { status: "blocked" }
+        : { status: "blocked", blockedByIssueIds },
+    );
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
