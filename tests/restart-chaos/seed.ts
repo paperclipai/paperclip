@@ -17,7 +17,8 @@ export interface ChaosLab {
   environmentKind: EnvironmentKind;
   projectId: string;
   fixtureRepositoryPath: string;
-  agents: Record<AdapterId, { id: string; name: string }>;
+  /** `body` is the creation request, so a driver can hire an identical agent later. */
+  agents: Record<AdapterId, { id: string; name: string; body?: Record<string, unknown> }>;
 }
 
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
@@ -177,7 +178,7 @@ export async function seedChaosLab(input: {
       workspacePath: fixtureRepositoryPath, secretRefs, executionId: input.waveId });
     const name = `Chaos ${adapter}`;
     const runtimeConfig = (payload.runtimeConfig ?? {}) as Record<string, unknown>;
-    const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, {
+    const body: Record<string, unknown> = {
       ...payload,
       ...(input.adapterConfigOverrides ? { adapterConfig: {
         ...((payload.adapterConfig ?? {}) as Record<string, unknown>), ...input.adapterConfigOverrides } } : {}),
@@ -185,8 +186,9 @@ export async function seedChaosLab(input: {
       title: "Restart chaos worker",
       runtimeConfig: { ...runtimeConfig, heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),
         enabled: false, maxConcurrentRuns: Math.max(1, input.concurrency) } },
-    });
-    agents[adapter] = { id: created.id, name };
+    };
+    const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, body);
+    agents[adapter] = { id: created.id, name, body };
     timeline.add("seed_agent", { adapter, agentId: created.id, profile: profile.id, model: profile.model, environmentId });
   }
 

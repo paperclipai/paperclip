@@ -226,6 +226,8 @@ async function main() {
     "midturn-mode": { type: "string", default: "queue" },
     // Fault the control plane right after a steered comment is acknowledged (K1, K2 or K6).
     "midturn-fault": { type: "string" },
+    // verify phase: fault the control plane while a newly hired agent runs harness verification.
+    "verify-fault": { type: "string" },
     "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
@@ -244,6 +246,8 @@ async function main() {
   const midturnFault = values["midturn-fault"] as FaultKind | undefined;
   if (midturnFault !== undefined && !["K1", "K2", "K6"].includes(midturnFault)) throw new Error("--midturn-fault must be K1, K2 or K6");
   if (midturnFault && midturnMode !== "steer") throw new Error("--midturn-fault applies to --midturn-mode steer");
+  const verifyFault = values["verify-fault"] as FaultKind | undefined;
+  if (verifyFault !== undefined && !["K1", "K2", "K6"].includes(verifyFault)) throw new Error("--verify-fault must be K1, K2 or K6");
   const lifecycle = values.lifecycle;
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
     throw new Error("--lifecycle must be per_turn, warm or default");
@@ -318,6 +322,42 @@ async function main() {
         timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
       }
     }));
+
+    // New agent: hire an agent identical to the seeded one and assign it a task
+    // at once, so the task waits for harness verification. Optionally restart
+    // the control plane while it verifies. TTFT is comment-to-first-token.
+    if (phases.has("verify")) for (const adapter of adapters) {
+      const source = lab.agents[adapter];
+      if (!source.body) continue;
+      for (let index = 0; index < samples; index += 1) {
+        const nonce = `${adapter}-v${index}-${Date.now().toString(36)}`;
+        const hired = await api.post<Json>(`/api/companies/${lab.companyId}/agents`, { ...source.body, name: `${source.name} verify ${nonce}` });
+        const agentId = String(hired.id);
+        const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
+          title: `TTFT verify ${nonce}`, description: coldTask(nonce), status: "todo", priority: "medium", assigneeAgentId: agentId });
+        const issueId = String(issue.id);
+        tasks.push({ issueId, adapter, phase: "verify" });
+        let fault: Awaited<ReturnType<typeof supervisor.fault>> | null = null;
+        if (verifyFault) {
+          const deadline = Date.now() + 60_000;
+          let state = "unknown";
+          while (Date.now() < deadline && (state = String((await api.get<Json>(`/api/agents/${agentId}`).catch(() => null))?.lifecycleState)) !== "verifying"
+            && state !== "ready") await delay(200);
+          timeline.add("baseline_verify_fault_point", { adapter, agentId, state });
+          if (state === "verifying") {
+            fault = await supervisor.fault(verifyFault, 0, `verify-${index}`);
+            faults.push({ kind: verifyFault, readyAt: fault.readyAt ?? Date.now(), runIds: [] });
+          }
+        }
+        const settled = await waitForRest(api, supervisor, issueId, 1);
+        if (settled.timedOut) {
+          timedOutIssues.add(issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "verify" });
+          continue;
+        }
+        timeline.add("baseline_verify_done", { adapter, agentId, issueId, faulted: Boolean(fault), runs: settled.runs.length });
+      }
+    }
 
     // Mid-turn follow-up: a comment posted while the agent is inside a long
     // tool call. Records when the comment landed and every run of the task,
