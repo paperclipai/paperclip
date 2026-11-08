@@ -327,31 +327,6 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
-const PUBLISH_LOCK_STALE_MS = 60_000;
-
-async function publishStaging(staging: string, finalDir: string): Promise<DaytonaImageArtifacts | null> {
-  const lock = `${finalDir}.lock`;
-  for (;;) {
-    try { await mkdir(lock); break; } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const concurrent = await readReceipt(finalDir);
-      if (concurrent) { await rm(staging, { recursive: true, force: true }); return concurrent; }
-      const held = await stat(lock).then(info => Date.now() - info.mtimeMs, () => 0);
-      if (held > PUBLISH_LOCK_STALE_MS) await rm(lock, { recursive: true, force: true });
-      else await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-  try {
-    const concurrent = await readReceipt(finalDir);
-    if (concurrent) { await rm(staging, { recursive: true, force: true }); return concurrent; }
-    await rm(finalDir, { recursive: true, force: true });
-    await rename(staging, finalDir);
-    return null;
-  } finally {
-    await rm(lock, { recursive: true, force: true });
-  }
-}
-
 export function defaultDaytonaImageCacheRoot(): string {
   return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
 }
@@ -433,12 +408,27 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
       providerPackPath: path.join(root, "rootfs", ...PROVIDER_PACK_PATH.split("/")), providerPackManifestSha256: sha256(packBytes),
       providerPackDigest: pack.digest!, providerPackRunnerSourceRevision: sourceRevision, extractedAt: new Date().toISOString(),
     });
-    const receipt = { ...receiptFor(finalDir), runnerdSha256: await fileSha256(runnerd) };
-    await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-    const published = await publishStaging(staging, finalDir);
-    if (published) { log(`Daytona image artifacts extracted concurrently at ${finalDir}`); return published; }
-    log(`Daytona image artifacts ready at ${finalDir}`);
-    return receipt;
+    const runnerdSha256 = await fileSha256(runnerd);
+    const publishTo = async (root: string) => {
+      const receipt = { ...receiptFor(root), runnerdSha256 };
+      await writeFile(path.join(staging, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+      await rename(staging, root);
+      log(`Daytona image artifacts ready at ${root}`);
+      return receipt;
+    };
+    try {
+      return await publishTo(finalDir);
+    } catch (error) {
+      const concurrent = await readReceipt(finalDir);
+      if (concurrent) {
+        await rm(staging, { recursive: true, force: true });
+        log(`Daytona image artifacts extracted concurrently at ${finalDir}`);
+        return concurrent;
+      }
+      if (!(await stat(finalDir).then(() => true, () => false))) throw error;
+      log(`Invalid cache entry at ${finalDir} left in place; publishing this extraction beside it`);
+      return await publishTo(`${finalDir}.${randomBytes(4).toString("hex")}`);
+    }
   } catch (error) {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     throw error;
