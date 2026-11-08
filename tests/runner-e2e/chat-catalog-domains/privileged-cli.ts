@@ -111,7 +111,7 @@ export function gradeChooseCliContext(value: unknown) {
 const context = privilegedDefinition("cli-operations.choose-cli-context", "privileged-cli", {
   async setup(ctx) {
     const operator = await prepareOwnedCli(ctx);
-    const birch = await ctx.input.api.post<Entity>("/api/companies", { name: `Birch CLI fixture ${ctx.input.nonce}` });
+    const birch = await ctx.input.api.post<Entity>("/api/companies", { name: `Birch ${ctx.input.nonce}` });
     for (const [name, companyId] of [["acorn", ctx.input.fixtures.company.id], ["birch", birch.id]])
       await runOwnedCli(ctx, ["context", "set", "--profile", name!, "--api-base", ctx.input.api.baseURL, "--company-id", companyId!, "--persona", "board", "--use", "--json"]);
     const before = JSON.parse(await runOwnedCli(ctx, ["context", "show", "--json"]));

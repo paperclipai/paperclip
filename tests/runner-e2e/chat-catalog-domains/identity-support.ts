@@ -79,7 +79,7 @@ async function identityProbeKey(ctx: ChatCatalogContext) {
   if (!ctx.input.privateSecrets) throw new Error("Identity probes require attempt-private credential redaction");
   let pending = identityProbeKeys.get(ctx);
   if (!pending) {
-    pending = ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${ctx.input.fixtures.agent.id}/keys`, { name: `chat-eval-probe-${ctx.input.nonce}` })
+    pending = ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${ctx.input.fixtures.agent.id}/keys`, { name: `access-check-${ctx.input.nonce}` })
       .then(key => { ctx.input.privateSecrets!.push(key.token); return key; });
     identityProbeKeys.set(ctx, pending);
   }
