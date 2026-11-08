@@ -20,6 +20,8 @@ export interface SshEnvironmentConfig {
   privateKeySecretRef: EnvSecretRefBinding | null;
   knownHosts: string | null;
   strictHostKeyChecking: boolean;
+  /** "run" (default): remote workspace folder per run. "execution_workspace": one stable folder per execution workspace. */
+  remoteWorkspaceKey?: "run" | "execution_workspace";
 }
 
 export type SandboxEnvironmentProvider = "fake" | (string & {});

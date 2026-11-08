@@ -53,6 +53,15 @@ import {
 } from "../services/workspace-runtime.ts";
 import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
+const mockSshRemoval = vi.hoisted(() => ({
+  removeSshWorkspaceFolders: vi.fn(async () => ({ removed: 1, warnings: [] as string[] })),
+}));
+
+vi.mock("../services/environment-execution-target.js", async (importActual) => ({
+  ...await importActual<typeof import("../services/environment-execution-target.js")>(),
+  removeSshWorkspaceFolders: mockSshRemoval.removeSshWorkspaceFolders,
+}));
+
 const execFileAsync = promisify(execFile);
 
 describe("execution workspace delivery state", () => {
@@ -1368,6 +1377,55 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
       expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
       expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
+
+    it("removes the SSH folders of a workspace the sweep cleaned and records their warnings", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      mockSshRemoval.removeSshWorkspaceFolders.mockClear();
+      mockSshRemoval.removeSshWorkspaceFolders.mockResolvedValueOnce({
+        removed: 0,
+        warnings: ["SSH folder of environment rig is in use by a run; left for the next sweep."],
+      });
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(0).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1 });
+      expect(mockSshRemoval.removeSshWorkspaceFolders).toHaveBeenCalledWith(
+        expect.objectContaining({ executionWorkspaceId: seeded.executionWorkspaceId }),
+      );
+      const [row] = await db
+        .select({ cleanupReason: executionWorkspaces.cleanupReason })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      expect(row?.cleanupReason).toContain("left for the next sweep");
+    }, 20_000);
+
+    it("keeps the SSH folders when the terminal cleanup fails", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      mockSshRemoval.removeSshWorkspaceFolders.mockClear();
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+      const failing = executionWorkspaceService(db, {
+        resolvePullRequestDetails: async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null },
+        now: () => new Date(nowMs),
+        workspaceReaperCooldownDays: 0,
+        beforeTerminalWorkspaceCleanup: async () => {
+          throw new Error("forced cleanup failure");
+        },
+      });
+
+      const sweep = await failing.sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ cleanupFailed: 1 });
+      expect(mockSshRemoval.removeSshWorkspaceFolders).not.toHaveBeenCalled();
     }, 20_000);
 
     it("falls back to updatedAt when completedAt is null and gates the archive", async () => {

@@ -77,6 +77,15 @@ vi.mock("../services/workspace-runtime.js", async (importActual) => {
   };
 });
 
+const mockSshRemoval = vi.hoisted(() => ({
+  removeSshWorkspaceFolders: vi.fn(async () => ({ removed: 1, warnings: [] as string[] })),
+}));
+
+vi.mock("../services/environment-execution-target.js", async (importActual) => ({
+  ...await importActual<typeof import("../services/environment-execution-target.js")>(),
+  removeSshWorkspaceFolders: mockSshRemoval.removeSshWorkspaceFolders,
+}));
+
 function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
@@ -527,6 +536,81 @@ describe("execution workspace routes", () => {
         failureReason: "execution_workspace_closed",
       }),
     );
+  });
+
+  describe("SSH folder removal on close", () => {
+    const closeArchivedWorkspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "archived",
+      mode: "isolated_workspace",
+      projectWorkspaceId: null,
+      projectId: null,
+      cwd: "/tmp/worktree",
+    };
+
+    function arrangeClose() {
+      mockExecutionWorkspaceService.getById.mockResolvedValue({ ...closeArchivedWorkspace, status: "active" });
+      mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({ state: "ready", blockingReasons: [] });
+      mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+        outcome: "archived",
+        workspace: closeArchivedWorkspace,
+        capturedGeneration: 3,
+      });
+      mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction.mockImplementation(
+        async ({ destroy }: { destroy: () => Promise<unknown> }) => ({
+          skippedReopened: false,
+          result: await destroy(),
+        }),
+      );
+      mockExecutionWorkspaceService.applyClosedWorkspaceCleanupOutcome = vi.fn(async () => closeArchivedWorkspace);
+    }
+
+    it("removes the SSH folders of the workspace after a successful cleanup", async () => {
+      arrangeClose();
+      const res = await request(createApp())
+        .patch("/api/execution-workspaces/workspace-1")
+        .send({ status: "archived" });
+
+      expect(res.status).toBe(200);
+      expect(mockSshRemoval.removeSshWorkspaceFolders).toHaveBeenCalledWith(
+        expect.objectContaining({ companyId: "company-1", executionWorkspaceId: "workspace-1" }),
+      );
+    });
+
+    it("keeps the SSH folders when the cleanup did not succeed", async () => {
+      arrangeClose();
+      mockWorkspaceRuntimeTeardown.cleanupExecutionWorkspaceArtifacts.mockResolvedValueOnce({
+        cleaned: false,
+        warnings: ["worktree busy"],
+      });
+      const res = await request(createApp())
+        .patch("/api/execution-workspaces/workspace-1")
+        .send({ status: "archived" });
+
+      expect(res.status).toBe(200);
+      expect(mockSshRemoval.removeSshWorkspaceFolders).not.toHaveBeenCalled();
+    });
+
+    it("records a removal warning in the cleanup reason", async () => {
+      arrangeClose();
+      mockSshRemoval.removeSshWorkspaceFolders.mockResolvedValueOnce({
+        removed: 0,
+        warnings: ["SSH folder of environment rig is in use by a run; left for the next sweep."],
+      });
+      const res = await request(createApp())
+        .patch("/api/execution-workspaces/workspace-1")
+        .send({ status: "archived" });
+
+      expect(res.status).toBe(200);
+      expect(mockExecutionWorkspaceService.applyClosedWorkspaceCleanupOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cleanupReason: expect.stringContaining("left for the next sweep"),
+          markCleanupFailed: false,
+        }),
+      );
+    });
   });
 
   it("keeps the reusable sandbox leases when a reopen makes the fence skip the archive teardown", async () => {

@@ -421,6 +421,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         target: executionTarget,
         adapterKey: "grok",
         workspaceLocalDir: cwd,
+        executionWorkspaceId: asString(workspaceContext.executionWorkspaceId, "") || null,
         timeoutSec,
         installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,

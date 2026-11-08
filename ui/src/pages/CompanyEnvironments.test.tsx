@@ -780,6 +780,54 @@ describe("CompanyEnvironments — test provider button", () => {
     });
   });
 
+  it("keeps the stored SSH remote workspace key when an SSH environment is saved", async () => {
+    mockEnvironmentsApi.list.mockResolvedValue([
+      {
+        id: "env-1",
+        name: "Rig",
+        driver: "ssh",
+        description: null,
+        config: {
+          host: "192.0.2.10",
+          port: 22,
+          username: "paperclip",
+          remoteWorkspacePath: "/srv/paperclip",
+          privateKey: null,
+          privateKeySecretRef: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+          remoteWorkspaceKey: "execution_workspace",
+        },
+      },
+    ]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    await act(async () => {
+      findButton(document.body, "Save environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.update).toHaveBeenCalledExactlyOnceWith(
+      "env-1",
+      expect.objectContaining({
+        driver: "ssh",
+        config: expect.objectContaining({ remoteWorkspaceKey: "execution_workspace" }),
+      }),
+      "company-1",
+    );
+  });
+
   it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

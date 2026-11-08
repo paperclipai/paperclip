@@ -109,6 +109,7 @@ import { createGitHubWorkspaceDeliveryResolver, type GitHubWorkspaceDeliveryReso
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { removeSshWorkspaceFolders } from "./environment-execution-target.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
@@ -2668,6 +2669,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         runCleanupCommands: false,
         forceWorktreeRemoval: false,
       });
+      if (cleanup.cleaned) {
+        const remote = await removeSshWorkspaceFolders({
+          db,
+          companyId: workspace.companyId,
+          executionWorkspaceId: workspace.id,
+        }).catch((err) => ({
+          removed: 0,
+          warnings: [`Could not look up SSH folders: ${err instanceof Error ? err.message : String(err)}`],
+        }));
+        cleanup.warnings.push(...remote.warnings);
+      }
       if (cleanup.cleaned && workspace.mode === "shared_workspace") {
         await db.transaction(async tx => {
           await notifyStatusCardIssueChange(tx, workspace.companyId);

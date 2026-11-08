@@ -33,6 +33,7 @@ describe("environment config helpers", () => {
       },
       knownHosts: null,
       strictHostKeyChecking: true,
+      remoteWorkspaceKey: "run",
     });
   });
 
@@ -101,8 +102,19 @@ describe("environment config helpers", () => {
         privateKeySecretRef: null,
         knownHosts: null,
         strictHostKeyChecking: false,
+        remoteWorkspaceKey: "run",
       },
     });
+  });
+
+  it("keeps an execution_workspace SSH remote workspace key and rejects other values", () => {
+    const base = { host: "ssh.example.test", username: "ssh-user", remoteWorkspacePath: "/srv/paperclip/workspace" };
+    expect(
+      normalizeEnvironmentConfig({ driver: "ssh", config: { ...base, remoteWorkspaceKey: "execution_workspace" } }),
+    ).toMatchObject({ remoteWorkspaceKey: "execution_workspace" });
+    expect(() =>
+      normalizeEnvironmentConfig({ driver: "ssh", config: { ...base, remoteWorkspaceKey: "shared" } }),
+    ).toThrow(HttpError);
   });
 
   it("normalizes sandbox config into its canonical stored shape", () => {

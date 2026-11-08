@@ -40,8 +40,17 @@ export interface SshCommandResult {
   stderr: string;
 }
 
+export type SshRemoteWorkspaceKey = "run" | "execution_workspace";
+
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
+  /** "run" (default): one workspace folder per run. "execution_workspace": one stable folder per execution workspace. */
+  remoteWorkspaceKey?: SshRemoteWorkspaceKey;
+  /**
+   * In-process only (not serialisable): true while the run is still live. Lets the stable-folder
+   * lock be taken over once its owner run is terminal.
+   */
+  isRunActive?: (runId: string) => Promise<boolean>;
 }
 
 export function createSshCommandManagedRuntimeRunner(input: {
@@ -188,6 +197,7 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     knownHosts: typeof parsed.knownHosts === "string" && parsed.knownHosts.length > 0 ? parsed.knownHosts : null,
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
+    ...(parsed.remoteWorkspaceKey === "execution_workspace" ? { remoteWorkspaceKey: "execution_workspace" as const } : {}),
   };
 }
 

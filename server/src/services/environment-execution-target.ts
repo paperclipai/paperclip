@@ -1,5 +1,6 @@
 import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
-import type { Db } from "@paperclipai/db";
+import { environmentLeases, environments, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
@@ -7,6 +8,7 @@ import {
   type AdapterExecutionTarget,
   type SandboxLeaseAcquisition,
 } from "@paperclipai/adapter-utils/execution-target";
+import { removeStableSshWorkspaceFolder } from "@paperclipai/adapter-utils/remote-managed-runtime";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import {
   clampSpanLabel,
@@ -704,6 +706,16 @@ export async function resolveEnvironmentExecutionTarget(input: {
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
       remoteCwd,
+      remoteWorkspaceKey: parsed.config.remoteWorkspaceKey,
+      // Lets a stable remote folder lock held by a finished run be taken over.
+      isRunActive: async (runId: string) => {
+        const rows = await input.db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, ["queued", "running"])))
+          .limit(1);
+        return rows.length > 0;
+      },
     },
   };
 }
@@ -712,4 +724,69 @@ export async function resolveEnvironmentExecutionTransport(
   input: Parameters<typeof resolveEnvironmentExecutionTarget>[0],
 ): Promise<Record<string, unknown> | null> {
   return adapterExecutionTargetToRemoteSpec(await resolveEnvironmentExecutionTarget(input)) as Record<string, unknown> | null;
+}
+
+/**
+ * Removes the stable SSH folder of an execution workspace on every SSH environment that leased it.
+ * An unreachable host or a held lock is a warning, not a failure: the sweep at the next SSH prepare
+ * removes a folder whose last restore was ok.
+ */
+export async function removeSshWorkspaceFolders(input: {
+  db: Db;
+  companyId: string;
+  executionWorkspaceId: string;
+}): Promise<{ removed: number; warnings: string[] }> {
+  const warnings: string[] = [];
+  let removed = 0;
+  const leases = await input.db
+    .select({ environmentId: environmentLeases.environmentId, metadata: environmentLeases.metadata })
+    .from(environmentLeases)
+    .where(and(
+      eq(environmentLeases.companyId, input.companyId),
+      eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId),
+    ));
+  const environmentIds = [...new Set(leases.flatMap((lease) => (lease.environmentId ? [lease.environmentId] : [])))];
+  if (environmentIds.length === 0) return { removed, warnings };
+  const rows = await input.db
+    .select()
+    .from(environments)
+    .where(inArray(environments.id, environmentIds));
+  for (const environment of rows) {
+    if (environment.driver !== "ssh") continue;
+    try {
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
+        id: environment.id,
+        driver: "ssh",
+        config: parseObject(environment.config),
+      });
+      if (parsed.driver !== "ssh") continue;
+      const bases = new Set([parsed.config.remoteWorkspacePath]);
+      for (const lease of leases) {
+        const remoteCwd = parseObject(lease.metadata).remoteCwd;
+        if (lease.environmentId === environment.id && typeof remoteCwd === "string" && remoteCwd.trim()) bases.add(remoteCwd.trim());
+      }
+      for (const base of bases) {
+        const outcome = await removeStableSshWorkspaceFolder(
+          {
+            host: parsed.config.host,
+            port: parsed.config.port,
+            username: parsed.config.username,
+            remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+            privateKey: parsed.config.privateKey,
+            knownHosts: parsed.config.knownHosts,
+            strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+            remoteCwd: base,
+          },
+          base,
+          input.executionWorkspaceId,
+        );
+        if (outcome === "removed") removed += 1;
+        else if (outcome === "locked") warnings.push(`SSH folder of environment ${environment.name} is in use by a run; left for the next sweep.`);
+        else if (outcome === "unsafe") warnings.push(`SSH folder of environment ${environment.name} was not removed: path is a symlink.`);
+      }
+    } catch (err) {
+      warnings.push(`Could not remove SSH folder on environment ${environment.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { removed, warnings };
 }

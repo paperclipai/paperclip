@@ -1483,6 +1483,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  /** Execution workspace id; SSH targets with `remoteWorkspaceKey: "execution_workspace"` key their stable folder on it. */
+  executionWorkspaceId?: string | null;
   /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
   runtimeRootDir?: string;
   syncWorkspace?: boolean;
@@ -1545,6 +1547,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      executionWorkspaceId: input.executionWorkspaceId,
+      timeoutSec: input.timeoutSec,
       syncWorkspace: input.syncWorkspace,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,

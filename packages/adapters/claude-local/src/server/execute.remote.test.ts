@@ -64,6 +64,11 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
     prepareWorkspaceForSshExecution,
     restoreWorkspaceFromSshExecution,
     syncDirectoryToSsh,
+    // No real ssh in unit tests: the stable-folder lock script is acquired; the sweep and cleanup commands succeed silently.
+    runSshCommand: vi.fn(async (_spec: unknown, command: string) => ({
+      stdout: command.includes("/lock") ? "ACQUIRED\n" : "",
+      stderr: "",
+    })),
   };
 });
 
@@ -93,6 +98,40 @@ describe("claude remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("keys the remote workspace folder on the execution workspace when the SSH environment asks for it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-stable-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const executionWorkspaceId = "11111111-2222-4333-8444-555555555555";
+
+    await execute({
+      runId: "run-stable",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", executionWorkspaceId },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "192.0.2.10", port: 2222, username: "fixture",
+          remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY", knownHosts: "[192.0.2.10]:2222 ssh-ed25519 AAAA", strictHostKeyChecking: true,
+          remoteWorkspaceKey: "execution_workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `/remote/workspace/.paperclip-runtime/workspaces/${executionWorkspaceId}/workspace`,
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/remote/workspace/.paperclip-runtime/runs/run-stable/runtime/claude/skills",
+    }));
   });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {

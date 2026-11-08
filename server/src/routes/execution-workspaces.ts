@@ -38,6 +38,7 @@ import {
   type WorkspaceRuntimeLeaseClaim,
 } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import { removeSshWorkspaceFolders } from "../services/environment-execution-target.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -1339,7 +1340,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, readiness.git?.headSha ?? null);
               return { cleaned: true, warnings: [] };
             }
-            return cleanupExecutionWorkspaceArtifacts({
+            const cleanup = await cleanupExecutionWorkspaceArtifacts({
               workspace: existing,
               projectWorkspace,
               teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
@@ -1349,6 +1350,20 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                 executionWorkspaceId: existing.id,
               }),
             });
+            if (cleanup.cleaned) {
+              // Remove the stable folder on each SSH host that ran the workspace.
+              // A locked or unreachable host is a warning; the next SSH prepare sweeps it.
+              const remote = await removeSshWorkspaceFolders({
+                db,
+                companyId: existing.companyId,
+                executionWorkspaceId: existing.id,
+              }).catch((err) => ({
+                removed: 0,
+                warnings: [`Could not look up SSH folders: ${err instanceof Error ? err.message : String(err)}`],
+              }));
+              cleanup.warnings.push(...remote.warnings);
+            }
+            return cleanup;
           },
         });
         if (fenced.skippedReopened) {

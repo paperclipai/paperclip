@@ -336,6 +336,38 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(mockResolveEnvironmentDriverConfigForRuntime).not.toHaveBeenCalled();
   });
 
+  it("passes the SSH remote workspace key and a run-liveness lookup into the target spec", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "192.0.2.10",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/srv/paperclip",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+        remoteWorkspaceKey: "execution_workspace",
+      },
+    });
+    const limit = vi.fn().mockResolvedValueOnce([{ id: "run-live" }]).mockResolvedValueOnce([]);
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) };
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: db as never,
+      companyId: "company-1",
+      adapterType: "grok_local",
+      environment: { id: "env-ssh-1", driver: "ssh", config: {} },
+      leaseId: "lease-ssh-1",
+      leaseMetadata: {},
+    } as never);
+
+    expect(target).toMatchObject({ kind: "remote", transport: "ssh", spec: { remoteWorkspaceKey: "execution_workspace" } });
+    const isRunActive = (target as { spec: { isRunActive: (id: string) => Promise<boolean> } }).spec.isRunActive;
+    await expect(isRunActive("run-live")).resolves.toBe(true);
+    await expect(isRunActive("run-done")).resolves.toBe(false);
+  });
+
   it("resolves SSH execution targets for grok_local", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "ssh",
@@ -1436,5 +1468,69 @@ describe("resolveEnvironmentExecutionTarget", () => {
     // copies the stale flag.
     expect(execSpan!.parent).toBe(stepSpan);
     expect(execSpan!.attributes[A.execCriticalPath]).toBe(false);
+  });
+});
+
+describe("removeSshWorkspaceFolders", () => {
+  const WS = "11111111-2222-4333-8444-555555555555";
+
+  async function load(removeImpl: (...args: unknown[]) => Promise<string>) {
+    vi.resetModules();
+    const remove = vi.fn(removeImpl);
+    vi.doMock("@paperclipai/adapter-utils/remote-managed-runtime", () => ({ removeStableSshWorkspaceFolder: remove }));
+    const mod = await import("../services/environment-execution-target.js");
+    return { remove, removeSshWorkspaceFolders: mod.removeSshWorkspaceFolders };
+  }
+
+  function fakeDb(leases: unknown[], envs: unknown[]) {
+    let call = 0;
+    return {
+      select: () => ({ from: () => ({ where: async () => (call++ === 0 ? leases : envs) }) }),
+    } as never;
+  }
+
+  beforeEach(() => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockReset();
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: { host: "192.0.2.10", port: 22, username: "u", remoteWorkspacePath: "/srv/ws", privateKey: "k", knownHosts: "h", strictHostKeyChecking: true },
+    });
+  });
+
+  it("removes the folder on each SSH environment that leased the workspace and skips other drivers", async () => {
+    const { remove, removeSshWorkspaceFolders } = await load(async () => "removed");
+    const db = fakeDb(
+      [{ environmentId: "e1", metadata: null }, { environmentId: "e1", metadata: null }, { environmentId: "e2", metadata: null }],
+      [{ id: "e1", name: "rig", driver: "ssh", config: {} }, { id: "e2", name: "box", driver: "sandbox", config: {} }],
+    );
+    const result = await removeSshWorkspaceFolders({ db, companyId: "c1", executionWorkspaceId: WS });
+    expect(result).toEqual({ removed: 1, warnings: [] });
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(expect.objectContaining({ host: "192.0.2.10" }), "/srv/ws", WS);
+  });
+
+  it("warns instead of failing when the host is unreachable or the folder is locked", async () => {
+    const outcomes = ["locked", "boom"];
+    const { removeSshWorkspaceFolders } = await load(async () => {
+      const next = outcomes.shift()!;
+      if (next === "boom") throw new Error("connection refused");
+      return next;
+    });
+    const db = fakeDb(
+      [{ environmentId: "e1", metadata: null }, { environmentId: "e2", metadata: null }],
+      [{ id: "e1", name: "rig", driver: "ssh", config: {} }, { id: "e2", name: "rig2", driver: "ssh", config: {} }],
+    );
+    const result = await removeSshWorkspaceFolders({ db, companyId: "c1", executionWorkspaceId: WS });
+    expect(result.removed).toBe(0);
+    expect(result.warnings).toEqual([
+      expect.stringContaining("in use by a run"),
+      expect.stringContaining("connection refused"),
+    ]);
+  });
+
+  it("does nothing when no environment leased the workspace", async () => {
+    const { remove, removeSshWorkspaceFolders } = await load(async () => "removed");
+    expect(await removeSshWorkspaceFolders({ db: fakeDb([], []), companyId: "c1", executionWorkspaceId: WS })).toEqual({ removed: 0, warnings: [] });
+    expect(remove).not.toHaveBeenCalled();
   });
 });

@@ -78,6 +78,8 @@ type EnvironmentFormState = {
   sshPrivateKeySecretId: string;
   sshKnownHosts: string;
   sshStrictHostKeyChecking: boolean;
+  // No control: carried so a save keeps the stored value.
+  sshRemoteWorkspaceKey: "run" | "execution_workspace";
   sandboxProvider: string;
   sandboxConfig: Record<string, unknown>;
   envVars: Record<string, EnvBinding>;
@@ -134,6 +136,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
                 : { type: "secret_ref" as const, secretId: form.sshPrivateKeySecretId, version: "latest" as const },
             knownHosts: form.sshKnownHosts.trim() || null,
             strictHostKeyChecking: form.sshStrictHostKeyChecking,
+            remoteWorkspaceKey: form.sshRemoteWorkspaceKey,
           }
         : form.driver === "sandbox"
           ? {
@@ -157,6 +160,7 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     sshPrivateKeySecretId: "",
     sshKnownHosts: "",
     sshStrictHostKeyChecking: true,
+    sshRemoteWorkspaceKey: "run",
     sandboxProvider: "",
     sandboxConfig: {},
     envVars: {},
@@ -202,6 +206,8 @@ function readSshConfig(environment: Environment) {
       typeof config.strictHostKeyChecking === "boolean"
         ? config.strictHostKeyChecking
         : true,
+    remoteWorkspaceKey:
+      config.remoteWorkspaceKey === "execution_workspace" ? ("execution_workspace" as const) : ("run" as const),
   };
 }
 
@@ -232,6 +238,7 @@ function createEnvironmentFormFromEnvironment(environment: Environment): Environ
       sshPrivateKeySecretId: ssh.privateKeySecretId,
       sshKnownHosts: ssh.knownHosts,
       sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
+      sshRemoteWorkspaceKey: ssh.remoteWorkspaceKey,
       envVars: environment.envVars ?? {},
     };
   }

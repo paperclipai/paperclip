@@ -55,6 +55,7 @@ const sshEnvironmentConfigSchema = z.object({
     .nullable()
     .transform((value) => (value && value.length > 0 ? value : null)),
   strictHostKeyChecking: z.boolean().optional().default(true),
+  remoteWorkspaceKey: z.enum(["run", "execution_workspace"]).optional().default("run"),
 }).strict();
 
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
