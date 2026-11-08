@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f6f4ee" />
+    <meta name="theme-color" content="#07111f" />
     <meta
       name="description"
       content="A free, read-only journey through the history of mobile phones, from the first handheld call to the phones of tomorrow."
@@ -11,38 +11,42 @@
     <title>Pocket-sized planet — a history of mobile phones</title>
     <style>
       :root {
-        color-scheme: light;
-        --paper: #f6f4ee;
-        --paper-deep: #ebe8de;
-        --ink: #20211d;
-        --muted: #65665f;
-        --line: #d7d4ca;
-        --orange: #e85c36;
-        --blue: #c8dfe0;
-        --green: #d6e0c3;
-        --lavender: #d9d3e7;
-        --yellow: #f0dda0;
-        --white: #fffefa;
-        --line-soft: rgba(215, 212, 202, 0.75);
-        --paper-soft: rgba(246, 244, 238, 0.92);
-        --orange-ring: rgba(232, 92, 54, 0.2);
-        --orange-halo: rgba(232, 92, 54, 0.04);
-        --orange-halo-wide: rgba(232, 92, 54, 0.03);
-        --orange-glow: rgba(232, 92, 54, 0.7);
-        --orange-focus: rgba(232, 92, 54, 0.16);
-        --ink-shadow: rgba(32, 33, 29, 0.18);
-        --ink-shadow-light: rgba(32, 33, 29, 0.08);
-        --ink-edge: rgba(32, 33, 29, 0.4);
-        --ink-dot: rgba(32, 33, 29, 0.11);
-        --ink-border: rgba(32, 33, 29, 0.08);
-        --ink-border-light: rgba(32, 33, 29, 0.1);
-        --ink-text-soft: rgba(32, 33, 29, 0.7);
-        --white-edge: rgba(255, 254, 250, 0.34);
-        --white-ring: rgba(255, 254, 250, 0.22);
-        --white-halo: rgba(255, 254, 250, 0.05);
-        --white-halo-wide: rgba(255, 254, 250, 0.04);
-        --white-text-soft: rgba(255, 254, 250, 0.68);
-        --white-text: rgba(255, 254, 250, 0.72);
+        color-scheme: dark;
+        --paper: #07111f;
+        --paper-deep: #0c1a2c;
+        --device-ink: #07111f;
+        --ink: #eaf2ff;
+        --muted: #9aacc2;
+        --line: #263a54;
+        --orange: #ff8068;
+        --blue: #153957;
+        --green: #17473f;
+        --lavender: #342b59;
+        --yellow: #f5c86e;
+        --white: #f5f8ff;
+        --space-deep: #040a13;
+        --glass: rgba(17, 34, 54, 0.62);
+        --glass-strong: rgba(21, 43, 68, 0.82);
+        --line-soft: rgba(140, 172, 210, 0.18);
+        --paper-soft: rgba(7, 17, 31, 0.78);
+        --orange-ring: rgba(255, 128, 104, 0.26);
+        --orange-halo: rgba(255, 128, 104, 0.06);
+        --orange-halo-wide: rgba(76, 158, 255, 0.04);
+        --orange-glow: rgba(255, 128, 104, 0.8);
+        --orange-focus: rgba(255, 128, 104, 0.22);
+        --ink-shadow: rgba(0, 0, 0, 0.42);
+        --ink-shadow-light: rgba(0, 0, 0, 0.24);
+        --ink-edge: rgba(234, 242, 255, 0.45);
+        --ink-dot: rgba(210, 228, 255, 0.2);
+        --ink-border: rgba(210, 228, 255, 0.14);
+        --ink-border-light: rgba(210, 228, 255, 0.2);
+        --ink-text-soft: rgba(234, 242, 255, 0.72);
+        --white-edge: rgba(245, 248, 255, 0.48);
+        --white-ring: rgba(245, 248, 255, 0.2);
+        --white-halo: rgba(245, 248, 255, 0.04);
+        --white-halo-wide: rgba(76, 158, 255, 0.04);
+        --white-text-soft: rgba(245, 248, 255, 0.7);
+        --white-text: rgba(245, 248, 255, 0.78);
         --page-width: 76rem;
         font-family:
           "Avenir Next", Avenir, "Segoe UI", "Helvetica Neue", sans-serif;
@@ -61,10 +65,24 @@
       }
 
       body {
+        position: relative;
         min-width: 20rem;
         margin: 0;
         background: var(--paper);
         color: var(--ink);
+      }
+
+      body::before {
+        position: fixed;
+        z-index: -1;
+        inset: 0;
+        background:
+          radial-gradient(ellipse at 78% 12%, rgba(39, 101, 156, 0.16), transparent 34rem),
+          radial-gradient(ellipse at 12% 45%, rgba(85, 52, 126, 0.12), transparent 38rem),
+          radial-gradient(rgba(220, 235, 255, 0.24) 0.7px, transparent 0.8px);
+        background-size: auto, auto, 4.5rem 4.5rem;
+        content: "";
+        pointer-events: none;
       }
 
       a {
@@ -84,7 +102,7 @@
         left: 0.75rem;
         transform: translateY(-180%);
         border-radius: 999px;
-        background: var(--ink);
+        background: var(--device-ink);
         color: var(--white);
         padding: 0.75rem 1rem;
       }
@@ -117,6 +135,7 @@
         top: 0;
         border-bottom: 1px solid var(--line-soft);
         background: var(--paper-soft);
+        -webkit-backdrop-filter: blur(1rem);
         backdrop-filter: blur(1rem);
       }
 
@@ -177,8 +196,9 @@
       }
 
       .access-note {
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-soft);
         border-radius: 999px;
+        background: var(--glass);
         padding: 0.4rem 0.7rem;
         color: var(--muted);
         font-size: 0.68rem;
@@ -189,7 +209,7 @@
       .hero {
         position: relative;
         overflow: hidden;
-        padding: clamp(4rem, 10vw, 8rem) 0 clamp(4.5rem, 9vw, 7rem);
+        padding: clamp(4rem, 10vw, 8rem) 0 clamp(5rem, 10vw, 8rem);
       }
 
       .hero::before {
@@ -274,7 +294,7 @@
         align-items: center;
         gap: 0.65rem;
         border-radius: 999px;
-        background: var(--ink);
+        background: var(--device-ink);
         color: var(--white);
         padding: 0.8rem 1.2rem;
         text-decoration: none;
@@ -298,20 +318,24 @@
         display: grid;
         min-height: 25rem;
         place-items: center;
+        perspective: 70rem;
+        transform-style: preserve-3d;
       }
 
       .orbit {
         position: absolute;
         width: min(94%, 25rem);
         aspect-ratio: 1;
-        border: 1px solid var(--line);
+        transform: rotateX(62deg) rotateZ(-18deg);
+        border: 1px solid var(--line-soft);
         border-radius: 50%;
+        box-shadow: 0 0 2.5rem rgba(74, 160, 255, 0.12);
       }
 
       .orbit::before,
       .orbit::after {
         position: absolute;
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-soft);
         border-radius: 50%;
         content: "";
       }
@@ -349,10 +373,11 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        border: 2px solid var(--ink);
-        background: var(--ink);
+        border: 2px solid var(--device-ink);
+        background: var(--device-ink);
         color: var(--white);
         box-shadow: 0 1.25rem 3rem var(--ink-shadow);
+        transform-style: preserve-3d;
       }
 
       .device-old {
@@ -361,7 +386,7 @@
         left: 15%;
         width: 7.5rem;
         height: 14rem;
-        transform: rotate(-12deg);
+        transform: rotateY(-16deg) rotateZ(-12deg);
         border-radius: 1.1rem;
         background: var(--orange);
       }
@@ -373,7 +398,7 @@
         width: 0.2rem;
         height: 1.8rem;
         transform: rotate(-4deg);
-        background: var(--ink);
+        background: var(--device-ink);
         content: "";
       }
 
@@ -402,9 +427,9 @@
         right: 17%;
         width: 10.5rem;
         height: 20rem;
-        transform: rotate(8deg);
+        transform: rotateY(14deg) rotateZ(8deg);
         border-radius: 1.8rem;
-        background: var(--ink);
+        background: var(--device-ink);
       }
 
       .device-new::before {
@@ -426,7 +451,7 @@
         height: 0.35rem;
         transform: translateX(-50%);
         border-radius: 999px;
-        background: var(--ink);
+        background: var(--device-ink);
         content: "";
       }
 
@@ -456,7 +481,9 @@
         z-index: 5;
         top: 4.5rem;
         border-block: 1px solid var(--line);
-        background: var(--paper);
+        background: rgba(7, 17, 31, 0.88);
+        -webkit-backdrop-filter: blur(1rem);
+        backdrop-filter: blur(1rem);
       }
 
       .chapter-nav {
@@ -484,8 +511,8 @@
 
       .chapter-nav a:hover,
       .chapter-nav a[aria-current="location"] {
-        background: var(--ink);
-        color: var(--white);
+        background: var(--glass-strong);
+        color: var(--orange);
       }
 
       .timeline {
@@ -523,6 +550,7 @@
         grid-template-columns: 11rem minmax(0, 1fr);
         align-items: start;
         gap: clamp(2rem, 6vw, 6rem);
+        perspective: 100rem;
       }
 
       .story-aside {
@@ -581,7 +609,7 @@
         bottom: 1.2rem;
         left: 0.2rem;
         width: 1px;
-        background: var(--line);
+        background: linear-gradient(transparent, var(--orange), var(--line), transparent);
         content: "";
       }
 
@@ -591,7 +619,15 @@
         grid-template-columns: minmax(0, 0.85fr) minmax(15rem, 1.15fr);
         align-items: center;
         gap: clamp(1.5rem, 4vw, 4rem);
-        padding: 1.1rem 0 2.4rem 2rem;
+        margin-bottom: 1.5rem;
+        border: 1px solid var(--line-soft);
+        border-radius: 1.4rem;
+        background: linear-gradient(135deg, rgba(20, 40, 63, 0.74), rgba(9, 22, 38, 0.5));
+        box-shadow:
+          0 1.5rem 3rem rgba(0, 0, 0, 0.18),
+          inset 0 1px 0 rgba(245, 248, 255, 0.06);
+        padding: 1.1rem 1.1rem 1.1rem 2rem;
+        transform-style: preserve-3d;
         scroll-margin-top: 10rem;
       }
 
@@ -651,8 +687,25 @@
         min-height: 19rem;
         overflow: hidden;
         place-items: center;
-        border: 1px solid var(--ink-border);
-        border-radius: 1rem;
+        border: 1px solid var(--ink-border-light);
+        border-radius: 1.2rem;
+        background-color: var(--glass);
+        box-shadow:
+          0 1.5rem 2.5rem rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(245, 248, 255, 0.16);
+        transform: rotateY(-7deg) rotateX(3deg) translateZ(1rem);
+        transition: transform 320ms ease, box-shadow 320ms ease;
+        -webkit-backdrop-filter: blur(0.7rem);
+        backdrop-filter: blur(0.7rem);
+      }
+
+      .chapter:hover .device-card,
+      .chapter:focus-within .device-card {
+        transform: rotateY(0) rotateX(0) translateY(-0.4rem) translateZ(1.5rem);
+        box-shadow:
+          0 2rem 3rem rgba(0, 0, 0, 0.38),
+          0 0 2rem rgba(73, 158, 255, 0.14),
+          inset 0 1px 0 rgba(245, 248, 255, 0.22);
         isolation: isolate;
       }
 
@@ -664,6 +717,15 @@
         background-size: 0.75rem 0.75rem;
         content: "";
         opacity: 0.42;
+      }
+
+      .device-card::after {
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.12), transparent 38%);
+        content: "";
+        pointer-events: none;
       }
 
       .tone-orange {
@@ -712,8 +774,8 @@
         height: 13.8rem;
         align-content: end;
         justify-items: center;
-        transform: rotate(-7deg);
-        border: 0.35rem solid var(--ink);
+        transform: rotateY(-18deg) rotateZ(-7deg) translateZ(2rem);
+        border: 0.35rem solid var(--device-ink);
         border-radius: 1rem;
         background: var(--orange);
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
@@ -729,7 +791,7 @@
         transform: rotate(-8deg);
         transform-origin: bottom;
         border-radius: 999px;
-        background: var(--ink);
+        background: var(--device-ink);
         content: "";
       }
 
@@ -741,10 +803,10 @@
         display: grid;
         height: 4.5rem;
         place-items: center;
-        border: 0.25rem solid var(--ink);
+        border: 0.25rem solid var(--device-ink);
         border-radius: 0.25rem;
         background: var(--yellow);
-        color: var(--ink);
+        color: var(--device-ink);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 0.95rem;
       }
@@ -768,10 +830,10 @@
         width: 7rem;
         height: 12rem;
         place-items: center;
-        transform: rotate(6deg);
-        border: 0.3rem solid var(--ink);
+        transform: rotateY(16deg) rotateZ(6deg) translateZ(2rem);
+        border: 0.3rem solid var(--device-ink);
         border-radius: 1.1rem;
-        background: var(--ink);
+        background: var(--device-ink);
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
       }
 
@@ -797,8 +859,8 @@
         position: relative;
         width: 8rem;
         height: 11.5rem;
-        transform: rotate(-6deg);
-        border: 0.42rem solid var(--ink);
+        transform: rotateY(-15deg) rotateX(4deg) rotateZ(-6deg) translateZ(2rem);
+        border: 0.42rem solid var(--device-ink);
         border-radius: 1rem;
         background: var(--white);
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
@@ -833,10 +895,10 @@
         position: relative;
         width: 9rem;
         height: 13rem;
-        transform: rotate(4deg);
-        border: 0.4rem solid var(--ink);
+        transform: rotateY(14deg) rotateX(4deg) rotateZ(4deg) translateZ(2rem);
+        border: 0.4rem solid var(--device-ink);
         border-radius: 1.4rem;
-        background: var(--ink);
+        background: var(--device-ink);
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
         padding: 0.75rem;
       }
@@ -876,7 +938,7 @@
         width: 10rem;
         grid-template-columns: repeat(3, 1fr);
         gap: 0.75rem;
-        transform: rotate(-5deg);
+        transform: rotateY(-12deg) rotateX(5deg) rotateZ(-5deg) translateZ(2rem);
       }
 
       .app-grid span {
@@ -894,13 +956,13 @@
         display: flex;
         align-items: center;
         gap: 1rem;
-        transform: rotate(-5deg);
+        transform: rotateY(-12deg) rotateX(4deg) rotateZ(-5deg) translateZ(2rem);
       }
 
       .modern-phone {
         width: 6.4rem;
         height: 12rem;
-        border: 0.35rem solid var(--ink);
+        border: 0.35rem solid var(--device-ink);
         border-radius: 1.3rem;
         background: linear-gradient(160deg, var(--orange), var(--lavender) 50%, var(--blue));
         box-shadow: 0 1.2rem 2rem var(--ink-shadow);
@@ -919,7 +981,9 @@
       .future {
         position: relative;
         overflow: hidden;
-        background: var(--ink);
+        background:
+          radial-gradient(ellipse at 82% 18%, rgba(52, 87, 148, 0.34), transparent 34rem),
+          var(--space-deep);
         color: var(--white);
         padding: clamp(4rem, 9vw, 7rem) 0;
       }
@@ -978,7 +1042,7 @@
 
       .future .primary-link:hover {
         background: var(--white);
-        color: var(--ink);
+        color: var(--device-ink);
       }
 
       .sources {
@@ -1020,14 +1084,24 @@
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        border: 1px solid var(--line);
-        border-radius: 0.75rem;
-        background: var(--white);
+        border: 1px solid var(--line-soft);
+        border-radius: 1rem;
+        background: var(--glass);
         padding: 1rem;
         text-decoration: none;
         font-size: 0.78rem;
         font-weight: 700;
         line-height: 1.45;
+        box-shadow: inset 0 1px 0 rgba(245, 248, 255, 0.08);
+        transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+        -webkit-backdrop-filter: blur(0.75rem);
+        backdrop-filter: blur(0.75rem);
+      }
+
+      .source-link:hover {
+        transform: translateY(-0.2rem);
+        border-color: var(--orange-ring);
+        background: var(--glass-strong);
       }
 
       .source-link span:last-child {
@@ -1058,7 +1132,7 @@
         display: inline-flex;
         align-items: center;
         gap: 0.45rem;
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-soft);
         border-radius: 999px;
         padding: 0.45rem 0.7rem;
         color: var(--ink);
@@ -1069,7 +1143,7 @@
         width: 0.4rem;
         aspect-ratio: 1;
         border-radius: 50%;
-        background: #4a7553;
+        background: #7ddca1;
         content: "";
       }
 
@@ -1124,6 +1198,7 @@
 
         .hero-art {
           min-height: 23rem;
+          perspective: 55rem;
         }
 
         .hero-year {
@@ -1167,7 +1242,7 @@
         .chapter {
           grid-template-columns: 1fr;
           gap: 0.5rem;
-          padding-bottom: 2.5rem;
+          padding: 1rem;
         }
 
         .chapter-copy {
@@ -1176,6 +1251,7 @@
 
         .device-card {
           min-height: 17rem;
+          transform: rotateY(-3deg) rotateX(2deg);
         }
 
         .closing-inner {
@@ -1203,12 +1279,12 @@
 
         .device-old {
           left: 15%;
-          transform: scale(0.88) rotate(-12deg);
+          transform: scale(0.88) rotateY(-16deg) rotateZ(-12deg);
         }
 
         .device-new {
           right: 13%;
-          transform: scale(0.88) rotate(8deg);
+          transform: scale(0.88) rotateY(14deg) rotateZ(8deg);
         }
       }
 
@@ -1395,7 +1471,7 @@
               </div>
             </article>
 
-            <article class="chapter" id="chapter-2008" data-year="2008">
+            <article class="chapter" id="chapter-2008" data-year="2008" data-nav-id="chapter-2007">
               <div class="chapter-copy">
                 <span class="chapter-era">2008 · APPS OPEN NEW DOORS</span>
                 <h3>A phone becomes many things.</h3>
@@ -1559,7 +1635,8 @@
 
               const year = visible.target.dataset.year;
               activeYear.textContent = year;
-              const sectionLink = chapterLinks.find((link) => link.hash === `#${visible.target.id}`);
+              const navTargetId = visible.target.dataset.navId ?? visible.target.id;
+              const sectionLink = chapterLinks.find((link) => link.hash === `#${navTargetId}`);
               for (const link of chapterLinks) link.removeAttribute("aria-current");
               if (sectionLink) sectionLink.setAttribute("aria-current", "location");
             },

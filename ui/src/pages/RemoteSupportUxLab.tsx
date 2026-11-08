@@ -95,6 +95,7 @@ export function RemoteSupportUxLab() {
   const controlSupported = selectedPhoneId === "maya";
 
   function selectPhone(phoneId: PhoneId) {
+    if (phoneId === selectedPhoneId) return;
     setSelectedPhoneId(phoneId);
     setControlApproval("not-requested");
     setScreenApproval("approved");

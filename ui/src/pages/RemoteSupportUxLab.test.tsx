@@ -91,5 +91,13 @@ describe("RemoteSupportUxLab", () => {
     });
     expect(container.textContent).toContain("Allow screen sharing for this session?");
     expect(container.textContent).toContain("The helper can only see your screen after you approve.");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Jordan Lee, iPhone 15, iPhone"]')
+        ?.click();
+    });
+    expect(container.textContent).toContain("Allow screen sharing for this session?");
+    expect(container.textContent).toContain("The helper can only see your screen after you approve.");
   });
 });
