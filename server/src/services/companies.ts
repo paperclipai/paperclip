@@ -1,4 +1,5 @@
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -347,6 +348,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
+          if (companyPatch.status === "active") await promoteDeferredWorkIntents(tx, { companyId: id, trigger: "pause_lifted" });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyExternalObjectRefresh(tx, id);

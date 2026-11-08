@@ -16,6 +16,7 @@ import {
   issues,
   nativeRunFinalizations,
   sandboxCreationOperations,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -65,7 +66,7 @@ describe("report-only ownership reconciliation", () => {
 
   beforeEach(async () => {
     await rm(orphanSpool, { recursive: true, force: true });
-    await db.execute(sql`truncate budget_policies, activity_log, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
+    await db.execute(sql`truncate budget_policies, activity_log, workspace_operations, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
       native_run_finalizations, heartbeat_runs, issues, agents, companies cascade`);
     companyId = randomUUID(); agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Ownership fixture", issuePrefix: "OWN" });
@@ -78,6 +79,7 @@ describe("report-only ownership reconciliation", () => {
       liveRun: randomUUID(), deadRun: randomUUID(), debtRun: randomUUID(), boundedRun: randomUUID(),
       liveIssue: randomUUID(), stalledIssue: randomUUID(),
       orphanLease: randomUUID(), unownedCleanup: randomUUID(), foreignIntent: randomUUID(), wake: randomUUID(),
+      heldWake: randomUUID(),
     };
     await db.insert(issues).values([
       { id: ids.liveIssue, companyId, title: "Live", status: "in_progress", assigneeAgentId: agentId },
@@ -115,7 +117,12 @@ describe("report-only ownership reconciliation", () => {
         processStartedAt: "2026-11-01T00:00:00.000Z" } } });
     // A wake request ended terminally on a temporary refusal.
     await db.insert(agentWakeupRequests).values({ id: ids.wake, companyId, agentId, source: "assignment",
-      status: "skipped", error: "Company budget hold: admission paused" });
+      status: "skipped", reason: "agent.not_invokable", requestedByActorType: "user", error: "Agent is paused" });
+    // A work intent refused for another run's unfinished accounting (the gate
+    // Phase 3 removed). Saved, not dropped, so it is not an I4 violation.
+    await db.insert(agentWakeupRequests).values({ id: ids.heldWake, companyId, agentId, source: "automation",
+      status: "deferred_issue_execution", payload: { executionWait: { reason: "budget.blocked",
+        message: "Company cannot start work while completed runs await accounting." } } });
   }
 
   async function snapshot() {
@@ -134,7 +141,9 @@ describe("report-only ownership reconciliation", () => {
     const names = OWNABLE_KINDS.map(kind => kind.id);
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
-    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id)).toEqual(["native_accepted_result_lease", "wake_request_claimed"]);
+    expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "environment_run_lease_active",
+        "environment_teardown_claim", "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -143,7 +152,7 @@ describe("report-only ownership reconciliation", () => {
     const before = await snapshot();
     const state = createOwnershipReportState();
 
-    const first = await runOwnershipReconciliationPass(db, { state });
+    const first = await runOwnershipReconciliationPass(db, { state, settle: false });
 
     expect(kindReport(first, "native_executor_claim")).toMatchObject({ inProgress: 1,
       verdicts: { alive: 1, gone: 0, unprovable: 0 }, reasons: { current_process: 1 } });
@@ -160,22 +169,24 @@ describe("report-only ownership reconciliation", () => {
     expect(rules(first, "environment_pending_cleanup")).toEqual(["I1_owned"]);
     // I2 needs the owner proven gone on two consecutive passes.
     expect(rules(first, "environment_run_lease_active")).toEqual([]);
+    // Phase 3: pending accounting is exposure, not a gate. Only a refusal that
+    // names an accounting hold is an I3 violation.
     expect(first.violations.filter(violation => violation.rule === "I3_admission_independent")
-      .map(violation => violation.recordId)).toEqual([ids.debtRun]);
-    expect(rules(first, "wake_request")).toEqual(["I4_exactly_once_intent"]);
+      .map(violation => violation.recordId)).toEqual([ids.heldWake]);
+    expect(rules(first, "wake_request")).toEqual(["I3_admission_independent", "I4_exactly_once_intent"]);
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
     expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns",
       "I7_scope", "record_cap", "wake_coverage"]);
 
     expect(first.awaitingSecondProof).toBe(1);
-    const second = await runOwnershipReconciliationPass(db, { state });
+    const second = await runOwnershipReconciliationPass(db, { state, settle: false });
     expect(rules(second, "environment_run_lease_active")).toEqual(["I2_settled"]);
     expect(second.newViolations.map(violation => `${violation.rule}:${violation.kind}`)).toEqual(["I2_settled:environment_run_lease_active"]);
 
     // A stuck record already reported for I2 needs no further pass.
     expect(second.awaitingSecondProof).toBe(0);
-    expect((await runOwnershipReconciliationPass(db, { state })).awaitingSecondProof).toBe(0);
+    expect((await runOwnershipReconciliationPass(db, { state, settle: false })).awaitingSecondProof).toBe(0);
 
     // Report-only: nothing was settled, released or retried.
     expect(await snapshot()).toEqual(before);
@@ -278,6 +289,52 @@ describe("report-only ownership reconciliation", () => {
       .toEqual([wakes.pending.id, wakes.unprojected.id].sort());
   });
 
+  it("settles a finalize attempt whose process died mid-copyback, and keeps live or independent ones", async () => {
+    // Crash points workspace.finalize.after_start_before_copyback and
+    // .after_copyback_before_done: the run finished through a later attempt,
+    // but the interrupted attempt stayed `running`.
+    const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
+      ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
+    const runs = { done: randomUUID(), live: randomUUID(), legacyDone: randomUUID(), legacyLive: randomUUID() };
+    await db.insert(heartbeatRuns).values([run(runs.done, "succeeded"), run(runs.live, "running"),
+      run(runs.legacyDone, "succeeded"), run(runs.legacyLive, "running")]);
+    const dead = { bootId: "previous-boot", pid: 4_194_303, hostHash: currentProcessSpaceHash(),
+      processStartedAt: "2026-11-07T09:00:00.000Z" };
+    const ops = { dead: randomUUID(), live: randomUUID(), foreign: randomUUID(), uncertain: randomUUID(),
+      legacyDone: randomUUID(), legacyLive: randomUUID() };
+    const op = (id: string, runId: string, metadata: Record<string, unknown>) => ({ id, companyId, heartbeatRunId: runId,
+      phase: "workspace_finalize", status: "running", metadata });
+    await db.insert(workspaceOperations).values([
+      op(ops.dead, runs.done, { finalizeOwner: dead }),
+      // Stamped by this process and still running here (current boot): alive.
+      op(ops.live, runs.live, { finalizeOwner: { bootId: currentControllerBootId(), pid: process.pid,
+        hostHash: currentProcessSpaceHash(), processStartedAt: null } }),
+      // Another PID space is never proof.
+      op(ops.foreign, runs.done, { finalizeOwner: { ...dead, hostHash: "another-pid-space" } }),
+      op(ops.uncertain, runs.done, { finalizeOwner: dead, uncertain: true }),
+      // Written before the stamp: owned by its run.
+      op(ops.legacyDone, runs.legacyDone, {}),
+      op(ops.legacyLive, runs.legacyLive, {}),
+    ]);
+    const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
+      .from(workspaceOperations)).map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(Object.values(await statuses()).every(status => status === "running")).toBe(true);
+
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state });
+    expect(kindReport(first, "native_workspace_finalize_attempt")).toMatchObject({ inProgress: 6, settled: 2 });
+    expect(await statuses()).toEqual({ dead: "failed", live: "running", foreign: "running", uncertain: "running",
+      legacyDone: "failed", legacyLive: "running" });
+    const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.dead));
+    expect(settled.metadata).toMatchObject({ abandonedFinalization: { reason: "abandoned_workspace_finalization", proof: "pid_dead" } });
+    expect(settled.finishedAt).not.toBeNull();
+    // The run's outcome never changes.
+    const [doneRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.done));
+    expect(doneRun.status).toBe("succeeded");
+  });
+
   it("writes nothing when recording is off", async () => {
     await seed();
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
@@ -285,10 +342,11 @@ describe("report-only ownership reconciliation", () => {
     expect(await db.select().from(activityLog)).toEqual([]);
   });
 
-  it("does not report admission holds without an active budget policy", async () => {
+  it("never reports pending accounting itself as an admission violation", async () => {
     await seed();
-    await db.update(budgetPolicies).set({ isActive: false });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, ids.heldWake));
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(kindReport(report, "run_accounting_debt")).toMatchObject({ inProgress: 2 });
     expect(report.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
   });
 
@@ -299,12 +357,62 @@ describe("report-only ownership reconciliation", () => {
       source: "assignment", status: "failed", error: "adapter exited with code 1" })));
     const refused = Array.from({ length: 5 }, () => randomUUID());
     await db.insert(agentWakeupRequests).values(refused.map(id => ({ id, companyId, agentId, source: "assignment",
-      status: "skipped", error: "issue lock busy" })));
+      status: "skipped", reason: "company.inactive", requestedByActorType: "user", error: "Company is not active" })));
     const report = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
     expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")
       .map(violation => violation.recordId).sort()).toEqual([...refused].sort());
     const again = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
     expect(again.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  // Section E: I4 reads the closed refusal code, not free text. Phase 2's
+  // false positive was a delivered retry whose error said "retrying once".
+  it("does not report a wake whose error text only mentions a retry", async () => {
+    const state = createOwnershipReportState();
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "failed",
+      reason: "process_lost", requestedByActorType: "user", error: "Process lost; retrying once" });
+    const report = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  it("reports a saved message whose pause lifted without promotion, and not one still paused", async () => {
+    const id = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id, companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt: minutesAgo(10),
+      payload: { executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const paused = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(paused.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([]);
+    expect(kindReport(paused, "wake_request_deferred")).toMatchObject({ inProgress: 1, verdicts: { alive: 1 } });
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const lifted = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(lifted.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([
+      expect.objectContaining({ rule: "I4_exactly_once_intent", recordId: id, reason: "deferred_after_hold_cleared" })]);
+  });
+
+  it("does not report a hard-stop refusal or a message saved behind a live run", async () => {
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "skipped",
+      reason: "budget.blocked", requestedByActorType: "user", error: "Company is paused because its budget hard-stop was reached." });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "running", invocationSource: "manual",
+      contextSnapshot: { issueId } });
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt: minutesAgo(10),
+      payload: { issueId, executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {
+    const updatedAt = minutesAgo(1);
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "deferred_issue_execution",
+      requestedByActorType: "user", updatedAt,
+      payload: { executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.kind === "wake_request_deferred")).toEqual([]);
+    // Without a release event the worker still checks again when grace ends.
+    expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
   });
 
   it("attributes spool files to their company", async () => {
@@ -319,15 +427,31 @@ describe("report-only ownership reconciliation", () => {
       .where(eq(activityLog.action, OWNERSHIP_INVARIANT_VIOLATION_ACTION))).toEqual([{ entityId: "orphan-1" }]);
   });
 
-  it("counts admission holds only for policies whose scope includes the run", async () => {
-    await seed();
-    await db.update(budgetPolicies).set({ scopeType: "agent", scopeId: randomUUID() });
-    const other = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(other.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
-    await db.update(budgetPolicies).set({ scopeId: agentId });
-    const own = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(own.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
-      .toEqual([ids.debtRun]);
+  it("reports a run cancelled for an accounting hold", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "cancelled", invocationSource: "manual",
+      error: "New work must wait while a native run recovers its unfinished accounting." });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([
+      expect.objectContaining({ kind: "queued_run", recordId: runId, reason: "refused_for_accounting_hold" })]);
+  });
+
+  it("reads every accounting-hold refusal in a busy window across passes", async () => {
+    const state = createOwnershipReportState();
+    await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    const refused = Array.from({ length: 25 }, () => randomUUID());
+    await db.insert(agentWakeupRequests).values(refused.map(id => ({ id, companyId, agentId, source: "assignment",
+      status: "skipped", error: "Company cannot start work while completed runs await accounting." })));
+    const seen: string[] = [];
+    const first = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    // Ten pages of two: the rest waits for the next pass, which is kept due.
+    expect(first.retryNeeded).toBe(true);
+    seen.push(...first.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId));
+    const second = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    seen.push(...second.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId));
+    expect(seen.sort()).toEqual([...refused].sort());
+    const third = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(third.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
   });
 
   it("treats a saved monitor deadline as a next action", async () => {
@@ -370,15 +494,6 @@ describe("report-only ownership reconciliation", () => {
     const passes: boolean[] = [];
     for (let pass = 0; pass < 6; pass++) passes.push((await runOwnershipReconciliationPass(db, { state })).retryNeeded);
     expect(passes).toEqual([true, true, true, true, false, false]);
-  });
-
-  it("counts late-receipt debt as an admission hold, as the gate does", async () => {
-    await seed();
-    await db.update(heartbeatRuns).set({ costAccountingPending: false, usageJson: { accountingLateReceiptPending: true } })
-      .where(eq(heartbeatRuns.id, ids.debtRun));
-    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
-      .toEqual([ids.debtRun]);
   });
 
   it("reads a kind larger than one page in a single pass, so second proofs compare the same records", async () => {

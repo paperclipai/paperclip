@@ -1,0 +1,203 @@
+name: Crash-point suite
+
+# On-demand only (durable ownership plan, Decision 2): never a required PR
+# check. Runs tests/restart-chaos/crash-points.ts on the default branch, which
+# kills an isolated control plane at each selected named crash point, restarts
+# it and asserts plan invariants I1–I8 plus restart-chaos graders R1–R6.
+# Provider keys come from the runner-e2e-paid environment, so the code under
+# test must be CODEOWNER-reviewed: the default branch only, allowlisted actors.
+
+on:
+  workflow_dispatch:
+    inputs:
+      points:
+        description: "Comma-separated crash-point globs (blank = every point reachable in env)"
+        required: false
+        default: ""
+        type: string
+      kinds:
+        description: "Comma-separated ownership kind ids, e.g. native_executor_claim (blank = all)"
+        required: false
+        default: ""
+        type: string
+      adapters:
+        description: "Comma-separated adapters: codex, claude, opencode"
+        required: false
+        default: codex
+        type: string
+      workloads:
+        description: "Comma-separated restart-chaos workloads: A1, B1, B5, C1"
+        required: false
+        default: A1
+        type: string
+      nth:
+        description: "Fire at the nth hit of each point"
+        required: false
+        default: "1"
+        type: string
+
+concurrency:
+  group: crash-points-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # No secrets here: refuse the wrong branch, actor or input before the paid job starts.
+  authorize:
+    name: Authorize crash-point run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require default branch and allowlisted numeric actor IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "The crash-point suite uses provider keys and may run only from the default branch." >&2
+            exit 1
+          fi
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
+          if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
+            echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
+            exit 1
+          fi
+          for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
+            jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          done
+
+      - name: Validate inputs
+        env:
+          POINTS: ${{ inputs.points }}
+          KINDS: ${{ inputs.kinds }}
+          ADAPTERS: ${{ inputs.adapters }}
+          WORKLOADS: ${{ inputs.workloads }}
+          NTH: ${{ inputs.nth }}
+        run: |
+          set -euo pipefail
+          [[ "$POINTS" =~ ^[a-z0-9_.*?,]*$ ]] || { echo "points: lower-case names, '.', '_', '*', '?' and ','" >&2; exit 1; }
+          [[ "$KINDS" =~ ^[a-z0-9_,]*$ ]] || { echo "kinds: lower-case ids and ','" >&2; exit 1; }
+          [[ "$ADAPTERS" =~ ^(codex|claude|opencode)(,(codex|claude|opencode))*$ ]] || { echo "adapters: codex, claude, opencode" >&2; exit 1; }
+          [[ "$WORKLOADS" =~ ^(A1|B1|B5|C1)(,(A1|B1|B5|C1))*$ ]] || { echo "workloads: A1, B1, B5, C1" >&2; exit 1; }
+          [[ "$NTH" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "nth: 1-999" >&2; exit 1; }
+
+  suite:
+    name: Crash points (${{ inputs.points || 'all' }})
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    environment:
+      name: runner-e2e-paid
+    steps:
+      - name: Reauthorize paid execution before provider access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "The crash-point suite uses provider keys and may run only from the default branch." >&2
+            exit 1
+          fi
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
+          if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
+            echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
+            exit 1
+          fi
+          for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
+            jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      # No shared dependency cache and no dependency lifecycle scripts in a
+      # secret-bearing job (tests/runner-e2e/SECURITY.md); the repo's own
+      # postinstall step runs explicitly.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node scripts/link-plugin-dev-sdk.mjs
+
+      - name: Build native runner
+        run: |
+          set -euo pipefail
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+          pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+
+      - name: List selected crash points
+        env:
+          POINTS: ${{ inputs.points }}
+          KINDS: ${{ inputs.kinds }}
+        run: node scripts/crash-points.mjs --list ${POINTS:+--points "$POINTS"} ${KINDS:+--kinds "$KINDS"}
+
+      - name: Run crash-point suite
+        env:
+          POINTS: ${{ inputs.points }}
+          KINDS: ${{ inputs.kinds }}
+          ADAPTERS: ${{ inputs.adapters }}
+          WORKLOADS: ${{ inputs.workloads }}
+          NTH: ${{ inputs.nth }}
+          OPENAI_API_KEY: ${{ contains(inputs.adapters, 'codex') && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ contains(inputs.adapters, 'claude') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ contains(inputs.adapters, 'opencode') && secrets.OPENROUTER_API_KEY || '' }}
+          # The hosted runner is a disposable VM; B1 oracles run agent code without Seatbelt there.
+          RESTART_CHAOS_ALLOW_UNSANDBOXED_ORACLE: "1"
+          RESTART_CHAOS_RESULTS_DIR: ${{ runner.temp }}/crash-point-results
+        run: |
+          set -euo pipefail
+          node scripts/crash-points.mjs ${POINTS:+--points "$POINTS"} ${KINDS:+--kinds "$KINDS"} \
+            --adapters "$ADAPTERS" --workloads "$WORKLOADS" --nth "$NTH" --seed "$((GITHUB_RUN_ID % 2147483647))"
+
+      - name: Summarize
+        if: always()
+        run: |
+          shopt -s nullglob
+          for summary in "$RUNNER_TEMP"/crash-point-results/crash-points/*/SUMMARY.md; do cat "$summary" >> "$GITHUB_STEP_SUMMARY"; done
+
+      # Summaries, grades and crash-point receipts only: server logs and
+      # evidence bundles can hold provider output and stay on the runner.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: crash-points-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/crash-point-results/crash-points/*/SUMMARY.md
+            ${{ runner.temp }}/crash-point-results/crash-points/*/summary.json
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/crash-point.json
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/t*.grade.json
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/timeline.jsonl
+          retention-days: 14
+          if-no-files-found: warn

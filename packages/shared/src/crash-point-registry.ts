@@ -21,6 +21,8 @@ export type CrashPointDefinition = {
   environments: readonly CrashPointEnvironment[];
   kinds: readonly string[];
   invariants: readonly CrashPointInvariant[];
+  /** What a run must go through first when one plain task does not reach the point. */
+  prerequisite?: string;
 };
 
 export const CRASH_POINT_NAME_PATTERN = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.(before|after)_[a-z0-9_]+$/;
@@ -97,18 +99,21 @@ export const CRASH_POINTS = {
     environments: ["daytona"],
     kinds: ["environment_teardown_claim", "environment_pending_cleanup"],
     invariants: ["I2", "I7"],
+    prerequisite: "A pending_cleanup lease: a provider release that failed or could not be verified. A plain task's release succeeds and never claims a teardown.",
   },
   "environment.teardown.after_destroy_before_lease": {
     description: "A reusable sandbox was destroyed at the provider; its lease row is not released.",
     environments: ["daytona"],
     kinds: ["environment_run_lease_active", "environment_retained_hold"],
     invariants: ["I2"],
+    prerequisite: "A reuse_by_environment lease that expires or is replaced (destroyReusableSandboxLease). The chaos Daytona environment's leases are ephemeral by default.",
   },
   "environment.stop_retain.after_claim_before_stop": {
     description: "A stop-and-retain intent and its claim are committed; the provider stop has not been retried.",
     environments: ["daytona"],
     kinds: ["environment_stop_and_retain_intent"],
     invariants: ["I2", "I7"],
+    prerequisite: "A stop-and-retain intent: a run whose sandbox must be stopped but kept, for a native workspace export resume.",
   },
   "environment.lease.after_release_before_runtime_services": {
     description: "The run's environment leases are released; its workspace runtime services are not.",

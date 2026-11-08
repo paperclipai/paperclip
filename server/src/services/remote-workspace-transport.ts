@@ -247,11 +247,23 @@ const fs=require('node:fs/promises'),path=require('node:path');
   if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_attachment');return true};
  if(!await safeDirectory(root))throw Error('missing_workspace');
  const parent=path.join(root,'.paperclip-recovered'),destination=path.join(parent,input.operationId);
- if(!await safeDirectory(parent)||!await safeDirectory(destination)){process.stdout.write('missing');return}
+ // Removal first renames a verified attachment here, so an interrupted delete
+ // never leaves a proofless attachment behind; the next removal finishes it.
+ const retiring=path.join(parent,'.retiring-'+input.operationId);
+ const unlock=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())return;
+  await fs.chmod(p,0o700);for(const name of await fs.readdir(p))await unlock(path.join(p,name))};
+ const discard=async()=>{await unlock(retiring);await fs.rm(retiring,{recursive:true});
+  await fs.rmdir(parent).catch(e=>{if(e.code!=='ENOTEMPTY'&&e.code!=='EEXIST')throw e})};
+ if(!await safeDirectory(parent)){process.stdout.write('missing');return}
+ let resumed=false;
+ if(input.remove===true&&await safeDirectory(retiring)){await discard();resumed=true}
+ if(!await safeDirectory(destination)){process.stdout.write(resumed?'removed':'missing');return}
  const proof=path.join(destination,'provenance.json'),s=await inspect(proof);
  if(!s?.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384||await fs.readFile(proof,'utf8')!==input.provenance)
   throw Error('attachment_proof_changed');
- process.stdout.write('present');
+ if(input.remove!==true){process.stdout.write('present');return}
+ await fs.rename(destination,retiring);await discard();
+ process.stdout.write('removed');
 })().catch(()=>{process.stderr.write('remote_workspace_recovery_attachment_invalid');process.exitCode=1});`;
 
 /** Reuse a restored attachment only with its exact provenance. User edits to
@@ -263,6 +275,17 @@ export async function hasRemoteRecoveryAttachment(input: {
     input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance })], undefined, 30_000);
   if (output !== "present" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
   return output === "present";
+}
+
+/** Remove a retired attachment, but only while its exact provenance is still
+ * in place; anything else at that path is left alone. */
+export async function removeRemoteRecoveryAttachment(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; provenance: string;
+}) {
+  const output = await command(input.target, "recovery_attachment", ["-e", RECOVERY_ATTACHMENT,
+    input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance, remove: true })]);
+  if (output !== "removed" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
+  return output === "removed";
 }
 
 const PREPARE = String.raw`

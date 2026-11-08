@@ -11,6 +11,7 @@ import {
   armCrashPointForTest,
   armedCrashPoint,
   crashPoint,
+  parseCrashPointControl,
   parseCrashPointSpec,
   type CrashPointName,
 } from "./crash-points.js";
@@ -47,6 +48,15 @@ describe("parseCrashPointSpec", () => {
     expect(() => parseCrashPointSpec("sandbox.create.after_typo")).toThrow(/unknown crash point/);
     expect(() => parseCrashPointSpec(`${first}:0`)).toThrow(/positive integer/);
     expect(() => parseCrashPointSpec(`${first}:x`)).toThrow(/positive integer/);
+  });
+});
+
+describe("parseCrashPointControl", () => {
+  it("reads a token and a spec, and treats anything else as disarmed", () => {
+    expect(parseCrashPointControl(`t1 ${first}:3\n`)).toEqual({ token: "t1", spec: { name: first, nth: 3 } });
+    expect(parseCrashPointControl("")).toBeNull();
+    expect(parseCrashPointControl(first)).toBeNull();
+    expect(parseCrashPointControl("t1 sandbox.create.after_typo")).toBeNull();
   });
 });
 
@@ -145,6 +155,31 @@ describe("crashPoint armed by the environment", { timeout: 60_000 }, () => {
       expect(result.signal).toBe("SIGKILL");
       expect(result.stdout).toBe("closed\none\n");
       expect(JSON.parse(readFileSync(receipt, "utf8").trim())).toMatchObject({ point: first, hit: 2 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arms at runtime from the control file and resets the count on a new token", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "crash-point-control-"));
+    try {
+      const control = path.join(dir, "control");
+      const receipt = path.join(dir, "receipt.jsonl");
+      const hit = `crashPoint(${JSON.stringify(first)});`;
+      const source = [
+        `const { crashPoint } = await import(${JSON.stringify(path.join(import.meta.dirname, "crash-points.ts"))});`,
+        `const { writeFileSync } = await import("node:fs");`,
+        `${hit} process.stdout.write("absent\\n");`,
+        `writeFileSync(${JSON.stringify(control)}, "t1 ${first}:2\\n");`,
+        `${hit} process.stdout.write("t1-one\\n");`,
+        `writeFileSync(${JSON.stringify(control)}, "t2 ${first}:2\\n");`,
+        `${hit} process.stdout.write("t2-one\\n");`,
+        `${hit} process.stdout.write("t2-two\\n");`,
+      ].join("\n");
+      const result = runChild({ PAPERCLIP_CRASH_POINT_CONTROL: control, PAPERCLIP_CRASH_POINT_RECEIPT: receipt }, source);
+      expect(result.signal).toBe("SIGKILL");
+      expect(result.stdout).toBe("absent\nt1-one\nt2-one\n");
+      expect(JSON.parse(readFileSync(receipt, "utf8").trim())).toMatchObject({ point: first, hit: 2, token: "t2" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
