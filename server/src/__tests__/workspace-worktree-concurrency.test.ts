@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { realizeExecutionWorkspace } from "../services/workspace-runtime.js";
+import { realizeExecutionWorkspace, worktreeCreateLimits } from "../services/workspace-runtime.js";
 
 const execFileAsync = promisify(execFile);
 const git = async (cwd: string, args: string[]) => (await execFileAsync("git", args, { cwd })).stdout.trim();
@@ -56,6 +56,46 @@ describe("concurrent git worktree creation", () => {
     }
   }, 60_000);
 
+  const realize = (repoRoot: string, identifier: string) => realizeExecutionWorkspace({
+    base: { baseCwd: repoRoot, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1",
+      repoUrl: null, repoRef: "origin/main" },
+    config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+    issue: { id: `issue-${identifier}`, identifier, title: `Task ${identifier}` },
+    agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+  });
+
+  it("leaves no half-created branch when the lock outlasts every retry, so a later retry creates it cleanly", async () => {
+    const repoRoot = await clonedRepository();
+    const lock = path.join(repoRoot, ".git", "config.lock");
+    await fs.writeFile(lock, "");
+    await expect(realize(repoRoot, "PAP-910")).rejects.toThrow(/could not lock config file/);
+    await fs.rm(lock, { force: true });
+    const workspace = await realize(repoRoot, "PAP-910");
+    expect(workspace).toMatchObject({ created: true, branchCreatedByRuntime: true });
+    expect(await git(repoRoot, ["config", "--get", `branch.${workspace.branchName}.remote`])).toBe("origin");
+  }, 60_000);
+
+  it("stops a stuck create at its deadline so later creates on the repository proceed", async () => {
+    const repoRoot = await clonedRepository();
+    const hooks = path.join(path.dirname(repoRoot), "hooks");
+    await fs.mkdir(hooks);
+    await fs.writeFile(path.join(hooks, "post-checkout"), "#!/bin/sh\nsleep 30\n", { mode: 0o755 });
+    await git(repoRoot, ["config", "core.hooksPath", hooks]);
+    const original = worktreeCreateLimits.timeoutMs;
+    worktreeCreateLimits.timeoutMs = 1_000;
+    try {
+      const stuck = realize(repoRoot, "PAP-920");
+      const startedAt = Date.now();
+      await expect(stuck).rejects.toThrow(/timed out/);
+      await git(repoRoot, ["config", "--unset", "core.hooksPath"]);
+      const next = await realize(repoRoot, "PAP-921");
+      expect(next).toMatchObject({ created: true });
+      expect(Date.now() - startedAt).toBeLessThan(20_000);
+    } finally {
+      worktreeCreateLimits.timeoutMs = original;
+    }
+  }, 60_000);
+
   async function createConcurrently(repoRoot: string, round: number) {
     const tasks = Array.from({ length: 10 }, (_, index) => round * 10 + index + 1);
     const workspaces = await Promise.all(tasks.map(index => realizeExecutionWorkspace({
@@ -70,6 +110,8 @@ describe("concurrent git worktree creation", () => {
       expect(workspace).toMatchObject({ created: true, branchCreatedByRuntime: true });
       expect(await git(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(workspace.branchName);
       expect(workspace.branchName).toContain(`PAP-${tasks[position]}`);
+      // The degraded state this guards against: a branch without its upstream.
+      expect(await git(repoRoot, ["config", "--get", `branch.${workspace.branchName}.remote`])).toBe("origin");
     }
     expect(new Set(workspaces.map(workspace => workspace.cwd)).size).toBe(tasks.length);
   }
