@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -754,6 +754,65 @@ describe("runChildProcess", () => {
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
     expect(result.stdout).toBe("done");
+  });
+
+  it("strips server-only secrets from the child env even when opts.env carries the whole server env", async () => {
+    const fake = (label: string) => `fake-${label}-${randomUUID()}`;
+    const secrets: Record<string, string> = {
+      PAPERCLIP_AGENT_JWT_SECRET: fake("jwt"),
+      BETTER_AUTH_SECRET: fake("auth"),
+      PAPERCLIP_SECRETS_MASTER_KEY: fake("master"),
+      PAPERCLIP_SECRETS_AWS_KMS_KEY_ID: fake("kms"),
+    };
+    const providerKey = fake("provider");
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    // Only hashes go on the child's argv, and the child reports names and counts only.
+    const childScript = [
+      "const { createHash } = require('node:crypto');",
+      "const sha = (v) => createHash('sha256').update(v).digest('hex');",
+      "const secretHashes = new Set(JSON.parse(process.argv[1]));",
+      "const env = process.env;",
+      "const argvText = process.argv.join('\\n');",
+      "process.stdout.write(JSON.stringify({",
+      "  secretKeysInEnv: Object.keys(env).filter((k) => /JWT_SECRET|AUTH_SECRET|MASTER_KEY|SECRETS_AWS_/.test(k)).sort(),",
+      "  secretValuesInEnv: Object.values(env).filter((v) => secretHashes.has(sha(v))).length,",
+      "  injectedValuesInArgv: process.argv.filter((a) => secretHashes.has(sha(a))).length",
+      "    + (argvText.includes(env.TEST_PROVIDER_API_KEY ?? '\\0') ? 1 : 0),",
+      "  providerKeyKept: sha(env.TEST_PROVIDER_API_KEY ?? '') === process.argv[2],",
+      "}));",
+    ].join("\n");
+
+    const previous = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = secrets.PAPERCLIP_AGENT_JWT_SECRET;
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", childScript, JSON.stringify(Object.values(secrets).map(sha)), sha(providerKey)],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...(process.env as Record<string, string>),
+            ...secrets,
+            TEST_PROVIDER_API_KEY: providerKey,
+          },
+          timeoutSec: 10,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        secretKeysInEnv: [],
+        secretValuesInEnv: 0,
+        injectedValuesInArgv: 0,
+        providerKeyKept: true,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previous;
+    }
   });
 
   it("waits for onSpawn before sending stdin to the child", async () => {

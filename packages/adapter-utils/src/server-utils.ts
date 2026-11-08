@@ -3548,6 +3548,51 @@ export function sanitizeInheritedPaperclipEnv(
   return env;
 }
 
+// Server-only signing and encryption secrets. A spawned agent never needs these,
+// but adapters that build their env from `{ ...process.env, ...env }` pass the
+// whole server env as `opts.env`, which bypasses sanitizeInheritedPaperclipEnv.
+// Host-wide provider API keys are not in this list: agents depend on them.
+const SERVER_ONLY_SECRET_ENV_KEYS = new Set([
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "PAPERCLIP_AUTH_SECRET",
+  "BETTER_AUTH_SECRET",
+  "PAPERCLIP_SECRETS_MASTER_KEY",
+  "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+  "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+  "PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET",
+  "PAPERCLIP_DECISION_SIGNING_SECRET",
+  "PAPERCLIP_WORKSPACE_HANDOFF_SECRET",
+  "PAPERCLIP_WORKSPACE_HANDOFF_KEY",
+  "PAPERCLIP_WORKSPACE_READINESS_TOKEN",
+  "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN",
+  "PAPERCLIP_DEV_SERVER_STATUS_TOKEN",
+  "PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN",
+  "PAPERCLIP_TELEMETRY_BACKEND_TOKEN",
+  "PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",
+  "PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",
+  "PAPERCLIP_ID_CONNECTOR_SIGN_PRIVATE_KEY",
+  "PAPERCLIP_ID_CONNECTOR_SEAL_PRIVATE_KEY",
+]);
+const SERVER_ONLY_SECRET_ENV_PREFIXES = ["PAPERCLIP_SECRETS_AWS_"];
+
+export function isServerOnlySecretEnvKey(key: string): boolean {
+  const upper = key.toUpperCase();
+  return (
+    SERVER_ONLY_SECRET_ENV_KEYS.has(upper) ||
+    SERVER_ONLY_SECRET_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))
+  );
+}
+
+/** Deletes server-only secrets from `env` in place and returns it. */
+export function stripServerOnlySecretEnv<T extends Record<string, string | undefined>>(
+  env: T,
+): T {
+  for (const key of Object.keys(env)) {
+    if (isServerOnlySecretEnvKey(key)) delete env[key];
+  }
+  return env;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -4761,6 +4806,7 @@ export async function runChildProcess(
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
     }
+    stripServerOnlySecretEnv(rawMerged);
 
     const mergedEnv = ensurePathInEnv(rawMerged);
     if (opts.localProcessSandbox?.homeDir) {
@@ -4768,11 +4814,11 @@ export async function runChildProcess(
     }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
-      remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteEnv: opts.remoteExecution ? stripServerOnlySecretEnv({ ...opts.env }) : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
-        const childEnv = { ...mergedEnv, ...target.env };
+        const childEnv = stripServerOnlySecretEnv({ ...mergedEnv, ...target.env });
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
