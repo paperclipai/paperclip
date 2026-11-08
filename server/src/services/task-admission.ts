@@ -45,6 +45,16 @@ export function registerTaskDrainExpiryWork(
   };
 }
 
+// Set while this server cannot renew its controller instance lease: it stops
+// dispatching new work until the lease is renewed (or it exits). It never
+// replaces an operator's drain and has no idle owner, so HTTP stays open.
+let controllerLeaseQuiesce: TaskDrainState | null = null;
+export function setControllerLeaseQuiesce(quiesced: boolean): void {
+  if (quiesced === (controllerLeaseQuiesce !== null)) return;
+  controllerLeaseQuiesce = quiesced ? { startedAt: new Date(), expiresAt: null } : null;
+  notifyDrainChanged();
+}
+
 export function readTaskDrain(now: Date): TaskDrainState | null {
   if (taskDrainState?.expiresAt && taskDrainState.expiresAt.getTime() <= now.getTime()) {
     taskDrainState = null;
@@ -52,7 +62,7 @@ export function readTaskDrain(now: Date): TaskDrainState | null {
       try { listener(); } catch (error) { process.emitWarning(`Task drain expiry notification failed: ${String(error)}`); }
     }
   }
-  return taskDrainState;
+  return taskDrainState ?? controllerLeaseQuiesce;
 }
 
 export function computeTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" } = {}): TaskDrainState {
@@ -71,7 +81,7 @@ export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" }
   return drain;
 }
 export function stopTaskDrain(): { wasActive: boolean } {
-  const wasActive = readTaskDrain(new Date()) !== null;
+  const wasActive = readTaskDrain(new Date()) !== null && taskDrainState !== null;
   taskDrainState = null;
   notifyDrainChanged();
   return { wasActive };

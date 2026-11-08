@@ -1877,6 +1877,39 @@ processes with no recorded host are left to the run's Stop control. The next
 release removes the fallback and treats every row with no recorded host as
 unprovable.
 
+Every server boot registers a controller instance (`controller_instances`): a row
+named by its boot id, with an epoch and a lease on the database clock (90 s TTL).
+
+- **Renewal while holding work.** The boot renews with one `UPDATE` every 30 s,
+  but only while it holds work: a recent ownership stamp, tracked in-flight work,
+  or a registered local-work probe. An idle boot issues no queries, so its
+  database can sleep, and its lease lapses. The next stamp renews at once without
+  delaying the stamping write.
+- **Renewal failure.** The boot first quiesces: it reports a task drain, so it
+  dispatches no new work. If it renews again before anyone fences it, it resumes.
+  It exits only if renewal has failed for 60 s while it still holds work.
+
+A record owned by the server process itself (a lease, claim or intent with no
+recorded process group) that names a boot in another host or PID space is
+judged through that boot's row:
+
+- `stopped`: the boot shut down cleanly, so the record's owner is gone.
+- live lease: the owner is alive.
+- expired lease: the prover fences the boot (only a newer epoch may), so the
+  owner is gone. This needs both conditions below; otherwise the record stays
+  unprovable.
+  - The lease expired more than 30 s ago. Because of the 60 s exit rule, a boot
+    that held work stops before this point.
+  - The record was last written while the lease was still valid. A record a boot
+    wrote after resuming from an idle lapse is never fenced on that boot's old
+    expiry.
+- no row (a boot from before the lease): the record stays unprovable.
+
+A record with a recorded process group stays unprovable across hosts, because
+agent processes may outlive their server. The lease is off on Railway, which
+proves a replaced deployment from its own identity, and when
+`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off`.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Native finalization reconciliation (part of native recovery and the orphan
