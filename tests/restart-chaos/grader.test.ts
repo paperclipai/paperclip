@@ -243,6 +243,9 @@ describe("T-oracles", () => {
       slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"-r1-paperclip-chaos-2026-\"]\n", stderr: "" } } }).verdict).toBe("fail");
     expect(r1TestChecksSlug("import test from \"node:test\";")).toBe(false);
     expect(r1TestChecksSlug("import test from \"node:test\"; import assert from \"node:assert\"; assert.ok(chaosSlug(\"x\"));")).toBe(false);
+    expect(r1TestChecksSlug([ "import test from \"node:test\";", "import assert from \"node:assert/strict\";",
+      "for (const [input, want] of [[\"Hello Chaos World\", \"hello-chaos-world\"], [\"a b\", \"a-b\"], [\"-x-\", \"x\"]])",
+      "  test(input, () => assert.equal(chaosSlug(input), want));"].join("\n"))).toBe(true);
     const argv = workloadDefinitions.R1.collect.commands.find(command => command.name === "node_test")!.argv;
     expect(typeof argv === "function" ? argv("abcd1234") : argv).toEqual([process.execPath, "--test", "packages/shared/src/chaos/slug-abcd1234.test.ts"]);
   });

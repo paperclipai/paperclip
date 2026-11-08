@@ -43,8 +43,8 @@ const r1Test = (nonce: string) => `packages/shared/src/chaos/slug-${nonce}.test.
 
 export function r1TestChecksSlug(text: string | null | undefined): boolean {
   if (!text) return false;
-  const assertions = text.match(/\bassert(\.\w+)?\s*\(/g)?.length ?? 0;
-  return text.includes("node:test") && text.includes("node:assert") && text.includes("chaosSlug(") && assertions >= 3;
+  return text.includes("node:test") && text.includes("node:assert") && /\bassert(\.\w+)?\s*\(/.test(text)
+    && text.includes("chaosSlug") && text.includes("hello-chaos-world");
 }
 /** bench.sh must have actually run: at least this long between start and finish. */
 export const BENCH_MIN_SECONDS = 200;

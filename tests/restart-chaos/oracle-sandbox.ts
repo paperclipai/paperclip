@@ -18,13 +18,13 @@ function sbplString(value: string) { return `"${value.replaceAll("\\", "\\\\").r
  * example ~/.secrets or ~/.ssh), write anywhere except a scratch directory, or
  * use the network. The workspace stays readable.
  */
-export function oracleSandboxProfile(input: { workspace: string; scratch: string; protectedRoots: readonly string[]; readableRoots?: readonly string[] }): string {
+export function oracleSandboxProfile(input: { workspace: string; scratch: string; protectedRoots: readonly string[]; readableFiles?: readonly string[] }): string {
   const lines = ["(version 1)", "(allow default)", "(deny network*)", "(deny file-write*)",
     `(allow file-write* (subpath ${sbplString(input.scratch)}) (literal "/dev/null") (literal "/dev/tty"))`];
   for (const root of input.protectedRoots) lines.push(`(deny file-read* (subpath ${sbplString(root)}))`);
   // Later rules win: re-allow the workspace and scratch even if they sit under a protected root.
   lines.push(`(allow file-read* (subpath ${sbplString(input.workspace)}) (subpath ${sbplString(input.scratch)}))`);
-  for (const root of input.readableRoots ?? []) lines.push(`(allow file-read* (subpath ${sbplString(root)}))`);
+  for (const file of input.readableFiles ?? []) lines.push(`(allow file-read* (literal ${sbplString(file)}))`);
   return lines.join("\n");
 }
 
@@ -35,7 +35,7 @@ export function oracleSandboxProfile(input: { workspace: string; scratch: string
  * temporary HOME alone does not stop absolute-path reads.
  */
 export async function runOracleCommand(argv: readonly string[], workspace: string, options: {
-  protectedRoots?: readonly string[]; readableRoots?: readonly string[]; timeoutMs?: number; platform?: NodeJS.Platform; allowUnsandboxed?: boolean;
+  protectedRoots?: readonly string[]; readableFiles?: readonly string[]; timeoutMs?: number; platform?: NodeJS.Platform; allowUnsandboxed?: boolean;
 } = {}): Promise<OracleCommandResult> {
   const platform = options.platform ?? process.platform;
   const sandboxed = platform === "darwin";
@@ -51,7 +51,7 @@ export async function runOracleCommand(argv: readonly string[], workspace: strin
     const [command, args] = sandboxed
       ? ["/usr/bin/sandbox-exec", ["-p", oracleSandboxProfile({ workspace: await resolve(workspace), scratch,
         protectedRoots: await Promise.all((options.protectedRoots ?? [os.homedir()]).map(resolve)),
-        readableRoots: await Promise.all((options.readableRoots ?? []).map(resolve)) }), ...argv]]
+        readableFiles: await Promise.all((options.readableFiles ?? []).map(resolve)) }), ...argv]]
       : [argv[0]!, argv.slice(1)];
     try {
       const { stdout, stderr } = await execFileAsync(command, args, { cwd: workspace, env, timeout: options.timeoutMs ?? 60_000, maxBuffer: 1024 * 1024 });

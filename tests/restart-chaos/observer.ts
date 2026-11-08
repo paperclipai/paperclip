@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, realpath } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -761,7 +761,7 @@ export class TaskObserver {
       for (const command of definition.collect.commands) {
         const argv = typeof command.argv === "function" ? command.argv(this.plan.nonce) : command.argv;
         commands[command.name] = await runOracleCommand(argv, workspacePath, { protectedRoots: this.protectedRoots,
-          readableRoots: argv[0] === process.execPath ? [path.dirname(path.dirname(await realpath(process.execPath)))] : [] });
+          readableFiles: argv[0] === process.execPath ? [process.execPath] : [] });
       }
     }
     return {
