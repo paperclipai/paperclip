@@ -226,6 +226,10 @@ export function issueCreationRequestFilters(
     : {};
 }
 
+export function issueMatchesStatusFilter(issue: Pick<Issue, "status" | "displayStatus">, statuses: string[]): boolean {
+  return statuses.length === 0 || statuses.includes(issue.displayStatus ?? issue.status);
+}
+
 export function applyIssueFilters(
   issues: Issue[],
   state: IssueFilterState,
@@ -244,7 +248,7 @@ export function applyIssueFilters(
   if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks && !state.routineTasksOnly) {
     result = result.filter((issue) => !isAgentCreatedIssue(issue));
   }
-  if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.displayStatus ?? issue.status));
+  if (state.statuses.length > 0) result = result.filter((issue) => issueMatchesStatusFilter(issue, state.statuses));
   if (state.priorities.length > 0) result = result.filter((issue) => state.priorities.includes(issue.priority));
   if (state.assignees.length > 0) {
     result = result.filter((issue) => {
