@@ -563,7 +563,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       }
     }
     let failedAuthIdentity: string | null = null;
-    if (input.failureKind === "auth" && pin.member.binding.mode !== "responsible_user") {
+    if (input.failureKind === "auth") {
       const binding = pin.member.binding;
       const [source] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
         .innerJoin(toolConnections, and(eq(toolConnections.companyId, connectionGrants.companyId), eq(toolConnections.id, connectionGrants.connectionId)))
