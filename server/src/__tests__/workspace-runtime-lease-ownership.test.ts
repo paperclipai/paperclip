@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -99,6 +100,10 @@ describeEmbeddedPostgres("execution workspace runtime lease ownership", () => {
     expect(report.kinds[0]).toMatchObject({ kind: KIND, inProgress: 1, settled: 1 });
     expect(report.kinds[0]!.reasons).toEqual({ owner_issue_terminal: 1 });
     expect(await leaseRows()).toHaveLength(0);
+    // The release is logged with the previous owner and the proof.
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "execution_workspace.runtime_lease_released")))
+      .toMatchObject([{ actorId: "ownership-reconciler", entityType: "execution_workspace", entityId: workspaceId,
+        details: { previousOwnerKey: `issue:${issueId}`, proof: "owner_issue_terminal" } }]);
   });
 
   it("settles leases of hidden or missing issues and of terminal or missing runs", async () => {

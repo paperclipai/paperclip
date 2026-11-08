@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaceRuntimeLeases, type Db } from "@paperclipai/db";
+import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { proveWorkspaceRuntimeLeaseOwnerGone } from "./workspace-runtime-leases.js";
@@ -20,7 +21,8 @@ export async function settleExecutionWorkspaceRuntimeLease(db: Db, record: InPro
   const ownerKey = record.owner.kind === "issue" ? `issue:${record.owner.issueId}`
     : record.owner.kind === "run" ? `run:${record.owner.runId}` : null;
   if (!ownerKey) return { settled: false, reason: "owner_not_provable" };
-  return db.transaction(async transaction => {
+  let publication: ActivityPublication | undefined;
+  const outcome = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [row] = await tx.select().from(executionWorkspaceRuntimeLeases)
       .where(and(eq(executionWorkspaceRuntimeLeases.id, record.recordId),
@@ -32,6 +34,16 @@ export async function settleExecutionWorkspaceRuntimeLease(db: Db, record: InPro
     const deleted = await tx.delete(executionWorkspaceRuntimeLeases)
       .where(and(eq(executionWorkspaceRuntimeLeases.id, row.id), eq(executionWorkspaceRuntimeLeases.ownerKey, ownerKey)))
       .returning({ id: executionWorkspaceRuntimeLeases.id });
-    return deleted.length ? { settled: true, reason: gone } : { settled: false, reason: "lease_no_longer_held" };
+    if (!deleted.length) return { settled: false, reason: "lease_no_longer_held" };
+    // The lease row is gone; the activity entry keeps who held it and why it was released.
+    publication = (await persistActivity(tx, {
+      companyId: row.companyId, actorType: "system", actorId: "ownership-reconciler",
+      action: "execution_workspace.runtime_lease_released", entityType: "execution_workspace",
+      entityId: row.executionWorkspaceId, runId: row.ownerRunId, issueId: row.ownerIssueId,
+      details: { leaseId: row.id, previousOwnerKey: row.ownerKey, lastAction: row.lastAction, proof: gone },
+    })).publication;
+    return { settled: true, reason: gone };
   });
+  if (outcome.settled && publication) publishActivity(publication);
+  return outcome;
 }
