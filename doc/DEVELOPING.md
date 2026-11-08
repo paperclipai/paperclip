@@ -5194,3 +5194,5 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+See [Codex shell certificate trust](sandbox-shell-environment.md) for execution-side certificate environment variables.

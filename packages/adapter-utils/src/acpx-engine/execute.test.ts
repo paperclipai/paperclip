@@ -701,7 +701,7 @@ describe("shared ACPX engine runtime behavior", () => {
         } : {}),
       });
       const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG ?? "{}"));
-      expect(config.shell_environment_policy?.include_only).toContain("SLACK_BOT_TOKEN");
+      expect(config.shell_environment_policy?.include_only).toEqual(expect.arrayContaining(["SLACK_BOT_TOKEN", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"]));
       if (withIdentity) expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
         "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
       ]));

@@ -1,4 +1,4 @@
-import { configuredEnvironment } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../../configured-environment.js";
 import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
@@ -220,6 +220,7 @@ class BoundedLineDecoder {
 }
 
 const SAFE_ENVIRONMENT_KEYS = [
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "AGENT_HOME",
   "ALL_PROXY",

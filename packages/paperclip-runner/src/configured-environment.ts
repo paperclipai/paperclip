@@ -3,6 +3,8 @@ import { AGENT_OBSERVABILITY_ENV_KEYS } from "./drivers/agent-observability.js";
  * Values remain in the process environment, never in argv or this manifest.
  * Do not mint this projection from ambient process.env.
  */
+export const CERTIFICATE_ENVIRONMENT_KEYS = ["SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] as const;
+
 export const CONFIGURED_ENVIRONMENT_KEYS = "PAPERCLIP_CONFIGURED_ENV_KEYS";
 
 export const GENERATED_RUNTIME_ENVIRONMENT_KEYS: ReadonlySet<string> = new Set([
