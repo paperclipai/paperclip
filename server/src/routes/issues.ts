@@ -2202,15 +2202,15 @@ function summarizeIssueReferenceActivityDetails(
 function preserveStoredStagesOnMonitorWrite(input: {
   requested: NormalizedExecutionPolicy | null;
   stored: NormalizedExecutionPolicy | null;
+  policyProvided: boolean;
   stagesProvidedInBody: boolean;
-}) {
-  const { requested, stored, stagesProvidedInBody } = input;
-  if (!requested || !stored) return requested;
-  if (requested.stages.length > 0) return requested;
-  if (stored.stages.length === 0) return requested;
-  if (!stagesProvidedInBody) return { ...requested, stages: stored.stages };
-  if (monitorPoliciesEqual(requested, stored)) return requested;
-  return { ...requested, stages: stored.stages };
+}): NormalizedExecutionPolicy | null {
+  const { requested, stored, policyProvided, stagesProvidedInBody } = input;
+  if (!policyProvided || !stored || stored.stages.length === 0) return requested;
+  if (requested && requested.stages.length > 0) return requested;
+  if (stagesProvidedInBody && monitorPoliciesEqual(requested, stored)) return requested;
+  const base = requested ?? { mode: stored.mode, commentRequired: true, stages: [] };
+  return { ...base, stages: stored.stages };
 }
 
 function activityExecutionParticipantKey(
@@ -14370,7 +14370,8 @@ export function issueRoutes(
 
   router.patch(
     "/issues/:id",
-    (req, _res, next) => {
+    (req, res, next) => {
+      res.locals.executionPolicyStagesProvided = Array.isArray(req.body?.executionPolicy?.stages);
       if (req.body?.expectedStatusVersion !== undefined && (
         req.body.status !== "todo" ||
         Object.keys(req.body).some(key => key !== "status" && key !== "expectedStatusVersion")
@@ -14878,16 +14879,15 @@ export function issueRoutes(
         existing.executionPolicy ?? null,
       );
       if (req.body.executionPolicy !== undefined) {
-        updateFields.executionPolicy = applyActorMonitorScheduledBy(
-          preserveStoredStagesOnMonitorWrite({
-            requested: normalizeIssueExecutionPolicy(req.body.executionPolicy),
-            stored: previousExecutionPolicy,
-            stagesProvidedInBody: Array.isArray(
-              (req.body.executionPolicy as { stages?: unknown } | null)?.stages,
-            ),
-          }),
-          actor.actorType,
-        );
+        updateFields.executionPolicy = preserveStoredStagesOnMonitorWrite({
+          requested: applyActorMonitorScheduledBy(
+            normalizeIssueExecutionPolicy(req.body.executionPolicy),
+            actor.actorType,
+          ),
+          stored: previousExecutionPolicy,
+          policyProvided: req.body.executionPolicy !== null,
+          stagesProvidedInBody: res.locals.executionPolicyStagesProvided === true,
+        });
       }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
