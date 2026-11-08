@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, type Db } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
@@ -19,29 +19,29 @@ import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
-import { canonicalizeEffectiveRunConfigCategory } from "./effective-run-config-fingerprints.js";
+import { resolveDecisionSigningSecret } from "./decision-signing.js";
 import { sandboxBinding } from "./environment-probe.js";
-import type { RuntimeSecretManifestEntry } from "./secrets.js";
 import { serverVersion } from "../version.js";
 
 /**
- * Digest of what a passed harness test proves: the agent's effective
- * configuration (secret references by version, never by value), its AI
- * binding and environment, and the runner image it ran in. Null when the
- * runner image has no immutable identity, so such a pass is never reused.
+ * Digest of what a passed harness test proves: the agent's fully resolved
+ * effective configuration (every value the test used, including cwd and
+ * resolved credentials), the AI account and credential generation it selected,
+ * its environment, and the runner image it ran in. Keyed with the instance's
+ * signing secret, so the stored value never verifies a guessed credential
+ * offline. Null when the runner image has no immutable identity: such a pass
+ * is never reused.
  */
 export function harnessVerificationDigest(input: {
-  adapterType: string; config: Record<string, unknown>; binding: unknown; environmentId: string | null;
-  secretManifest: readonly RuntimeSecretManifestEntry[]; runner: Record<string, unknown> | null;
+  adapterType: string; config: Record<string, unknown>; account: unknown; environmentId: string | null;
+  runner: Record<string, unknown> | null;
 }): string | null {
   if (!input.runner) return null;
-  const effective = canonicalizeEffectiveRunConfigCategory({ category: "session",
-    value: { adapterType: input.adapterType, config: input.config, binding: input.binding ?? null, environmentId: input.environmentId },
-    secretManifest: input.secretManifest });
-  const canonical = JSON.stringify({ v: 1, effective, runner: input.runner }, (_key, value: unknown) =>
-    value && typeof value === "object" && !Array.isArray(value)
+  const canonical = JSON.stringify({ v: 2, adapterType: input.adapterType, config: input.config, account: input.account ?? null,
+    environmentId: input.environmentId, runner: input.runner }, (_key, value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date)
       ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : value);
-  return `v1:sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+  return `v2:hmac-sha256:${createHmac("sha256", resolveDecisionSigningSecret()).update("harness-verification-v2:").update(canonical).digest("hex")}`;
 }
 
 export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
@@ -100,9 +100,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       config = { ...config, ...selected.runtimeConfig };
     }
     if (binding) config = { ...config, env: stripAiAuthBindings(config.env) };
-    const resolvedConfig = await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType });
-    config = resolvedConfig.config;
-    const secretManifest: RuntimeSecretManifestEntry[] = [...(resolvedConfig.manifest ?? [])];
+    config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType })).config;
     let runner: Record<string, unknown> | null = providerApi ? { kind: "provider_api" } : { kind: "local", version: serverVersion };
     const environmentId = providerApi ? null : await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, agent.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
     if (environmentId) {
@@ -110,7 +108,12 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const environment = await environments.getById(environmentId);
       if (environment && environment.driver !== "local") {
         const image = environment.driver === "sandbox" ? await sandboxBinding(db, environment, agent.companyId).catch(() => null) : null;
-        runner = image ? { kind: "sandbox", environmentId, ...image } : null;
+        // Only an immutable image digest or a qualified snapshot ID names the image a test ran in.
+        const immutable = image && ("image" in image || ("qualifiedSnapshotId" in image && image.qualifiedSnapshotId));
+        runner = immutable ? { kind: "sandbox", environmentId, ...image } : null;
+      } else if (environment && (await instanceSettingsService(db).getExperimental()).enableManagedSandboxOnly === true) {
+        // The test runs in the managed sandbox instead, whose image is not named here.
+        runner = null;
       }
       // Run admission refuses these agents before any lease, so verification must too.
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
@@ -121,17 +124,19 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const resolved = await secrets.resolveEnvBindings(agent.companyId, env,
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
-      secretManifest.push(...(resolved.manifest ?? []));
     }
-    if (binding) await aiConnectionService(db).select({
+    const selected = binding ? await aiConnectionService(db).select({
       companyId: agent.companyId, userId: responsibleUserId, agentId: agent.id,
       adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
       acpxAgent: config.acpxAgent, binding,
-    });
+    }) : null;
+    // The account and credential generation the binding selected, never the credential.
+    const account = selected ? { ...selected.attribution,
+      connectionUpdatedAt: (selected as { connection?: { updatedAt?: unknown } }).connection?.updatedAt ?? null,
+      grantUpdatedAt: (selected as { grant?: { updatedAt?: unknown } }).grant?.updatedAt ?? null } : null;
     // A configuration that already passed in this runner image is verified:
     // a restart or a return to verifying never boots another test sandbox.
-    const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, binding: binding ?? null,
-      environmentId, secretManifest, runner });
+    const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, account, environmentId, runner });
     if (digest && agent.harnessVerifiedDigest === digest) return "complete";
     const target = providerApi
       ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }

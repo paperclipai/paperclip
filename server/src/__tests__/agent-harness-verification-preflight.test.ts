@@ -172,7 +172,7 @@ describePostgres("saved harness account preflight", () => {
     await expect(verify()).resolves.toBe("complete");
     expect(allocate).toHaveBeenCalledOnce();
     const [verified] = await db.select().from(agents).where(eq(agents.id, agent.id));
-    expect(verified!.harnessVerifiedDigest).toMatch(/^v1:sha256:[a-f0-9]{64}$/);
+    expect(verified!.harnessVerifiedDigest).toMatch(/^v2:hmac-sha256:[a-f0-9]{64}$/);
     // A restart, or a return to verifying, never boots another test target.
     await expect(verify()).resolves.toBe("complete");
     expect(allocate).toHaveBeenCalledOnce();
@@ -182,10 +182,19 @@ describePostgres("saved harness account preflight", () => {
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
     await expect(verify()).rejects.toThrow("Reconnect or validate the selected AI account");
     await db.update(connectionGrants).set({ status: grant!.status }).where(eq(connectionGrants.id, account.grantId));
-    // A changed configuration is a new configuration.
-    await db.update(agents).set({ adapterConfig: { model: "openrouter/openai/gpt-5.1" } }).where(eq(agents.id, agent.id));
-    await expect(verify()).resolves.toBe("complete");
-    expect(allocate).toHaveBeenCalledTimes(2);
+    // A changed configuration is a new configuration, including values a
+    // session fingerprint ignores (cwd) and literal credentials.
+    const model = "openrouter/anthropic/claude-sonnet-4.5";
+    let calls = 1;
+    for (const adapterConfig of [{ model: "openrouter/openai/gpt-5.1" }, { model, cwd: "/tmp/paperclip-missing-directory" },
+      { model, env: { FIXTURE_TOKEN: "first-literal" } }, { model, env: { FIXTURE_TOKEN: "second-literal" } }]) {
+      await db.update(agents).set({ adapterConfig }).where(eq(agents.id, agent.id));
+      await expect(verify()).resolves.toBe("complete");
+      expect(allocate).toHaveBeenCalledTimes(++calls);
+    }
+    // The digest is keyed: it is not a plain hash a reader could recompute.
+    const [stored] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(stored!.harnessVerifiedDigest).not.toContain("second-literal");
   });
 
   it("does not record a failed verification", async () => {

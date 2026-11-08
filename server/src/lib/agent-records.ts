@@ -326,7 +326,8 @@ export function agentRecordQueries(db: Db) {
   }
 
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
-    const { lifecycleOperation, lifecycleRequiredPluginIds, ...publicRow } = row;
+    // The harness verification digest is server-only reuse state, never an API field.
+    const { lifecycleOperation, lifecycleRequiredPluginIds, harnessVerifiedDigest, harnessVerifiedAt, ...publicRow } = row;
     return withUrlKey({
       ...publicRow,
       permissions: normalizeAgentPermissions(row.permissions),

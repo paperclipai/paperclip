@@ -190,9 +190,16 @@ async function readyAdapters(api: ChaosApi, lab: ChaosLab, adapters: AdapterId[]
 function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   const ms = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(2)} s`;
   const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|"];
-  for (const row of baselineRows(runs)) {
-    lines.push(`| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`);
+  const rowLine = (row: ReturnType<typeof baselineRows>[number]) => `| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`;
+  for (const row of baselineRows(runs)) lines.push(rowLine(row));
+  // New agents wait for harness verification before their run is created:
+  // their own rows, so that wait never blends into ordinary cold starts.
+  const verifyRuns = runs.filter(run => run.phase === "verify").map(run => ({ ...run, phase: "cold" as const }));
+  if (verifyRuns.length) {
+    lines.push("", "New agent behind harness verification (TTFT counts from run creation; the verification wait precedes it):", "", lines[0]!, lines[1]!);
+    for (const row of baselineRows(verifyRuns)) lines.push(rowLine(row));
   }
+
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
   const samples = recoverySamples(runs, faults);
@@ -343,6 +350,9 @@ async function main() {
           let state = "unknown";
           while (Date.now() < deadline && (state = String((await api.get<Json>(`/api/agents/${agentId}`).catch(() => null))?.lifecycleState)) !== "verifying"
             && state !== "ready") await delay(200);
+          // The worker claims verification in the step that enters the state; this
+          // margin makes sure the fault interrupts a held verification lease.
+          if (state === "verifying") await delay(1_000);
           timeline.add("baseline_verify_fault_point", { adapter, agentId, state });
           if (state === "verifying") {
             fault = await supervisor.fault(verifyFault, 0, `verify-${index}`);
