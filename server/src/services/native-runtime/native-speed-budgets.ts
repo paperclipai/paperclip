@@ -14,7 +14,15 @@
  */
 
 export type SpeedBudgetAdapter = "claude" | "codex" | "opencode";
-export type SpeedBudgetMetric = "ttft" | "agent_boot" | "restart_recovery";
+/**
+ * `time_to_first_activity`: run creation to the first agent activity the UI
+ * shows (a text delta, a tool-call start or a reasoning indicator, whichever
+ * comes first; span `task.time_to_first_agent_activity`). That is when the user
+ * sees the agent respond. Time to first text (`task.time_to_first_token`) stays
+ * a reported metric without a budget: tool-first adapters such as Claude often
+ * call tools before they write text. The budget numbers are the TTFT baseline's.
+ */
+export type SpeedBudgetMetric = "time_to_first_activity" | "agent_boot" | "restart_recovery";
 export type SpeedBudgetStart = "cold" | "warm";
 
 export type SpeedBudget = { p50Ms: number; p95Ms: number };
@@ -31,24 +39,24 @@ export const RESTART_RECOVERY_PROVIDER_EVENT_TYPES: ReadonlySet<string> = new Se
 
 const s = (seconds: number) => Math.round(seconds * 1000);
 
-/** TTFT and agent boot by adapter and start kind; restart recovery by adapter. */
+/** First activity and agent boot by adapter and start kind; restart recovery by adapter. */
 export const LOCAL_SPEED_BUDGETS: Readonly<Record<SpeedBudgetAdapter, {
-  ttft: Record<SpeedBudgetStart, SpeedBudget>;
+  time_to_first_activity: Record<SpeedBudgetStart, SpeedBudget>;
   agent_boot: Record<SpeedBudgetStart, SpeedBudget>;
   restart_recovery: SpeedBudget;
 }>> = {
   claude: {
-    ttft: { cold: { p50Ms: s(16.5), p95Ms: s(30) }, warm: { p50Ms: s(9.5), p95Ms: s(28.5) } },
+    time_to_first_activity: { cold: { p50Ms: s(16.5), p95Ms: s(30) }, warm: { p50Ms: s(9.5), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(9), p95Ms: s(20.5) }, warm: { p50Ms: s(3.5), p95Ms: s(16.5) } },
     restart_recovery: { p50Ms: s(15), p95Ms: s(22.5) },
   },
   codex: {
-    ttft: { cold: { p50Ms: s(6), p95Ms: s(17) }, warm: { p50Ms: s(10), p95Ms: s(28.5) } },
+    time_to_first_activity: { cold: { p50Ms: s(6), p95Ms: s(17) }, warm: { p50Ms: s(10), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(2.5), p95Ms: s(7) }, warm: { p50Ms: s(5), p95Ms: s(16.5) } },
     restart_recovery: { p50Ms: s(6.5), p95Ms: s(8) },
   },
   opencode: {
-    ttft: { cold: { p50Ms: s(17.5), p95Ms: s(49) }, warm: { p50Ms: s(26.5), p95Ms: s(88) } },
+    time_to_first_activity: { cold: { p50Ms: s(17.5), p95Ms: s(49) }, warm: { p50Ms: s(26.5), p95Ms: s(88) } },
     agent_boot: { cold: { p50Ms: s(12), p95Ms: s(37) }, warm: { p50Ms: s(22), p95Ms: s(65.5) } },
     restart_recovery: { p50Ms: s(25.5), p95Ms: s(38.5) },
   },
@@ -87,7 +95,7 @@ export type SpeedBudgetBreach = {
   percentile: "p95";
   baseline: string;
   disposition?: string;
-  /** TTFT only: time the input waited for its run to exist (for example a
+  /** First activity only: time the input waited for its run to exist (for example a
    * comment posted while the previous turn was running). Not judged. */
   inputWaitMs?: number;
 };

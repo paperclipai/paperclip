@@ -385,12 +385,13 @@ export function createNativeRunTrace(input: {
     // A resumed attempt keeps the run's original queue span; its own claim is
     // the start of this attempt's preparation.
     if (name === "heartbeat.prepare_before_environment") attemptStartedAtMs = startedAtMs;
-    if (name === "task.time_to_first_token") {
+    if (name === "task.time_to_first_agent_activity") {
       // The span keeps the full user-visible latency. The budget (baseline:
       // idle follow-ups) judges it from run creation: time the input spent
       // waiting for a run to exist (behind a live turn) is reported, not judged.
+      // Time to first text (task.time_to_first_token) is reported, not budgeted.
       const inputWaitMs = runCreatedAtMs !== null && runCreatedAtMs > startedAtMs ? runCreatedAtMs - startedAtMs : 0;
-      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "ttft", start: budgetStart,
+      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "time_to_first_activity", start: budgetStart,
         measuredMs: endedAtMs - startedAtMs - inputWaitMs, ...(inputWaitMs > 0 ? { inputWaitMs } : {}) }));
     }
     // Agent boot: run claimed (end of heartbeat.queue) to the provider session

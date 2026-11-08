@@ -74,12 +74,16 @@ export interface RunMetrics {
    * `question_response.to_run_created`): the wait behind a live turn. Part of
    * the user-visible TTFT; reported as its own step, not judged by the budget. */
   inputWaitMs: number | null;
-  /** TTFT from run creation: what the speed budget judges. */
+  /** TTFT (first text) from run creation: reported, no budget for tool-first adapters. */
   ttftAfterRunCreatedMs: number | null;
+  /** First visible agent activity (text delta, tool-call start or reasoning)
+   * from run creation (`task.time_to_first_agent_activity`): what the speed
+   * budget judges. */
+  firstActivityAfterRunCreatedMs: number | null;
 }
 
 /** Spans that wrap others (or the whole run); ranking them would double count. */
-const CUMULATIVE_SPANS = new Set(["task.time_to_first_token", "comment.to_run_created", "question_response.to_run_created", "task.provider_session.measured", "task.prepare",
+const CUMULATIVE_SPANS = new Set(["task.time_to_first_token", "task.time_to_first_agent_activity", "comment.to_run_created", "question_response.to_run_created", "task.provider_session.measured", "task.prepare",
   "native.session.execute", "runner.session.startup", "agent.turn", "environment.startup"]);
 
 const FIRST_SPAN = (spans: RunSpan[], name: string) => spans.find(span => span.name === name) ?? null;
@@ -87,6 +91,7 @@ const FIRST_SPAN = (spans: RunSpan[], name: string) => spans.find(span => span.n
 export function runMetrics(run: BaselineRun): RunMetrics {
   const spans = runSpans(run);
   const ttft = FIRST_SPAN(spans, "task.time_to_first_token");
+  const activity = FIRST_SPAN(spans, "task.time_to_first_agent_activity");
   const queue = FIRST_SPAN(spans, "heartbeat.queue");
   // runner.turn.submit = session.started → turn.submitted; a resumed session has
   // runner.session.resume ending at turn.submitted instead.
@@ -103,9 +108,11 @@ export function runMetrics(run: BaselineRun): RunMetrics {
   }
   const ingress = FIRST_SPAN(spans, "comment.to_run_created") ?? FIRST_SPAN(spans, "question_response.to_run_created");
   // Only an ingress that starts the TTFT span waited for its run to exist.
-  const inputWaitMs = ingress && ttft && ingress.startOffsetMs <= ttft.startOffsetMs ? ingress.durationMs : null;
+  const anchor = ttft ?? activity;
+  const inputWaitMs = ingress && anchor && ingress.startOffsetMs <= anchor.startOffsetMs ? ingress.durationMs : null;
   return {
     inputWaitMs,
+    firstActivityAfterRunCreatedMs: activity ? Math.max(0, activity.durationMs - (inputWaitMs ?? 0)) : null,
     ttftAfterRunCreatedMs: ttft ? Math.max(0, ttft.durationMs - (inputWaitMs ?? 0)) : null,
     ttftMs: ttft ? ttft.durationMs : null,
     ttftAnchor: ttft && typeof ttft.attributes.anchor === "string" ? ttft.attributes.anchor : null,
@@ -142,8 +149,10 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
 export interface BaselineRow { adapter: string; environment: string; warmth: "cold" | "warm"; ttft: Distribution; boot: Distribution;
   /** The wait behind a live turn (input accepted to run created), its own measured step. */
   inputWait: Distribution;
-  /** TTFT from run creation: the value the speed budget judges. */
+  /** TTFT (first text) from run creation: reported. */
   ttftAfterRunCreated: Distribution;
+  /** First visible agent activity from run creation: the value the speed budget judges. */
+  firstActivityAfterRunCreated: Distribution;
   anchors: Record<string, number> }
 
 export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
@@ -164,7 +173,8 @@ export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
       ttft: distribution(group.metrics.flatMap(metric => metric.ttftMs === null ? [] : [metric.ttftMs])),
       boot: distribution(group.metrics.flatMap(metric => metric.bootMs === null ? [] : [metric.bootMs])),
       inputWait: distribution(group.metrics.flatMap(metric => metric.inputWaitMs === null ? [] : [metric.inputWaitMs])),
-      ttftAfterRunCreated: distribution(group.metrics.flatMap(metric => metric.ttftAfterRunCreatedMs === null ? [] : [metric.ttftAfterRunCreatedMs])) };
+      ttftAfterRunCreated: distribution(group.metrics.flatMap(metric => metric.ttftAfterRunCreatedMs === null ? [] : [metric.ttftAfterRunCreatedMs])),
+      firstActivityAfterRunCreated: distribution(group.metrics.flatMap(metric => metric.firstActivityAfterRunCreatedMs === null ? [] : [metric.firstActivityAfterRunCreatedMs])) };
   });
 }
 

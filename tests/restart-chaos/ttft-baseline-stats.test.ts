@@ -77,6 +77,20 @@ describe("ttft baseline statistics", () => {
       ttft: { n: 2, p50: 6_000, p95: 12_000 } });
   });
 
+  it("reports first visible activity from run creation next to first text", () => {
+    const toolFirst = run("t", "warm", [
+      reuse("reused"),
+      span("comment.to_run_created", 0, 30_000),
+      span("heartbeat.queue", 30_000, 100),
+      span("task.time_to_first_agent_activity", 0, 35_000, { anchor: "comment" }),
+      span("task.time_to_first_token", 0, 48_000, { anchor: "comment" }),
+    ], "claude");
+    expect(runMetrics(toolFirst)).toMatchObject({ inputWaitMs: 30_000, firstActivityAfterRunCreatedMs: 5_000,
+      ttftAfterRunCreatedMs: 18_000 });
+    expect(baselineRows([toolFirst])[0]).toMatchObject({ firstActivityAfterRunCreated: { p50: 5_000 },
+      ttftAfterRunCreated: { p50: 18_000 } });
+  });
+
   it("ranks pre-turn steps by p95 without cumulative wrappers", () => {
     const ranked = rankPreTurnSteps([coldRun("a"), coldRun("b", 2)]);
     expect(ranked[0]).toMatchObject({ step: "runner.process.launch", n: 2, p95: 3_000 });

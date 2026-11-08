@@ -8842,6 +8842,36 @@ describe("native resumed preparation timing", () => {
     },
   );
 
+  it("records first visible activity at a tool call that precedes the first text", async () => {
+    const startedAtMs = Date.now() - 20_000;
+    const events: AdapterRuntimeEvent[] = [];
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 3_000);
+    const event = (eventType: string, payload: Record<string, unknown>) => ({
+      eventType, payload, itemId: "item", emittedAt: new Date(Date.now()).toISOString(),
+    }) as PrpEvent;
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      for (const candidate of [event("turn.submitted", {}), event("turn.started", {})]) await accountingEvents.committed!(candidate);
+      clock.mockReturnValue(startedAtMs + 5_000);
+      // Tool-first: the agent starts a tool before it writes any text.
+      await accountingEvents.committed!(event("tool.execution.started", { executionId: "tool-1" }));
+      clock.mockReturnValue(startedAtMs + 16_000);
+      await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "first text" }));
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner",
+        preparationSpans: [{ name: "heartbeat.queue", startedAtMs, endedAtMs: startedAtMs + 100 }],
+        onEvent: async (event) => { events.push(event); } });
+    } finally { clock.mockRestore(); }
+    const span = (name: string) => events.filter((candidate) => candidate.payload?.span === name);
+    expect(span("task.time_to_first_agent_activity")).toHaveLength(1);
+    expect(span("task.time_to_first_agent_activity")[0]?.payload).toMatchObject({ parentSpan: "task.provider_session",
+      startOffsetMs: 0, durationMs: 5_000, eventKind: "toolCall", anchor: "run_created" });
+    expect(span("task.time_to_first_token")[0]?.payload).toMatchObject({ durationMs: 16_000, eventKind: "agentMessage" });
+  });
+
   it("anchors first-token timing at an earlier durable wake request without blocking later events", async () => {
     const startedAtMs = Date.now() - 5_000;
     const events: AdapterRuntimeEvent[] = [];

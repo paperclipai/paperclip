@@ -10370,6 +10370,24 @@ async function executePaperclipNativeSessionWithinScope(
               endedAtMs: milestoneAtMs,
               attributes: { eventKind: kind },
             });
+            // The user-visible response (the speed budget's metric): the same
+            // anchor as time to first text, to this first visible agent event.
+            // Detached like TTFT, so the anchor read never delays the turn.
+            const activityAt = Date.now();
+            trace.defer(async () => {
+              const activityStart = resolveNativeTimeToFirstTokenStart({
+                traceStartedAtMs: trace.traceStartedAtMs,
+                preparationSpans,
+                wakeRequestedAtMs: await readNativeRunWakeRequestedAtMs(input.db, input.execution.binding.runId),
+              });
+              await trace.record({
+                name: "task.time_to_first_agent_activity",
+                parentName: "task.provider_session",
+                startedAtMs: activityStart.startedAtMs,
+                endedAtMs: activityAt,
+                attributes: { eventKind: kind, anchor: activityStart.anchor },
+              });
+            });
           }
         }
         if (
