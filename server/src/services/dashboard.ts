@@ -130,12 +130,13 @@ export function dashboardService(db: Db) {
           to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
           run.status AS status,
           run.error_code AS error_code,
-          (run.id IN (SELECT id FROM recovered_runs)) AS recovered,
+          (rec.id IS NOT NULL) AS recovered,
           count(*)::double precision AS count
         FROM ${heartbeatRuns} AS run
+        LEFT JOIN (SELECT DISTINCT id FROM recovered_runs) AS rec ON rec.id = run.id
         WHERE run.company_id = ${companyId}
           AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
-        GROUP BY date, run.status, run.error_code, recovered
+        GROUP BY date, run.status, run.error_code, rec.id IS NOT NULL
       `))) as unknown as Iterable<{
         date: string;
         status: string;
