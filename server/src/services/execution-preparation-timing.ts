@@ -267,27 +267,25 @@ export function withRunResponsePresentationTiming<T>(runId: string, work: () => 
 export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   return withDatabaseOperation(phase, async () => {
     const owned = ownership.getStore();
-    if (!endpointEnabled() && owned && !owned.ended && isPreparationPhaseName(owned.phase)) {
-      const count = owned.details.get(phase) ?? 0;
-      if (count >= 16) return work();
-      owned.details.set(phase, count + 1);
-      const startedAtMs = Date.now();
-      let outcome: RecordedPreparationPhase["outcome"] = "failed";
-      try {
-        const value = await work();
-        outcome = "ok";
-        return value;
-      } finally {
-        recordPreparationPhase(owned.runId, { name: phase, startedAtMs, endedAtMs: Date.now(), outcome });
-      }
-    }
-    if (!endpointEnabled() || !owned || owned.ended) return work();
+    if (!owned || owned.ended) return work();
     const count = owned.details.get(phase) ?? 0;
     if (count >= 16) return work();
     owned.details.set(phase, count + 1);
-    // A startup step can be more specific than the owning run phase. Keep that
-    // causal parent while the child publishes its own context to plugin workers.
-    return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+    // A step inside a preparation phase reaches the run log with or without a tracer.
+    const recordedRunId = isPreparationPhaseName(owned.phase) ? owned.runId : null;
+    const startedAtMs = Date.now();
+    let outcome: RecordedPreparationPhase["outcome"] = "failed";
+    try {
+      // A startup step can be more specific than the owning run phase. Keep that
+      // causal parent while the child publishes its own context to plugin workers.
+      const value = endpointEnabled()
+        ? await measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined)
+        : await work();
+      outcome = "ok";
+      return value;
+    } finally {
+      if (recordedRunId) recordPreparationPhase(recordedRunId, { name: phase, startedAtMs, endedAtMs: Date.now(), outcome });
+    }
   });
 }
 

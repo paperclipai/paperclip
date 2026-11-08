@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase, withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 
 describe("run preparation phases for the run log", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
   it("records slow named phases per run, marks failures, and forgets them once drained", async () => {
     const runId = randomUUID();
     const time = createRunPreparationTiming(runId);
@@ -40,6 +41,17 @@ describe("run preparation phases for the run log", () => {
       await measureRunPhase("workspace_sync.transfer", () => delay(60));
     });
     expect(drainRunPreparationPhases(runId)).toEqual([]);
+  });
+
+  it("records nested preparation steps when an OTLP endpoint is set too", async () => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+    const runId = randomUUID();
+    await createRunPreparationTiming(runId)("runtime_selection", async () => {
+      await measureRunPhase("runtime_selection.workspace_sync", () => delay(60));
+    });
+    expect(drainRunPreparationPhases(runId).map(phase => phase.name)).toEqual([
+      "runtime_selection.workspace_sync", "heartbeat.prepare.runtime_selection",
+    ]);
   });
 
   it("keeps runs apart", async () => {
