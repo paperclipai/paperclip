@@ -138,6 +138,13 @@ host file transfers retain Windows drive paths. Full workspace typechecking also
 requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
 validate Windows ACLs.
 
+Native Codex uses the executable from its matching Windows platform package.
+Keep that optional dependency installed with the main Codex package. A missing
+or mismatched platform package fails setup instead of using another executable.
+Managed account probes use the account home prepared by the server. This does
+not qualify ambient credential homes or the full native credential refresh path
+on Windows; those paths retain their existing platform restrictions.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
