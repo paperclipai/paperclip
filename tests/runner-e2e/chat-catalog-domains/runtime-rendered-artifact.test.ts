@@ -5,6 +5,7 @@ import { hasSimplerWebsite, renderRuntimeArtifact, type RuntimeRenderedNode } fr
 const node = (tag: string, text: string, extra: Partial<RuntimeRenderedNode> = {}): RuntimeRenderedNode => ({ tag, role: null, text, href: null, inNavigation: false, color: "rgb(0, 0, 0)", background: "rgb(255, 255, 255)", ...extra });
 const simple = () => [node("MAIN", "Acorn Notes organizes research into clear summaries so teams can work without the busywork. Join the early access list."), node("H1", "Acorn Notes"), node("A", "Join early access", { href: "#signup" })];
 it("accepts visible substantive natural single-page content and action", () => expect(hasSimplerWebsite(simple())).toBe(true));
+it("accepts a visible product paragraph without a main landmark", () => { const x = simple(); x[0] = node("P", x[0]!.text); expect(hasSimplerWebsite(x)).toBe(true); expect(hasSimplerWebsite([node("P", "Short."), x[1]!, x[2]!])).toBe(false); });
 it("accepts a natural button signup equivalent", () => { const x = simple(); x[2] = node("BUTTON", "Subscribe"); expect(hasSimplerWebsite(x)).toBe(true); });
 it("rejects comment-only/hidden heading absent from rendered evidence", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "H1"))).toBe(false));
 it("rejects an invisible signup action", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "A"))).toBe(false));

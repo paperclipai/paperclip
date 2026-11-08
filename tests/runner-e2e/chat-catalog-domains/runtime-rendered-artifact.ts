@@ -28,11 +28,17 @@ export async function renderRuntimeArtifact(ctx: ChatCatalogContext, html: strin
     });
   } finally { await preview.close(); }
 }
-export function hasSimplerWebsite(nodes: RuntimeRenderedNode[]) {
+/** Closed sub-results of the single-page check, for diagnosis without retaining page text. */
+export function simplerWebsiteChecks(nodes: RuntimeRenderedNode[]) {
   const headline = nodes.some(node => (node.tag === "H1" || node.role === "heading") && /\bAcorn\s+Notes\b/i.test(node.text));
-  const content = nodes.some(node => node.tag === "MAIN" && node.text.length >= 40);
+  // A visible product paragraph; the request never named a <main> landmark.
+  const content = nodes.some(node => ["MAIN", "SECTION", "P"].includes(node.tag) && node.text.length >= 40);
   const signup = nodes.some(node => ["BUTTON", "A"].includes(node.tag) && /sign.?up|subscribe|join|early access/i.test(node.text));
   const tabbed = nodes.some(node => ["tab", "tablist", "tabpanel"].includes(node.role ?? ""));
   const multiPage = nodes.some(node => node.tag === "A" && node.inNavigation && !!node.href && !/^#|^\s*$/.test(node.href));
+  return { headline, content, signup, tabbed, multiPage };
+}
+export function hasSimplerWebsite(nodes: RuntimeRenderedNode[]) {
+  const { headline, content, signup, tabbed, multiPage } = simplerWebsiteChecks(nodes);
   return headline && content && signup && !tabbed && !multiPage;
 }
