@@ -645,6 +645,15 @@ describe("multi-page open inventory calibration", () => {
     o.reply = "501 open tasks.\n## Unassigned\n" + o.tasks.slice(0, 4).map(row => `[${row.title}](/ACORN/issues/${row.id})`).join(", ") + " … every 3rd task: 1, 4, 7";
     expect(gradeInternal(o).passed).toBe(false);
   });
+  it("treats a bold-labelled line as its own owner group, not the group above it", () => {
+    const o = valid("tasks.organize-open-work"); o.state.ownerLabels = { morgan: "Morgan", unassigned: "Unassigned" };
+    const link = (row: { id: string; title?: string }) => `[${row.title}](/ACORN/issues/${row.id})`;
+    o.reply = "**Morgan — 0 blocked:** none\n**Unassigned — 2 blocked:** " + o.tasks.slice(0, 2).map(link).join(", ")
+      + "\n**Unassigned — todo:** " + o.tasks.slice(2).map(link).join(", ");
+    expect(gradeInternal(o).passed).toBe(true);
+    o.reply = "**Morgan — 2 blocked:** " + o.tasks.slice(0, 2).map(link).join(", ") + "\n- " + o.tasks.slice(2).map(link).join(", ");
+    expect(gradeInternal(o).passed).toBe(false);
+  });
   it("rejects a blocked item placed after an ordinary item for the same owner", () => {
     const o = valid("tasks.organize-open-work");
     o.reply = "## Unassigned\n" + [...o.tasks.slice(2), ...o.tasks.slice(0, 2)].map(row => `- [${row.title}](/ACORN/issues/${row.id})`).join("\n");
