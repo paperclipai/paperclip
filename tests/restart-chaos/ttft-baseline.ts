@@ -286,6 +286,8 @@ async function main() {
   const midturn: Json[] = [];
   const timedOutIssues = new Set<string>();
   let sweeper: DaytonaWaveSweeper | null = null;
+  const workspaceOperations: Array<{ runId: string; adapter: string; phase: string; operation: string; status: string;
+    durationMs: number | null; command: string | null }> = [];
   const followUpTasks = new Map<AdapterId, { issueId: string; nonce: string; runs: number }>();
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
@@ -455,13 +457,27 @@ async function main() {
         const runId = runIdOf(run);
         runs.push({ runId, adapter: task.adapter, environment: env,
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
+        // Workspace commands (worktree, provision, sync) the run waited on, with their durations.
+        const operations = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 10_000).catch(() => []);
+        for (const operation of operations) workspaceOperations.push({ runId, adapter: task.adapter,
+          phase: runPhase.get(runId) ?? task.phase, operation: String(operation.phase), status: String(operation.status),
+          durationMs: operation.startedAt && operation.finishedAt
+            ? Date.parse(String(operation.finishedAt)) - Date.parse(String(operation.startedAt)) : null,
+          command: typeof operation.command === "string" ? operation.command.slice(0, 120) : null });
       }
     }
-    const data = { waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+    const data = { workspaceOperations, waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
       timedOutTasks: timedOutIssues.size, samples, restarts, midturn, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
     process.stdout.write(report(runs, faults));
+    if (workspaceOperations.length) {
+      const table = ["", "| Run phase | Adapter | Workspace operation | Status | Duration | Command |", "|---|---|---|---|---|---|",
+        ...workspaceOperations.slice().sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))
+          .map(op => `| ${op.phase} | ${op.adapter} | ${op.operation} | ${op.status} | ${op.durationMs === null ? "—" : `${(op.durationMs / 1000).toFixed(2)} s`} | ${op.command ? `\`${op.command}\`` : "—"} |`)].join("\n");
+      process.stdout.write(`${table}\n`);
+      await writeFile(path.join(outDir, "workspace-operations.md"), `${table}\n`, { mode: 0o600 });
+    }
     if (timedOutIssues.size) process.stdout.write(`\n${timedOutIssues.size} sample(s) timed out and were left out.\n`);
     // Every answered mid-turn comment must be answered exactly once.
     const wrongReplies = midturn.filter(sample => sample.replyCount !== 1);
