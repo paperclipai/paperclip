@@ -387,6 +387,31 @@ describe("resolveHeartbeatRunResponse", () => {
     },
   };
 
+  it("posts the complete accepted answer instead of a run-log preview the runner bounded", () => {
+    const complete = "**Open work — 501 tasks**\n\n### Morgan\n" + Array.from({ length: 501 }, (_, i) => `RUN-${i + 1}`).join(", ");
+    const preview = complete.slice(0, 3_988) + "…[truncated]";
+    const accepted = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: complete } };
+    for (const channel of ["final", "unknown"] as const) {
+      expect(resolveHeartbeatRunResponse({
+        resultJson: accepted,
+        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel },
+      })).toMatchObject({
+        text: complete,
+        decision: { chosenSource: "semantic_result_summary", commentAction: "create",
+          reasonCodes: ["bounded_final_agent_message_completed_by_semantic_summary"] },
+      });
+    }
+  });
+
+  it("keeps a bounded final message when the accepted summary is not its complete text", () => {
+    const preview = "x".repeat(3_988) + "…[truncated]";
+    const unrelated = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Short different summary." } };
+    expect(resolveHeartbeatRunResponse({
+      resultJson: unrelated,
+      finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+    })).toMatchObject({ text: preview, decision: { chosenSource: "final_agent_message" } });
+  });
+
   it("applies comment, explicit provider, adapter, terminal fallback, and semantic precedence", () => {
     const resultWithAdapterFinal = {
       ...resultJson,

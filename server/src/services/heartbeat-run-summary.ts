@@ -326,6 +326,26 @@ export function readCompletedAssistantMessageCandidate(input: {
   };
 }
 
+/** Marker the runner appends when it bounds a provider message for the run log. */
+export const RUN_EVENT_TEXT_BOUND_MARKER = "…[truncated]";
+
+/**
+ * Run-log events keep only a display-bounded preview of a long provider
+ * message. That preview must never become the durable reply: when the
+ * accepted semantic summary is the complete text the preview was cut from,
+ * return the complete text. Any other preview is left to the caller unchanged.
+ */
+export function completeBoundedFinalAgentMessage(
+  preview: string,
+  resultJson: Record<string, unknown>,
+): string | null {
+  if (!preview.endsWith(RUN_EVENT_TEXT_BOUND_MARKER)) return null;
+  const retained = preview.slice(0, -RUN_EVENT_TEXT_BOUND_MARKER.length).trimEnd();
+  if (!retained) return null;
+  const summary = readAcceptedSemanticSummary(resultJson);
+  return summary && summary.length > retained.length && summary.startsWith(retained) ? summary : null;
+}
+
 function readAcceptedSemanticSummary(resultJson: Record<string, unknown>) {
   const candidates = semanticResultCandidates(resultJson);
   for (const candidate of candidates) {
@@ -515,6 +535,18 @@ export function resolveHeartbeatRunResponse(input: {
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
   const resolveCompletedUpstreamResponse = () => {
+    const completedPreview = finalAgentText
+      ? completeBoundedFinalAgentMessage(finalAgentText, resultJson)
+      : null;
+    if (completedPreview && (explicitProviderFinal || compatibleTerminalAssistant)) {
+      return {
+        text: completedPreview,
+        decision: decision("semantic_result_summary", {
+          commentAction: "create",
+          reasonCodes: ["bounded_final_agent_message_completed_by_semantic_summary"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
     if (
       explicitProviderFinal &&
       finalAgentText &&
