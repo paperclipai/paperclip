@@ -2,6 +2,7 @@ import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { currentControllerBootId } from "./controller-process-identity.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { pendingCleanupMetadataObjectSql } from "./environment-cleanup-state.js";
 import { readEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { allowLegacyShutdownWorkspaceCleanup } from "./legacy-shutdown-workspace-settlement.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
@@ -77,7 +78,8 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
     const flipped = await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
       .set({ status: "pending_cleanup", failureReason: ORPHANED_RUN_LEASE_FAILURE_REASON,
         // When the first cleanup attempt became due (the row keeps updatedAt).
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        // A scalar or array root reads as an empty object, so the key is top level.
+        metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
           pendingCleanupRecoveredAtMs: context.now.getTime() })}::jsonb` })
       .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
         eq(environmentLeases.heartbeatRunId, runId),
