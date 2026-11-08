@@ -117,6 +117,8 @@ export async function seedChaosLab(input: {
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
   adapterConfigOverrides?: Record<string, unknown>;
+  /** A real repository to use as the project's primary workspace instead of the tiny fixture. */
+  repositoryPath?: string;
   /** Called as soon as the wave owns external resources that need cleanup. */
   onEnvironment?: (lab: Pick<ChaosLab, "companyId" | "environmentId" | "environmentKind">) => void;
 }): Promise<ChaosLab> {
@@ -127,7 +129,8 @@ export async function seedChaosLab(input: {
     await installFixtureDaytonaProvider(runnerApiView(input.api), { environment: { id: "daytona" } } as MatrixExecution);
     timeline.add("seed_daytona_plugin", {});
   }
-  const fixtureRepositoryPath = await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
+  const fixtureRepositoryPath = input.repositoryPath
+    ?? await createFixtureRepository(path.join(input.fixtureRoot, "chaos-sandbox"));
   const company = await api.post<{ id: string }>("/api/companies", {
     name: "Chaos Lab",
     description: `Restart chaos harness wave ${input.waveId}`,
