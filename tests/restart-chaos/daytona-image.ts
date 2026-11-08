@@ -331,6 +331,37 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
  * Returns the verified runnerd and provider pack of `image`, extracting them
  * once per image digest into `cacheRoot/<digest>/`.
  */
+/** One image cache for every wave and crash-point run, so a run never re-downloads an image another run already extracted. */
+export function defaultDaytonaImageCacheRoot(): string {
+  return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
+}
+
+/**
+ * `skopeo copy` into an empty `dir:` destination. skopeo's own `--retry-times`
+ * covers request failures, but a blob read that times out mid-copy fails the
+ * whole copy, and skopeo then refuses the half-written directory ("not a
+ * containers image directory, don't want to overwrite"). So each attempt starts
+ * from a fresh, empty directory.
+ */
+export async function copyImageToDir(input: { skopeo: string; image: string; blobs: string; attempts?: number;
+  log?: (line: string) => void }): Promise<void> {
+  const attempts = input.attempts ?? 3;
+  const log = input.log ?? (() => undefined);
+  for (let attempt = 1; ; attempt += 1) {
+    await rm(input.blobs, { recursive: true, force: true });
+    await mkdir(input.blobs, { recursive: true, mode: 0o700 });
+    log(`skopeo copy ${input.image} (linux/amd64) → ${input.blobs} (attempt ${attempt}/${attempts})`);
+    try {
+      await execFileAsync(input.skopeo, ["copy", "--retry-times", "3", "--override-os", "linux", "--override-arch", "amd64",
+        `docker://${input.image}`, `dir:${input.blobs}`], { maxBuffer: 16 * 1024 * 1024 });
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      log(`skopeo copy failed (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); retrying into an empty directory`);
+    }
+  }
+}
+
 export async function prepareDaytonaImageArtifacts(input: { image: string; cacheRoot: string; skopeo?: string; log?: (line: string) => void }): Promise<DaytonaImageArtifacts> {
   const match = IMMUTABLE_IMAGE.exec(input.image);
   if (!match) throw new Error(`Daytona image must be an immutable registry/repository@sha256:<digest> reference, got "${input.image}"`);
@@ -344,11 +375,7 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
   const blobs = path.join(staging, "blobs");
   const rootfs = path.join(staging, "rootfs");
   try {
-    await mkdir(blobs, { recursive: true, mode: 0o700 });
-    log(`skopeo copy ${input.image} (linux/amd64) → ${blobs}`);
-    await execFileAsync(input.skopeo ?? process.env.SKOPEO ?? "skopeo", ["copy", "--retry-times", "3",
-      "--override-os", "linux", "--override-arch", "amd64", `docker://${input.image}`, `dir:${blobs}`],
-    { maxBuffer: 16 * 1024 * 1024 });
+    await copyImageToDir({ skopeo: input.skopeo ?? process.env.SKOPEO ?? "skopeo", image: input.image, blobs, log });
     const manifestBytes = await readFile(path.join(blobs, "manifest.json"));
     const manifest = JSON.parse(manifestBytes.toString("utf8")) as { config: { digest: string }; layers: Array<{ digest: string; mediaType: string }> };
     if (!manifest.config?.digest || !Array.isArray(manifest.layers)) throw new Error("skopeo did not produce a single-platform image manifest");
@@ -428,7 +455,7 @@ if (invoked && import.meta.url === pathToFileURL(invoked).href) {
   const image = process.argv[2];
   if (!image) { console.error("Usage: daytona-image.ts <registry/repository@sha256:digest>"); process.exit(2); }
   const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-  const cacheRoot = process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images");
+  const cacheRoot = defaultDaytonaImageCacheRoot();
   try {
     const artifacts = await prepareDaytonaImageArtifacts({ image, cacheRoot, log: line => console.error(line) });
     const check = await assertControllerMatchesImage(artifacts, repositoryRoot).then(() => "match", (error: Error) => error.message);

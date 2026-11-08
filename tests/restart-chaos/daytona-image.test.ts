@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, readlink, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertControllerMatchesImage, extractFromLayers, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
+import { assertControllerMatchesImage, copyImageToDir, extractFromLayers, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
 
 type Entry =
   | { path: string; type: "file"; content: string; mode?: number }
@@ -189,5 +189,42 @@ describe("assertControllerMatchesImage", () => {
   });
   it("names both content IDs and the image revision when they differ", async () => {
     await expect(assertControllerMatchesImage(image, "/unused", "e".repeat(64))).rejects.toThrow(/does not match the Daytona image[\s\S]*d{40}[\s\S]*e{64}/);
+  });
+});
+
+describe("copyImageToDir", () => {
+  // A fake skopeo that, like the real one, refuses a non-empty destination and
+  // leaves a half-written directory behind when a blob read times out.
+  async function fakeSkopeo(root: string, failures: number): Promise<string> {
+    const script = path.join(root, "skopeo");
+    await writeFile(script, `#!/bin/sh
+dest="\${9#dir:}"
+if [ -n "$(ls -A "$dest")" ]; then echo "not a containers image directory, don't want to overwrite" >&2; exit 1; fi
+n=$(cat "${root}/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${root}/count"
+if [ $n -le ${failures} ]; then echo partial > "$dest/blob"; echo "read: operation timed out" >&2; exit 1; fi
+echo '{}' > "$dest/manifest.json"
+`);
+    await chmod(script, 0o755);
+    return script;
+  }
+
+  it("retries a copy that failed part-way from an empty directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-skopeo-"));
+    try {
+      const blobs = path.join(root, "blobs");
+      await copyImageToDir({ skopeo: await fakeSkopeo(root, 2), image: "ghcr.io/x/y@sha256:" + "a".repeat(64), blobs });
+      expect(await readFile(path.join(root, "count"), "utf8")).toBe("3\n");
+      expect(await readFile(path.join(blobs, "manifest.json"), "utf8")).toBe("{}\n");
+      await expect(stat(path.join(blobs, "blob"))).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("gives up after the last attempt with skopeo's error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "daytona-skopeo-"));
+    try {
+      await expect(copyImageToDir({ skopeo: await fakeSkopeo(root, 5), image: "i", blobs: path.join(root, "blobs"), attempts: 2 }))
+        .rejects.toThrow(/operation timed out/);
+      expect(await readFile(path.join(root, "count"), "utf8")).toBe("2\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
