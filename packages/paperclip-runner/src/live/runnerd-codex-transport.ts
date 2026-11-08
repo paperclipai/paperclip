@@ -105,7 +105,7 @@ import {
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
-import { isTerminalOperation, staleTerminalCallResult, unseenReturnedToolCalls } from "./terminal-call-freshness.js";
+import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -800,6 +800,14 @@ async function awaitProviderDrainBarrier(input: {
     }
   }
   return false;
+}
+
+export function committedEventWindowComplete(state: { committedEvents: readonly { sourceSeq: number }[]; ackedSourceSeq: number } | undefined): boolean {
+  if (!state || state.committedEvents.length !== state.ackedSourceSeq) return false;
+  const seen = new Set(state.committedEvents.map(event => event.sourceSeq));
+  if (seen.size !== state.ackedSourceSeq) return false;
+  for (let seq = 1; seq <= state.ackedSourceSeq; seq += 1) if (!seen.has(seq)) return false;
+  return true;
 }
 
 function providerTurnIsActiveFromCommittedEvents(
@@ -4319,7 +4327,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const item = record(rehydrateRunnerdItemNotification(payload, this.#threadId, observedTurn).item);
           if (typeof item.id === "string") items.set(item.id, { turnId: observedTurn, item });
         }
-        if (!observedStart) throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        if (!observedStart && !committedEventWindowComplete(this.#core?.store.state)) {
+          throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        }
         data = [...items.values()];
         // Runner authority wins over schema-shaped prose in an assistant item.
         if (semanticResultItem) data.push(semanticResultItem);
@@ -7115,9 +7125,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // had returned but not yet reached the agent (it was held across a
       // controller restart) is stale: refuse it so the agent continues with
       // those results instead of ending the task on a wait that is over.
-      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents, core.store.state.commands,
-        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId });
-      if (unseen.length) return staleTerminalCallResult(call.operationId, unseen);
+      // After a reattach the held calls are recovered while this call is
+      // delivered, so wait for earlier calls that have not returned yet
+      // (restart chaos t05) before judging what the agent had seen.
+      const settled = await settleEarlierToolCalls(
+        () => this.#closed || core !== this.#core ? null : { events: core.store.state.committedEvents, commands: core.store.state.commands },
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId },
+      );
+      if (!settled || this.#closed || core !== this.#core || epoch !== this.#turnStartResponseEpoch || threadId !== this.#threadId) {
+        throw new SemanticToolNotDispatchedError();
+      }
+      if (settled.unseen.length || settled.pending.length) {
+        return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
+      }
     }
     const outcome = unwrapToolResponse(
       await this.#handler({

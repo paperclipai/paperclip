@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { seedChaosLab } from "./seed.js";
+import { cloneWorkspaceRepository, createFixtureRepository, seedChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
 
 type Call = { method: string; route: string; body?: unknown };
@@ -102,5 +104,25 @@ describe("seedChaosLab RC-06 mask", () => {
     await seed(api, timeline);
     expect(calls.some(isPolicyCall)).toBe(false);
     expect(timeline.entries.some(entry => entry.kind === "seed_mask_rc06")).toBe(false);
+  });
+});
+
+describe("cloneWorkspaceRepository", () => {
+  it("clones a fresh, shallow working copy of the source repository", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-clone-"));
+    try {
+      const source = await createFixtureRepository(path.join(root, "source"));
+      const clone = cloneWorkspaceRepository(source, path.join(root, "clone"));
+      expect(existsSync(path.join(clone, "chaoscli/cli.py"))).toBe(true);
+      expect(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: clone, encoding: "utf8" }).trim()).toBe("true");
+      const first = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: clone, encoding: "utf8" }).trim()).toBe(first);
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "later"], { cwd: source });
+      const pinned = cloneWorkspaceRepository(source, path.join(root, "pinned"), first);
+      expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: pinned, encoding: "utf8" }).trim()).toBe(first);
+      expect(() => cloneWorkspaceRepository(source, path.join(root, "missing"), "0".repeat(40))).toThrow(/no longer has commit/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

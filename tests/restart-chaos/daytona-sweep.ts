@@ -43,16 +43,24 @@ export interface DaytonaSweepResult {
   orphanSandboxes: SandboxLeak[];
   /** Leases still `active` or `pending_cleanup` with every task at rest. */
   heldLeases: LeaseLeak[];
-  /** Leases kept on purpose (`retained`, or a released reusable lease whose sandbox is stopped for reuse), reported but not a leak. */
+  /** Leases kept on purpose (`retained`, a released reusable lease whose sandbox is stopped for reuse, or a released retain-on-failure restore source whose sandbox is stopped), reported but not a leak. */
   retainedLeases: LeaseLeak[];
   /** Archived sandboxes behind a released lease: expected and reported; Daytona deletes them. */
   archivedSandboxes: string[];
   error: string | null;
 }
 
-/** A stopped sandbox behind a released reuse_by_environment lease: a later run on the same workspace resumes it. */
+/**
+ * A stopped sandbox Paperclip keeps on purpose behind a released lease:
+ * - `reuse_by_environment`: a later run on the same workspace resumes it;
+ * - `retain_on_failure`: a failed run's workspace copy kept for file recovery
+ *   (restore recovery owns it; environment deletion destroys it).
+ * Only a stopped one counts: a running sandbox, or one with no lease (for
+ * example after its environment was deleted), is still a leak.
+ */
 function keptForReuse(lease: LeaseRow, sandbox: DaytonaSandboxRow): boolean {
-  return lease.status === "released" && lease.leasePolicy === "reuse_by_environment"
+  return lease.status === "released"
+    && (lease.leasePolicy === "reuse_by_environment" || lease.leasePolicy === "retain_on_failure")
     && String(sandbox.state ?? "").toLowerCase() === "stopped";
 }
 

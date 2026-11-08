@@ -586,6 +586,62 @@ describe("executeNativeSession recovery", () => {
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
   });
 
+  it.each([
+    { label: "after the continuation starts", staleFirst: false },
+    { label: "before the continuation starts", staleFirst: true },
+  ])("keeps the restart continuation when the restored runner reports an earlier unrecorded continuation lost $label", async ({ staleFirst }) => {
+    let staleAppended!: () => void;
+    const staleTerminal = new Promise<void>(resolve => { staleAppended = resolve; });
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const interrupted: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "codex_app_server", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+      semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => {
+      if (staleFirst) await staleTerminal;
+      return { turnId: "turn-continuation" };
+    });
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: "turn-unrecorded-continuation" };
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return structuredClone(interrupted); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const events: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) {
+        events.push(event);
+        if (event.eventType === "turn.failed") staleAppended();
+        return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+      },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: interrupted,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect((startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0]).continuation).toBe(true);
+    expect(events.filter(event => event.eventType === "turn.failed").map(event => event.turnId)).toEqual(["turn-unrecorded-continuation"]);
+  });
+
   it.each(["acpx_runtime", "opencode_server"] as const)("continues a restart-lost %s turn once in the same conversation", async (driverKind) => {
     const qualified = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
     const acpxInput: NativeExecutionInputV1 = (driverKind === "acpx_runtime" ? {
@@ -6558,6 +6614,36 @@ describe("executeNativeSession recovery", () => {
         capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
       openSession: vi.fn(), openReplacementSession,
       recoverSession: async () => ({ recovered: false, reason: "runnerd transport closed while waiting for run.attach" }),
+    };
+    const port: ControlPlanePort = {
+      openRun: vi.fn(async () => undefined), appendEvent: vi.fn(), completeRun: vi.fn(),
+      loadSessionCheckpoint: async () => structuredClone(checkpoint),
+      replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    })).rejects.toBe(replacementAttempted);
+    expect(openReplacementSession).toHaveBeenCalledOnce();
+  });
+
+  it("continues in a fresh session when a new run's saved session is incompatible and the checkpoint allows replacement", async () => {
+    // A provider release changed between turns (for example an agent-server
+    // bump). The next run's checkpoint allows replacement, so the user's task
+    // continues automatically in a fresh provider session, with no Retry.
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-upgraded", identity,
+      providerSessionId: "provider-upgraded", providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+      cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const replacementAttempted = new Error("replacement attempted");
+    const openReplacementSession = vi.fn(async () => { throw replacementAttempted; });
+    const backend: NativeSessionBackend = {
+      descriptor: async () => ({ kind: "mock", name: "upgraded", version: "1",
+        capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
+      openSession: vi.fn(), openReplacementSession,
+      recoverSession: async () => ({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE,
+        reason: "ACPX durable launch profile digest does not match runner startup" }),
     };
     const port: ControlPlanePort = {
       openRun: vi.fn(async () => undefined), appendEvent: vi.fn(), completeRun: vi.fn(),
