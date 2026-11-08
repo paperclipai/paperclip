@@ -11217,6 +11217,17 @@ export function issueService(db: Db) {
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
+        /**
+         * Server-owned optimistic guard for an execution-stage decision that
+         * was derived before this service acquired the issue row lock.
+         */
+        expectedExecutionDecisionSnapshot?: {
+          status: string;
+          assigneeAgentId: string | null;
+          assigneeUserId: string | null;
+          executionPolicy: unknown;
+          executionState: unknown;
+        };
         expectedStatusVersion?: number;
         /** Defaults to `flatten` for parent changes. Board-user routes pass `allow_nested`. */
         parentDepthPolicy?: IssueParentDepthPolicy;
@@ -11309,6 +11320,7 @@ export function issueService(db: Db) {
         companyGuard,
         workspaceSelectionActor,
         expectedExecutionPolicy,
+        expectedExecutionDecisionSnapshot,
         expectedStatusVersion,
         parentDepthPolicy: _parentDepthPolicy,
         expectedParentId: _expectedParentId,
@@ -11584,6 +11596,27 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (
+          expectedExecutionDecisionSnapshot !== undefined &&
+          (receiptExisting.status !== expectedExecutionDecisionSnapshot.status ||
+            receiptExisting.assigneeAgentId !==
+              expectedExecutionDecisionSnapshot.assigneeAgentId ||
+            receiptExisting.assigneeUserId !==
+              expectedExecutionDecisionSnapshot.assigneeUserId ||
+            !isDeepStrictEqual(
+              receiptExisting.executionPolicy ?? null,
+              expectedExecutionDecisionSnapshot.executionPolicy,
+            ) ||
+            !isDeepStrictEqual(
+              receiptExisting.executionState ?? null,
+              expectedExecutionDecisionSnapshot.executionState,
+            ))
+        ) {
+          throw conflict(
+            "The execution stage changed before this decision could be saved. Read the task again before deciding.",
+            { code: "execution_stage_changed" },
+          );
+        }
         if (issueData.executionPolicy !== undefined) assertQualityReviewPolicyMutation({ previousPolicy: receiptExisting.executionPolicy, nextPolicy: issueData.executionPolicy, actorAgentId, actorUserId });
         if ((patch.status ?? receiptExisting.status) === "done" &&
             (receiptExisting.status !== "done" || issueData.executionPolicy !== undefined)) {

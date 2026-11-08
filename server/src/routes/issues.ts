@@ -15332,6 +15332,15 @@ export function issueRoutes(
         ...(expectedParentId !== undefined ? { expectedParentId } : {}),
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
+        expectedExecutionDecisionSnapshot: transition.decision
+          ? {
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              assigneeUserId: existing.assigneeUserId,
+              executionPolicy: existing.executionPolicy ?? null,
+              executionState: existing.executionState ?? null,
+            }
+          : undefined,
         expectedStatusVersion,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,

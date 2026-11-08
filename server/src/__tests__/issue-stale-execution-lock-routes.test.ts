@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   authUsers,
@@ -10,8 +10,10 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueExecutionDecisions,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -43,10 +45,12 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueExecutionDecisions);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companyMemberships);
@@ -490,6 +494,156 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
     expect(res.body.startedAt).toBeTruthy();
+  });
+
+  it("rejects a stale concurrent stage decision without duplicating or rewinding execution", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    const approverUserId = "second-board-user";
+    await db.insert(authUsers).values({
+      id: approverUserId,
+      name: "Second Board User",
+      email: "second-board@example.test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: approverUserId,
+      status: "active",
+      membershipRole: "admin",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Concurrent staged decision",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [{ type: "user", userId: "board-user" }],
+          },
+          {
+            id: approvalStageId,
+            type: "approval",
+            participants: [{ type: "user", userId: approverUserId }],
+          },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "board-user" },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    let resolveRowLocked!: () => void;
+    let releaseRowLock!: () => void;
+    const rowLocked = new Promise<void>((resolve) => {
+      resolveRowLocked = resolve;
+    });
+    const rowLockRelease = new Promise<void>((resolve) => {
+      releaseRowLock = resolve;
+    });
+    const lockHolder = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .for("update");
+      resolveRowLocked();
+      await rowLockRelease;
+    });
+    await rowLocked;
+
+    const decide = (comment: string) =>
+      request(createApp(boardActor(companyId)))
+        .patch(`/api/issues/${issueId}`)
+        .send({ executionDecision: "approve", comment })
+        .then((response) => response);
+    const firstDecision = decide("First concurrent approval");
+    const secondDecision = decide("Second concurrent approval");
+
+    try {
+      const deadline = Date.now() + 5_000;
+      let lockWaiters = 0;
+      while (Date.now() < deadline) {
+        const rows = await db.execute(sql`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+        `);
+        lockWaiters = Number(rows[0]?.count ?? 0);
+        if (lockWaiters >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(lockWaiters).toBeGreaterThanOrEqual(2);
+    } finally {
+      releaseRowLock();
+      await lockHolder;
+    }
+
+    const responses = await Promise.all([firstDecision, secondDecision]);
+    const successful = responses.filter((response) => response.status === 200);
+    const stale = responses.filter((response) => response.status === 409);
+    expect(successful).toHaveLength(1);
+    expect(
+      stale,
+      JSON.stringify(
+        responses.map((response) => ({
+          status: response.status,
+          body: response.body,
+        })),
+      ),
+    ).toHaveLength(1);
+    expect(stale[0]?.body.details).toMatchObject({
+      code: "execution_stage_changed",
+    });
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(saved).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: approverUserId,
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        currentStageIndex: 1,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: approverUserId },
+        completedStageIds: [reviewStageId],
+        lastDecisionOutcome: "approved",
+      },
+    });
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      stageId: reviewStageId,
+      outcome: "approved",
+    });
   });
 
   it("cancels a pending staged issue with a timestamp and no live execution", async () => {
