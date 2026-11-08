@@ -1777,6 +1777,12 @@ export function agentRoutes(
     };
   }
 
+  /** Terminating an agent is a board-only governed action; tell other actors where a person can do it. */
+  function assertBoardCanTerminateAgent(req: Request) {
+    if (req.actor.type === "board") return;
+    throw forbidden("Board access required: only a board user can terminate an agent, using Terminate in the actions menu on the agent's profile.");
+  }
+
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -5506,6 +5512,8 @@ export function agentRoutes(
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
+    // Termination is board-only and irreversible on every route, not just POST /terminate.
+    if (requestedStatus === "terminated") assertBoardCanTerminateAgent(req);
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
@@ -5943,7 +5951,7 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
+    assertBoardCanTerminateAgent(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
