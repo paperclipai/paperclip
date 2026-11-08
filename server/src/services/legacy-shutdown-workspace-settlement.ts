@@ -63,11 +63,6 @@ export function pendingLegacyShutdownWorkspaceSettlement(lease: Lease) {
     && typeof marker.deadlineAt === "string" ? marker : null;
 }
 
-/**
- * The process that committed the fence, as a shared ownership stamp. Markers
- * written before `controller` was recorded name only a boot id; their owner
- * is never proven gone, and the renewed deadline stays their release.
- */
 export function legacyShutdownSettlementOwnerStamp(metadata: unknown): LocalOwnerStamp | null {
   if (!metadata || typeof metadata !== "object") return null;
   const marker = (metadata as Record<string, unknown>).legacyShutdownWorkspaceSettlement;
@@ -77,6 +72,16 @@ export function legacyShutdownSettlementOwnerStamp(metadata: unknown): LocalOwne
   return { kind: "local", scope: "legacy_shutdown_settlement_fence", generation: null, host: null,
     processSpace: controller.hostHash, bootId: controller.bootId, pid: controller.pid,
     processStartedAt: controller.processStartedAt, processGroupId: null };
+}
+
+export function legacyShutdownSettlementOwner(metadata: unknown):
+  { kind: "process"; stamp: LocalOwnerStamp } | { kind: "none" } {
+  const stamp = legacyShutdownSettlementOwnerStamp(metadata);
+  if (stamp) return { kind: "process", stamp };
+  const marker = (metadata as { legacyShutdownWorkspaceSettlement?: { controllerBootId?: unknown } } | null)?.legacyShutdownWorkspaceSettlement;
+  const bootId = typeof marker?.controllerBootId === "string" && marker.controllerBootId ? marker.controllerBootId : null;
+  return bootId ? { kind: "process", stamp: { kind: "local", scope: "legacy_shutdown_settlement_fence", generation: null,
+    host: null, processSpace: null, bootId, pid: null, processStartedAt: null } } : { kind: "none" };
 }
 
 const sameOwner = (left: LocalOwnerStamp, right: LocalOwnerStamp) => left.bootId === right.bootId
@@ -105,8 +110,6 @@ export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new 
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' <= ${now.toISOString()}`,
   )).orderBy(sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt'`).limit(50);
   for (const lease of rows) await allowLegacyShutdownWorkspaceCleanup(db, lease, now, { onDeferredDeadline: scope.onDeferredDeadline });
-  // A fence whose committing process is proven gone (shared prover) cannot be
-  // renewed or joined by its owner, so it settles without waiting out the deadline.
   const held = await db.select().from(environmentLeases).where(and(
     scope.companyId ? eq(environmentLeases.companyId, scope.companyId) : undefined,
     scope.leaseId ? eq(environmentLeases.id, scope.leaseId) : undefined,
@@ -124,12 +127,6 @@ export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new 
   }
 }
 
-/**
- * Settle of the `legacy_shutdown_settlement_fence` ownership kind (plan Phase 2).
- * The reconciler calls this only after the process that committed the fence was
- * proven gone. It takes the same path as an expired deadline, so the source is
- * preserved and the restore failure recorded; it never deletes provider files.
- */
 export async function settleLegacyShutdownSettlementFence(db: Db, record: { recordId: string; owner: { kind: string; stamp?: unknown } },
   context: { now: Date; proof: OwnerProof }): Promise<{ settled: boolean; reason: string }> {
   if (record.owner.kind !== "process") return { settled: false, reason: "owner_not_provable" };
@@ -175,8 +172,6 @@ export async function finishLegacyShutdownWorkspaceSettlement(db: Db, run: Run, 
 export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, now = new Date(),
   options: {
     ownerStopOnly?: boolean; onDeferredDeadline?: (at: number) => void;
-    /** The fence's committing process, proven gone by the shared prover. It
-     * replaces the deadline only while the marker still names that process. */
     ownerProvenGone?: LocalOwnerStamp;
   } = {}) {
   if (!pendingLegacyShutdownWorkspaceSettlement(lease)) return true;

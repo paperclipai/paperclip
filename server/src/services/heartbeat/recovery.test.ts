@@ -850,7 +850,6 @@ describePostgres("heartbeat recovery module ownership", () => {
     adapterExecutionControls.delete(f.run.id);
   }
 
-  /** Rewrite the fence as if a previous server process committed it. */
   async function fenceFromPreviousServer(f: Awaited<ReturnType<typeof seedShutdownSource>>,
     controller: Record<string, unknown> | null) {
     const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
@@ -865,7 +864,6 @@ describePostgres("heartbeat recovery module ownership", () => {
   }
   const fenceState = async (leaseId: string) => ((await db.select().from(environmentLeases)
     .where(eq(environmentLeases.id, leaseId)))[0].metadata!.legacyShutdownWorkspaceSettlement as { state: string });
-  // pid 2^22-1 is above every Linux/macOS pid ceiling: never alive.
   const deadController = () => ({ pid: 4_194_303, hostHash: currentProcessSpaceHash(), processStartedAt: new Date(0).toISOString() });
 
   it("stamps the shutdown fence with the committing server process", async () => {
@@ -883,7 +881,6 @@ describePostgres("heartbeat recovery module ownership", () => {
     const f = await seedShutdownSource();
     try {
       await fenceFromPreviousServer(f, deadController());
-      // The deadline (30 s) has not passed; the owner's death is the proof.
       await sweepLegacyShutdownWorkspaceSettlements(db);
       expect(await fenceState(f.lease.id)).toMatchObject({ state: "expired" });
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].resultJson)
@@ -907,7 +904,6 @@ describePostgres("heartbeat recovery module ownership", () => {
       const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind] });
       expect(report.kinds[0]).toMatchObject({ inProgress: 3, settled: 1 });
       expect(await fenceState(dead.lease.id)).toMatchObject({ state: "expired" });
-      // Another host, or a marker with only a boot id, keeps its renewed deadline.
       await sweepLegacyShutdownWorkspaceSettlements(db);
       expect(await fenceState(foreign.lease.id)).toMatchObject({ state: "pending" });
       expect(await fenceState(legacy.lease.id)).toMatchObject({ state: "pending" });
