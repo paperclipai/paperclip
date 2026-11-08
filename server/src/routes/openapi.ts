@@ -2187,7 +2187,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2196,7 +2200,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports/preview",
   tags: ["companies"],
   summary: "Preview company export",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 

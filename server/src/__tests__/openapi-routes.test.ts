@@ -331,6 +331,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents the export include body so agents can request projects and skills", () => {
+    const spec = buildOpenApiSpec();
+    for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
+      const operation = spec.paths[path].post;
+      const body = operation.requestBody.content["application/json"].schema;
+      expect(body.properties.include.properties).toMatchObject({ projects: expect.anything(), skills: expect.anything() });
+      expect(operation.description).toMatch(/include\.projects/);
+    }
+  });
   it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
     const spec = buildOpenApiSpec();
     const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
