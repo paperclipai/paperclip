@@ -105,6 +105,7 @@ export type OwnerProofReason =
   | "process_group_alive"
   | "fence_held"
   | "controller_lease_held"
+  | "controller_lease_grace"
   | "provider_running"
   // unprovable
   | "missing_identity"
@@ -252,6 +253,8 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
   if (instance === "stopped") return { verdict: "gone", reason: "controller_stopped" };
   if (instance === "fenced") return { verdict: "gone", reason: "controller_fenced" };
   if (instance === "live") return { verdict: "alive", reason: "controller_lease_held" };
+  // Just past its last sign of life: kept as alive so the settle watch re-checks it after the grace.
+  if (instance === "grace") return { verdict: "alive", reason: "controller_lease_grace" };
   return proof;
 }
 

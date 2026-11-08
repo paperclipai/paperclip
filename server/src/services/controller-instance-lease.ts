@@ -4,37 +4,44 @@ import { logger } from "../middleware/logger.js";
 import {
   currentControllerBootId, currentControllerDeployment, currentProcessSpaceHash, onControllerStamp,
 } from "./controller-process-identity.js";
-import { hasRegisteredLocalWork } from "./idle-local-work.js";
-import { idleWorkSnapshot, setControllerLeaseQuiesce } from "./task-admission.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { setControllerLeaseQuiesce, subscribeIdleWorkSettled } from "./task-admission.js";
 
 export const CONTROLLER_LEASE_TTL_MS = 90_000;
 export const CONTROLLER_LEASE_RENEW_MS = 30_000;
-/** While renewal keeps failing and this boot still holds work, it stops after this long. */
+/** Renewal attempts start failing from their own start; this boot stops after this long while holding work. */
 export const CONTROLLER_LEASE_SELF_FENCE_MS = 60_000;
-/** A prover fences a boot only this long after its lease expired. */
+/** A prover fences a boot only this long after the boot's last sign of life. */
 export const CONTROLLER_LEASE_FENCE_GRACE_MS = 30_000;
-/** A stamp keeps the lease renewing for this long even with no other work signal. */
-const STAMP_HOLD_MS = CONTROLLER_LEASE_TTL_MS;
+/** A stamp counts as held work for this long, so its record's write can commit before the first check. */
+const STAMP_COMMIT_GRACE_MS = 10_000;
+/** A settle of other work re-checks holdings at most this often. */
+const SETTLE_RECHECK_MIN_MS = 5_000;
+/** A renewal that has not answered within this bound counts as failed. */
+const RENEW_TIMEOUT_MS = 10_000;
 const RETRY_MS = 5_000;
 
-export type ControllerInstanceState = "live" | "expired" | "fenced" | "stopped";
-type RenewResult = "renewed" | "fenced";
+export type ControllerInstanceState = "live" | "grace" | "expired" | "fenced" | "stopped";
+type RenewResult = "holding" | "idle" | "fenced";
 
 type LeaseState = {
-  db: Db;
-  epoch: number;
-  timer: ReturnType<typeof setTimeout> | null;
   onLost: (reason: "fenced" | "lease_lost") => void;
   now: () => number;
-  holdsWork: () => boolean;
-  renew: () => Promise<RenewResult>;
-  renewEveryMs: number;
-  retryMs: number;
+  renew: (stampedRecently: boolean) => Promise<RenewResult>;
   lastStampAt: number;
+  /** Start of the first renewal attempt in the current failing streak. */
   failingSince: number | null;
-  ticking: boolean;
+  /** Renewal is due: this boot stamped work, or its last renewal found work it still holds. */
+  active: boolean;
+  epoch: number | null;
   stopped: boolean;
+  /** Wall-clock time of the last stamp (the stamp window follows the server's clock). */
+  lastStampWallAt: number;
+  lastTickAt: number;
+  ignoreNextSettle: boolean;
   unsubscribe: () => void;
+  wake: () => void;
 };
 
 let state: LeaseState | null = null;
@@ -51,121 +58,152 @@ function exitOnLostLease(reason: "fenced" | "lease_lost") {
   process.exit(1);
 }
 
-/** Work this boot holds: a recent ownership stamp, tracked in-flight work, or a local work probe. */
-function defaultHoldsWork(current: LeaseState): boolean {
-  return current.now() - current.lastStampAt < STAMP_HOLD_MS || idleWorkSnapshot().active > 0 || hasRegisteredLocalWork();
-}
-
-function renewInDatabase(db: Db): () => Promise<RenewResult> {
-  return async () => {
-    const renewed = await db.update(controllerInstances).set({
-      renewedAt: sql`now()`, leaseExpiresAt: sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`,
-    }).where(and(eq(controllerInstances.bootId, currentControllerBootId()), isNull(controllerInstances.fencedAt),
-      isNull(controllerInstances.stoppedAt))).returning({ epoch: controllerInstances.epoch });
-    return renewed.length ? "renewed" : "fenced";
-  };
+/** In-progress records stamped with this boot id: the process-owned kinds of the ownership registry. */
+function holdsStampedWorkSql(bootId: string) {
+  return sql`(
+    exists (select 1 from environment_leases where status in ('active', 'pending_cleanup')
+      and (metadata->'leaseController'->>'bootId' = ${bootId} or metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
+    or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId}))`;
 }
 
 /**
- * Registers this boot. The lease renews only while the boot holds work, so an idle
- * server issues no queries and its database can sleep; a lapsed lease is harmless
- * because a prover fences only for records the boot touched while its lease was valid.
+ * One statement: create this boot's row on first use, and extend its lease only while the boot
+ * holds work (a stamp within the TTL, or an in-progress record stamped with its boot id).
+ * Returns whether it still holds work, or that a newer boot fenced it.
  */
-export async function startControllerInstanceLease(db: Db, options: {
-  onLost?: (reason: "fenced" | "lease_lost") => void;
-  now?: () => number;
-  holdsWork?: () => boolean;
-  renew?: () => Promise<RenewResult>;
-  renewEveryMs?: number;
-  retryMs?: number;
-} = {}): Promise<{ epoch: number }> {
-  registeredDb = db;
-  if (state) return { epoch: state.epoch };
-  const [row] = await db.insert(controllerInstances).values({
-    bootId: currentControllerBootId(), processSpace: currentProcessSpaceHash(), pid: process.pid,
-    leaseExpiresAt: sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`,
-  }).returning({ epoch: controllerInstances.epoch });
-  const now = options.now ?? (() => performance.now());
-  const current: LeaseState = {
-    db, epoch: row!.epoch, timer: null, onLost: options.onLost ?? exitOnLostLease, now,
-    holdsWork: () => false, renew: options.renew ?? renewInDatabase(db),
-    renewEveryMs: options.renewEveryMs ?? CONTROLLER_LEASE_RENEW_MS, retryMs: options.retryMs ?? RETRY_MS,
-    lastStampAt: now(), failingSince: null, ticking: false, stopped: false, unsubscribe: () => {},
+function renewInDatabase(db: Db): (stampedRecently: boolean) => Promise<RenewResult> {
+  return async stampedRecently => {
+    const bootId = currentControllerBootId();
+    const holds = sql`(${stampedRecently} or ${holdsStampedWorkSql(bootId)})`;
+    const expires = sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`;
+    const rows = await db.execute(sql`
+      insert into controller_instances (boot_id, process_space, pid, lease_expires_at)
+      values (${bootId}, ${currentProcessSpaceHash()}, ${process.pid}, ${expires})
+      on conflict (boot_id) do update set
+        lease_expires_at = case when ${holds} then ${expires} else controller_instances.lease_expires_at end,
+        renewed_at = case when ${holds} then now() else controller_instances.renewed_at end
+      where controller_instances.fenced_at is null and controller_instances.stopped_at is null
+      returning epoch, ${holds} as holds`) as unknown as Array<{ epoch: string | number; holds: boolean }>;
+    const row = rows[0];
+    if (!row) return "fenced";
+    if (state) state.epoch = Number(row.epoch);
+    return row.holds ? "holding" : "idle";
   };
-  current.holdsWork = options.holdsWork ?? (() => defaultHoldsWork(current));
-  state = current;
-  current.unsubscribe = onControllerStamp(() => {
-    const idle = current.timer === null;
-    current.lastStampAt = current.now();
-    // The first stamp after an idle lapse renews at once, without delaying the stamping write.
-    if (idle && !current.stopped) void tickControllerInstanceLease();
-  });
-  schedule(current, current.renewEveryMs);
-  return { epoch: current.epoch };
 }
 
-function schedule(current: LeaseState, delayMs: number) {
-  if (current.timer) clearTimeout(current.timer);
-  current.timer = setTimeout(() => { current.timer = null; void tickControllerInstanceLease(); }, delayMs);
-  current.timer.unref();
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([work, new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("controller instance lease renewal timed out")), ms);
+  })]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Registers this boot's lease with the shared delivery coordinator. The lease is renewed only
+ * while the boot holds work, so an idle boot issues no statements and its database can sleep.
+ */
+export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  options: {
+    onLost?: (reason: "fenced" | "lease_lost") => void;
+    now?: () => number;
+    renew?: (stampedRecently: boolean) => Promise<RenewResult>;
+  } = {}) {
+  registeredDb = db;
+  const current: LeaseState = {
+    onLost: options.onLost ?? exitOnLostLease, now: options.now ?? (() => performance.now()),
+    renew: options.renew ?? renewInDatabase(db), lastStampAt: Number.NEGATIVE_INFINITY, failingSince: null,
+    active: false, epoch: null, stopped: false, unsubscribe: () => {}, wake: () => {},
+    lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, ignoreNextSettle: false,
+  };
+  state = current;
+  const worker = coordinator.register(DELIVERY_QUEUES.controllerInstanceLease, {
+    retryMs: RETRY_MS,
+    runDuringDrain: true,
+    run: () => tickControllerInstanceLease(),
+    hasPending: async () => false,
+    nextRunAt: () => nextLeaseDeadline(current),
+  });
+  current.wake = worker.wake;
+  const unsubscribeStamp = onControllerStamp(() => {
+    const wasActive = current.active;
+    current.lastStampAt = current.now();
+    current.lastStampWallAt = Date.now();
+    current.active = true;
+    // The first stamp after an idle lapse renews at once, without delaying the stamping write.
+    if (!wasActive && !current.stopped) worker.wake();
+  });
+  // When the server's work settles, check holdings now rather than one renewal later,
+  // so an idle server issues no statement after its last work.
+  const unsubscribeSettle = subscribeIdleWorkSettled(() => {
+    if (current.ignoreNextSettle) { current.ignoreNextSettle = false; return; }
+    if (current.active && !current.stopped && Date.now() - current.lastTickAt >= SETTLE_RECHECK_MIN_MS) worker.wake();
+  });
+  current.unsubscribe = () => { unsubscribeStamp(); unsubscribeSettle(); };
+  return {
+    ready: worker.ready,
+    stop: async () => {
+      current.unsubscribe();
+      await worker.stop();
+    },
+  };
+}
+
+function nextLeaseDeadline(current: LeaseState): number | null {
+  if (current.stopped) return null;
+  if (current.failingSince !== null) return Date.now() + RETRY_MS;
+  return current.active ? Date.now() + CONTROLLER_LEASE_RENEW_MS : null;
 }
 
 /** Renew while holding work; quiesce on failure; stop only if the failure outlasts the self-fence window with work held. */
 export async function tickControllerInstanceLease(): Promise<void> {
   const current = state;
-  if (!current || current.ticking || current.stopped) return;
-  current.ticking = true;
-  try {
-    const holding = current.holdsWork();
-    if (!holding && current.failingSince === null) {
-      // Idle: let the lease lapse. The next stamp wakes renewal again.
-      if (current.timer) { clearTimeout(current.timer); current.timer = null; }
-      return;
-    }
-    let result: RenewResult | "failed";
-    try { result = await current.renew(); } catch (error) {
-      logger.warn({ err: error }, "controller instance lease renewal failed");
-      result = "failed";
-    }
-    if (result === "renewed") {
-      current.failingSince = null;
-      setControllerLeaseQuiesce(false);
-      schedule(current, current.renewEveryMs);
-      return;
-    }
-    // Fenced or unreachable: dispatch nothing new while the outcome is open.
-    setControllerLeaseQuiesce(true);
-    if (result === "fenced") { current.stopped = true; current.onLost("fenced"); return; }
-    current.failingSince ??= current.now();
-    if (current.now() - current.failingSince >= CONTROLLER_LEASE_SELF_FENCE_MS && current.holdsWork()) {
-      current.stopped = true;
-      current.onLost("lease_lost");
-      return;
-    }
-    schedule(current, current.retryMs);
-  } finally {
-    current.ticking = false;
+  if (!current || current.stopped || (!current.active && current.failingSince === null)) return;
+  const attemptStartedAt = current.now();
+  current.lastTickAt = Date.now();
+  // The coordinator's own work token settles right after this run; that is not other work.
+  current.ignoreNextSettle = true;
+  const stampedRecently = Date.now() - current.lastStampWallAt < STAMP_COMMIT_GRACE_MS;
+  let result: RenewResult | "failed";
+  try { result = await withTimeout(current.renew(stampedRecently), RENEW_TIMEOUT_MS); } catch (error) {
+    logger.warn({ err: error }, "controller instance lease renewal failed");
+    result = "failed";
+  }
+  if (result === "holding" || result === "idle") {
+    current.failingSince = null;
+    // Idle: the lease lapses with no further statements until the next stamp wakes it.
+    current.active = result === "holding";
+    setControllerLeaseQuiesce(false);
+    return;
+  }
+  // Fenced or unreachable: dispatch nothing new while the outcome is open.
+  setControllerLeaseQuiesce(true);
+  if (result === "fenced") { current.stopped = true; current.onLost("fenced"); return; }
+  current.failingSince ??= attemptStartedAt;
+  if (current.now() - current.failingSince >= CONTROLLER_LEASE_SELF_FENCE_MS && (current.active || stampedRecently)) {
+    current.stopped = true;
+    current.onLost("lease_lost");
   }
 }
 
 /** Graceful shutdown: this boot no longer owns anything, so its stamps are gone at once. */
-export async function stopControllerInstanceLease(): Promise<void> {
+export async function stopControllerInstanceLease(db: Db | null = registeredDb): Promise<void> {
   const current = state;
-  if (!current) return;
-  if (current.timer) clearTimeout(current.timer);
-  current.unsubscribe();
-  current.stopped = true;
+  if (current) { current.stopped = true; current.unsubscribe(); }
   state = null;
-  await current.db.update(controllerInstances).set({ stoppedAt: sql`now()` })
+  if (!db || current?.epoch == null) return;
+  await db.update(controllerInstances).set({ stoppedAt: sql`now()` })
     .where(eq(controllerInstances.bootId, currentControllerBootId()))
     .catch(error => logger.warn({ err: error }, "controller instance stop record failed"));
 }
 
 /**
- * The lease state of another boot, for a record it last touched at `touchedAt` (its
- * write time). An expired lease past the fence grace is fenced here, but only when
- * the record was touched while that lease was still valid: a boot that resumed
- * after an idle lapse wrote it later, and is alive.
+ * The lease state of another boot, for a record it last wrote at `touchedAt`. The boot's last
+ * sign of life is the later of its lease expiry and that write plus the TTL (a boot that resumed
+ * after an idle lapse renews on its first stamp). Within the grace after it, the owner is still
+ * treated as alive so the record stays watched; past it, the boot is fenced (only by a newer
+ * epoch) and its records are gone. A boot that held work exits before this point.
  */
 export async function proveControllerInstance(db: Db, bootId: string, touchedAt: Date | null):
   Promise<ControllerInstanceState | null> {
@@ -173,22 +211,41 @@ export async function proveControllerInstance(db: Db, bootId: string, touchedAt:
     fenced: sql<boolean>`${controllerInstances.fencedAt} is not null`,
     stopped: sql<boolean>`${controllerInstances.stoppedAt} is not null`,
     live: sql<boolean>`${controllerInstances.leaseExpiresAt} > now()`,
-    leaseExpiresAt: controllerInstances.leaseExpiresAt,
+    pastGrace: sql<boolean>`greatest(${controllerInstances.leaseExpiresAt},
+      ${touchedAt?.toISOString() ?? null}::timestamptz + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval)
+      < now() - ${`${CONTROLLER_LEASE_FENCE_GRACE_MS} milliseconds`}::interval`,
   }).from(controllerInstances).where(eq(controllerInstances.bootId, bootId));
   if (!row) return null;
   if (row.stopped) return "stopped";
   if (row.fenced) return "fenced";
   if (row.live) return "live";
-  if (!touchedAt || touchedAt.getTime() > row.leaseExpiresAt.getTime()) return "expired";
-  const [fenced] = await db.update(controllerInstances).set({ fencedAt: sql`now()`, fencedByEpoch: state?.epoch ?? null })
+  if (!touchedAt) return "expired";
+  if (!row.pastGrace) return "grace";
+  // Only a boot that holds a lease row of its own may fence, and only an older epoch.
+  const epoch = await ownEpoch();
+  if (epoch === null) return "expired";
+  const [fenced] = await db.update(controllerInstances).set({ fencedAt: sql`now()`, fencedByEpoch: epoch })
     .where(and(eq(controllerInstances.bootId, bootId), isNull(controllerInstances.fencedAt), isNull(controllerInstances.stoppedAt),
-      sql`${controllerInstances.leaseExpiresAt} < now() - ${`${CONTROLLER_LEASE_FENCE_GRACE_MS} milliseconds`}::interval`,
-      ...(state ? [sql`${controllerInstances.epoch} < ${state.epoch}`] : [])))
+      sql`greatest(${controllerInstances.leaseExpiresAt}, ${touchedAt.toISOString()}::timestamptz
+        + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval)
+        < now() - ${`${CONTROLLER_LEASE_FENCE_GRACE_MS} milliseconds`}::interval`,
+      sql`${controllerInstances.epoch} < ${epoch}`))
     .returning({ bootId: controllerInstances.bootId });
   if (fenced) return "fenced";
   const [after] = await db.select({ fenced: sql<boolean>`${controllerInstances.fencedAt} is not null` })
     .from(controllerInstances).where(eq(controllerInstances.bootId, bootId));
   return after?.fenced ? "fenced" : "expired";
+}
+
+/** This boot's epoch, creating its row on first need (one statement). Null when the lease is off or unreachable. */
+async function ownEpoch(): Promise<number | null> {
+  const current = state;
+  if (!current || current.stopped) return null;
+  if (current.epoch === null) {
+    const result = await withTimeout(current.renew(false), RENEW_TIMEOUT_MS).catch(() => null);
+    if (result === "fenced") return null;
+  }
+  return current.epoch;
 }
 
 /** Lets the owner proof read other boots' leases, whether or not this boot holds one. */
@@ -201,7 +258,6 @@ export function registeredControllerInstanceDb(): Db | null {
 }
 
 export function resetControllerInstanceLeaseForTests(): void {
-  if (state?.timer) clearTimeout(state.timer);
   state?.unsubscribe();
   state = null;
   registeredDb = null;

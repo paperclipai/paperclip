@@ -78,7 +78,7 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
-import { controllerInstanceLeaseEnabled, registerControllerInstanceDb, startControllerInstanceLease,
+import { controllerInstanceLeaseEnabled, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
   stopControllerInstanceLease } from "./services/controller-instance-lease.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
@@ -1102,13 +1102,9 @@ async function startServerWithDatabaseTeardown(
   // Records this boot owns are stamped with its boot id; the lease lets a server on
   // another host or container prove this boot gone after it is replaced.
   registerControllerInstanceDb(db as any);
-  if (controllerInstanceLeaseEnabled()) {
-    try {
-      await startControllerInstanceLease(db as any);
-    } catch (err) {
-      logger.error({ err }, "controller instance lease could not start; replaced-container proof is unavailable for this boot");
-    }
-  }
+  const controllerInstanceLeaseWork = controllerInstanceLeaseEnabled()
+    ? registerControllerInstanceLeaseWork(db as any, deliveryWork) : null;
+  if (controllerInstanceLeaseWork) server.on("close", () => { void controllerInstanceLeaseWork.stop(); });
 
   // These jobs need not delay readiness, but their writes must finish before
   // an idle report can authorize sleep. Count the whole detached promise.

@@ -93,6 +93,12 @@ export function isIdleTaskDrainActive(): boolean { return Boolean(readTaskDrain(
 // The generation also catches work which starts AND finishes during a scan.
 let generation = 0;
 let active = 0;
+const settledListeners = new Set<() => void>();
+/** Called (synchronously) whenever the last tracked work finishes. */
+export function subscribeIdleWorkSettled(listener: () => void): () => void {
+  settledListeners.add(listener);
+  return () => { settledListeners.delete(listener); };
+}
 export function beginIdleTrackedWork(): () => void {
   generation++;
   active++;
@@ -102,6 +108,9 @@ export function beginIdleTrackedWork(): () => void {
     finished = true;
     active--;
     generation++;
+    if (active === 0) for (const listener of settledListeners) {
+      try { listener(); } catch { /* a listener never blocks work accounting */ }
+    }
   };
 }
 export function trackIdleWork<T>(work: Promise<T>): Promise<T> {

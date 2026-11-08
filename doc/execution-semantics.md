@@ -1877,17 +1877,23 @@ processes with no recorded host are left to the run's Stop control. The next
 release removes the fallback and treats every row with no recorded host as
 unprovable.
 
-Every server boot registers a controller instance (`controller_instances`): a row
-named by its boot id, with an epoch and a lease on the database clock (90 s TTL).
+A server boot that holds work keeps a controller instance lease
+(`controller_instances`): a row named by its boot id, with an epoch and a lease
+on the database clock (90 s TTL).
 
-- **Renewal while holding work.** The boot renews with one `UPDATE` every 30 s,
-  but only while it holds work: a recent ownership stamp, tracked in-flight work,
-  or a registered local-work probe. An idle boot issues no queries, so its
-  database can sleep, and its lease lapses. The next stamp renews at once without
-  delaying the stamping write.
-- **Renewal failure.** The boot first quiesces: it reports a task drain, so it
-  dispatches no new work. If it renews again before anyone fences it, it resumes.
-  It exits only if renewal has failed for 60 s while it still holds work.
+- **Renewal.** The shared delivery-work coordinator schedules it every 30 s,
+  only while the boot holds work. A single upsert both creates the row on first
+  use and extends the lease, but only if the boot stamped ownership in the last
+  90 s or still has an in-progress record stamped with its boot id: an
+  environment lease or cleanup claim, a sandbox creation intent, a workspace
+  finalize attempt, or an agent lifecycle step. Otherwise the lease lapses and
+  the worker issues no statements until the next stamp, so an idle server's
+  database can sleep.
+- **Renewal failure.** Each renewal has a 10 s bound. A failed or timed-out
+  renewal quiesces the boot: it reports a task drain and dispatches no new work.
+  If it renews again before anyone fences it, it resumes. It exits only if
+  renewal has kept failing for 60 s, counted from the first failed attempt's
+  start, while it still holds work.
 
 A record owned by the server process itself (a lease, claim or intent with no
 recorded process group) that names a boot in another host or PID space is
@@ -1895,14 +1901,13 @@ judged through that boot's row:
 
 - `stopped`: the boot shut down cleanly, so the record's owner is gone.
 - live lease: the owner is alive.
-- expired lease: the prover fences the boot (only a newer epoch may), so the
-  owner is gone. This needs both conditions below; otherwise the record stays
-  unprovable.
-  - The lease expired more than 30 s ago. Because of the 60 s exit rule, a boot
-    that held work stops before this point.
-  - The record was last written while the lease was still valid. A record a boot
-    wrote after resuming from an idle lapse is never fenced on that boot's old
-    expiry.
+- otherwise, the boot's last sign of life is the later of its lease expiry and
+  the record's last write plus the TTL. A boot that resumes after an idle lapse
+  renews on its first stamp.
+  - Within 30 s after that, the owner still counts as alive, so the settle watch
+    re-checks it.
+  - After that, the prover fences the boot (only a newer epoch may), and the
+    owner is gone. A boot that held work has exited by then.
 - no row (a boot from before the lease): the record stays unprovable.
 
 A record with a recorded process group stays unprovable across hosts, because
