@@ -30,7 +30,7 @@ import { DaytonaWaveSweeper } from "./daytona-sweep.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
-  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions,
+  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions, daytonaBaselineHolders, parseBaselineEnvironment,
   type BaselineEvent, type BaselineFault, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -269,20 +269,12 @@ async function main() {
   const requested = values.adapters!.split(",").map(value => value.trim()) as AdapterId[];
   const samples = Math.max(1, Number(values.samples));
   const restarts = Math.max(0, Number(values.restarts));
-  const env = values.env === "daytona" ? "daytona" as const : "local" as const;
-  if (env === "daytona" && !values["daytona-image"]) throw new Error("--env daytona needs --daytona-image");
+  const { env, cpu } = parseBaselineEnvironment({ env: values.env, image: values["daytona-image"], cpu: values["daytona-cpu"],
+    warm: values["daytona-warm"] === true, inherit: values["daytona-inherit"] === true });
   if (env === "daytona") {
-    // A warm sandbox (the warm fixture, or the inheriting default) outlives its task for
-    // the idle window and no other task reuses it, so count one per sampled task.
     const budget = Number(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET ?? DAYTONA_VCPU_BUDGET);
-    const perTaskPhases = ["coldwarm", "midturn", "verify"].filter(phase => phases.has(phase)).length
-      + (phases.has("restart") ? Math.max(1, Number(values.restarts)) : 0);
-    const cpu = Number(values["daytona-cpu"]);
-    // The default fixture releases each sandbox after its turn; only a warm one is retained.
     const retainsSandboxes = values["daytona-warm"] === true || values["daytona-inherit"] === true;
-    const holders = retainsSandboxes
-      ? requested.length * Math.max(1, Number(values.samples)) * Math.max(1, perTaskPhases)
-      : requested.length;
+    const holders = daytonaBaselineHolders({ adapters: requested.length, samples, phases, restarts, retainsSandboxes });
     if (holders * cpu > budget) {
       throw new Error(`${holders} ${retainsSandboxes ? "sampled tasks (warm sandboxes outlive their task)" : "concurrent tasks"} × --daytona-cpu ${cpu} vCPU can be held at once, `
         + `exceeding the Daytona vCPU budget of ${budget}. Lower --samples, --adapters or --daytona-cpu (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).`);
@@ -360,7 +352,7 @@ async function main() {
     const api = new ChaosApi(supervisor.baseUrl);
     const repositoryPath = values["workspace-repo"] ? path.resolve(values["workspace-repo"]) : undefined;
     projectScopedTasks = Boolean(repositoryPath);
-    const lab = await seedChaosLab({ api, env, daytonaImage: values["daytona-image"], daytonaCpu: Number(values["daytona-cpu"]),
+    const lab = await seedChaosLab({ api, env, daytonaImage: values["daytona-image"], daytonaCpu: cpu,
       daytonaWarm: values["daytona-warm"], daytonaInherit: values["daytona-inherit"],
       adapters: requested, concurrency: requested.length, budgetCents: 3000,
       masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides, repositoryPath,
@@ -461,8 +453,10 @@ async function main() {
     // First turn after an idle control-plane restart: K1 while nothing runs,
     // then one more follow-up on each task the cold/warm phase left at rest.
     // The fault must be idle: no timed-out sample may still be running.
+    // A failed runs read counts as not at rest: the fault must never land on a live turn.
     const allAtRest = timedOutIssues.size === 0 && (await Promise.all(tasks.map(async task =>
-      (await runsFor(api, task.issueId)).every(run => !ACTIVE_RUN_STATUSES.has(String(run.status)))))).every(Boolean);
+      (await api.get<Json[]>(`/api/issues/${task.issueId}/runs`, 10_000).catch(() => null))
+        ?.every(run => !ACTIVE_RUN_STATUSES.has(String(run.status))) ?? false))).every(Boolean);
     if (phases.has("postfault") && followUpTasks.size && !allAtRest) {
       timeline.add("baseline_postfault_skipped", { reason: "work_not_at_rest", timedOut: timedOutIssues.size });
     }

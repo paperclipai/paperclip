@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baselineRows, distribution, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
+  baselineRows, daytonaBaselineHolders, distribution, parseBaselineEnvironment, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
   type BaselineEvent, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -75,6 +75,31 @@ describe("ttft baseline statistics", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ adapter: "codex", warmth: "cold", anchors: { wake_request: 2 },
       ttft: { n: 2, p50: 6_000, p95: 12_000 } });
+  });
+
+  it("leaves post-restart and verification runs out of the baseline rows", () => {
+    const rows = baselineRows([coldRun("a"), run("p", "postfault", [span("task.time_to_first_token", 0, 20_000)]),
+      run("v", "verify", [span("task.time_to_first_token", 0, 30_000)])]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ warmth: "cold", ttft: { n: 1, p50: 6_000 } });
+  });
+
+  it("counts held Daytona sandboxes per concurrent task, or per sampled task when they stay warm", () => {
+    const phases = new Set(["coldwarm", "midturn", "restart"]);
+    expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: false })).toBe(3);
+    expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: true })).toBe(60);
+    expect(daytonaBaselineHolders({ adapters: 2, samples: 0, phases: new Set(["postfault"]), restarts: 0, retainsSandboxes: true })).toBe(2);
+  });
+
+  it("rejects contradictory or out-of-range environment options", () => {
+    const base = { env: "daytona", image: "img", cpu: "4", warm: false, inherit: false };
+    expect(parseBaselineEnvironment(base)).toEqual({ env: "daytona", cpu: 4 });
+    expect(parseBaselineEnvironment({ ...base, env: "local", image: undefined })).toMatchObject({ env: "local" });
+    expect(() => parseBaselineEnvironment({ ...base, env: "dayton" })).toThrow(/local or daytona/);
+    expect(() => parseBaselineEnvironment({ ...base, image: undefined })).toThrow(/needs --daytona-image/);
+    for (const cpu of ["0", "5", "abc", "2.5"]) expect(() => parseBaselineEnvironment({ ...base, cpu })).toThrow(/1 to 4/);
+    expect(() => parseBaselineEnvironment({ ...base, warm: true, inherit: true })).toThrow(/cannot be combined/);
+    expect(() => parseBaselineEnvironment({ ...base, env: "local", image: undefined, warm: true })).toThrow(/only to --env daytona/);
   });
 
   it("ranks pre-turn steps by p95 without cumulative wrappers", () => {

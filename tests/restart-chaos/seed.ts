@@ -59,6 +59,12 @@ export function chaosDaytonaShape(cpu: number) {
   return { cpu, memory: 4, disk: 10 };
 }
 
+/** A user's default environment config: the lifecycle and lease reuse are left to the agent. */
+export function inheritingEnvironmentConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const { runnerLifecycleMode: _lifecycle, reuseLease: _reuse, ...rest } = config;
+  return rest;
+}
+
 async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; reuseLease: boolean; waveId: string;
   secretRefs: SecretReferenceMap; timeline: Timeline; warm?: boolean; inherit?: boolean }): Promise<string> {
   // The warm fixture keeps a reusable sandbox and a warm runner between turns.
@@ -69,13 +75,9 @@ async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: strin
   const payload = fixture.buildEnvironment({ secretRefs: input.secretRefs, daytonaImage: input.image, executionId: input.waveId });
   const shape = chaosDaytonaShape(input.cpu);
   // A user's default environment: the agent decides the lifecycle, and nothing pins lease reuse.
-  if (input.inherit) {
-    const config = payload.config as Record<string, unknown>;
-    delete config.runnerLifecycleMode;
-    delete config.reuseLease;
-  }
+  const baseConfig = input.inherit ? inheritingEnvironmentConfig(payload.config as Record<string, unknown>) : payload.config as Record<string, unknown>;
   const environment = await input.api.post<{ id: string; driver: string }>(`/api/companies/${input.companyId}/environments`,
-    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
+    { ...payload, config: { ...baseConfig, ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
   input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape,
     reuseLease: input.reuseLease });
   return environment.id;
