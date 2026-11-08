@@ -460,7 +460,7 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
           on steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
         where steered.company_id = c.company_id
           and (steered.context_snapshot->>'issueId' = c.issue_id::text or steered.native_issue_id = c.issue_id)
-          and steer_event.event_type = 'item.started' and steer_event.payload->'prpEvent'->>'itemId' = c.id::text)
+          and strpos(steer_event.payload::text, c.id::text) > 0)
       and exists (select 1 from heartbeat_runs prior where prior.company_id = c.company_id
         and (prior.context_snapshot->>'issueId' = c.issue_id::text or prior.native_issue_id = c.issue_id))
       and not exists (select 1 from heartbeat_runs r where r.company_id = c.company_id

@@ -483,10 +483,16 @@ describe("report-only ownership reconciliation", () => {
     };
     const lost = await closedTask("agent");
     const steered = await closedTask("agent");
+    const goalSteered = await closedTask("agent");
     const personClosed = await closedTask("user");
-    await db.insert(heartbeatRunEvents).values({ companyId, runId: steered.runId, agentId, seq: 1, eventType: "item.started",
-      stream: "system", level: "info", sourceEventId: randomUUID(),
-      payload: { prpEvent: { itemId: steered.commentId, payload: { kind: "userMessage" } } } });
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, runId: steered.runId, agentId, seq: 1, eventType: "item.completed", stream: "system", level: "info",
+        sourceEventId: randomUUID(), payload: { prpEvent: { itemId: `provider-item-9f2:steer:${steered.commentId}`,
+          payload: { kind: "steering_acknowledgement" } } } },
+      { companyId, runId: goalSteered.runId, agentId, seq: 1, eventType: "item.started", stream: "system", level: "info",
+        sourceEventId: randomUUID(), payload: { prpEvent: { itemId: "msg_provider_generated_7c1",
+          payload: { kind: "userMessage", commandId: `goal_comment_${goalSteered.commentId}` } } } },
+    ]);
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
       .toEqual([lost.commentId]);
