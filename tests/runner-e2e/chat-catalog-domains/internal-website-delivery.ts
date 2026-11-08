@@ -102,7 +102,7 @@ function websiteDelivery(revising: boolean): ChatCatalogCase {
     const state = { project: p, task: handedOff, worker, priorRunId, filename, producedBody: actual, producedHash: hash(actual), marker, bodyFact, signupHref, originalAttachment, originalProductId, selectedSource, factualContextAttachment: selectedSource.factualContextAttachment };
     await ctx.input.evidence("chat-catalog-actual-prior-website.json", state); return state;
   }, gradeWebsiteDelivery);
-  return { ...base, ...(revising ? { oracleVersion: "paperclip.chat-catalog.internal.website-revision.v2" } : {}), authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-source.md"), expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 600_000,
+  return { ...base, ...(revising ? { oracleVersion: "paperclip.chat-catalog.internal.website-revision.v3" } : {}), authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-source.md"), expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 600_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-website-delivery.ts", "registered-artifact.ts"],
     async observe(ctx, state): Promise<DeliveryObservation> {
       const o = await observeInternal(ctx, state); const ids = [entity(state, "task").id, ...(ctx.issue() ? [ctx.issue()!.id] : [])];
@@ -112,7 +112,10 @@ function websiteDelivery(revising: boolean): ChatCatalogCase {
       return { ...o, attachments, products, downloaded, ...(ctx.issue() ? { chatIssueId: ctx.issue()!.id } : {}) };
     },
     async verifyResult(ctx, state, value) {
-      const o = value as DeliveryObservation; await base.verifyResult(ctx, state, value);
+      const o = value as DeliveryObservation;
+      // The revision request already attaches the source task; follow a rendered task link when one exists,
+      // while the returned download and both library stacks below are always opened.
+      if (!revising || o.tasks.some(row => hasLink(o, "issues", row))) await base.verifyResult(ctx, state, value);
       const file = deliveredFiles(o).find(row => downloadHref(o, row)); if (!file) throw new Error("Missing exact registered download result");
       const href = downloadHref(o, file)!; const page = await ctx.input.page.context().newPage();
       try {
