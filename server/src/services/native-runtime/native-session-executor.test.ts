@@ -12321,6 +12321,8 @@ describe("native warm session supervision", () => {
       terminalTurns: [],
       pendingRuntimeRequests: [],
       codexUsageBaseline: { baseline: {}, latest, ...(accounted ? { accounted } : {}) },
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-first-run-restart-continuation",
     };
     const result = {
       result: { summary: "completed" },
@@ -12336,6 +12338,7 @@ describe("native warm session supervision", () => {
     };
     const firstClose = vi.fn(async () => undefined);
     let resumedBaseline: unknown;
+    let resumedMarker: unknown;
     state.execute
       .mockReset()
       .mockImplementationOnce(async (options) => {
@@ -12345,6 +12348,8 @@ describe("native warm session supervision", () => {
       })
       .mockImplementationOnce(async (options) => {
         resumedBaseline = options.persistedSession?.codexUsageBaseline;
+        resumedMarker = { consumed: options.persistedSession?.dispositionOnlyRecoveryConsumed,
+          turnId: options.persistedSession?.dispositionOnlyRecoveryTurnId };
         return result;
       });
 
@@ -12365,6 +12370,7 @@ describe("native warm session supervision", () => {
         latest,
         ...(accounted ? { accounted } : {}),
       });
+      expect(resumedMarker).toEqual({ consumed: false, turnId: null });
     } finally {
       if (previousPaperclipHome === undefined) {
         delete process.env.PAPERCLIP_HOME;
