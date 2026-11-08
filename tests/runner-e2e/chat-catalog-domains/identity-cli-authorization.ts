@@ -89,21 +89,24 @@ export const cliAuthorizationIdentityCases: readonly ChatCatalogCase[] = [identi
     const challenge = await privateChallenge(ctx, id, token);
     state.requestedAccess = challenge.requestedAccess; state.requestedCompanyId = challenge.requestedCompanyId;
     state.agentApproveStatus = await probeAgentPermission(ctx, `/api/cli-auth/challenges/${id}/approve`, "POST", { token });
-    const source = ctx.input.page.url(); await ctx.input.page.goto(approval!, { waitUntil: "domcontentloaded" });
+    const source = ctx.input.page.url();
+    // Navigate without page.goto: its report step title would carry the challenge secret.
+    await ctx.input.page.evaluate(target => { window.location.assign(target); }, approval!); await ctx.input.page.waitForURL(page => page.pathname === url.pathname, { waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByRole("heading", { name: "Approve Paperclip CLI access", exact: true })).toBeVisible();
     await expect(ctx.input.page.getByText("paperclipai auth login", { exact: true })).toBeVisible(); state.reviewVisible = true;
     await expect(ctx.input.page.getByText(ctx.input.fixtures.company.name, { exact: true }).last()).toBeVisible(); state.reviewCompanyVisible = true;
     const approved = ctx.input.page.waitForResponse(response => response.request().method() === "POST" && new URL(response.url()).pathname === `/api/cli-auth/challenges/${id}/approve`);
     await ctx.input.page.getByRole("button", { name: "Approve CLI access", exact: true }).click();
     const approvalResult = await approved; if (!approvalResult.ok()) throw new Error("Human CLI approval failed");
-    resources.keyId = (await approvalResult.json() as { keyId: string }).keyId;
+    // The public challenge read deliberately withholds the approver; the person's own approval response names them.
+    const approvedBody = await approvalResult.json() as { keyId: string; userId?: string; approved?: boolean };
+    resources.keyId = approvedBody.keyId; state.approvedByUserId = approvedBody.approved === true ? approvedBody.userId : undefined;
     await expect(ctx.input.page.getByRole("heading", { name: "CLI access approved", exact: true })).toBeVisible();
     const loggedIn = await login; state.cliExitCode = loggedIn.code;
     if (loggedIn.code !== 0) throw new Error("Real CLI login failed; private process logs retained");
     const store = JSON.parse(await readFile(resources.store, "utf8")) as { credentials: Record<string, CliCredential> };
     const credential = store.credentials[ctx.input.api.baseURL]; if (!credential?.token) throw new Error("CLI did not persist its own credential");
     resources.token = credential.token; ctx.input.privateSecrets!.push(credential.token);
-    const decision = await privateChallenge(ctx, id, token); state.approvedByUserId = decision.approvedByUser?.id;
     const identity = await runCli(ctx, ["auth", "whoami"], "whoami"); if (identity.code !== 0) throw new Error("Real authenticated CLI whoami failed");
     const me = JSON.parse(identity.stdout) as { userId: string; source: string; companyIds: string[] };
     state.cliUserId = me.userId; state.cliSource = me.source; state.cliHasCompany = me.companyIds.includes(ctx.input.fixtures.company.id);
@@ -140,7 +143,7 @@ export const cliAuthorizationIdentityCases: readonly ChatCatalogCase[] = [identi
 async function privateChallenge(ctx: ChatCatalogContext, id: string, token: string) {
   const response = await fetch(`${ctx.input.api.baseURL}/api/cli-auth/challenges/${id}?token=${encodeURIComponent(token)}`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) { await response.body?.cancel(); throw new Error(`Public CLI challenge read HTTP ${response.status}; response withheld`); }
-  return response.json() as Promise<{ requestedAccess: string; requestedCompanyId: string; approvedByUser?: { id: string } }>;
+  return response.json() as Promise<{ requestedAccess: string; requestedCompanyId: string }>;
 }
 async function runCli(ctx: ChatCatalogContext, args: string[], name: string): Promise<{ code: number | null; stdout: string }> {
   const resources = owned.get(ctx); if (!resources) throw new Error("Owned CLI process state missing");
