@@ -5,7 +5,7 @@ import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
-import { CEO_HIRING_DENIAL_KEY, normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -5056,11 +5056,11 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    // Turning a CEO's hiring off here is the board's restriction; record who
-    // and when, so it is told apart from a false saved by other writes.
-    const hiringWasOn = normalizeAgentPermissions(existing.permissions, { role: existing.role }).canCreateAgents;
-    const permissionsPatch = existing.role === "ceo" && req.body.canCreateAgents === false && hiringWasOn
-      ? { ...req.body, [CEO_HIRING_DENIAL_KEY]: {
+    // Saving a CEO's hiring as off here is the board's restriction, since this
+    // control shows the effective value; record who and when, so it is told
+    // apart from a false saved by other writes. Keep an earlier record.
+    const permissionsPatch = existing.role === "ceo" && req.body.canCreateAgents === false
+      ? { ...req.body, [CEO_HIRING_DENIAL_KEY]: ceoHiringDenial(existing.permissions) ?? {
           actorType: req.actor.type === "agent" ? "agent" : "user",
           actorId: (req.actor.type === "agent" ? req.actor.agentId : req.actor.userId) ?? null,
           at: new Date().toISOString(),
@@ -5075,6 +5075,11 @@ export function agentRoutes(
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+    // The toggle is the visible hiring control: turning it off also removes an
+    // explicit agents:create grant that would otherwise still allow hiring.
+    if (req.body.canCreateAgents === false) {
+      await access.setPrincipalPermission(agent.companyId, "agent", agent.id, "agents:create", false, null);
+    }
     await access.setPrincipalPermission(
       agent.companyId,
       "agent",
