@@ -1979,6 +1979,7 @@ pub struct CodexCommandExecutor {
     provider: Option<CodexProvider>,
     event_identity: Option<ProviderEventIdentity>,
     restore_checked: bool,
+    restore_after_park: bool,
     restore_error: Option<DurableRunnerError>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
@@ -1995,6 +1996,7 @@ impl CodexCommandExecutor {
             provider: None,
             event_identity: None,
             restore_checked: false,
+            restore_after_park: false,
             restore_error: None,
             opencode_launch_profile: None,
             cursor_cloud_launch_profile: None,
@@ -5695,6 +5697,9 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+        if std::mem::take(&mut self.restore_after_park) {
+            self.restore_checked = false;
+        }
         self.startup_command = Some(ProviderStartupCommand {
             command_id: command.command_id.clone(),
             controller_seq: command.controller_seq,
@@ -5893,6 +5898,12 @@ impl CommandExecutor for CodexCommandExecutor {
         // successful no-op from an empty in-memory provider slot.
         self.restore()?;
         self.stop_owned_provider()?;
+        Ok(())
+    }
+
+    fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
+        self.shutdown()?;
+        self.restore_after_park = true;
         Ok(())
     }
 

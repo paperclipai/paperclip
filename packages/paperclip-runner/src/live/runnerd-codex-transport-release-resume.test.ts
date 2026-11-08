@@ -179,7 +179,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       "--acpx-sidecar-script", sidecarScript, "--acpx-sidecar-script-sha256", `sha256:${digest("qualified fixture entry")}`] : [];
     const launch = vi.fn((spec: Parameters<typeof fixture.launch>[0]) => { handle = fixture.launch({ ...spec, args: [...spec.args, ...acpxArguments] }); return handle; });
     const options = { runnerBinary: binary, runnerArtifact: readRunnerdArtifactBinding(binary), stateDirectory: root,
-      codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, ...(mode === "empty goal snapshot" ? ["--durable-turn-ids", "--late-accounting-tail-gate", goalGate, "--late-active-goal"] : [])), prpIdentity: identity,
+      codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, "--durable-turn-ids", ...(mode === "empty goal snapshot" ? ["--late-accounting-tail-gate", goalGate, "--late-active-goal"] : [])), prpIdentity: identity,
       get authorityRunId() { return claimantRunId; }, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
       runnerProcessLauncher: launch, controlPlaneRegistration: registration, releaseResume: pair,
       ...((mode === "release admission" || mode === "deferred turn after close") ? { measureOperation: async <T>(phase: string, work: () => Promise<T>): Promise<T> => {

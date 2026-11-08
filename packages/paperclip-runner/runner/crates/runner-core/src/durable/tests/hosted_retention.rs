@@ -201,10 +201,10 @@ fn exercise_hosted_loop(blocked_work: Option<bool>) {
         "parked"
     );
     let parked_polls = polls.load(Ordering::SeqCst);
-    // Outlast the ordinary reconnect grace without any polling or shutdown.
+    assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     thread::sleep(Duration::from_millis(80));
     assert_eq!(polls.load(Ordering::SeqCst), parked_polls);
-    assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     assert_eq!(
         host_exchange(
             &mut host,
@@ -225,6 +225,8 @@ fn exercise_hosted_loop(blocked_work: Option<bool>) {
         return;
     }
     claimed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    thread::sleep(Duration::from_millis(400));
+    assert_eq!(polls.load(Ordering::SeqCst), parked_polls);
     // A stale parked-only retirement cannot kill a newly claimed process.
     assert_eq!(
         host_exchange(

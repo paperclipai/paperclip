@@ -212,8 +212,16 @@ requests defined in the host-control codec; it cannot execute PRP commands.
 
 `park` requires the exact six-field authority, acknowledged command/event cut,
 no unfinished transition or cleanup, and the provider eligibility proof above.
-The Runner drops its controller connection and credentials, retains its provider
-and journals, and blocks on host control without provider polling. Ordinary
+After that proof, the Runner stops the provider and its process tree through
+`CommandExecutor::park_provider`, so no provider connection keeps the host
+awake. It replies `parked` only after that stop succeeds. If the stop fails,
+the Runner records a diagnostic, replies `conflict`, and stays unparked with its
+controller connection. The Launcher then keeps its wake hold. The default hook
+is the executor's ordinary `shutdown`. Native Codex and ACPX run that shutdown
+and then re-arm the restore that a fresh Runner performs on its first command.
+Their saved provider state is unchanged. The Runner process stays resident with
+its durable state and journals. It drops its controller connection and
+credentials and blocks on host control without provider polling. Ordinary
 reconnect grace does not expire a parked Runner. The configured process lifetime
 still applies. Mount ownership stays with Launcher.
 
@@ -221,11 +229,21 @@ still applies. Mount ownership stays with Launcher.
 It resumes authenticated PRP under the retained authority; ordinary `run.attach`
 must still establish the next authority before new work. Pending reconnect and
 live commands both reject execution before that attachment; snapshots, drain,
-and cleanup remain available. Replaying the same claim returns its acknowledgement without consuming another ticket. A parked
-retirement names the park request. Cancelling a claim additionally requires its
-claim ID, the unchanged authority and sequence cut, and provider quiescence.
-Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
-suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+and cleanup remain available. Replaying the same claim returns its acknowledgement without consuming another ticket.
+The provider stays stopped, and the Runner does not poll it, until it admits
+the first command after the claim. That command, usually the warm-attachment
+snapshot or `run.attach`, starts the provider again on the saved session:
+Codex resumes its thread with `thread/resume` and ACPX loads its session. ACPX
+still replaces that sidecar during `run.attach`, as it does after any restore. A
+restarted provider must complete a turn of its own before the Runner can park
+again.
+A parked retirement names the park request. Cancelling a claim additionally
+requires its claim ID, the unchanged authority and sequence cut, and provider
+quiescence. A provider that is still stopped from the park satisfies that
+quiescence. Retirement, parked host-channel loss, or process-lifetime expiry
+persists the existing suspended lifecycle. A provider already stopped at park
+is not shut down again; otherwise the ordinary provider shutdown path runs.
+There is no new checkpoint state.
 
 This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake

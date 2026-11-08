@@ -917,6 +917,7 @@ pub struct AcpxCommandExecutor {
     state: Option<AcpxDurableState>,
     session: Option<AcpxProviderSession>,
     restore_checked: bool,
+    restore_after_park: bool,
     restore_error: Option<DurableRunnerError>,
     persistence_error: Option<DurableRunnerError>,
     #[cfg(test)]
@@ -961,6 +962,7 @@ impl AcpxCommandExecutor {
             state: None,
             session: None,
             restore_checked: false,
+            restore_after_park: false,
             recovery_pending_effects: None,
             restore_error: None,
             persistence_error: None,
@@ -2762,6 +2764,9 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+        if std::mem::take(&mut self.restore_after_park) {
+            self.restore_checked = false;
+        }
         self.restore()?;
         if self
             .candidate_admission()
@@ -2912,6 +2917,12 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
         state.pending_events.drain(..count);
         self.save_state()
+    }
+
+    fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
+        self.shutdown()?;
+        self.restore_after_park = true;
+        Ok(())
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {

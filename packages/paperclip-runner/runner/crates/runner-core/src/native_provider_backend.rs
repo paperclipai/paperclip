@@ -472,6 +472,16 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         Ok(outcome)
     }
 
+    fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.park_provider(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.park_provider(),
+            _ => Err(DurableRunnerError::invalid(
+                "the selected provider cannot stop for a host park",
+            )),
+        }
+    }
+
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
         // Terminal delivery can be reconciled by a replacement runner whose
         // executor has not processed a provider command. Select the durable

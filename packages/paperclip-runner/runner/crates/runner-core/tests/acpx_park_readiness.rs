@@ -210,6 +210,74 @@ fn hosted_park_slow_acpx_observation_preserves_the_provider_and_next_turn() {
 }
 
 #[test]
+fn hosted_park_stops_acpx_and_attachment_resumes_the_same_session() {
+    for agent in ["codex", "claude"] {
+        let (fixture, _config, mut executor, opened) = fixture(agent);
+        let starts = || {
+            fs::read_to_string(fixture.0.join("sidecar.jsonl"))
+                .unwrap()
+                .lines()
+                .filter(|line| line.contains("processStart"))
+                .count()
+        };
+        executor
+            .execute(&command(
+                3,
+                "turn.start",
+                json!({"turnId":"first", "text":"Complete before parking."}),
+            ))
+            .unwrap();
+        settle(&mut executor);
+        assert!(executor.host_park_ready().unwrap());
+        executor.park_provider().unwrap();
+        assert!(!std::process::Command::new("kill")
+            .args(["-0", &opened["processId"].to_string()])
+            .status()
+            .unwrap()
+            .success());
+        assert!(executor.poll_disconnected_events().unwrap().is_empty());
+        assert!(!executor.host_park_ready().unwrap());
+        assert_eq!(starts(), 1);
+        executor
+            .execute(&command(
+                4,
+                "session.snapshot",
+                json!({"includePendingRuntimeRequests": true}),
+            ))
+            .unwrap();
+        assert_eq!(starts(), 2);
+        let state: Value =
+            serde_json::from_slice(&fs::read(fixture.0.join("acpx-provider-state.json")).unwrap())
+                .unwrap();
+        let attached = executor
+            .execute(&command(
+                5,
+                "run.attach",
+                json!({"provider": state["descriptor"]}),
+            ))
+            .unwrap();
+        assert_eq!(attached.result["status"], "resumed");
+        assert_eq!(
+            attached.result["providerSessionId"],
+            opened["providerSessionId"]
+        );
+        assert_ne!(attached.result["processId"], opened["processId"]);
+        let attached_starts = starts();
+        executor
+            .execute(&command(
+                6,
+                "turn.start",
+                json!({"turnId":"second", "text":"Continue after the claim."}),
+            ))
+            .unwrap();
+        settle(&mut executor);
+        assert!(executor.host_park_ready().unwrap());
+        assert_eq!(starts(), attached_starts);
+        executor.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn hosted_park_acpx_preserves_late_goals_and_rejects_foreign_or_busy_observations() {
     for agent in ["codex", "claude"] {
         let (fixture, _config, mut executor, _) = fixture(agent);

@@ -383,6 +383,10 @@ pub trait CommandExecutor {
         Ok(())
     }
 
+    fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
+        self.shutdown()
+    }
+
     /// Reconcile an already-durable terminal delivery without implicitly
     /// restoring a provider. A delivery-only result retains a separate fence
     /// until a new explicit stop proves physical provider cleanup.
@@ -475,6 +479,7 @@ struct HostedRunnerControl {
     channel: HostControl,
     park_id: Option<String>,
     claiming: Option<(String, String)>,
+    provider_stopped: bool,
 }
 
 #[cfg(unix)]
@@ -484,7 +489,33 @@ impl HostedRunnerControl {
             channel,
             park_id: None,
             claiming: None,
+            provider_stopped: false,
         }
+    }
+}
+
+#[cfg(unix)]
+fn provider_stopped(control: Option<&HostedRunnerControl>) -> bool {
+    control.is_some_and(|control| control.provider_stopped)
+}
+
+#[cfg(not(unix))]
+fn provider_stopped(_: Option<&HostControl>) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn persist_suspended_host_lifecycle<E: CommandExecutor>(
+    control: &HostedRunnerControl,
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    executor: &mut E,
+) -> Result<(), DurableRunnerError> {
+    if control.provider_stopped {
+        state.lifecycle = "suspended".to_owned();
+        store.save(state)
+    } else {
+        persist_lifecycle_before_shutdown(state, store, executor, "suspended")
     }
 }
 
@@ -560,12 +591,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 let remaining = (!config.max_runtime.is_zero())
                     .then(|| config.max_runtime.saturating_sub(started.elapsed()));
                 if remaining.is_some_and(|duration| duration.is_zero()) {
-                    persist_lifecycle_before_shutdown(
-                        &mut state,
-                        &store,
-                        &mut executor,
-                        "suspended",
-                    )?;
+                    persist_suspended_host_lifecycle(control, &mut state, &store, &mut executor)?;
                     return Ok(());
                 }
                 match process_host_control(
@@ -586,11 +612,11 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     Ok(HostAction::Retire) => return Ok(()),
                     Ok(_) => continue,
                     Err(error) => {
-                        let _ = persist_lifecycle_before_shutdown(
+                        let _ = persist_suspended_host_lifecycle(
+                            control,
                             &mut state,
                             &store,
                             &mut executor,
-                            "suspended",
                         );
                         return Err(error);
                     }
@@ -644,6 +670,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         }
 
         let provider_deadline = if authenticated_once
+            && !provider_stopped(host_control.as_ref())
             && state.warm_transition.is_none()
             && state.pending_terminal_delivery.is_none()
             && state.pending_provider_cleanup.is_none()
@@ -653,7 +680,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             None
         };
         if Instant::now() < next_connection_attempt {
-            if authenticated_once {
+            if authenticated_once && !provider_stopped(host_control.as_ref()) {
                 poll_disconnected_executor_events(&mut state, &store, &config, &mut executor)?;
             }
             let wake_at = next_connection_attempt.min(connection_attempt_deadline(
@@ -895,7 +922,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 connection.protocol_version,
             )?;
             #[cfg(unix)]
-            admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
+            admit_host_claim(host_control.as_mut(), &command, next_authority.as_ref())?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -1137,14 +1164,16 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 }
             }
             let control_message = transport.receive_json();
-            poll_executor_events_when_control_idle(
-                &mut state,
-                &store,
-                &config,
-                &mut executor,
-                sent_source_seq,
-                &control_message,
-            )?;
+            if !provider_stopped(host_control.as_ref()) {
+                poll_executor_events_when_control_idle(
+                    &mut state,
+                    &store,
+                    &config,
+                    &mut executor,
+                    sent_source_seq,
+                    &control_message,
+                )?;
+            }
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -1201,7 +1230,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         connection.protocol_version,
                     )?;
                     #[cfg(unix)]
-                    admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
+                    admit_host_claim(host_control.as_mut(), &command, next_authority.as_ref())?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -1396,11 +1425,14 @@ enum HostAction {
 
 #[cfg(unix)]
 fn admit_host_claim(
-    control: Option<&HostedRunnerControl>,
+    control: Option<&mut HostedRunnerControl>,
     command: &Command,
     next_authority: Option<&DurableRunnerConfig>,
 ) -> Result<(), DurableRunnerError> {
-    if control.is_some_and(|control| control.claiming.is_some())
+    let Some(control) = control else {
+        return Ok(());
+    };
+    if control.claiming.is_some()
         && !(matches!(
             command.command_type.as_str(),
             "session.snapshot"
@@ -1414,6 +1446,7 @@ fn admit_host_claim(
             "claimed Runner requires authority attachment before execution",
         ));
     }
+    control.provider_stopped = false;
     Ok(())
 }
 
@@ -1449,6 +1482,15 @@ fn process_host_control<E: CommandExecutor>(
             )
             && executor.host_park_ready()? =>
         {
+            if let Err(error) = executor.park_provider() {
+                state.record_diagnostic(format!(
+                    "host park refused because provider shutdown failed: {error}"
+                ));
+                store.save(state)?;
+                control.channel.reply(&request, "conflict")?;
+                return Ok(HostAction::None);
+            }
+            control.provider_stopped = true;
             control.park_id = Some(id.clone());
             control.channel.reply(&request, "parked")?;
             Ok(HostAction::Park)
@@ -1486,12 +1528,12 @@ fn process_host_control<E: CommandExecutor>(
                         .as_ref()
                         .is_some_and(|(park, claim)| park == park_id && claim == claim_id)
                     && host_park_cut_matches(state, identity, *command_seq, *acked_seq)
-                    && executor.host_park_ready()?
+                    && (control.provider_stopped || executor.host_park_ready()?)
             }
             _ => false,
         } =>
         {
-            persist_lifecycle_before_shutdown(state, store, executor, "suspended")?;
+            persist_suspended_host_lifecycle(control, state, store, executor)?;
             control.channel.reply(&request, "retired")?;
             Ok(HostAction::Retire)
         }
@@ -3115,13 +3157,13 @@ mod tests {
             exchange(&claim, &mut state, &mut control, &mut executor, false).0,
             HostAction::None
         ));
-        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
-        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
-        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&mut control), &command("session.snapshot"), None).is_ok());
+        assert!(admit_host_claim(Some(&mut control), &command("run.attach"), None).is_err());
         let mut next_authority = config.clone();
         next_authority.run_id = "next-run".to_owned();
         assert!(admit_host_claim(
-            Some(&control),
+            Some(&mut control),
             &command("run.attach"),
             Some(&next_authority)
         )
@@ -3132,7 +3174,7 @@ mod tests {
             exchange(&changed, &mut state, &mut control, &mut executor, false).1["status"],
             "conflict"
         );
-        assert_eq!(executor.shutdowns, 0);
+        assert_eq!(executor.shutdowns, 1);
         let mut premature_park = park.clone();
         premature_park["id"] = json!("park-before-attach");
         assert_eq!(
@@ -3194,11 +3236,11 @@ mod tests {
             .1["status"],
             "conflict"
         );
-        assert_eq!(executor.shutdowns, 0);
+        assert_eq!(executor.shutdowns, 1);
         executor.ready = true;
         // Simulate completed run.attach before a later exact parked cut.
         control.claiming = None;
-        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
+        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_ok());
         let mut next_park = park.clone();
         next_park["id"] = json!("park-2");
         assert!(matches!(
@@ -3210,8 +3252,150 @@ mod tests {
             exchange(&retire, &mut state, &mut control, &mut executor, true).0,
             HostAction::Retire
         ));
-        assert_eq!(executor.shutdowns, 1);
+        assert_eq!(executor.shutdowns, 2);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_stops_the_provider_before_acknowledging_or_refuses() {
+        use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+        use std::os::unix::net::UnixStream;
+        struct StoppingExecutor {
+            host: UnixStream,
+            proofs: usize,
+            shutdowns: usize,
+            fail: bool,
+        }
+        impl CommandExecutor for StoppingExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.proofs += 1;
+                Ok(true)
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdowns += 1;
+                self.host.set_nonblocking(true).unwrap();
+                let unsent = (&self.host).read(&mut [0_u8; 1]).unwrap_err().kind();
+                self.host.set_nonblocking(false).unwrap();
+                assert_eq!(unsent, ErrorKind::WouldBlock);
+                if self.fail {
+                    Err(DurableRunnerError::invalid(
+                        "provider tree is still running",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-host-park-stop-{}", uuid::Uuid::new_v4()));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let mut state = DurableState::new(&config);
+        let (socket, mut host) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(host.try_clone().unwrap());
+        let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+        let mut executor = StoppingExecutor {
+            host: host.try_clone().unwrap(),
+            proofs: 0,
+            shutdowns: 0,
+            fail: true,
+        };
+        let identity = json!({
+            "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+            "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+        });
+        let mut exchange = |request: Value,
+                            state: &mut DurableState,
+                            control: &mut HostedRunnerControl,
+                            executor: &mut StoppingExecutor,
+                            parked: bool| {
+            writeln!(host, "{request}").unwrap();
+            let action = process_host_control(
+                control,
+                state,
+                &store,
+                executor,
+                parked,
+                Some(Duration::from_secs(1)),
+            )
+            .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (action, serde_json::from_str::<Value>(&line).unwrap())
+        };
+        let park = |id: &str| {
+            json!({"op":"park","id":id,"identity":identity,
+                "lastControllerCommandSeq":0,"ackedSourceSeq":0})
+        };
+        let (action, reply) = exchange(
+            park("park-refused"),
+            &mut state,
+            &mut control,
+            &mut executor,
+            false,
+        );
+        assert!(matches!(action, HostAction::None));
+        assert_eq!(reply["status"], "conflict");
+        assert_eq!(executor.shutdowns, 1);
+        assert!(control.park_id.is_none() && !control.provider_stopped);
+        assert!(state
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("provider shutdown failed")));
+        executor.fail = false;
+        let (action, reply) = exchange(
+            park("park-1"),
+            &mut state,
+            &mut control,
+            &mut executor,
+            false,
+        );
+        assert!(matches!(action, HostAction::Park));
+        assert_eq!(reply["status"], "parked");
+        assert_eq!((executor.proofs, executor.shutdowns), (2, 2));
+        assert!(control.provider_stopped);
+        let claim = json!({"op":"claim","id":"claim-1","parkId":"park-1",
+            "bootstrapTicket":"fresh-private-ticket"});
+        assert!(matches!(
+            exchange(claim, &mut state, &mut control, &mut executor, true).0,
+            HostAction::Claim(_)
+        ));
+        let retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1",
+            "claimId":"claim-1","identity":identity,
+            "lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        let (action, reply) = exchange(retire, &mut state, &mut control, &mut executor, false);
+        assert!(matches!(action, HostAction::Retire));
+        assert_eq!(reply["status"], "retired");
+        assert_eq!((executor.proofs, executor.shutdowns), (2, 2));
+        assert_eq!(
+            store.load_or_create(&config).unwrap().0.lifecycle,
+            "suspended"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_claim_keeps_the_stopped_provider_idle_until_a_command_is_admitted() {
+        let (socket, _host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+        control.provider_stopped = true;
+        control.claiming = Some(("park-1".to_owned(), "claim-1".to_owned()));
+        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_err());
+        assert!(provider_stopped(Some(&control)));
+        let mut next_authority = config(PathBuf::from("unused"));
+        next_authority.run_id = "next-run".to_owned();
+        admit_host_claim(
+            Some(&mut control),
+            &command("run.attach"),
+            Some(&next_authority),
+        )
+        .unwrap();
+        assert!(!provider_stopped(Some(&control)));
     }
 
     #[test]
@@ -3275,6 +3459,7 @@ mod tests {
                 serde_json::from_str::<Value>(&reply).unwrap()["status"],
                 "parked"
             );
+            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
             if eof {
                 drop(host);
                 assert!(task.join().unwrap().is_err());

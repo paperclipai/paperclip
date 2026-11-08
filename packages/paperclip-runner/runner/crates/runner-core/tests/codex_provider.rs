@@ -679,6 +679,97 @@ fn hosted_park_proof_requires_the_surviving_settled_native_codex_process() {
 }
 
 #[test]
+#[cfg(unix)]
+fn hosted_park_stops_codex_and_attachment_resumes_the_same_thread() {
+    let directory = temporary_directory("hosted-park-stop-resume");
+    let mut provider = serde_json::to_value(provider_config(
+        &directory,
+        &["--record-process-start", "--durable-turn-ids"],
+    ))
+    .unwrap();
+    provider["kind"] = json!("codex");
+    let mut runner_config = durable_config(&directory);
+    let mut executor =
+        NativeProviderCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider}),
+        ))
+        .unwrap();
+    let opened = executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    let provider_pid = opened.result["processId"].as_u64().unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete before the host parks."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    let thread_id = |directory: &Path| {
+        serde_json::from_slice::<Value>(
+            &fs::read(directory.join("codex-provider-state.json")).unwrap(),
+        )
+        .unwrap()["threadId"]
+            .clone()
+    };
+    let parked_thread = thread_id(&directory);
+    assert!(parked_thread.is_string());
+    executor.park_provider().unwrap();
+    assert!(!std::process::Command::new("kill")
+        .args(["-0", "--", &provider_pid.to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(executor.poll_disconnected_events().unwrap().is_empty());
+    executor.shutdown().unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(call_count(&directory, "thread/resume"), 0);
+    let attached = executor
+        .execute(&command("attach", 4, "run.attach", json!({})))
+        .unwrap();
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "thread/resume"), 1);
+    runner_config.run_id = "run-2".to_owned();
+    executor.rotate_authority(&runner_config);
+    executor
+        .execute(&command(
+            "next-turn",
+            5,
+            "turn.start",
+            json!({"text":"Continue after the claim."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert_eq!(thread_id(&directory), parked_thread);
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hosted_park_rejects_a_quiet_helper_after_parent_completion() {
     let directory = temporary_directory("hosted-park-helper");
     let config = provider_config(&directory, &["--quiet-helper-turn"]);

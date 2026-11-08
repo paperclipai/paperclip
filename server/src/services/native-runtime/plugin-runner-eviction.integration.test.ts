@@ -298,18 +298,12 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
           const providerPids: number[] = harness === "codex" ? [Number(await readFile(providerPidFile, "utf8"))]
             : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); });
           const nativePid = handles.get(taskA)!.child.pid!;
-          for (const pid of providerPids) {
-            const [parent, group] = execFileSync("ps", ["-p", String(pid), "-o", "ppid=", "-o", "pgid="], { encoding: "utf8" }).trim().split(/\s+/).map(Number);
-            expect([nativePid, ...providerPids]).toContain(parent); expect(group).toBe(pid);
-          }
-          process.kill(nativePid, "SIGKILL");
-          for (const pid of providerPids) {
-            try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-          }
-          await handles.get(taskA)!.completion;
-          await waitForCondition("owned providers no longer exist", () => providerPids.every(pid => {
+          await waitForCondition("parked providers no longer exist", () => providerPids.every(pid => {
             try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
           }));
+          expect(handles.get(taskA)!.isExitConfirmed?.()).toBe(false);
+          process.kill(nativePid, "SIGKILL");
+          await handles.get(taskA)!.completion;
           expect(isSettledReadyRunnerState(await state())).toBe(true);
         }
         // The existing task runtime records physical stop and state availability.

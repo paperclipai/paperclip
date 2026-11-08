@@ -141,7 +141,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         const requirements = { ...operation.requirements, runtimeContext: operation.requirements.runtimeContext ? parseNativeRuntimeContext(operation.requirements.runtimeContext) : null, settings: { ...operation.requirements.settings, acpxAgent: harness === "claude" ? "claude" as const : undefined, managedProfile: undefined, agentCoreProfile: undefined } };
         const launch = { configurationId: `configuration-${operation.requirements.identity.runId}`, requirementsDigest: runnerLaunchRequirementsDigest(requirements),
           provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: ["--state-file", join(root, "provider.json"), "--terminal-result-file", resultFile,
-            "--call-log", calls, "--record-process-start"] }, root, cwd: workspace, codexHome: home, codexCommand: fakeCodexAppServer,
+            "--call-log", calls, "--record-process-start", "--durable-turn-ids"] }, root, cwd: workspace, codexHome: home, codexCommand: fakeCodexAppServer,
             providerNodeCommand: harness === "claude" ? sidecar : process.execPath, opencodeProxyPath: "", acpxSidecarPath: harness === "claude" ? sidecarScript : "" }) };
         preparations.set(launch.configurationId, { operation, launch }); return { kind: "prepared", taskId, launch };
       }
@@ -285,11 +285,12 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       expect(releases[1]!.environmentLeaseId).toBe(leaseA); expect(handle!.child.pid).toBe(pid); expect(submissions).toBe(1);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       if (harness === "codex") {
-        expect(methods.filter(method => method === "process-start")).toHaveLength(1);
+        expect(methods.filter(method => method === "process-start")).toHaveLength(adopted ? 3 : 2);
+        expect(methods.filter(method => method === "thread/resume")).toHaveLength(adopted ? 2 : 1);
         expect(methods.filter(method => method === "turn/start")).toHaveLength(adopted ? 3 : 2);
       } else {
         const journal = methods.map(line => JSON.parse(line));
-        expect(journal.filter(entry => entry.processStart)).toHaveLength(adopted ? 3 : 2);
+        expect(journal.filter(entry => entry.processStart)).toHaveLength(adopted ? 5 : 3);
         expect(journal.filter(entry => entry.command === "turn.start")).toHaveLength(adopted ? 3 : 2);
       }
     } catch (error) {
