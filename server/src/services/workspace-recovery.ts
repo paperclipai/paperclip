@@ -522,15 +522,24 @@ async function recordCopybackOwnerHold(db: Db, input: Source, generationId: stri
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const owner = source?.owner;
   if (!owner || typeof owner !== "object" || typeof (owner as { token?: unknown }).token !== "string") return;
-  await db.update(issueRecoveryActions).set({
-    // A confirmation names one receipt; a newer unverified owner needs its own.
-    evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
-      jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
-    updatedAt: new Date(),
-  }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+  const target = and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId),
     sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${generationId}`,
-    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`));
+    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`);
+  await db.transaction(async tx => {
+    const [action] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(target).for("update");
+    if (!action) return;
+    // Wake the ownership worker (on any server) before the hold it announces,
+    // so a quiet worker judges this owner and can wake the recheck.
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport,
+      JSON.stringify({ companyId: input.companyId, runId: input.runId, actionId: input.actionId }));
+    await tx.update(issueRecoveryActions).set({
+      // A confirmation names one receipt; a newer unverified owner needs its own.
+      evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
+        jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
+      updatedAt: new Date(),
+    }).where(target);
+  });
 }
 
 const cursors = new WeakMap<Db, string>();
