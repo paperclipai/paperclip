@@ -196,8 +196,8 @@ jobs:
           path: |
             ${{ runner.temp }}/crash-point-results/crash-points/*/SUMMARY.md
             ${{ runner.temp }}/crash-point-results/crash-points/*/summary.json
-            ${{ runner.temp }}/crash-point-results/crash-points/*/*/w-*/crash-point.json
-            ${{ runner.temp }}/crash-point-results/crash-points/*/*/w-*/t*.grade.json
-            ${{ runner.temp }}/crash-point-results/crash-points/*/*/w-*/timeline.jsonl
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/crash-point.json
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/t*.grade.json
+            ${{ runner.temp }}/crash-point-results/crash-points/*/w-*/timeline.jsonl
           retention-days: 14
           if-no-files-found: warn

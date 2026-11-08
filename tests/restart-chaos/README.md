@@ -231,9 +231,10 @@ The suite runs one wave, `main.ts --crash-point <a>:<nth>,<b>:<nth>,...`:
 
 1. One isolated control plane boots once, with `PAPERCLIP_CRASH_POINT_CONTROL`
    set to an empty control file (nothing armed) and without the Vite UI.
-2. For each point in turn: invariants are read as a baseline. Then the
-   point's batch launches (one task per adapter × workload), and the harness
-   arms the point by writing `<token> <name>:<nth>` to the control file.
+2. For each point in turn: invariants are read as a baseline, the harness
+   arms the point by writing `<token> <name>:<nth>` to the control file, and
+   the point's batch launches (one task per adapter × workload). Creating an
+   assigned issue already queues its wake, so the point is armed first.
 3. At the nth hit the server appends a receipt and SIGKILLs itself. The
    supervisor treats it as K1: it empties the control file, kills what is
    left of the server's process tree, starts a replacement, and waits for ready.
