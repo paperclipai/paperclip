@@ -2704,6 +2704,9 @@ export async function executeNativeSession(
     };
     let restartContinuationStarted = false;
     let borrowedContinuationTurnId: string | null = null;
+    let restartContinuationTurnId: string | null = null;
+    let settleStartupDecision: () => void = () => undefined;
+    const startupDecision = new Promise<void>(resolve => { settleStartupDecision = resolve; });
     let continuationDispositionRequested = false;
     // The consumer may already be running when a continuation starts, and the
     // continuation can complete before its start checkpoint settles. A
@@ -2718,6 +2721,7 @@ export async function executeNativeSession(
         const steeredMessages = await options.getUnreadSteeredMessages?.() ?? [];
         signal?.throwIfAborted();
         const started = await session.startTurn(restartContinuation(steeredMessages));
+        restartContinuationTurnId = started.turnId;
         if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
         await checkpoint(signal);
       })();
@@ -2740,8 +2744,20 @@ export async function executeNativeSession(
       await checkpoint(signal);
       return true;
     };
+    const supersededByRestartContinuation = async (event: PrpEvent, signal: AbortSignal) => {
+      if (!recovered || !checkpointedInterruption || event.eventType !== "turn.failed" ||
+          !isNativeRestartInterruption(event.payload.error) || !event.turnId ||
+          event.turnId === checkpointedInterruption) return false;
+      await startupDecision;
+      signal.throwIfAborted();
+      if (!restartContinuationStarted) return false;
+      await continuationSetup?.catch(() => undefined);
+      signal.throwIfAborted();
+      return restartContinuationTurnId !== null && event.turnId !== restartContinuationTurnId;
+    };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
+      if (await supersededByRestartContinuation(event, signal)) return true;
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
@@ -3044,7 +3060,9 @@ export async function executeNativeSession(
           });
           await checkpoint();
         }
+        settleStartupDecision();
       } catch (error) {
+        settleStartupDecision();
         // Consumption starts before provider launch so eager events cannot be
         // lost. If launch or its checkpoint fails, abort any in-flight append
         // before joining cleanup so the failed turn cannot commit late or
