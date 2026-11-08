@@ -29,7 +29,7 @@ async function main(): Promise<PrivateKeyReceipt> {
       return receipt;
     }
     if (![input.agentId, input.companyId, input.sourceIssueId].every(id => typeof id === "string" && /^[a-f0-9-]{36}$/i.test(id)) || !input.profileURL || new URL(input.profileURL).origin !== base.origin) throw new Error("Invalid exact private key resource binding");
-    await page.goto(input.profileURL, { waitUntil: "domcontentloaded" }); await page.getByRole("link", { name: /API keys/i }).click();
+    await page.goto(input.profileURL, { waitUntil: "domcontentloaded" });
     await page.getByPlaceholder("Key name (e.g. production)").fill("local integration"); await page.getByRole("button", { name: "Create", exact: true }).click();
     await page.getByText("API key created — copy it now, it will not be shown again.", { exact: true }).waitFor({ state: "visible" });
     const token = (await page.locator("code").filter({ hasText: /^pcp_/ }).first().textContent())?.trim();
