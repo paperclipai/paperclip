@@ -128,6 +128,7 @@ export function createOwnershipReportState(): OwnershipReportState {
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
@@ -156,6 +157,21 @@ async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<M
         : { verdict: "alive", reason: "owner_run_active" });
     }
   }
+  // Issue owners share the map under an `issue:` key (run ids are bare UUIDs).
+  const issueIds = [...new Set(records.flatMap(record => record.owner.kind === "issue" ? [record.owner.issueId] : []))];
+  for (let index = 0; index < issueIds.length; index += 500) {
+    const batch = issueIds.slice(index, index + 500);
+    const rows = await db.select({ id: issues.id, status: issues.status, hiddenAt: issues.hiddenAt }).from(issues)
+      .where(inArray(issues.id, batch));
+    const byId = new Map(rows.map(row => [row.id, row]));
+    for (const issueId of batch) {
+      const row = byId.get(issueId);
+      proofs.set(`issue:${issueId}`, !row ? { verdict: "gone", reason: "owner_issue_missing" }
+        : row.hiddenAt ? { verdict: "gone", reason: "owner_issue_hidden" }
+        : TERMINAL_ISSUE_STATUSES.includes(row.status) ? { verdict: "gone", reason: "owner_issue_terminal" }
+        : { verdict: "alive", reason: "owner_issue_active" });
+    }
+  }
   return proofs;
 }
 
@@ -165,6 +181,7 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
     case "process": return proveOwnerGone(owner.stamp, probe);
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
+    case "issue": return runProofs.get(`issue:${owner.issueId}`) ?? { verdict: "unprovable", reason: "owner_issue_unread" };
     case "operator": return { verdict: "alive", reason: "operator_owned" };
     // A queue is not a process: it is never proven gone. A deadline long past
     // means the queue is not acting, which is a gap to report, not a release.
