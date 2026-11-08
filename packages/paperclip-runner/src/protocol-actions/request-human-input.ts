@@ -110,13 +110,13 @@ export const requestHumanInputAction = {
             "type": "string",
             "description": "Interaction card title.",
             "minLength": 1,
-            "maxLength": 300
+            "maxLength": 240
           },
           "prompt": {
             "type": "string",
             "description": "Question or decision prompt.",
             "minLength": 1,
-            "maxLength": 10000
+            "maxLength": 1000
           },
           "payload": questionPayloadSchema,
           "resolverPolicy": {

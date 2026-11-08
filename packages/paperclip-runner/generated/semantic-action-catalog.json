@@ -819,7 +819,7 @@
         },
         "prompt": {
           "description": "Question or decision prompt.",
-          "maxLength": 10000,
+          "maxLength": 1000,
           "minLength": 1,
           "type": "string"
         },
@@ -837,7 +837,7 @@
         },
         "title": {
           "description": "Interaction card title.",
-          "maxLength": 300,
+          "maxLength": 240,
           "minLength": 1,
           "type": "string"
         }

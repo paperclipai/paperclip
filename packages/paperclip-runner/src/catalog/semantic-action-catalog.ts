@@ -252,8 +252,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
             "item_verdicts",
           ],
         },
-        title: text("Interaction card title.", 300),
-        prompt: text("Question or decision prompt.", 10_000),
+        title: text("Interaction card title.", 240),
+        prompt: text("Question or decision prompt.", 1_000),
         payload: openObject,
         resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
         targetRevisionId: nullableText(
