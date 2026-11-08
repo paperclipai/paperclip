@@ -30,7 +30,7 @@ import { DaytonaWaveSweeper } from "./daytona-sweep.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
-  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions, daytonaBaselineHolders, parseBaselineEnvironment,
+  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions, daytonaBaselineHolders, daytonaRetainsSandboxes, parseBaselineEnvironment,
   type BaselineEvent, type BaselineFault, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -269,11 +269,16 @@ async function main() {
   const requested = values.adapters!.split(",").map(value => value.trim()) as AdapterId[];
   const samples = Math.max(1, Number(values.samples));
   const restarts = Math.max(0, Number(values.restarts));
+  const lifecycle = values.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
+    throw new Error("--lifecycle must be per_turn, warm or default");
+  }
   const { env, cpu } = parseBaselineEnvironment({ env: values.env, image: values["daytona-image"], cpu: values["daytona-cpu"],
     warm: values["daytona-warm"] === true, inherit: values["daytona-inherit"] === true });
   if (env === "daytona") {
     const budget = Number(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET ?? DAYTONA_VCPU_BUDGET);
-    const retainsSandboxes = values["daytona-warm"] === true || values["daytona-inherit"] === true;
+    const retainsSandboxes = daytonaRetainsSandboxes({ warmEnvironment: values["daytona-warm"] === true,
+      inheritEnvironment: values["daytona-inherit"] === true, lifecycle });
     const holders = daytonaBaselineHolders({ adapters: requested.length, samples, phases, restarts, retainsSandboxes });
     if (holders * cpu > budget) {
       throw new Error(`${holders} ${retainsSandboxes ? "sampled tasks (warm sandboxes outlive their task)" : "concurrent tasks"} × --daytona-cpu ${cpu} vCPU can be held at once, `
@@ -290,10 +295,6 @@ async function main() {
   if (midturnFault && midturnMode !== "steer") throw new Error("--midturn-fault applies to --midturn-mode steer");
   const verifyFault = values["verify-fault"] as FaultKind | undefined;
   if (verifyFault !== undefined && !["K1", "K2", "K6"].includes(verifyFault)) throw new Error("--verify-fault must be K1, K2 or K6");
-  const lifecycle = values.lifecycle;
-  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
-    throw new Error("--lifecycle must be per_turn, warm or default");
-  }
   // default removes the catalog's pinned per_turn so the server resolves the
   // product default; absent keeps the catalog setting.
   const adapterConfigOverrides = lifecycle === "warm"
@@ -409,7 +410,8 @@ async function main() {
         const hired = await api.post<Json>(`/api/companies/${lab.companyId}/agents`, { ...source.body, name: `${source.name} verify ${nonce}` });
         const agentId = String(hired.id);
         const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
-          title: `TTFT verify ${nonce}`, description: coldTask(nonce), status: "todo", priority: "medium", assigneeAgentId: agentId });
+          title: `TTFT verify ${nonce}`, description: coldTask(nonce), status: "todo", priority: "medium", assigneeAgentId: agentId,
+          ...(projectScopedTasks ? { projectId: lab.projectId } : {}) });
         const issueId = String(issue.id);
         tasks.push({ issueId, adapter, phase: "verify" });
         let fault: Awaited<ReturnType<typeof supervisor.fault>> | null = null;

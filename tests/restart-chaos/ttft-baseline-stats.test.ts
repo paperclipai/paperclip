@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baselineRows, daytonaBaselineHolders, distribution, parseBaselineEnvironment, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
+  baselineRows, daytonaBaselineHolders, daytonaRetainsSandboxes, distribution, parseBaselineEnvironment, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
   type BaselineEvent, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -89,6 +89,15 @@ describe("ttft baseline statistics", () => {
     expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: false })).toBe(3);
     expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: true })).toBe(60);
     expect(daytonaBaselineHolders({ adapters: 2, samples: 0, phases: new Set(["postfault"]), restarts: 0, retainsSandboxes: true })).toBe(2);
+  });
+
+  it("treats an inheriting environment as warm only when the agent's lifecycle is not pinned per-turn", () => {
+    expect(daytonaRetainsSandboxes({ warmEnvironment: true, inheritEnvironment: false, lifecycle: undefined })).toBe(true);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: undefined })).toBe(false);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "per_turn" })).toBe(false);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(true);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "warm" })).toBe(true);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: false, lifecycle: "warm" })).toBe(false);
   });
 
   it("rejects contradictory or out-of-range environment options", () => {

@@ -236,6 +236,17 @@ export function openShellExecutions(events: readonly BaselineEvent[], marker?: s
   return [...open.entries()].map(([executionId, entry]) => ({ executionId, matched: entry.matched, unlabelled: !entry.labelled }));
 }
 
+/**
+ * Whether finished tasks keep their Daytona sandbox for the idle window. The warm
+ * fixture always does. An inheriting environment defers to the agent, whose catalog
+ * profile pins per_turn unless --lifecycle warm or default (the product's warm
+ * default on a remote sandbox) replaces it.
+ */
+export function daytonaRetainsSandboxes(input: { warmEnvironment: boolean; inheritEnvironment: boolean; lifecycle: string | undefined }): boolean {
+  if (input.warmEnvironment) return true;
+  return input.inheritEnvironment && (input.lifecycle === "warm" || input.lifecycle === "default");
+}
+
 /** Daytona sandboxes a TTFT baseline can hold at once, for the vCPU budget check. */
 export function daytonaBaselineHolders(input: { adapters: number; samples: number; phases: ReadonlySet<string>; restarts: number;
   retainsSandboxes: boolean }): number {
