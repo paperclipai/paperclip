@@ -109,7 +109,8 @@ describe("GitHub App ownership and agent reach", () => {
       vi.spyOn(appCredentials, "resolveGitHubAppCredential").mockImplementationOnce(async () => {
         audience = [{ grantId: "grant", subjectId: "other" }];
         return { token: "installation-token", expiresAt: Date.now() + 3_600_000,
-          github: { userId: "123", login: "app[bot]", installationCount: 1, repositoryCount: 1 } };
+          github: { userId: "123", login: "app[bot]", installationCount: 1, repositoryCount: 1,
+            repositorySelection: "selected", installationIds: ["456"], installationOwnerLogins: ["owner"] } };
       });
       const changed = await resolveManagedGitHubCredential(db, buildSecretsFake({}), "company", { agentId: "a", responsibleUserId: "owner" });
       expect(changed.credential).toBeUndefined();
@@ -143,7 +144,8 @@ describe("createGitRemoteAuthProvider", () => {
     } }) }) } as unknown as Db;
     const acquire = vi.spyOn(appCredentials, "resolveGitHubAppCredential")
       .mockResolvedValue({ token: "installation-token", expiresAt: Date.now() + 3_600_000,
-        github: { userId: "123", login: "app[bot]", installationCount: 1, repositoryCount: 1 } });
+        github: { userId: "123", login: "app[bot]", installationCount: 1, repositoryCount: 1,
+          repositorySelection: "selected", installationIds: ["456"], installationOwnerLogins: ["owner"] } });
     const secrets = buildSecretsFake({ GITHUB_TOKEN: "legacy-token" });
     const provider = createGitRemoteAuthProvider(db, "company-1", {
       agentId: "agent-1", responsibleUserId: "user-1",

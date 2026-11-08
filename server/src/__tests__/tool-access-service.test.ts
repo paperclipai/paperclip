@@ -18255,12 +18255,12 @@ describeEmbeddedPostgres("tool access service", () => {
       const agent = await createAgent(db, company.id);
       const service = createTestToolAccessService(db);
       const application = await service.createApplication(company.id, { name: "GitHub", type: "rest_api" });
-      const connection = await service.createConnection(company.id, {
+      const connection = await service.createConnection(company.id, connectionInput({
         applicationId: application.id, name: "GitHub App diagnostics", transport: "rest_api", status: "draft", credentialPolicy: "per_agent",
         config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", methodConfig: {
           version: "1", appId: "123", installationId: "456", repositories: "owner/repo", permissionProfile: "read",
         } },
-      });
+      }));
       const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
         .export({ type: "pkcs8", format: "pem" }).toString();
       const secret = await secretService(db).create(company.id, {
@@ -18391,7 +18391,7 @@ describeEmbeddedPostgres("tool access service", () => {
         galleryKey: "github", connectionMethodKey: "mcp-key", credentialValues: { "credentials.authorization": "new-pat" },
       }, actor));
       expect(pat.connectionId).not.toBe(addedAgain.connectionId);
-      expect(pat.connection.config.connectionMethodKey).toBe("mcp-key");
+      expect(pat.connection.config?.connectionMethodKey).toBe("mcp-key");
     }
   });
 
@@ -18461,7 +18461,7 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialValues: { "credentials.privateKey": pem(keyA) },
     }, actor);
     const stored = await service.getConnection(connected.connectionId, company.id);
-    expect(stored.config.methodConfig).toEqual(configValues);
+    expect(stored.config?.methodConfig).toEqual(configValues);
     if (permissionProfile === "custom") {
       await expect(service.connectGalleryApp(company.id, {
         galleryKey: "github", connectionMethodKey: "app-installation", grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), resumeConnectionId: connected.connectionId,
@@ -18486,7 +18486,7 @@ describeEmbeddedPostgres("tool access service", () => {
       revision: expect.stringContaining(".123456"),
     });
     await service.finishGalleryAppConnection(company.id, connected.connectionId, {
-      enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access,
+      enabledCatalogEntryIds: [connected.catalog[0]!.id], askFirstCatalogEntryIds: [connected.catalog[0]!.id], access,
     }, actor);
     await service.putConnectionInstalls(connected.connectionId, {
       installs: access.agentIds.map(targetId => ({ targetType: "agent" as const, targetId })),
@@ -18524,6 +18524,30 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(await versions()).toEqual(originalVersions);
     await expect(acquire()).resolves.toMatchObject({ token: "app-token" });
     expect(authenticatedKeys.at(-1)).toBe("A");
+
+    const savedPermissions = async () => {
+      const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+      return {
+        entries: await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile!.id)),
+        bindings: await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, profile!.id)),
+        policies: (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id)))
+          .filter(policy => (policy.config as Record<string, unknown>).connectionId === connected.connectionId),
+        installs: await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connected.connectionId)),
+      };
+    };
+    const permissionsBeforeReconnect = await savedPermissions();
+    expect(permissionsBeforeReconnect.entries).toHaveLength(1);
+    expect(permissionsBeforeReconnect.policies.some(policy => policy.enabled)).toBe(true);
+    const wizardReconnect = await service.connectGalleryApp(company.id, {
+      galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+      name: "Renamed GitHub App", grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}),
+      configValues, credentialValues: {},
+    }, actor);
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: wizardReconnect.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access,
+    }, actor);
+    expect(await savedPermissions()).toEqual(permissionsBeforeReconnect);
+    expect((await service.getConnection(connected.connectionId, company.id)).name).toBe("Renamed GitHub App");
 
     discoveredTools.push(readTool("list_branches"));
     const pending = await service.refreshCatalog(connected.connectionId, actor);
@@ -18587,6 +18611,7 @@ describeEmbeddedPostgres("tool access service", () => {
       });
     }
     await reconnect(pem(keyB));
+    expect(await savedPermissions()).toEqual(permissionsBeforeReconnect);
     expect(authenticatedKeys.length).toBeGreaterThan(0);
     expect(authenticatedKeys.every(key => key === "B")).toBe(true);
     const refreshedCatalog = await db.select().from(toolCatalogEntries)
@@ -18650,7 +18675,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(installs).toEqual([expect.objectContaining({ targetType: "company", targetId: company.id })]);
       const resumed = await service.connectGalleryApp(company.id, {
         galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
-        grantKind: kind, credentialValues: {}, configValues: connection.config.methodConfig as Record<string, string>,
+        grantKind: kind, credentialValues: {}, configValues: connection.config?.methodConfig as Record<string, string>,
       }, actor);
       expect(resumed.connectionId).toBe(connected.connectionId);
       expect(resumed.connection.credentialPolicy).toBe(kind === "user" ? "per_user" : "shared");

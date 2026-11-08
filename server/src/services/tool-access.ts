@@ -2153,6 +2153,9 @@ export function toolAccessService(
             mcpAuthMode: input.authMode ?? "auto",
             mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
           } : {}),
+          ...(method?.credentialExchange === "github_app_installation" ? {
+            mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
+          } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
           // Telem.AI attributes each search to the Paperclip company, agent,
           // run and issue, so its catalog connection forwards those context
@@ -3249,7 +3252,7 @@ export function toolAccessService(
       await refreshGitHubAppAccess(db, connection);
     }
 
-    if (connection.config.mcpPreserveAccess === true && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+    if (connection.config.mcpPreserveAccess === true && (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey) || isGitHubAppConnection(connection))) {
       const [profile] = await db.select().from(toolProfiles).where(and(
         eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connection.id}`),
       )).limit(1);
