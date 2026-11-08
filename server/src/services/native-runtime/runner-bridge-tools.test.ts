@@ -86,6 +86,16 @@ describe("Runner workspace bridge", () => {
     expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("hello");
   });
 
+  it("tells agents that a comment on a running task waits for the assignee's next turn", () => {
+    // A chat lead routing a requirement change to busy work otherwise reads "without interrupting"
+    // as "never delivered" and reaches for the assignee's workspace or a duplicate task instead.
+    const comment = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "comment_on_task");
+    expect(comment?.description).toContain("existing task's assignee a new or changed requirement");
+    expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files");
+    expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task");
+    expect(comment?.description).toContain("not as already applied");
+  });
+
   it.skipIf(process.platform === "linux")("does not expose or execute commands without descendant containment", async () => {
     const directory = await root();
     expect(workspaceCommandSandboxAvailable()).toBe(false);
