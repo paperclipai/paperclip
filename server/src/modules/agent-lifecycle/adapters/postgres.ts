@@ -5,6 +5,7 @@ import type { AgentLifecycleOperation } from "@paperclipai/shared";
 import { AgentLifecycleConflict, canConfigureAgentConnection, compatibilityStatus, isLifecycleWorkPending, transition, type LifecycleCommand } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
 import type { LifecycleStore } from "../application/ports.js";
+import { currentControllerProcessStamp } from "../../../services/controller-process-identity.js";
 
 export function assertRootDatabase(db: Db) {
   if ("nestedIndex" in db) throw new AgentLifecycleConflict("Lifecycle commands require the root database connection");
@@ -75,7 +76,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
     }
     await effects.notifyWork(tx);
     const [updated] = await tx.update(agents).set({ lifecycleError: null,
-      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'retryRequired' - 'verificationFailures' - 'leaseOwner' - 'leaseUntil' - 'waitingForSignal' - 'recheckRequested'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
+      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'retryRequired' - 'verificationFailures' - 'leaseOwner' - 'leaseUntil' - 'leaseHolder' - 'waitingForSignal' - 'recheckRequested'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
     return updated;
   }
   if (command === "resume" && !["ready", "paused", "pausing", "resuming"].includes(agent.lifecycleState)) transition(agent.lifecycleState, command);
@@ -180,9 +181,11 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       });
     },
     async claim(id, owner, now) {
+      // leaseHolder names the claiming process, so restart recovery settles a dead holder's lease at once.
       const [agent] = await db.update(agents).set({
         lifecycleOperation: sql`(coalesce(${agents.lifecycleOperation}, '{"id":"", "hostComplete":false, "completedPluginIds":[], "attempts":0}'::jsonb) - 'recheckRequested')
           || jsonb_build_object('leaseOwner', ${owner}::text, 'leaseUntil', ${(new Date(now.getTime() + 120_000)).toISOString()}::text,
+            'leaseHolder', ${JSON.stringify(currentControllerProcessStamp())}::jsonb,
             'attempts', coalesce((${agents.lifecycleOperation}->>'attempts')::integer, 0) + 1)`,
       }).where(and(eq(agents.id, id), pendingLifecycleWork,
         sql`(${agents.lifecycleState} in ('pausing', 'terminating', 'cleaning_up') or exists (
@@ -224,7 +227,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
     async defer(agent, owner, error, now, options) {
       if (options?.waitForSignal && agent.lifecycleState === "verifying") {
         const rows = await db.update(agents).set({ lifecycleError: null,
-          lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'waitingForSignal' - 'recheckRequested')
+          lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'leaseHolder' - 'retryAt' - 'waitingForSignal' - 'recheckRequested')
             || case when coalesce(${agents.lifecycleOperation}->>'recheckRequested', 'false') = 'true'
               then '{}'::jsonb else '{"waitingForSignal":true}'::jsonb end`,
           updatedAt: now,
@@ -240,7 +243,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       }
       const rows = await db.update(agents).set({
         lifecycleError: error,
-        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired' - 'waitingForSignal' - 'recheckRequested')
+        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'leaseHolder' - 'retryAt' - 'retryRequired' - 'waitingForSignal' - 'recheckRequested')
           || ${JSON.stringify(retry)}::jsonb`,
         updatedAt: now,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),

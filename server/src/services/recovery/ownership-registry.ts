@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, isNull, like, notInArray, notLike, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
+  agents,
   environmentLeases,
   executionWorkspaceRestorePoints,
   executionWorkspaceRuntimeLeases,
@@ -40,6 +41,7 @@ import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-sto
 import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } from "../legacy-shutdown-workspace-settlement.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
+import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import {
   nativeLeaseHolderStamp,
@@ -549,6 +551,31 @@ function runtimeLeaseOwner(row: typeof executionWorkspaceRuntimeLeases.$inferSel
 // ----------------------------------------------------------------------------
 // The registry
 
+// ----------------------------------------------------------------------------
+// agents.lifecycle_operation
+
+/** A live lifecycle lease (for example harness verification) and its holder. */
+const agentLifecycleLeaseHeld = and(
+  sql`${agents.lifecycleOperation} ? 'leaseOwner'`, sql`${agents.lifecycleOperation} ? 'leaseHolder'`,
+  sql`(${agents.lifecycleOperation}->>'leaseUntil')::timestamptz > now()`);
+
+const agentLifecycleLeaseKind: OwnableKind = {
+  // Shared path: a restart that kills the holder must not leave the agent's
+  // lifecycle step, and its queued runs, waiting out the lease.
+  id: "agent_lifecycle_lease", title: "Agent lifecycle step lease (harness verification and setup)", obligation: "ownership",
+  storage: "database", invariantChecks: [1, 2], settle: settleAgentLifecycleLease,
+  listInProgress: async (db, limit, offset) => {
+    const rows = await db.select({ id: agents.id, companyId: agents.companyId, operation: agents.lifecycleOperation,
+      updatedAt: agents.updatedAt }).from(agents).where(agentLifecycleLeaseHeld)
+      .orderBy(asc(agents.id)).limit(limit + 1).offset(offset);
+    const result = page(rows, limit);
+    return { truncated: result.truncated, records: result.rows.map(row => ({
+      recordId: row.id, companyId: row.companyId, runId: null, issueId: null,
+      owner: controllerStamp(row.operation?.leaseHolder, "agent_lifecycle_lease"), updatedAt: row.updatedAt,
+    })) };
+  },
+};
+
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
   nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
@@ -979,6 +1006,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     () => ({ kind: "operator", ownerType: "run_dispatch" }), [4]),
   runKind("scheduled_retry_run", "Scheduled retry run", "ownership", eq(heartbeatRuns.status, "scheduled_retry"),
     () => ({ kind: "operator", ownerType: "retry_schedule" }), [4]),
+  agentLifecycleLeaseKind,
 ];
 
 /** Resolve the current holder of fences that live on another row (the
