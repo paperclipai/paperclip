@@ -6464,7 +6464,9 @@ async function verifyStagedAttachmentRestart(input: {
   const target = input.runnerExecutionTarget;
   if (input.restartRecovery?.kind !== "reattach_remote_runner" || input.restartRecovery.remote.kind === "plugin_task" ||
       target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask ||
-      target.sandboxLeaseAcquisition?.outcome !== "resumed") return deny();
+      target.sandboxLeaseAcquisition?.outcome === "replacement" ||
+      input.restartRecovery.remote.providerLeaseId !== target.sandboxLeaseAcquisition?.providerLeaseId ||
+      input.restartRecovery.remote.remoteCwd !== target.remoteCwd) return deny();
   const [current] = await input.db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId),
     eq(heartbeatRuns.agentId, input.execution.binding.agentId), eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId)));

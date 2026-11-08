@@ -15634,6 +15634,44 @@ describe("runnerd provider runtime wiring", () => {
       } finally { restore.mockRestore(); header.mockRestore(); verify.mockRestore(); await controller.stop(); }
     });
 
+  it.each([
+    { label: "a sandbox this run created", outcome: "created", providerLeaseId: "sandbox", remoteCwd: "/workspace", admitted: true },
+    { label: "a replacement sandbox", outcome: "replacement", providerLeaseId: "sandbox", remoteCwd: "/workspace", admitted: false },
+    { label: "another provider lease", outcome: "created", providerLeaseId: "other-sandbox", remoteCwd: "/workspace", admitted: false },
+    { label: "another remote directory", outcome: "created", providerLeaseId: "sandbox", remoteCwd: "/elsewhere", admitted: false },
+  ] as const)("binds a staged attachment restart to the claimed sandbox lease: $label", async ({ outcome, providerLeaseId, remoteCwd, admitted }) => {
+    const current = scopedNativeExecution(`staged-attachment-lease-${outcome}-${providerLeaseId}-${remoteCwd.length}`);
+    current.task.prompt = "Inspect attachment ref:original";
+    const root = await initializeScopedRunnerRoot(current, "attachment-runner");
+    const sourceIdentity = { runnerInstanceId: "attachment-runner", environmentLeaseId: "attachment-lease",
+      runId: "attachment-source", normalizedSessionId: current.session.normalizedSessionId!, turnId: "source-turn", itemId: "source-item" };
+    const targetIdentity = { ...sourceIdentity, runId: current.binding.runId, turnId: "target-turn", itemId: "target-item" };
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: sourceIdentity,
+      expectedRunnerVersion: "fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    controller.stageRunAttachment(targetIdentity, { provider: { kind: "codex", instructions: "prepared attachment grant" } });
+    const saved = JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8"));
+    state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async () =>
+      ({ attachments: [{ id: "attachment-original" }], cleanup: async () => undefined }) as never);
+    state.renderNativeRunnerStagedAttachmentPrompt.mockReturnValueOnce("Materialized attachment: .paperclip-inbound/current/original");
+    const reached = new Error("verified staged admission reached recheck");
+    const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockResolvedValue(null);
+    const header = vi.spyOn(runnerCheckpoint, "loadNativeRunnerCheckpointHeader").mockResolvedValue("staged header");
+    const verify = vi.spyOn(stagedAttachmentRecovery, "resolveNativeStagedAttachmentRecovery")
+      .mockResolvedValueOnce({ currentExecution: structuredClone(current), sourceIdentity, targetIdentity,
+        templateDigest: saved.stagedRunAttachment.templateDigest } as never)
+      .mockRejectedValueOnce(reached);
+    try {
+      const resume = executePaperclipNativeSession({ db: leaseDb(current), execution: current, useRunnerd: true,
+        runnerInstanceId: "attachment-runner", restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId,
+          leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+          remote: { kind: "sandbox", leaseId: "attachment-lease", providerLeaseId: "sandbox", remoteCwd: "/workspace" } } as never,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "attachment-lease", remoteCwd,
+          runner: { execute: vi.fn() }, sandboxLeaseAcquisition: { outcome, providerLeaseId } } as never });
+      if (admitted) { await expect(resume).rejects.toBe(reached); expect(verify).toHaveBeenCalledTimes(2); }
+      else { await expect(resume).rejects.toThrow("staged_attachment_recovery_unproven"); expect(verify).not.toHaveBeenCalled(); }
+    } finally { restore.mockRestore(); header.mockRestore(); verify.mockRestore(); await controller.stop(); }
+  });
+
   it("passes the run checkpoint active turn into restart recovery", async () => {
     state.createBackend.mockClear();
     state.createTransport.mockClear();
