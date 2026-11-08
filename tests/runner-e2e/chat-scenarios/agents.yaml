@@ -86,8 +86,8 @@ scenarios:
     expected_outcome: >-
       Morgan's durable instructions gain the requested rule while retaining unrelated guidance.
       The response links to the agent or revision and explains when future work will use it. A
-      concurrent edit produces a visible conflict or a fresh merge rather than silently
-      overwriting the newer instructions.
+      concurrent human edit made during the run is merged: the saved result keeps the newer
+      instructions and adds the rule rather than silently overwriting them.
   - id: agents.restore-instructions
     capabilities:
       - agents/instructions

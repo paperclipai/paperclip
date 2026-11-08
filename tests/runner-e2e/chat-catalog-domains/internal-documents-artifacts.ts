@@ -1,4 +1,4 @@
-import { withRestoreConcurrency } from "./internal-restore-concurrency.js";
+import { withRestoreConcurrency, identifiesRevision } from "./internal-restore-concurrency.js";
 import { projectMarkdownToText, resolveProjectionRange, createDocumentAnchorSelector } from "../../../packages/shared/src/document-anchors.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { privateDownloadCases } from "./internal-private-download.js";
@@ -54,7 +54,7 @@ export function grade_documents_artifacts(value: unknown) {
         && revisions.every(original => o.revisions.some(row => row.id === original.id && row.body === original.body)), "All three historical revisions remain unmodified alongside the restoration.");
       c.add("restore-path-attribution", !!before && o.activity.some(row => row.action === "issue.document_restored" && row.entityId === before.id
         && row.agentId === o.leadId && row.details?.restoredFromRevisionId === previous?.id), "An independently observed restore audit identifies the exact source revision.");
-      c.add("no-execution-rewind", !!before && sameTask(before, current) && /\b(?:revision|version)\b/i.test(o.reply), "Chat identifies a document revision and leaves task execution unchanged.");
+      c.add("no-execution-rewind", !!before && sameTask(before, current) && !!plan && identifiesRevision(o.reply, plan), "Chat identifies the resulting current document revision and leaves task execution unchanged.");
       break;
     }
     default: c.add("implemented-scenario", false, "No independent oracle is implemented for this scenario.");

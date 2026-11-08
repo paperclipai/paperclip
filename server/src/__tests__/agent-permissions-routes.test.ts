@@ -244,6 +244,7 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
             Promise.resolve(resolve([{
               id: companyId,
               name: "Paperclip",
+              issuePrefix: "PAP",
               requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
             }])),
           ),
@@ -1706,6 +1707,30 @@ describe("agent permission routes", () => {
     expect(mockApprovalService.rejectHire).toHaveBeenCalledWith(agentId, "board-user");
     // The hire decision rejects the pending agent; the route must not terminate again.
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["PATCH status", (base: string) => request(base).patch(`/api/agents/${agentId}`).send({ status: "terminated" })],
+    ["POST terminate", (base: string) => request(base).post(`/api/agents/${agentId}/terminate`).send({})],
+  ])("keeps agent termination board-only through %s, even for an agent allowed to configure the target", async (_route, send) => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "idle" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, send);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("only a board user can terminate an agent");
+    expect(res.body.error).toContain(`[the agent's profile](/PAP/agents/${agentId})`);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelInvocationsForAgents).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("terminates directly when no open hire approval is linked", async () => {

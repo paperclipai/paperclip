@@ -343,7 +343,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agent-chat.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.remember-preview.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "setupHumanMessageCount": 1,
@@ -518,7 +518,7 @@
       "chat-catalog-domains/runtime-agents.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.edit-instructions.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -675,7 +675,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime-hiring.v3",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
@@ -780,7 +780,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime-retirement.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
@@ -790,7 +790,8 @@
       "invariantCheckIds": [
         "lead-ready",
         "real-active-assignment",
-        "truthful-historical-work"
+        "truthful-historical-work",
+        "historical-record-starts-no-work"
       ]
     },
     "runPolicy": {
@@ -2033,7 +2034,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.export-company.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -2069,7 +2070,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity.import-preview.v2",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -2845,7 +2846,7 @@
       "chat-catalog-domains/internal-restore-concurrency.ts",
       "chat-catalog-domains/identity-auth.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.restore-document.saved-edit.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 3,
@@ -2872,7 +2873,7 @@
       "chat-catalog-domains/internal-website-delivery.ts",
       "registered-artifact.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.website-revision.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,
@@ -3608,7 +3609,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/navigation-preferences.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity-profile.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -4746,13 +4747,14 @@
       "chat-catalog-domains/runtime-failed-runs.ts",
       "chat-catalog-domains/runtime-native-failure.ts",
       "chat-catalog-domains/runtime-support.ts",
+      "chat-catalog-domains/internal-run-history.ts",
       "chat-scenarios/runs-adapters.yaml",
       "../../ui/src/components/TaskChatThread.tsx",
       "../../ui/src/components/task-chat/TaskChatMarker.tsx",
       "../../ui/src/components/task-chat/TaskChatThreadView.tsx",
       "../../ui/src/pages/AgentDetail.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.inspect-failed-run.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "turnTimeoutMs": 120000,
@@ -5180,7 +5182,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/skills.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.integrator.skill-import.v2",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
@@ -5282,7 +5284,7 @@
       "chat-catalog-domains/integrator-status-cards.ts",
       "chat-scenarios/status-cards.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.status-card.archive.v2",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
@@ -5737,7 +5739,7 @@
       "chat-catalog-domains/internal-distinct-fixtures.ts",
       "chat-linked-question.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -5784,7 +5786,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-query-attachments.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.attachment-brief.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,

@@ -1,5 +1,6 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
 import { expect } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
@@ -42,26 +43,69 @@ async function attributedPhase(ctx: ChatCatalogContext, priorRunIds: string[], m
     reply: replies.map(row => row.body ?? "").join("\n"), attributed: bound && runs.length === 1 && replies.length > 0
       && replies.every(row => Date.parse(row.createdAt!) >= Date.parse(human[0]!.createdAt!)) };
 }
+/**
+ * A clarification may end the turn as a reply or as a durable question card
+ * the phase's own run created. Its effects are read by run attribution, not
+ * by the model-chosen wording.
+ */
+async function clarificationPhase(ctx: ChatCatalogContext, priorRunIds: string[], message: string) {
+  const base = await attributedPhase(ctx, priorRunIds, message); const sourceId = ctx.issue()!.id;
+  const [rows, interactions, products, attachments, documents] = await Promise.all([
+    ctx.input.api.get<Entity[]>(`/api/issues/${sourceId}/comments?order=asc`),
+    ctx.input.api.get<Array<Entity & { kind?: string; status?: string; sourceRunId?: string | null }>>(`/api/issues/${sourceId}/interactions`),
+    ctx.input.api.get<Array<{ id: string; createdByRunId?: string | null }>>(`/api/issues/${sourceId}/work-products`),
+    ctx.input.api.get<Array<{ id: string; originatingRunId?: string | null }>>(`/api/issues/${sourceId}/attachments`),
+    ctx.input.api.get<Entity[]>(`/api/issues/${sourceId}/documents`)]);
+  const revisions = (await Promise.all(documents.map(doc => ctx.input.api.get<Array<{ id: string; createdByRunId?: string | null }>>(
+    `/api/issues/${sourceId}/documents/${encodeURIComponent(doc.key!)}/revisions`)))).flat();
+  const human = rows.find(row => row.id === base.humanCommentId);
+  const questions = interactions.filter(row => row.kind === "ask_user_questions" && row.status === "pending"
+    && !!row.sourceRunId && base.runIds.includes(row.sourceRunId) && !!human && Date.parse(row.createdAt!) >= Date.parse(human.createdAt!));
+  const ownRun = (id?: string | null) => !!id && base.runIds.includes(id);
+  const bound = base.attributed || (!!human && base.runIds.length === 1 && questions.length > 0
+    && rows.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && ownRun(row.createdByRunId)).every(row => Date.parse(row.createdAt!) >= Date.parse(human.createdAt!)));
+  return { ...base, answeredTurn: bound, questionIds: questions.map(row => row.id),
+    createdArtifacts: [...products.filter(row => ownRun(row.createdByRunId)).map(row => row.id), ...attachments.filter(row => ownRun(row.originatingRunId)).map(row => row.id)],
+    createdRevisions: revisions.filter(row => ownRun(row.createdByRunId)).map(row => row.id) };
+}
+async function linkedPreviews(ctx: ChatCatalogContext, links: string[]) {
+  const sourceId = ctx.issue()!.id;
+  const ids = [...new Set(links.map(href => { try { return new URL(href, ctx.input.api.baseURL).pathname.match(/^\/api\/attachments\/([^/]+)\/content$/)?.[1]; } catch { return undefined; } }).filter((id): id is string => !!id))];
+  const attachments = await ctx.input.api.get<Array<{ id: string; issueId: string; originalFilename?: string | null; sha256: string; byteSize: number }>>(`/api/issues/${sourceId}/attachments`);
+  return Promise.all(attachments.filter(row => ids.includes(row.id)).map(async row => {
+    const bytes = await ctx.input.api.getAttachmentContent(row.id);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    return { attachmentId: row.id, issueId: row.issueId, originalFilename: row.originalFilename ?? null, sha256,
+      contentVerified: bytes.length === row.byteSize && sha256 === row.sha256 };
+  }));
+}
+type LinkedPreview = Awaited<ReturnType<typeof linkedPreviews>>[number];
+/**
+ * "That preview" is identified by its bytes: the canonical answer must link a
+ * same-issue attachment whose downloaded content equals the selected preview.
+ * Re-registering the identical file is acceptable; a regenerated or different
+ * file is not. Reply wording is never graded.
+ */
 export function gradeRememberPreview(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("real-history-preview-evidence", !!o, "A genuine native preview, retained human selection and independently downloaded bytes are required."); if (!o) return c.result();
   const prior = o.state.previewBefore as Artifact; const after = o.state.previewAfter as Artifact;
+  const linked = (o.state.linkedPreviews as LinkedPreview[] | undefined) ?? [];
   c.add("same-accessible-selected-preview", !!prior?.contentVerified && !!after?.contentVerified && prior.attachmentId === after.attachmentId
     && prior.sha256 === after.sha256 && after.content.includes(String(o.state.designMarker)) && /blue|#0000ff/i.test(after.content)
-    && (o.state.queryLinks as string[] | undefined)?.some(href => { try { const url = new URL(href, o.origin); return url.origin === o.origin && url.pathname === `/api/attachments/${prior.attachmentId}/content`; } catch { return false; } }) === true,
-  "The answer returns the same actual blue preview with its unpredictable retained marker and accessible original attachment.");
+    && linked.some(row => row.contentVerified && row.sha256 === prior.sha256 && row.originalFilename === o.state.filename
+      && (o.state.queryLinks as string[] | undefined)?.some(href => { try { const url = new URL(href, o.origin); return url.origin === o.origin && url.pathname === `/api/attachments/${row.attachmentId}/content`; } catch { return false; } }) === true),
+  "The canonical answer links an accessible attachment whose downloaded bytes are exactly the selected blue preview, which itself remains intact.");
   c.add("persisted-choice-after-reload", o.state.reloaded === true && o.state.historyRetained === true && o.state.choiceEstablished === true
-    && /blue/i.test(String(o.state.queryReply)) && !/which (?:design|colou?r)|cannot (?:find|remember)|no (?:prior|previous).*choice/i.test(String(o.state.queryReply)),
-  "The canonical reply resolves the established choice from genuine retained history after reload.");
-  c.add("no-misrouted-followup", o.tasks.every(task => /blue/i.test(`${task.description ?? ""}\n${task.title ?? ""}`))
-    && o.runs.every(run => run.status === "succeeded" && run.agentId === o.leadId),
-  "Any follow-up task preserves the selected blue design and no unrelated execution or fabricated agreement is introduced.");
-  const unknown = o.state.unknownDesignPhase as { attributed?: boolean; reply?: string; runIds?: string[] } | undefined;
-  c.add("unestablished-choice-clarified", unknown?.attributed === true && unknown.runIds?.length === 1
-    && /which|clarif|share|provide|could you|can you|not.*(?:select|pick|agree|record)|no.*(?:select|pick|agree|record)/i.test(unknown.reply ?? "")
-    && !/here(?:'s| is).*(?:green|alternate).*preview|we (?:selected|picked|agreed).*(?:green|alternate)/i.test(unknown.reply ?? "")
+    && String(o.state.queryReply ?? "").trim().length > 0 && (o.state.canonicalRunIds as string[] | undefined)?.length === 1,
+  "After reload, one canonical turn answers from genuinely retained history.");
+  c.add("no-misrouted-followup", o.tasks.length === 0 && o.runs.every(run => run.status === "succeeded" && run.agentId === o.leadId),
+  "No follow-up task or unrelated execution is introduced; neither request asked for one.");
+  const unknown = o.state.unknownDesignPhase as { answeredTurn?: boolean; runIds?: string[]; createdArtifacts?: string[]; createdRevisions?: string[] } | undefined;
+  c.add("unestablished-choice-clarified", unknown?.answeredTurn === true && unknown.runIds?.length === 1
+    && unknown.createdArtifacts?.length === 0 && unknown.createdRevisions?.length === 0
     && o.tasks.length === 0 && o.runs.length === 3,
-  "A separate explicit follow-up about a never-selected alternate design gets its own focused clarification instead of a fabricated agreement or preview.");
+  "The never-selected alternate design gets its own turn that ends on a reply or pending question and creates no preview, document change or task.");
   return c.result();
 }
 export function gradeBrowserReconnect(value: unknown) {
@@ -119,6 +163,7 @@ export const runtimeHistoryCases = [runtimeDefinition("agent-chat.remember-and-f
   return { designMarker, filename, previewBefore, history, initialRunId: phase.runs[0]!.id, setupRunIds: phase.runs.map(run => run.id), choiceEstablished: true, reloaded: true };
 }, gradeRememberPreview, {
   sourceFiles: ["chat-catalog-domains/runtime-history.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agent-chat.yaml"],
+  oracleVersion: "paperclip.chat-catalog.runtime.remember-preview.v3",
   setupHumanMessageCount: 1, expectedHumanMessageCount: 3, expectedRunCount: 3, attemptTimeoutMs: 720_000,
   async act(ctx, state) {
     const canonical = await sourceSettled(ctx, 2);
@@ -127,20 +172,33 @@ export const runtimeHistoryCases = [runtimeDefinition("agent-chat.remember-and-f
     const prior = canonical.runs.map(run => run.id);
     const message = "Use the alternate green design I chose earlier, and show me that preview. If our history does not establish that alternate choice, ask me a focused clarification before creating or changing anything.";
     await sendChatMessage(ctx.input.page, message, chatCatalogNativePhaseRemainingBudget(ctx)); await sourceSettled(ctx, 3);
-    state.unknownDesignPhase = await attributedPhase(ctx, prior, message);
+    state.unknownDesignPhase = await clarificationPhase(ctx, prior, message);
   },
   async observe(ctx, state) {
     await retainHistory(ctx, state);
+    state.linkedPreviews = await linkedPreviews(ctx, state.queryLinks as string[]);
     [state.previewAfter] = await readRegisteredArtifacts(ctx.input.api, ctx.issue()!.id, String(state.initialRunId), [String(state.filename)]);
     return observeRuntime(ctx, state);
   },
   async verifyResult(ctx, state, value) {
     const o = runtimeObservation(value)!; const preview = state.previewAfter as Artifact;
-    const href = (state.queryLinks as string[]).find(link => { try { return new URL(link, o.origin).pathname === `/api/attachments/${preview.attachmentId}/content`; } catch { return false; } });
+    const same = (state.linkedPreviews as LinkedPreview[]).filter(row => row.contentVerified && row.sha256 === preview.sha256).map(row => row.attachmentId);
+    const href = (state.queryLinks as string[]).find(link => { try { return same.some(id => new URL(link, o.origin).pathname === `/api/attachments/${id}/content`); } catch { return false; } });
     if (!href) throw new Error("The same persisted preview must be accessible from the rendered answer");
-    const download = ctx.input.page.waitForEvent("download");
-    await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
-    if ((await download).suggestedFilename() !== state.filename) throw new Error("Remembered preview UI downloaded a different file");
+    // Attachment links open the in-app preview panel; its visible download
+    // control must then deliver the same file. A direct download also counts.
+    const page = ctx.input.page; const name = String(state.filename);
+    const direct = page.waitForEvent("download", { timeout: 30_000 }).then(download => ({ download })).catch(() => null);
+    await page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
+    const control = page.locator("header").filter({ has: page.getByRole("heading", { name, exact: true }) })
+      .getByRole("link", { name: `Download ${name}`, exact: true }).last();
+    const opened = await Promise.race([direct, control.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ download: null }))]);
+    let download = opened?.download ?? null;
+    if (!download) {
+      await expect(control).toHaveAttribute("href", new RegExp(`/api/attachments/(?:${same.join("|")})/content\\?download=1$`));
+      [download] = await Promise.all([page.waitForEvent("download"), control.click()]);
+    }
+    if (download.suggestedFilename() !== name) throw new Error("Remembered preview UI downloaded a different file");
   },
 }), runtimeDefinition("recovery.browser-reconnect", async ctx => {
   const state = await busyRuntimeWorker(ctx); const source = await openStandingChat(ctx);

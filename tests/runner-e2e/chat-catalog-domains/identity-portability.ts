@@ -12,12 +12,20 @@ import { identityDefinition, identityObservation, identityWorker, observeIdentit
 
 const secretValues = new WeakMap<ChatCatalogContext, string>();
 interface AgentConfiguration { adapterType: string; adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown> }
+/** The saved configuration an import could overwrite. Lifecycle status and updatedAt change on their own
+ * after setup (agent preparation, harness budget funding), so they are not configuration; configurationRevision
+ * is the product's own content hash of the configuration and stays in the comparison. */
+export function savedAgentConfiguration(value: unknown) {
+  const { status: _status, updatedAt: _updatedAt, ...configuration } = (value ?? {}) as Record<string, unknown>; return JSON.stringify(configuration);
+}
 function text(entry: CompanyPortabilityFileEntry) { return typeof entry === "string" ? entry : Buffer.from(entry.data, "base64").toString("utf8"); }
 export function gradePortability(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-portability-evidence", !!o, "Actual package files, public provenance, permitted actor and independently saved resources are required."); if (!o) return c.result();
   if (o.scenarioId === "companies.export-company") {
     const preview = o.state.actualPackagePreview as CompanyPortabilityPreviewResult | undefined; const attachment = o.state.exportAttachment as IssueAttachment | undefined;
-    c.add("actual-supported-company-package", !!preview && preview.errors.length === 0 && preview.manifest.source?.companyId === o.companyId
+    const company = o.company as Entity & { name?: string };
+    // An inline import preview never fills manifest.source, so provenance is the package's own COMPANY.md entry naming the source company.
+    c.add("actual-supported-company-package", !!preview && preview.errors.length === 0 && !!company.name && preview.manifest.company?.name === company.name
       && preview.manifest.agents.some(agent => agent.name === o.state.originalAgentName) && preview.manifest.projects.some(row => row.name === "Launch")
       && preview.manifest.skills.some(skill => skill.slug === "launch-checklist") && typeof preview.files["COMPANY.md"] === "string"
       && Object.keys(preview.files).some(file => file.endsWith("AGENTS.md")) && Object.keys(preview.files).some(file => file.endsWith("SKILL.md")),
@@ -27,14 +35,18 @@ export function gradePortability(value: unknown) {
       && attachment.sha256 === o.state.downloadSha256 && o.state.actualDownloadStatus === 200 && o.state.fileVisible === true && o.state.agentExportPermissionStatus === 200,
       "A real CEO-generated package attachment is visible and its authorized exact download matches immutable upload hash/run identity; a prose promise or export page link alone is insufficient.");
     c.add("nonportable-credentials-explicit", o.state.packageContainsPrivateValue === false && o.state.noForeignScope === true
-      && !!preview?.envInputs.some(input => input.kind === "secret" && input.requirement === "required") && /credential|secret|sign.in|authentication/i.test(o.reply)
-      && /runtime|environment|configur|reconnect|prerequisite|not.*(?:authenticat|ready)/i.test(o.reply), "Actual secret values and foreign scope are absent while the package and reply retain omitted credentials/runtime prerequisites, without claiming an authenticated clone.");
+      // The product exports every secret_ref as a valueless input (requirement "optional" by design); the reply must name the setup-chosen omitted credential so the person knows what to supply.
+      && !!preview?.envInputs.some(input => input.key === o.state.secretKey && input.kind === "secret" && !input.defaultValue)
+      && [o.state.secretKey, o.state.secretName].some(name => typeof name === "string" && o.reply.toLowerCase().includes(name.toLowerCase())),
+      "Actual secret values and out-of-company resources are absent while the package keeps the omitted credential as a valueless input and the reply names that credential for the person to supply.");
   } else if (o.scenarioId === "companies.import-preview") {
     const preview = o.state.preview as CompanyPortabilityPreviewResult | undefined; const conflict = entity(o.state, "existing");
     c.add("actual-conflict-before-mutation", !!preview && preview.errors.length === 0 && preview.targetCompanyId === o.companyId
       && preview.plan.agentPlans.some(plan => plan.slug === "morgan" && plan.existingAgentId === conflict.id && plan.action !== "update")
-      && o.state.beforeChoiceUnchanged === true && o.state.initialReplyAskedChoice === true && o.state.actualPackageAttached === true,
-      "The actual attached synthetic package produces a real Morgan collision preview and requests a consequential choice before changing company resources.");
+      && o.state.beforeChoiceUnchanged === true && o.state.firstTurnAwaitedHuman === true && o.state.actualPackageAttached === true
+      // The conflicting employee's name is a setup-chosen literal; the reply must surface it. How the agent phrases the conflict or the question is not graded.
+      && typeof o.state.firstReply === "string" && o.state.firstReply.includes("Morgan"),
+      "The actual attached synthetic package produces a real Morgan collision preview; the first turn names the conflicting employee and hands the decision back to the person before changing company resources.");
     c.add("explicit-human-rename-import", o.humanQueries.length === 2 && o.humanQueries[1]?.includes("Morgan Package") && o.state.importedAgentId !== conflict.id
       && o.agents.some(agent => agent.id === o.state.importedAgentId && agent.name === "Morgan Package" && agent.companyId === o.companyId)
       && o.state.existingConfigurationUnchanged === true && o.state.existingStillPresent === true && o.state.importedAgentVisible === true,
@@ -54,14 +66,15 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
   identityDefinition("companies.export-company", async ctx => {
     const source = await openStandingChat(ctx); const p = await project(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
     const secret = `synthetic-export-key-${randomBytes(24).toString("hex")}`; secretValues.set(ctx, secret); ctx.input.privateSecrets!.push(secret);
-    const stored = await ctx.input.api.postSensitive<{ id: string }>(`${root}/secrets`, { name: "Export prerequisite API key", key: "EXPORT_FIXTURE_KEY", provider: "local_encrypted", value: secret });
+    const secretName = "Export prerequisite API key"; const secretKey = "EXPORT_FIXTURE_KEY";
+    const stored = await ctx.input.api.postSensitive<{ id: string }>(`${root}/secrets`, { name: secretName, key: secretKey, provider: "local_encrypted", value: secret });
     const config = await ctx.input.api.get<AgentConfiguration>(`/api/agents/${ctx.input.fixtures.agent.id}/configuration`);
     await ctx.input.api.patch(`/api/agents/${ctx.input.fixtures.agent.id}`, { adapterConfig: { ...config.adapterConfig,
-      env: { ...(config.adapterConfig.env as Record<string, unknown>), EXPORT_FIXTURE_KEY: { type: "secret_ref", secretId: stored.id, version: "latest" } } } });
+      env: { ...(config.adapterConfig.env as Record<string, unknown>), [secretKey]: { type: "secret_ref", secretId: stored.id, version: "latest" } } } });
     const skill = await ctx.input.api.post<Entity>(`${root}/skills`, { name: "Launch checklist", slug: "launch-checklist", description: "A portable accessible launch review checklist.", markdown: "---\nname: launch-checklist\ndescription: Review a website launch.\n---\n\n# Launch checklist\nCheck headings, keyboard navigation and business contact details.\n", sharingScope: "company" });
-    return { sourceId: source.id, project: p, skill, originalAgentName: ctx.input.fixtures.agent.name, syntheticPrivateValueCreated: true };
+    return { sourceId: source.id, project: p, skill, originalAgentName: ctx.input.fixtures.agent.name, secretKey, secretName, syntheticPrivateValueCreated: true };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.export-company.v2",
     async act(ctx, state) {
       await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); state.agentExportPermissionStatus = await probeAgentPermission(ctx, `/api/companies/${ctx.input.fixtures.company.id}/exports/preview`, "POST", { include: { company: true, agents: true, projects: true, skills: true, issues: false } });
       const attachments = await ctx.input.api.get<IssueAttachment[]>(`/api/issues/${ctx.issue()!.id}/attachments`);
@@ -75,7 +88,11 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
       state.packageContainsPrivateValue = Object.values(files).some(file => text(file).includes(secretValues.get(ctx)!));
       const preview = await ctx.input.api.post<CompanyPortabilityPreviewResult>(`/api/companies/${ctx.input.fixtures.company.id}/imports/preview`, { source: { type: "inline", rootPath, files, expectedFileCount: Object.keys(files).length },
         target: { mode: "existing_company", companyId: ctx.input.fixtures.company.id }, collisionStrategy: "rename", include: { company: false, agents: true, projects: true, skills: true, issues: false } });
-      state.actualPackagePreview = preview; state.noForeignScope = preview.manifest.source?.companyId === ctx.input.fixtures.company.id;
+      const [company, agents, projects] = await Promise.all([ctx.input.api.get<Entity & { name: string }>(`/api/companies/${ctx.input.fixtures.company.id}`),
+        ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`), ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/projects`)]);
+      const names = (rows: Entity[]) => new Set(rows.map(row => row.name)); const agentNames = names(agents); const projectNames = names(projects);
+      state.actualPackagePreview = preview; state.noForeignScope = preview.manifest.company?.name === company.name
+        && preview.manifest.agents.every(agent => agentNames.has(agent.name)) && preview.manifest.projects.every(row => projectNames.has(row.name));
       await ctx.input.evidence("identity-real-company-package-download.json", { attachmentId: attachment.id, originatingRunId: attachment.originatingRunId, sha256: state.downloadSha256,
         fileInventory: Object.keys(files), manifest: preview.manifest, envInputs: preview.envInputs, packageContainsPrivateValue: state.packageContainsPrivateValue, actualDownloadStatus: 200 });
     },
@@ -93,14 +110,17 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     return { sourceId: source.id, existing, existingConfiguration, sourcePackage, packageAttachment, actualPackageAttached: true,
       beforeAgentIds: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(row => row.id) };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources, queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v2", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await waitForReply(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
       const current = await ctx.input.api.get<Entity[]>(`${root}/agents`); state.beforeChoiceUnchanged = JSON.stringify(current.map(row => row.id).sort()) === JSON.stringify([...(state.beforeAgentIds as string[])].sort())
-        && JSON.stringify(state.existingConfiguration) === JSON.stringify(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`));
-      const o = await observeIdentity(ctx, state); state.initialReplyAskedChoice = /Morgan/i.test(o.reply) && /conflict|already exists|same name|collision/i.test(o.reply) && /rename|skip|which|choose|would you|should I/i.test(o.reply);
+        && savedAgentConfiguration(state.existingConfiguration) === savedAgentConfiguration(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`))
+        && !(await observeIdentity(ctx, state)).activity.some(row => row.action === "company.imported");
+      const o = await observeIdentity(ctx, state); state.firstReply = o.reply;
+      // waitForReply returned with the conversation waiting on the person and every run finished: the agent stopped after the preview instead of importing.
+      state.firstTurnAwaitedHuman = ctx.issue()?.conversationState === "waiting" && o.runs.length >= 1 && o.runs.every(run => run.status === "succeeded");
       state.preview = await ctx.input.api.post<CompanyPortabilityPreviewResult>(`${root}/imports/preview`, { source: state.sourcePackage, target: { mode: "existing_company", companyId: ctx.input.fixtures.company.id }, collisionStrategy: "rename", include: { company: false, agents: true, projects: false, issues: false, skills: false } });
-      if (!state.beforeChoiceUnchanged || !state.initialReplyAskedChoice) throw new Error("The consequential import conflict was not previewed without mutation and referred to the human");
+      if (!state.beforeChoiceUnchanged || !state.firstTurnAwaitedHuman) throw new Error("The consequential import conflict was not previewed without mutation and referred to the human");
       await sendChatMessage(ctx.input.page, "Import the package into this company. Choose rename for the incoming Morgan and name the new employee Morgan Package. Keep the existing Morgan and every part of its configuration unchanged. Do not run the imported employee.");
       const rows = await pollUntil({ label: "actual scoped renamed import", deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return { agents: await ctx.input.api.get<Entity[]>(`${root}/agents`), runs: await ctx.allRuns() }; },
         accept: value => value.agents.some(row => row.name === "Morgan Package" && row.id !== entity(state, "existing").id) && value.runs.length === 2 && value.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
@@ -112,7 +132,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     async observe(ctx, state) {
       const o = await observeIdentity(ctx, state); const imported = o.agents.find(row => row.name === "Morgan Package" && row.id !== entity(state, "existing").id);
       state.importedAgentId = imported?.id; state.existingStillPresent = o.agents.some(row => row.id === entity(state, "existing").id && row.name === "Morgan");
-      state.existingConfigurationUnchanged = JSON.stringify(state.existingConfiguration) === JSON.stringify(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`)); return o;
+      state.existingConfigurationUnchanged = savedAgentConfiguration(state.existingConfiguration) === savedAgentConfiguration(await ctx.input.api.get<AgentConfiguration>(`/api/agents/${entity(state, "existing").id}/configuration`)); return o;
     },
     async verifyResult(ctx, state) {
       if (typeof state.importedAgentId !== "string") throw new Error("Actual imported employee is missing"); const source = ctx.input.page.url();

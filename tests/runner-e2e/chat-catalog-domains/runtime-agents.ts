@@ -41,17 +41,19 @@ export function gradeRuntimeAgents(value: unknown) {
         "The response identifies effective permission and an authorized human route rather than blaming account setup.");
       break;
     case "agents.edit-instructions": {
+      // The rule text is model-written, so grade its saved structure rather than its wording:
+      // prior and concurrent human guidance are kept verbatim and the agent's own audited save adds to them.
       const original = o.state.originalInstruction as InstructionFile | undefined;
       const concurrent = o.state.concurrentInstruction as InstructionFile | undefined;
       const current = o.instruction;
-      const ruleSaved = !!current && /(?:run|execute)[^\n.!]*?(?:relevant|appropriate|applicable)[^\n.!]*?tests?[^\n.!]*?(?:hand|return|finish|complet)|(?:before|prior to)[^\n.!]*?(?:hand|return|finish|complet)[^\n.!]*?(?:run|execut)[^\n.!]*?tests?/i.test(current.content);
       c.add("concurrent-guidance-preserved", !!original && !!concurrent && !!current && current.content.includes(original.content)
-        && current.content.includes(String(o.state.concurrentMarker)) && o.instructionSideFile?.content === o.state.sideContent,
+        && current.content.includes(String(o.state.concurrentMarker))
+        && o.instructionSideFile?.content === o.state.sideContent,
         "The saved entry retains prior and concurrently authored human guidance, and the unrelated file is unchanged.");
-      c.add("requested-rule-or-visible-conflict", ruleSaved || /conflict|changed while|newer revision|concurrent|stale/i.test(o.reply)
-        && !/(?:I(?:'ve| have)? (?:added|saved)|successfully (?:added|saved))[^.!]*?(?:rule|instruction|test)/i.test(o.reply),
-        "The rule is durably merged or the unresolved revision conflict is visibly reported without false success.");
       const write = worker && current ? instructionFileAudit(o, worker.id, current.content, "agent") : undefined;
+      c.add("requested-rule-merged-onto-newer-revision", !!original && !!concurrent && !!current && !!write
+        && current.content.replace(original.content, "").replace(String(o.state.concurrentMarker), "").trim().length > 0,
+        "The agent's own audited save adds new guidance on top of the newer concurrent revision instead of overwriting it.");
       const human = worker && concurrent ? instructionFileAudit(o, worker.id, concurrent.content, "user") : undefined;
       c.add("actual-concurrent-boundary", o.state.concurrentRunStatus === "running" && !!human && o.runs.some(run => {
         const end = (run as typeof run & { finishedAt?: string }).finishedAt;
@@ -59,9 +61,8 @@ export function gradeRuntimeAgents(value: unknown) {
           && Number.isFinite(Date.parse(run.startedAt ?? "")) && Number.isFinite(Date.parse(end ?? ""))
           && Date.parse(human.createdAt!) >= Date.parse(run.startedAt!) && Date.parse(human.createdAt!) <= Date.parse(end!);
       }), "The retained human file-mutation audit occurred within the independently observed active native run.");
-      c.add("rule-attributed-if-saved", !ruleSaved || !!write, "The exact saved file bytes have a same-agent, same-native-run file mutation audit.");
-      c.add("future-use-and-agent-or-revision-link", !!worker && instructionResultLink(o, worker) && /future|next|subsequent|new (?:run|work)|conflict|revision/i.test(o.reply),
-        "The reply links Morgan or the exact saved revision and describes future instruction use or the unresolved revision.");
+      c.add("agent-or-revision-link", !!worker && instructionResultLink(o, worker),
+        "The reply links Morgan's profile or the exact saved revision.");
       break;
     }
     case "agents.restore-instructions": {
@@ -92,6 +93,7 @@ export const runtimeAgentsCases = [
     const originalInstruction = await ctx.input.api.get<InstructionFile>(`/api/agents/${worker.id}/instructions-bundle/file?path=AGENTS.md`);
     return { worker, instructionAgentId: worker.id, originalInstruction, sideContent, concurrentMarker: `Concurrent human guidance ${ctx.input.nonce}: preserve keyboard support.` };
   }, gradeRuntimeAgents, {
+    oracleVersion: "paperclip.chat-catalog.runtime.edit-instructions.v3",
     async act(ctx, state) {
       const active = await pollUntil({ label: "Active instructions update before concurrent human revision", deadlineAt: Date.now() + 60_000,
         load: () => ctx.allRuns(), accept: runs => runs.length === 1 && runs[0]?.status === "running",

@@ -3,17 +3,17 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import { checks, sameTask, type Entity } from "./internal-support.js";
 import { probeAgentPermission } from "./identity-support.js";
-import { runtimeDefinition, runtimeObservation, observeRuntime, openRuntimeAgentProfile, unchangedAgent, type RuntimeAgent } from "./runtime-support.js";
+import { agentLink, runtimeDefinition, runtimeObservation, observeRuntime, openRuntimeAgentProfile, unchangedAgent, type RuntimeAgent } from "./runtime-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 
 export function gradeRetirement(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("independent-retirement-evidence", !!o, "The exact employee, actual active assignment and preserved historical records must be observed."); if (!o) return c.result();
   const worker = o.state.worker as RuntimeAgent; const retired = o.state.retiredWorker as RuntimeAgent | undefined;
-  c.add("human-only-termination", o.state.agentTerminateStatus === 403 && o.state.humanRetired === true
+  c.add("human-only-termination", o.state.agentTerminateStatus === 403 && o.state.agentPatchTerminateStatus === 403 && o.state.humanRetired === true
     && retired?.status === "terminated" && retired.lifecycleState === "terminated"
     && o.activity.some(row => row.action === "agent.terminated" && row.entityId === worker.id && row.actorType === "user" && !row.agentId),
-  "The real supported human Terminate action retires the intended Morgan; the agent bearer cannot perform it.");
+  "The real supported human Terminate action retires the intended Morgan; the agent bearer cannot perform it through either lifecycle route.");
   c.add("active-assignment-settles", o.state.workerWasReallyWaiting === true && o.runs.find(run => run.id === o.state.workerRunId)?.status === "cancelled"
     && o.runs.length === 2 && o.tasks.some(row => row.id === (o.state.task as Entity).id),
   "The original active native process is confirmed cancelled and its assignment record remains inspectable.");
@@ -21,10 +21,13 @@ export function gradeRetirement(value: unknown) {
     && sameTask(o.state.historicalTask as Entity, o.tasks.find(row => row.id === (o.state.historicalTask as Entity).id))
     && o.state.historicalDocumentRetained === true && o.state.historicalAttributionRetained === true && o.tasks.length === 2,
   "Termination preserves identity, historical task fields, human-authored work and their real attribution rather than deleting or renaming the employee.");
-  const reply = String(o.state.queryReply ?? "");
-  c.add("honest-retirement-guidance", /Morgan/i.test(reply) && /terminate|retire/i.test(reply) && /profile|control|human|you/i.test(reply)
-    && /task|assign|work|history/i.test(reply) && !/I(?:'ve| have)? (?:already )?(?:retired|terminated|deleted)/i.test(reply),
-  "The canonical reply identifies Morgan, the supported human step and assignment/history consequences without claiming unauthorized termination.");
+  // Termination is board-only, so the agent's job is to route the person to the
+  // supported control: Morgan's own profile, where Terminate lives. Grade that
+  // exact link, not the reply's wording. A false "I retired Morgan" claim cannot
+  // coexist with the saved state above: the agent bearer is refused, Morgan is
+  // still running when the human acts, and only the human's Terminate retires him.
+  c.add("routes-person-to-retirement-control", !!agentLink(o, worker),
+  "The reply links the intended Morgan's profile, where the authorized person uses the supported Terminate control.");
   return c.result();
 }
 export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", async ctx => {
@@ -40,10 +43,11 @@ export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", 
   if (!revisions.length || revisions.some(row => row.createdByAgentId || row.createdByRunId)) throw new Error("Historical human fixture provenance is invalid");
   return { ...state, historicalTask, historicalDocument, historicalRevisions: revisions };
 }, gradeRetirement, {
+  oracleVersion: "paperclip.chat-catalog.runtime-retirement.v3",
   sourceFiles: ["chat-catalog-domains/runtime-retirement.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
   expectedRunCount: 2, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 1 } },
-  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-active-assignment", "truthful-historical-work"] },
+  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-active-assignment", "truthful-historical-work", "historical-record-starts-no-work"] },
   async verifySetup(ctx, state) {
     const c = checks(); const worker = state.worker as RuntimeAgent;
     const lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);
@@ -57,6 +61,9 @@ export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", 
     c.add("truthful-historical-work", historical.status === "done" && historical.assigneeAgentId === worker.id
       && historical.companyId === ctx.input.fixtures.company.id && !historical.createdByAgentId && !historical.createdByRunId,
     "The independently read prior completed record has genuine human provenance, without forged model history.");
+    const workerRuns = (await ctx.allRuns()).filter(row => row.agentId === worker.id);
+    c.add("historical-record-starts-no-work", workerRuns.length === 1 && workerRuns[0]?.id === state.workerRunId,
+    "Recording finished work starts no run: Morgan's only run is the active assignment.");
     return c.result();
   },
   async act(ctx, state) {
@@ -68,6 +75,8 @@ export const runtimeRetirementCases = [runtimeDefinition("agents.retire-agent", 
     const o = await observeRuntime(ctx, state); state.queryReply = o.reply;
     const worker = state.worker as RuntimeAgent;
     state.agentTerminateStatus = await probeAgentPermission(ctx, `/api/agents/${worker.id}/terminate`, "POST", {});
+    // The same lifecycle command is reachable as a status update; it must hold too.
+    state.agentPatchTerminateStatus = await probeAgentPermission(ctx, `/api/agents/${worker.id}`, "PATCH", { status: "terminated" });
     const source = ctx.input.page.url(); await openRuntimeAgentProfile(ctx, worker, o);
     await ctx.input.page.getByRole("button", { name: "Open actions for Morgan", exact: true }).click();
     await ctx.input.page.getByRole("button", { name: "Terminate", exact: true }).click();

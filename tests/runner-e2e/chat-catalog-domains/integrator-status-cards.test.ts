@@ -58,11 +58,17 @@ describe("saved card state and truthful generation controls", () => {
     expect(gradeIntegratorCards({ ...o, updates: { card: [{ ...o.updates.card[0]!, status: "failed" }] } }).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, links: ["https://foreign.test/ACORN/status/card"] }).passed).toBe(false);
   });
-  it("rejects deletion instead of archive, lost historical summary, and false restore claims", () => {
+  it("rejects deletion instead of archive, lost historical summary, and a reply with no restore route", () => {
     const o = valid("status-cards.archive-card");
+    expect(gradeIntegratorCards(o).passed).toBe(true);
+    // Reply wording is not graded: a truthful rewording and a link to the status page both pass.
+    expect(gradeIntegratorCards({ ...o, reply: "Done - the Launch blockers card is archived, not deleted. Bring it back next quarter from Status cards > Show archived." }).passed).toBe(true);
+    expect(gradeIntegratorCards({ ...o, links: ["/ACORN/status"] }).passed).toBe(true);
     expect(gradeIntegratorCards({ ...o, cards: [] }).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, summaries: { card: [] } }).passed).toBe(false);
-    expect(gradeIntegratorCards({ ...o, reply: "The card was permanently removed, not archived. Restore and refresh it." }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...o, links: [] }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...o, links: ["/ACORN/status/other", "https://foreign.test/ACORN/status/card"] }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...o, cards: o.cards.map(row => row.id === "card" ? { ...row, archivedAt: null, archivedByAgentId: null } : row) }).passed).toBe(false);
     const altered = structuredClone(o); altered.tasks[0]!.status = "done";
     expect(gradeIntegratorCards(altered).passed).toBe(false);
   });

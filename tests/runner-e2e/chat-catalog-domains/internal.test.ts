@@ -53,9 +53,9 @@ function valid(scenario: string): InternalObservation {
       const original = { id: "original", issueId: "task", sha256: sha(prior), originatingRunId: "build", contentPath: "/api/attachments/original/content" };
       const file = { id: "new", issueId: "task", sha256: sha(body), originatingRunId: "run", contentPath: "/api/attachments/new/content" };
       Object.assign(o.state, { worker: { id: "morgan" }, priorRunId: "build", producedBody: prior, producedHash: sha(prior), bodyFact: "Research teams stay organized.", signupHref: "https://example.test/signup", marker: "ORCHID", originalAttachment: original, originalProductId: "old-product" });
-      const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
+      const product = (id: string, attachmentId: string, run: string) => ({ id, issueId: "task", title: attachmentId === "original" ? "website-v1.html" : "website-v2.html", type: "artifact", provider: "paperclip", status: "active", createdByRunId: run, metadata: { attachmentId } });
       Object.assign(o, { attachments: [file, ...(revising ? [original] : [])], products: [product("new-product", "new", "run"), ...(revising ? [product("old-product", "original", "build")] : [])], downloaded: [{ id: "new", sha256: sha(body), body }, ...(revising ? [{ id: "original", sha256: sha(prior), body: prior }] : [])] });
-      o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1");
+      o.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" }); o.links.push("/api/attachments/new/content?download=1", ...(revising ? ["/api/attachments/original/content"] : []));
       o.reply = "The updated shorter version is available; the original remains available."; break;
     }
     case "tasks.assignment-conflict": {
@@ -364,7 +364,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },
   "documents-artifacts.find-artifact": o => { o.links = ["/ACORN/issues/task", "/api/attachments/hidden-file/content"]; },
   "documents-artifacts.produce-download": o => { o.links = ["/ACORN/issues/task", "/tmp/website.html"]; },
-  "documents-artifacts.revise-delivery": o => { o.reply = "Here is the old version again."; },
+  // Relabeling: the new bytes are filed under the original version's title, so the two versions are indistinguishable.
+  "documents-artifacts.revise-delivery": o => { (o as unknown as { products: { metadata: { attachmentId: string }; title: string }[] }).products.find(row => row.metadata.attachmentId === "new")!.title = "website-v1.html"; },
   "tasks.assignment-conflict": o => { o.tasks[0]!.assigneeAgentId = "riley"; },
   "activity.find-runs": o => { o.runs = o.runs.filter(run => run.id !== "interrupted"); },
   // The grader does not judge claim wording; the failure that matters is relaying another agent's feedback text.
@@ -714,6 +715,25 @@ describe("delegated attachment context calibration", () => {
   it("rejects stale bytes under an available copied filename", () => {
     const o = valid("tasks.attachment-brief"); Object.assign(o, { workerDownloadedHash: "b".repeat(64) });
     expect(gradeInternal(o).passed).toBe(false);
+  });
+  const inlineBrief = "# Acorn Field Notes\nBuild a simple accessible website.\nUse headline: Research without the busywork.\nOffer early signup with invitation code ORCHID-n1.\n";
+  const inlined = (description: string, workerReadInlineBrief = true) => {
+    const o = valid("tasks.attachment-brief"); o.state.briefBody = inlineBrief; o.tasks[0]!.description = description.slice(0, 40);
+    Object.assign(o, { workAttachments: [], durablePath: undefined, workerDownloadStatus: undefined, workerDownloadedHash: undefined,
+      workDescription: description, workerReadInlineBrief });
+    return o;
+  };
+  it("accepts the complete exact brief copied into the full saved task that Morgan reads", () => {
+    const filler = "Acceptance criteria follow. ".repeat(60);
+    expect(gradeInternal(inlined(`${filler}\n\nBRIEF (verbatim):\n${inlineBrief}`)).passed).toBe(true);
+    expect(gradeInternal(inlined(`Brief:\r\n${inlineBrief.split("\n").map(line => `> ${line}`).join("\r\n")}`)).passed).toBe(true);
+    expect(gradeInternal(inlined(`Ship a marketing site.\n\`\`\`md\n${inlineBrief}\`\`\``)).passed).toBe(true);
+  });
+  it("rejects a paraphrased, partial or Morgan-unreadable inline brief", () => {
+    expect(gradeInternal(inlined("Build a site for research teams with headline Research without the busywork and code ORCHID-n1.")).passed).toBe(false);
+    expect(gradeInternal(inlined(inlineBrief.split("\n").slice(0, 3).join("\n"))).passed).toBe(false);
+    expect(gradeInternal(inlined(`Use website-brief.md from the chat.`)).passed).toBe(false);
+    expect(gradeInternal(inlined(inlineBrief, false)).passed).toBe(false);
   });
 });
 

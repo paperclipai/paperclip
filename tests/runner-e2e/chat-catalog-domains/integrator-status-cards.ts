@@ -55,6 +55,11 @@ function cardsObservation(value: unknown): CardsObservation | undefined {
   return observation(value) && Array.isArray(o.cards) && !!o.updates && !!o.summaries && typeof o.cardsEnabled === "boolean" ? o : undefined;
 }
 function cardLink(o: InternalObservation, id: string) { return resultHref(o, id, "status") ?? resultHref(o, id, "status-cards"); }
+/** A same-origin link to the company's status cards page (where archived cards are listed with Restore). */
+function statusBoardLinked(o: InternalObservation) {
+  return o.links.some(href => { try { const url = new URL(href, o.origin); const parts = url.pathname.split("/").filter(Boolean);
+    return url.origin === new URL(o.origin).origin && parts.length === 2 && parts[1] === "status"; } catch { return false; } });
+}
 function freshSummary(o: CardsObservation, card: StatusCard) {
   return !!card.lastGeneratedAt && !!card.summaryBody && o.updates[card.id]?.some(row => row.kind !== "compile" && row.status === "ok" && !!row.runId
     && o.runs.some(run => run.id === row.runId && run.status === "succeeded") && row.generationIssueId != null)
@@ -84,8 +89,11 @@ export function gradeIntegratorCards(value: unknown) {
     c.add("unrelated-card-unchanged", !!other && !!otherNow && otherNow.interestPrompt === other.interestPrompt && otherNow.summaryBody === other.summaryBody && otherNow.archivedAt === other.archivedAt && JSON.stringify(otherNow.refreshPolicy) === JSON.stringify(other.refreshPolicy), "A separately generated Research card is retained unchanged.");
     c.add("summary-and-history-preserved", !!card && card.summaryBody === before?.summaryBody && JSON.stringify(o.summaries[card.id]) === JSON.stringify(o.state.originalSummaries)
       && JSON.stringify(o.updates[card.id]) === JSON.stringify(o.state.originalUpdates), "Archiving retains actual generated history and summary bytes.");
-    c.add("archive-restoration-truthful", groundedStatement(o.reply, /\b(?:card|launch)\b/i, /\barchived\b/i, /\b(?:deleted|permanently removed|not archived)\b/i)
-      && /\brestor(?:e|ing|ation)\b/i.test(o.reply) && /\brefresh\b/i.test(o.reply), "Chat reports archive rather than deletion and explains restoration plus possible refresh.");
+    // The restore explanation is model output, so its wording is not pattern-matched (a truthful "archived,
+    // not deleted" failed the old phrase check). The saved state above proves archive-not-delete; this grades
+    // that the reply gives the person a usable route to where the archived card is viewed and restored.
+    c.add("restore-route-linked", !!card && card.archivedAt != null && (!!cardLink(o, card.id) || statusBoardLinked(o)),
+      "The reply links the archived card or the company's status cards page, where the card is viewed and restored.");
   } else if (o.scenarioId === "status-cards.explain-card") {
     const source = originals[0];
     const initial = cardsObservation(o.state.accessCheckpoint);
@@ -215,7 +223,10 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
       if (initialChecklist) await ctx.input.evidence("chat-card-initial-required-checklist.json", initialChecklist);
       let otherCard: StatusCard | undefined; const sourceTasks = [t];
       if (id === "status-cards.archive-card") {
-        const research = await project(ctx, "Research"); sourceTasks.push(await task(ctx, "Research follow-up", research.id));
+        // The Research card asks for blockers, so give it one, as Launch has. With only a backlog task the
+        // summarizer searched for blockers that did not exist and its generation ran 171-182s against the 180s limit.
+        const research = await project(ctx, "Research");
+        sourceTasks.push(await task(ctx, "Lab access blocks research", research.id, { status: "blocked", description: "Research is blocked until the synthetic lab access request is approved." }));
         otherCard = await seedCard(ctx, ctx.input.fixtures.agent.id, worker.id, research.id, "Research");
         await pollUntil({ label: "independent Research card generation completion", deadlineAt: Date.now() + 45_000, load: () => ctx.allRuns(), accept: rows => rows.length === 2 && rows.every(row => row.status === "succeeded") });
       }
@@ -234,7 +245,7 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
 }
 export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none"),
-  define("status-cards.archive-card", "ceo", { authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
+  define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan"),
   define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
