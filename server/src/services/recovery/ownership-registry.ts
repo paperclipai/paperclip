@@ -42,6 +42,7 @@ import {
 import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
+import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -593,12 +594,18 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     },
   },
   runLeaseKind(),
-  leaseKind("environment_teardown_claim", "Teardown claim (in-flight cleanup)", "ownership",
-    and(eq(environmentLeases.status, "pending_cleanup"), sql`(${environmentLeases.metadata}->>'pendingCleanupInFlight')::boolean is true`),
-    teardownClaimOwner),
+  {
+    // Shared path since Phase 2: a claimant proven gone ends its fence now.
+    ...leaseKind("environment_teardown_claim", "Teardown claim (in-flight cleanup)", "ownership",
+      // Text compare: a malformed flag never makes the whole listing fail.
+      and(eq(environmentLeases.status, "pending_cleanup"),
+        sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'true'`),
+      teardownClaimOwner),
+    settle: settleEnvironmentTeardownClaim,
+  },
   leaseKind("environment_pending_cleanup", "Pending-cleanup obligation (not in flight)", "ownership",
     and(eq(environmentLeases.status, "pending_cleanup"),
-      sql`coalesce((${environmentLeases.metadata}->>'pendingCleanupInFlight')::boolean, false) is false`),
+      sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`),
     () => ({ kind: "none" }), [1, 2, 7]),
   leaseKind("environment_stop_and_retain_intent", "Stop-and-retain intent", "workspace_preservation",
     and(eq(environmentLeases.status, "pending_cleanup"), sql`${environmentLeases.metadata} ? 'sandboxStopAndRetain'`),

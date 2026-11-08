@@ -4,6 +4,45 @@ import { hasDeferredEnvironmentCleanup } from "./environment-cleanup-notificatio
 
 export const ENVIRONMENT_CLEANUP_RETRY_MS = 5 * 60_000;
 
+// Escalate and slow cleanup after this many attempts; never abandon a live lease.
+export const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
+
+// The reaper stores its retry attempt count under this key in the lease metadata.
+export const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
+
+// Read the stored retry attempt count as a safe value, directly in SQL. A
+// provider can write a malformed value under the attempts key. The type guard
+// makes any non-number value read as zero. The reader computes as numeric and
+// never casts to int, so a finite number outside the 32-bit range (for example
+// 1e300) never throws. The reader clamps a negative value to zero and a positive
+// value to the attempt cap. One malformed lease therefore never aborts the page
+// sweep. This matches the TypeScript reader `readPendingCleanupRetryAttempts`,
+// which clamps to the same range. The claim predicate compares the two readers,
+// so both must yield the same value for every input.
+export function pendingCleanupAttemptsSql() {
+  return sql`
+    case
+      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}) = 'number'
+        then least(
+          greatest(
+            floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric),
+            0
+          ),
+          ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}
+        )
+      else 0
+    end`;
+}
+
+// Choose the `jsonb_set` target root. A provider can write a scalar or array
+// metadata root. `jsonb_set` fails on a non-object root, so the reader uses the
+// stored metadata only when its root is an object. A NULL, scalar, or array root
+// reads as an empty object. `jsonb_typeof(NULL)` is NULL, so the else branch also
+// covers a NULL root.
+export function pendingCleanupMetadataObjectSql() {
+  return sql`case when jsonb_typeof(${environmentLeases.metadata}) = 'object' then ${environmentLeases.metadata} else '{}'::jsonb end`;
+}
+
 export function recoverableSandboxCreationCondition() {
   return or(eq(sandboxCreationOperations.state, "pending"), and(
     eq(sandboxCreationOperations.state, "needs_reconciliation"),
