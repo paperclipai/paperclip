@@ -41,6 +41,17 @@ describe("unseenReturnedToolCalls", () => {
   });
 });
 
+it("forgets calls of a provider turn lost on restore once a new turn starts (restart chaos K2 t110)", () => {
+  const commands = [{ type: "semantic_tool.result", payload: { callId: "lost", operationId: "read_agent_instructions" } }];
+  const finish = started("f", "paperclip_finish");
+  const events = [
+    event("turn.started", {}), started("lost", "read_agent_instructions"),
+    event("turn.failed", { error: { code: "provider_turn_lost_on_restore" } }),
+    event("turn.started", {}), started("r", "read_document"), result("r"), completed("r", "read_document"), finish,
+  ];
+  expect(unseenReturnedToolCalls(events, commands, { terminalSourceEventId: finish.sourceEventId, turnId: "turn-1" })).toEqual([]);
+});
+
 it("counts the controller's semantic_tool.result command as the returned result", () => {
   const block = started("b", "paperclip_block");
   const commands = [{ type: "semantic_tool.result", payload: { callId: "w", operationId: "write_document" } }];
