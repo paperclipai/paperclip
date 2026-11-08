@@ -160,6 +160,12 @@ Assigned skill snapshots use Windows write-deny ACLs, applied with the built-in
 System32 whoami and icacls tools. A failed ACL operation refuses publication;
 cleanup removes the snapshot's deny rules before deleting the owned tree.
 
+Embedded PostgreSQL on Windows stops through its matching `pg_ctl.exe` with a
+bounded fast shutdown. The recorded postmaster PID must match the owned process
+before shutdown. This lets PostgreSQL flush and retire its workers before a
+development preflight or restart releases the port. An ownership mismatch or
+failed shutdown is reported instead of forcing termination of a process tree.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns every managed pnpm lockfile:
