@@ -34,6 +34,7 @@ export function UserDelegateControl({ companyId }: { companyId: string | null | 
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const agentsView = useQueryView(agentsQuery);
   const selectableAgents = useMemo(
     () => (agentsQuery.data ?? []).filter(isAgentTaskTarget),
     [agentsQuery.data],
@@ -104,10 +105,14 @@ export function UserDelegateControl({ companyId }: { companyId: string | null | 
             <option key={agent.id} value={agent.id}>{agent.name}</option>
           ))}
         </NativeSelect>
-        {agentsQuery.isError ? (
-          <p className="text-sm text-destructive" role="alert">
-            {describeError(agentsQuery.error, { action: "load agents" }).body} You can still turn your delegate off.
-          </p>
+        {agentsView.kind === "error" ? (
+          <QueryErrorState
+            size="inline"
+            error={agentsView.error}
+            action="load agents; you can still turn your delegate off"
+            onRetry={agentsView.retry}
+            retrying={agentsView.isFetching}
+          />
         ) : null}
       </div>
 
