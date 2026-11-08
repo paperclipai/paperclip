@@ -25,6 +25,7 @@ import {
   invites,
   issueApprovals,
   issueAttachments,
+  issueComments,
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
@@ -244,6 +245,49 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it.each(["list", "summary", "taskIndex", "taskQuestions"] as const)("excludes unresolvable closed-task interactions from %s while retaining historical questions", async (reader) => {
+    const { companyId, workerId } = await seedCompany("CLS");
+    const expected: string[] = [];
+    const expectedIssueIds: string[] = [];
+    const issueIds: string[] = [];
+    for (const [index, status] of ["cancelled", "done", "in_progress"].entries()) {
+      const issueId = await insertIssue({ companyId, identifier: `CLS-${index + 1}`, title: status, status, assigneeAgentId: workerId });
+      issueIds.push(issueId);
+      for (const historical of [false, true]) {
+        const id = randomUUID();
+        await db.insert(issueThreadInteractions).values({
+          id, companyId, issueId, kind: "ask_user_questions", status: "pending",
+          createdByAgentId: workerId, payload: { version: 1, questions: [] },
+          createdAt: new Date(historical ? "2026-01-01" : "2026-01-03"),
+        });
+        if (status === "in_progress" || (status === "done" && historical)) {
+          expected.push(id);
+          expectedIssueIds.push(issueId);
+        }
+      }
+      await db.insert(issueComments).values({ companyId, issueId, authorUserId: "board-user", body: "Continue", createdAt: new Date("2026-01-02") });
+      await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", status: "pending",
+        createdByAgentId: workerId, payload: { version: 1, prompt: "Confirm?" },
+        ...(status === "in_progress" ? { status: "accepted" } : {}),
+      });
+    }
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId] };
+    const options = { userId: actor.userId, actor };
+    const service = attentionService(db);
+    if (reader === "taskQuestions") {
+      const items = await service.taskQuestions(companyId, issueIds, options);
+      expect(items.map(item => item.subject.id).sort()).toEqual(expected.sort());
+    } else if (reader === "list") {
+      const feed = await service.list(companyId, options);
+      expect(feed.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual(expected.sort());
+    } else {
+      const result = await service[reader](companyId, options);
+      expect(result.countsBySourceKind.issue_thread_interaction).toBe(expected.length);
+      if ("taskIds" in result) expect(result.taskIds.sort()).toEqual([...new Set(expectedIssueIds)].sort());
+    }
   });
 
   it("includes existing pending chat questions and confirmations, then retains answered questions in history", async () => {
