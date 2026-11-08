@@ -363,6 +363,61 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(triggered.monitorNextCheckAt).toBeNull();
   });
 
+  it("tells the task once when check-ins, agent comments and closed blockers wait on a held task", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
+      runtimeMode: "legacy", status: "interrupted", errorCode: "process_lost",
+      finishedAt: new Date(), contextSnapshot: { issueId } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId,
+      evidence: { runId: sourceRunId }, nextAction: "Inspect the interrupted execution before continuing." }).returning();
+    const heartbeat = heartbeatService(db);
+    const notices = () => db.select().from(issueComments).where(eq(issueComments.issueId, issueId))
+      .then(rows => rows.filter(row => row.authorType === "system"));
+
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect((await heartbeat.tickTimers(tickAt)).enqueued).toBe(0);
+    const [first] = await notices();
+    expect(first?.body).toContain("A scheduled check-in on this task did not start a run.");
+    expect(first?.body).toContain("only a person can continue it");
+    expect(first?.body).toContain("Inspect the interrupted execution before continuing.");
+    expect(first?.metadata?.sections?.[0]?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "Recovery action", value: hold!.id }),
+      expect.objectContaining({ label: "Input", value: "check_in" }),
+    ]));
+
+    // Later input during the same hold is deferred without another notice.
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
+    const [agentComment] = await db.insert(issueComments).values({ companyId, issueId,
+      authorType: "agent", authorAgentId: agentId, body: "Status from another agent" }).returning();
+    expect(await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented",
+      requestedByActorType: "agent", requestedByActorId: agentId,
+      contextSnapshot: { issueId, wakeReason: "issue_commented", commentId: agentComment!.id, wakeCommentId: agentComment!.id } })).toBeNull();
+    expect(await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_blockers_resolved",
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" } })).toBeNull();
+    expect(await notices()).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+  });
+
+  it("names a closed blocker when it is the first input held on the task", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
+      runtimeMode: "legacy", status: "interrupted", errorCode: "process_lost",
+      finishedAt: new Date(), contextSnapshot: { issueId } });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId,
+      evidence: { runId: sourceRunId }, nextAction: "Inspect the interrupted execution before continuing." });
+    expect(await heartbeatService(db).wakeup(agentId, { source: "automation", reason: "issue_blockers_resolved",
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" } })).toBeNull();
+    const notices = (await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
+      .filter(row => row.authorType === "system");
+    expect(notices.map(row => row.body)).toEqual([expect.stringContaining("A blocker of this task closed, but that did not start a run.")]);
+  });
+
   it("recovers a rejected native monitor call and delivers the corrected schedule once", async () => {
     const { companyId, issueId, agentId } = await seedFixture();
     const runId = randomUUID();

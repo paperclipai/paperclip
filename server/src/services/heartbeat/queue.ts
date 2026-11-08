@@ -188,6 +188,7 @@ import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
 import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
+import { recordHeldTaskInputNotice } from "../held-task-input-notice.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
@@ -3499,6 +3500,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 requestId: executionWaitRequestId }, condition, { replace: true });
               return { kind: "deferred" as const, admitted: true };
             }
+            await recordHeldTaskInputNotice(tx as unknown as Db, {
+              companyId: issue.companyId, issueId: issue.id,
+              recoveryActionId: executionBlocker.recoveryActionId, nextAction: executionBlocker.nextAction,
+              requestedByActorType: opts.requestedByActorType, reason,
+              contextSource: enrichedContextSnapshot.source, wakeCommentId,
+            });
             if (durableRequest || wakeCommentId ||
                 hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
                 readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {

@@ -439,9 +439,18 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         await notifyNativeWorkspaceFinalization(tx, input);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
         await notifyNativeStatusReassessment(tx, input);
-        await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
-          heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
-          metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } });
+        // Scope the finalize to each preserved workspace. A done blocker's
+        // dependents wait for a successful finalize in that workspace, so an
+        // unscoped row would keep them blocked although the work was saved.
+        const preservedWorkspaceIds = next.preservationOperationIds.length === 0 ? [] : [...new Set((await tx
+          .select({ id: workspaceOperations.executionWorkspaceId }).from(workspaceOperations)
+          .where(and(eq(workspaceOperations.companyId, input.companyId),
+            inArray(workspaceOperations.id, next.preservationOperationIds))))
+          .flatMap(row => row.id ? [row.id] : []))];
+        await tx.insert(workspaceOperations).values((preservedWorkspaceIds.length > 0 ? preservedWorkspaceIds : [null])
+          .map(executionWorkspaceId => ({ companyId: input.companyId, issueId: input.issueId, executionWorkspaceId,
+            heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
+            metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } })));
         if (!await updateSystemRecovery(tx as unknown as Db, input, current!, next))
           throw new Error("workspace_recovery_generation_changed");
         if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))

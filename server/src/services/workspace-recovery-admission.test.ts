@@ -6,7 +6,7 @@ import { recoveryService } from "./recovery/index.js";
 import { inspectWorkspaceSource } from "./workspace-source-inspection.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { heartbeatRunEvents, agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, plugins } from "@paperclipai/db";
+import { heartbeatRunEvents, agents, approvals, issueRelations, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, plugins } from "@paperclipai/db";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { recordRequiredWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
@@ -25,6 +25,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectTaskInterruption, taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
@@ -55,7 +56,7 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, reserveRemoteWork
 import { getExecutionBlocker, hasPendingRunCleanup } from "./execution-blocker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import * as workerProof from "./native-runtime/native-workspace-platform-proof.js";
-import { useWorkspaceRecoveryFixture, action, connectionString, db, makeRetryDue, replaceFixtureState, root, run, seed } from "./__tests__/workspace-recovery-fixture.js";
+import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, connectionString, db, makeRetryDue, replaceFixtureState, root, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
@@ -79,6 +80,27 @@ describe("automatic retained workspace recovery", () => {
     expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
     expect(observed.length).toBeGreaterThan(0);
     expect((await Promise.all(observed)).some(rows => rows.some(row => row.status === "succeeded"))).toBe(true);
+  });
+
+  it("scopes the recovery finalize to the preserved workspace so a done blocker releases its dependents", async () => {
+    const f = await acceptedRemoteExport();
+    const { workspaceId } = f, dependentId = randomUUID();
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await db.select({ workspaceId: workspaceOperations.executionWorkspaceId }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
+      eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->>'owningService' = 'workspace_recovery'`,
+    ))).toEqual([{ workspaceId }]);
+
+    // A person closes the held task. Its dependent must not keep counting it
+    // as open while it waits for a finalize that no run will write.
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await db.insert(issues).values({ id: dependentId, companyId: f.companyId, status: "blocked", title: "Dependent work" });
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.issueId, relatedIssueId: dependentId, type: "blocks" });
+    const readiness = (await issueService(db).listDependencyReadiness(f.companyId, [dependentId])).get(dependentId);
+    expect(readiness?.pendingFinalizeBlockerIssueIds).toEqual([]);
+    expect(readiness?.unresolvedBlockerIssueIds).toEqual([]);
   });
 
   it.each(["retain_on_failure", "reuse_by_environment", "reuse_by_execution_workspace"] as const)("re-enters only the accepted result finalizer for %s, preserving files and failure history", async leasePolicy => {
