@@ -149,6 +149,10 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     const credentialVersions = await readCredentialVersions();
     // A configuration that already passed in this runner image is verified:
     // a restart or a return to verifying never boots another test sandbox.
+    // A local probe without a managed AI connection can use the host's own
+    // credentials (environment variables, a CLI login) that no saved
+    // configuration names, so such a pass is never reused.
+    if (runner?.kind === "local" && !binding) runner = null;
     const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(credentialVersions), environmentId, runner });
     if (digest && agent.harnessVerifiedDigest === digest) return "complete";
     const target = providerApi

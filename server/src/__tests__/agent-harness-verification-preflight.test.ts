@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, environments, plugins } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
+import * as serverAdapters from "../adapters/index.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { secretService } from "../services/secrets.js";
@@ -247,6 +248,16 @@ describePostgres("saved harness account preflight", () => {
       return passed;
     });
     await expect(verify()).resolves.toBe("complete");
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
+  });
+
+  it("never reuses a local probe that may use the host's own credentials", async () => {
+    const localProbe = vi.fn().mockResolvedValue(passed);
+    vi.spyOn(serverAdapters, "requireServerAdapter").mockReturnValue({ testEnvironment: localProbe } as never);
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agent.id));
+    await expect(verify()).resolves.toBe("complete");
+    await expect(verify()).resolves.toBe("complete");
+    expect(localProbe).toHaveBeenCalledTimes(2);
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
   });
 
