@@ -69,12 +69,13 @@ describe.skipIf(!support.supported)("spawn process identity persistence", () => 
       expect(outcome).not.toHaveProperty("error");
       const run = (outcome as { run: typeof heartbeatRuns.$inferSelect | null }).run;
       expect(run).toMatchObject({ id: runId, processPid: pid, processHostHash: "remote" });
-      const events = await db.select().from(heartbeatRunEvents).where(and(
+      // The cases share one run; select this write's event by its reserved sequence.
+      const [event] = await db.select().from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.runId, runId),
-        eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED),
+        eq(heartbeatRunEvents.seq, Number(run!.nextEventSeq) - 1),
       ));
-      expect(events.at(-1)?.payload).toMatchObject({ processPid: pid, targetKind: "remote" });
-      expect(events.at(-1)?.seq).toBe(Number(run!.nextEventSeq) - 1);
+      expect(event).toMatchObject({ eventType: PROCESS_IDENTITY_RECORDED });
+      expect(event?.payload).toMatchObject({ processPid: pid, targetKind: "remote" });
     } finally {
       release();
       await holder;
