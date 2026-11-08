@@ -122,6 +122,24 @@ fn acquire_provider_lifetime_fence(
     })
 }
 
+fn turn_start_request(payload: &Value) -> Result<(&str, String), DurableRunnerError> {
+    let text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
+    let provider_turn_id = payload
+        .get("turnId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.turnId is required"))?
+        .to_owned();
+    if !is_stable_id(&provider_turn_id, DURABLE_STABLE_ID_CHARS) {
+        return Err(DurableRunnerError::invalid(
+            "turn.start payload.turnId is invalid",
+        ));
+    }
+    Ok((text, provider_turn_id))
+}
+
 fn await_provider_lifetime_fence(
     candidates: [u16; 3],
 ) -> Result<Vec<TcpListener>, DurableRunnerError> {
@@ -1838,20 +1856,63 @@ impl AcpxCommandExecutor {
     }
 
     fn start_turn(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
-        let text = payload
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
-        let requested_provider_turn_id = payload
-            .get("turnId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.turnId is required"))?;
-        let provider_turn_id = requested_provider_turn_id.to_owned();
-        if !is_stable_id(&provider_turn_id, DURABLE_STABLE_ID_CHARS) {
-            return Err(DurableRunnerError::invalid(
-                "turn.start payload.turnId is invalid",
-            ));
+        turn_start_request(payload)?;
+        let reopenable = self.session.is_none()
+            && self.state.as_ref().is_some_and(|state| {
+                state.identity.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+                    && matches!(
+                        state.lifecycle.as_str(),
+                        "prepared" | "suspended" | "session_open"
+                    )
+            });
+        let reopened = if reopenable {
+            Some(self.open_session()?)
+        } else {
+            None
+        };
+        match self.start_turn_in_open_session(payload) {
+            Ok(mut execution) => {
+                if let Some(opened) = reopened {
+                    let mut events = opened.events;
+                    events.append(&mut execution.events);
+                    execution.events = events;
+                }
+                Ok(execution)
+            }
+            Err(error) => {
+                if let Some(opened) = reopened {
+                    self.retain_reopened_session_events(opened.events)?;
+                }
+                Err(error)
+            }
         }
+    }
+
+    fn retain_reopened_session_events(
+        &mut self,
+        events: Vec<(String, EventPriority, Value)>,
+    ) -> Result<(), DurableRunnerError> {
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider is not prepared"))?;
+        for (event_type, priority, payload) in events {
+            state.push(NormalizedProviderEvent {
+                event_type,
+                priority,
+                payload,
+            })?;
+        }
+        self.save_state()
+    }
+
+    fn start_turn_in_open_session(
+        &mut self,
+        payload: &Value,
+    ) -> Result<CommandExecution, DurableRunnerError> {
+        let (text, provider_turn_id) = turn_start_request(payload)?;
         // Retain the old sidecar's read tail before its MCP receipt epoch changes.
         if self
             .session
