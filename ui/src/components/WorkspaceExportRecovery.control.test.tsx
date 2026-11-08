@@ -516,7 +516,19 @@ describe("governed retained-file recovery", () => {
       await click("Confirm and resume");
       expect(api.confirmOwnerGone).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", recordId: "lease-1",
         stopEvidence: "The old server container was replaced and is not running." });
-      expect(container.textContent).toContain("Releasing the resource…");
+      expect(container.textContent).toContain("Releasing the sandbox lease…");
+    });
+
+    it("names the stuck record for a kind confirmed by record version, and a generic resource otherwise", async () => {
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
+      const ownerGone = (kind: string) => ({ ...action, cause: "ownership_owner_unprovable", ownerType: "board",
+        evidence: { kind, recordId: "run-1", runId: "run-1", recordUpdatedAt: "2026-11-08T10:00:00.000Z" } }) as unknown as IssueRecoveryAction;
+      await mount(ownerGone("legacy_controller_lease"));
+      expect(container.textContent).toContain("This task’s earlier run was recorded before Paperclip stored which server held it");
+      expect(button("Confirm the previous server stopped")).toBeDefined();
+      await mount(ownerGone("a_future_kind"));
+      expect(container.textContent).toContain("A resource from this task’s earlier run was recorded");
     });
 
     it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
