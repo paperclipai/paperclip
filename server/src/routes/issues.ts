@@ -416,6 +416,20 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+/**
+ * A queued comment can only be discarded by its author, and no board, admin or
+ * agent override exists. Say so with the task link, so an agent that tried can
+ * relay the human route at once instead of searching for another endpoint.
+ */
+function queuedCommentAuthorOnlyDenial(issue: { identifier?: string | null }) {
+  const identifier = issue.identifier ?? null;
+  const prefix = identifier && /^[A-Z][A-Z0-9]*-\d+$/.test(identifier) ? identifier.split("-")[0] : null;
+  const where = identifier && prefix ? `[${identifier}](/${prefix}/issues/${identifier})` : "its task";
+  return `Only the author of a queued comment can discard it, from that queued message's menu on ${where}. `
+    + "This denial is final: no board, admin or agent override exists, so do not try other routes. "
+    + `Tell the author to discard it there.`;
+}
+
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
   revision: z.string().min(1),
@@ -17563,6 +17577,11 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(queuedCommentMutationTargetSchema),
     async (req, res) => {
+      if (req.actor.type === "agent") {
+        const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+        if (!issue) return;
+        throw forbidden(queuedCommentAuthorOnlyDenial(issue));
+      }
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
@@ -18852,7 +18871,7 @@ export function issueRoutes(
     if (deleteMode === "cancel" || pendingQueueWake || isLegacyQueuedComment) {
       if (!actorOwnsComment) {
         res.status(403).json({
-          error: "Only the comment author can cancel queued comments",
+          error: queuedCommentAuthorOnlyDenial(issue),
         });
         return;
       }
