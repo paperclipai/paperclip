@@ -9877,7 +9877,8 @@ export function issueRoutes(
       interruption: await taskInterruptionPresentation(db, issue),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
-      ...(stalledDependencies.length > 0 ? { stalledDependencies } : {}),
+      // Always present, so a cleared stall replaces the cached list.
+      stalledDependencies,
       blockedBy: visibleRelations.blockedBy,
       blocks: visibleRelations.blocks,
       relatedWork: visibleReferenceSummary,

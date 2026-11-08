@@ -25,6 +25,7 @@ import { agents, agentWakeupRequests, issueRecoveryActions, issueRelations, issu
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, type IssueBlockerStalledWakeContext, type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
 import { parseHeartbeatPolicy } from "../heartbeat/timer-policy.js";
+import { authorizationService } from "../authorization.js";
 
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
 /** Waiters that may be woken: not finished, and not parked in the backlog by the board. */
@@ -55,6 +56,22 @@ export function issueBlockerStalledWakeKey(input: { waiterIssueId: string; stall
   return [ISSUE_BLOCKER_STALLED_WAKE_REASON, input.waiterIssueId, input.stalledIssueId, input.recoveryActionId].join(":");
 }
 
+/**
+ * Recovery-action rows that keep a company in the recovery-action sweep: open
+ * actions, and a board action resolved as "blocked" on an issue that is still
+ * blocked (a stall with no open action left). Without the second case, an
+ * unassigned stalled blocker with a todo waiter is visited by no sweep.
+ */
+export function recoveryActionSweepCondition() {
+  return or(
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    and(eq(issueRecoveryActions.status, "resolved"), eq(issueRecoveryActions.outcome, "blocked"),
+      eq(issueRecoveryActions.ownerType, "board"),
+      sql`exists (select 1 from ${issues} stalled where stalled.id = ${issueRecoveryActions.sourceIssueId}
+        and stalled.company_id = ${issueRecoveryActions.companyId} and stalled.status = 'blocked')`),
+  )!;
+}
+
 type StallFilter = { companyId?: string | null; issueId?: string | null; issueIds?: readonly string[]; afterActionId?: string | null };
 
 /** The stalled issues matching `filter` and the recovery action each one waits on. */
@@ -65,6 +82,7 @@ async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PA
     kind: issueRecoveryActions.kind, cause: issueRecoveryActions.cause, status: issueRecoveryActions.status,
     ownerType: issueRecoveryActions.ownerType, nextAction: issueRecoveryActions.nextAction,
     issueId: issues.id, identifier: issues.identifier, title: issues.title, issueStatus: issues.status, parentId: issues.parentId,
+    projectId: issues.projectId, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
   }).from(issueRecoveryActions)
     .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
     .where(and(
@@ -90,6 +108,16 @@ async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PA
 }
 
 type StallRow = Awaited<ReturnType<typeof readStalls>>[number];
+
+/** What a waiter's agent may see of a stalled issue it cannot read: that it is stalled, nothing more. */
+function redactedStallContext(stall: StallRow, relation: IssueBlockerStallRelation): IssueBlockerStalledWakeContext {
+  return {
+    stalledIssueId: stall.issueId, stalledIssueIdentifier: null, stalledIssueTitle: "A task you cannot read",
+    stalledIssueStatus: stall.issueStatus, relation,
+    recoveryAction: { id: stall.actionId, kind: "", cause: "", status: stall.status, ownerType: stall.ownerType,
+      nextAction: "Ask the board to act on it; its details are not available to you." },
+  };
+}
 
 function stallContext(stall: StallRow, relation: IssueBlockerStallRelation): IssueBlockerStalledWakeContext {
   return {
@@ -140,6 +168,14 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
     if (stalled.length >= maxStalls) companyCursors.set(cursorKey, stalled.at(-1)!.actionId);
     else companyCursors.delete(cursorKey);
   }
+  const access = authorizationService(db);
+  const agentCanRead = async (agentId: string, onBehalfOfUserId: string | null, stall: StallRow) => (await access.decide({
+    actor: { type: "agent", agentId, companyId: stall.companyId, onBehalfOfUserId },
+    action: "issue:read",
+    resource: { type: "issue", companyId: stall.companyId, issueId: stall.issueId, projectId: stall.projectId,
+      parentIssueId: stall.parentId, assigneeAgentId: stall.assigneeAgentId, assigneeUserId: stall.assigneeUserId,
+      status: stall.issueStatus },
+  })).allowed;
   const agentAcceptsWakes = new Map<string, boolean>();
   const acceptsWakes = async (agentId: string) => {
     if (!agentAcceptsWakes.has(agentId)) {
@@ -153,7 +189,7 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
   for (const stall of stalled) {
     result.stalls += 1;
     const waiters = await db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
-      status: issues.status,
+      status: issues.status, responsibleUserId: issues.responsibleUserId,
       relation: sql<"child" | "blocker">`case when ${issues.id} = ${stall.parentId ?? null} then 'child' else 'blocker' end` })
       .from(issues)
       .where(and(
@@ -182,7 +218,9 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
             gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
       if (existing) { result.alreadyWoken += 1; continue; }
       if (!(await acceptsWakes(waiter.assigneeAgentId!))) { result.deferred += 1; continue; }
-      const context = stallContext(stall, waiter.relation);
+      // A private stalled issue's details never reach an agent that cannot read it.
+      const readable = await agentCanRead(waiter.assigneeAgentId!, waiter.responsibleUserId, stall);
+      const context = readable ? stallContext(stall, waiter.relation) : redactedStallContext(stall, waiter.relation);
       try {
         const wake = await enqueueWakeup(waiter.assigneeAgentId!, {
           source: "automation", triggerDetail: "system", reason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
@@ -202,8 +240,9 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           companyId: stall.companyId, actorType: "system", actorId: "issue-blocker-stall",
           action: "issue.blocker_stalled_wake", entityType: "issue", entityId: waiter.id,
           agentId: waiter.assigneeAgentId, issueId: waiter.id,
-          details: { stalledIssueId: stall.issueId, stalledIssueIdentifier: stall.identifier, relation: waiter.relation,
-            recoveryActionId: stall.actionId, recoveryActionKind: stall.kind, recoveryActionStatus: stall.status },
+          details: { stalledIssueId: stall.issueId, stalledIssueIdentifier: readable ? stall.identifier : null,
+            relation: waiter.relation, recoveryActionId: stall.actionId,
+            recoveryActionKind: readable ? stall.kind : null, recoveryActionStatus: stall.status, detailsWithheld: !readable },
         });
         result.woken += 1;
       } catch {

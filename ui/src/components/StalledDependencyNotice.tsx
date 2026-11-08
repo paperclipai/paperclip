@@ -37,7 +37,7 @@ export function StalledDependencyNotice({ stalled }: { stalled: IssueBlockerStal
 function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext }) {
   const ref = entry.stalledIssueIdentifier ?? entry.stalledIssueId;
   // The child's own task state decides whether Retry is offered, as on its page.
-  const { data: child } = useQuery({
+  const { data: child, error: readError, refetch, isFetching } = useQuery({
     queryKey: queryKeys.issues.detail(ref),
     queryFn: () => issuesApi.get(ref),
   });
@@ -57,6 +57,14 @@ function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext
       <span className="min-w-0 flex-1 truncate">{entry.stalledIssueTitle}</span>
       {entry.recoveryAction.nextAction ? (
         <span className="basis-full text-xs text-amber-800 dark:text-amber-200">{entry.recoveryAction.nextAction}</span>
+      ) : null}
+      {readError && !child ? (
+        <span role="alert" className="flex basis-full items-center gap-2 text-xs text-destructive">
+          Could not load this task's state: {describeError(readError).body}
+          <Button size="sm" variant="outline" className="h-6 px-2" disabled={isFetching} onClick={() => void refetch()}>
+            Reload
+          </Button>
+        </span>
       ) : null}
       {failed ? (
         <span role="alert" className="basis-full text-xs text-destructive">{describeError(retry.error).body}</span>

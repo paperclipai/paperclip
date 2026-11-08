@@ -5,6 +5,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
 import type { IssueRecoveryScope } from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
 
 type Entry = { id: string; companyId: string; dueAt: number };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
@@ -74,7 +75,7 @@ export function registerIssueRecoveryWork(
         const cursor = cursors.get(key);
         const rows = kind === "actions"
           ? await db.selectDistinct({ id: issueRecoveryActions.companyId, companyId: issueRecoveryActions.companyId })
-            .from(issueRecoveryActions).where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            .from(issueRecoveryActions).where(and(recoveryActionSweepCondition(),
               scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
               cursor ? gt(issueRecoveryActions.companyId, cursor) : undefined))
             .orderBy(asc(issueRecoveryActions.companyId)).limit(PAGE_SIZE)

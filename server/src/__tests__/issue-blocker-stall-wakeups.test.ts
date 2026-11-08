@@ -6,7 +6,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON } from "@paperclipai/shared";
 import { recoveryService } from "../services/recovery/service.js";
-import { issueBlockerStalledWakeKey, listStalledDependencies, wakeWaitersOfStalledIssues } from "../services/recovery/blocker-stall-wakeups.js";
+import { issueBlockerStalledWakeKey, listStalledDependencies, recoveryActionSweepCondition, wakeWaitersOfStalledIssues } from "../services/recovery/blocker-stall-wakeups.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
@@ -207,6 +207,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 1 });
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 1 });
     expect(new Set(calls.map(call => call.input.contextSnapshot.blockerStall.stalledIssueId))).toEqual(new Set([f.child.id, second.id]));
+  });
+
+  it("delivers one wake when two sweeps race for the same stall", async () => {
+    const f = await fixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const results = await Promise.all([
+      wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId }),
+      wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: f.child.id }),
+    ]);
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, ISSUE_BLOCKER_STALLED_WAKE_REASON));
+    expect(rows).toHaveLength(1);
+    expect(results.reduce((total, result) => total + result.woken, 0)).toBe(1);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps a company with only a resolved-as-blocked stall in the recovery-action sweep", async () => {
+    const f = await fixture();
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked", resolvedAt: new Date() })
+      .where(eq(issueRecoveryActions.id, f.action.id));
+    const selected = async () => (await db.selectDistinct({ companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions)
+      .where(recoveryActionSweepCondition())).map(row => row.companyId);
+    expect(await selected()).toContain(f.companyId);
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.child.id));
+    expect(await selected()).not.toContain(f.companyId);
+  });
+
+  it("withholds a private stalled issue's details from a waiter agent that cannot read it", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ visibility: "private", title: "Secret acquisition" }).where(eq(issues.id, f.child.id));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    const stall = calls[0]!.input.contextSnapshot.blockerStall;
+    expect(JSON.stringify(stall)).not.toContain("Secret acquisition");
+    expect(JSON.stringify(stall)).not.toContain("execution_recovery_budget_exhausted");
+    expect(stall).toMatchObject({ stalledIssueId: f.child.id, stalledIssueIdentifier: null });
+    const [activity] = await db.select().from(activityLog).where(eq(activityLog.action, "issue.blocker_stalled_wake"));
+    expect(activity.details).toMatchObject({ detailsWithheld: true, stalledIssueIdentifier: null });
   });
 
   it("ignores an action resolved any other way", async () => {

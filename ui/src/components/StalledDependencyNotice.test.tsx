@@ -108,6 +108,17 @@ describe("StalledDependencyNotice", () => {
     expect(node.querySelector<HTMLButtonElement>("button[aria-label='Retry CHA-8']")?.disabled).toBe(false);
   });
 
+  it("says when the child's state cannot be read and offers a reload", async () => {
+    getIssue.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ id: "child-1", identifier: "CHA-8",
+      interruption: { canRetry: true, observedRunId: "run-1" } });
+    const node = await render([stall()]);
+    const alert = await waitFor(() => node.querySelector("[role='alert']"));
+    expect(alert?.textContent).toContain("Could not load this task's state");
+    const reload = [...node.querySelectorAll("button")].find(button => button.textContent === "Reload")!;
+    await act(async () => { reload.click(); });
+    expect(await waitFor(() => node.querySelector("button[aria-label='Retry CHA-8']"))).not.toBeNull();
+  });
+
   it("omits Retry when the child's task state does not offer it", async () => {
     getIssue.mockResolvedValue({ id: "child-1", identifier: "CHA-8", interruption: { canRetry: false } });
     const node = await render([stall({ relation: "blocker" })]);
