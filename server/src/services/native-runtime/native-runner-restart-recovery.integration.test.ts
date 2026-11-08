@@ -2678,6 +2678,49 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
   });
 
+  /** Daytona wave s9301: the relaunched remote runner exited before run.prepare. */
+  async function seedExitedRemoteRunner(label: string, failure: Record<string, unknown> = {}, attempt = 2) {
+    const fixture = await seedUnlaunchedRemoteClaim(label, { bootstrapRetry: true, attempt,
+      event: { eventType: "native.process_start_requested" }, run: { processPid: 955, processStartedAt: new Date(Date.now() - 30_000) } });
+    await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 901, stream: "system",
+      level: "info", eventType: "native.process_identity_recorded" });
+    await fixture.db.update(nativeRunFinalizations).set({ failureCode: "native_runner_process_exited",
+      failureDetail: { message: "runnerd exited while waiting for run.prepare", recoverable: true, recoveryMode: "bootstrap_retry",
+        checkpointExists: false, providerEventsExist: false, providerSessionEstablished: false,
+        originalFailureCode: "native_runner_process_exited", ...failure } })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await fixture.db.update(heartbeatRuns).set({ errorCode: "native_runner_process_exited" }).where(eq(heartbeatRuns.id, fixture.runId));
+    return fixture;
+  }
+
+  it("bootstraps again when the relaunched remote runner exited before any provider work", async () => {
+    // The runner's own exit, observed and recorded by the controller with no
+    // provider session, events or checkpoint, proves the remote runner gone.
+    const fixture = await seedExitedRemoteRunner("EXITED-RUNNER");
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", recoveryState: "bootstrap_incomplete", failureCode: null });
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_exited_before_provider_work" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null });
+  });
+
+  it.each<[string, Record<string, unknown>, number, string]>([
+    ["the failure was not a runner exit", { originalFailureCode: "local_runtime_api_listener_unavailable" }, 2, "ambiguous_remote_recovery_evidence"],
+    ["the provider session was established", { providerSessionEstablished: true }, 2, "ambiguous_remote_recovery_evidence"],
+    ["provider events exist", { providerEventsExist: true }, 2, "ambiguous_remote_recovery_evidence"],
+    ["a checkpoint exists", { checkpointExists: true }, 2, "ambiguous_remote_recovery_evidence"],
+    ["the bootstrap budget is spent", {}, 3, "execution_recovery_budget_exhausted"],
+  ])("keeps an exited remote runner's retry held when %s", async (label, failure, attempt, reason) => {
+    const fixture = await seedExitedRemoteRunner(`EXITED-${label.replace(/\W+/g, "-")}`, failure, attempt);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: fixture.runId, reason })]);
+  });
+
   it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([
     ["a runner process start was requested", { bootstrapRetry: true, event: { eventType: "native.process_start_requested" } },
       { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
