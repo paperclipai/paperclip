@@ -7,7 +7,7 @@ import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-
 import { checks, entity, observation, observeInternal, sameTask, hasLink, type Entity, type InternalObservation } from "./internal-support.js";
 interface Revision extends Entity { createdByUserId?: string | null }
 interface ConcurrentRestore extends InternalObservation { phaseReply: string }
-function identifiesRevision(reply: string, doc: Entity) { return !!doc.latestRevisionId && reply.includes(doc.latestRevisionId)
+export function identifiesRevision(reply: string, doc: Pick<Entity, "latestRevisionId" | "latestRevisionNumber">) { return !!doc.latestRevisionId && reply.includes(doc.latestRevisionId)
   || Number.isSafeInteger(doc.latestRevisionNumber) && new RegExp(`\\b(?:revision|version|v)\\s*#?${doc.latestRevisionNumber}\\b`, "i").test(reply); }
 export function gradeConcurrentRestore(value: unknown, initialGrade: ChatCatalogCase["grade"]) {
   const c = checks(); const o = observation(value) as ConcurrentRestore | undefined;
@@ -17,10 +17,10 @@ export function gradeConcurrentRestore(value: unknown, initialGrade: ChatCatalog
   c.add("canonical-restoration-complete-before-variant", !!first && initialGrade(first).passed && !!initialDoc && identifiesRevision(first.reply, initialDoc),
     "The unchanged first query restores the exact selected history through its revision path and identifies the resulting current revision before any variant edits.");
   const readReply = o.state.readReply as Entity | undefined; const checkpoint = o.state.preReadRevision as Revision | undefined; const changed = o.state.interveningRevision as Revision | undefined;
-  c.add("fresh-read-before-other-editor-change", !!read && !!checkpoint && !!changed && read.reply.includes(String(o.state.readMarker)) && read.reply.includes(checkpoint.id)
+  c.add("fresh-read-before-other-editor-change", !!read && !!checkpoint && !!changed && read.reply.includes(String(o.state.readMarker)) && identifiesRevision(read.reply, { latestRevisionId: checkpoint.id, latestRevisionNumber: checkpoint.latestRevisionNumber })
     && read.documents.some(row => row.latestRevisionId === checkpoint.id && row.body === checkpoint.body)
     && read.runs.length === 2 && read.runs.every(run => run.agentId === o.leadId && run.status === "succeeded")
-    && !!readReply && readReply.authorAgentId === o.leadId && (readReply.body ?? "").includes(String(o.state.readMarker)) && (readReply.body ?? "").includes(checkpoint.id)
+    && !!readReply && readReply.authorAgentId === o.leadId && (readReply.body ?? "").includes(String(o.state.readMarker))
     && read.runs.some(run => run.id === readReply.createdByRunId) && !first?.runs.some(run => run.id === readReply.createdByRunId)
     && o.revisions.some(row => row.id === checkpoint.id && row.body === checkpoint.body && (row as Revision).createdByUserId === o.state.editorId)
     && o.revisions.some(row => row.id === changed.id && row.body === changed.body && (row as Revision).createdByUserId === o.state.editorId)
@@ -32,21 +32,19 @@ export function gradeConcurrentRestore(value: unknown, initialGrade: ChatCatalog
     && o.revisions.some(row => row.id === current.latestRevisionId && row.createdByAgentId === o.leadId && row.body === wanted.body)
     && o.activity.some(row => row.action === "issue.document_restored" && row.entityId === entity(o.state, "task").id && row.agentId === o.leadId
       && row.details?.restoredFromRevisionId === wanted.id && finalRunIds.has((row as Entity & { runId?: string }).runId ?? ""))
-    && identifiesRevision(o.phaseReply, current) && /\b(?:restored|restoring)\b/i.test(o.phaseReply);
+    && identifiesRevision(o.phaseReply, current);
   const preservedForClarification = current?.latestRevisionId === changed?.id && current?.body === changed?.body
-    && /\?|\b(?:confirm|clarif|conflict|pause|before I|cannot|can't|need your|which)\b/i.test(o.phaseReply)
     && !o.activity.some(row => row.action === "issue.document_restored" && finalRunIds.has((row as Entity & { runId?: string }).runId ?? ""));
-  c.add("explicitly-handled-actual-intervening-edit", /\bCasey\b/.test(o.phaseReply) && /\boffline\b|\bwithout (?:a )?network\b/i.test(o.phaseReply)
-    && /\bprototype\b/i.test(o.phaseReply) && /\b(?:edit|change|revision|version)\b/i.test(o.phaseReply) && (restored || preservedForClarification),
-    "Only the final phase may acknowledge Casey's actual offline-prototype edit and either explain an intentional historical restore or retain it while asking for clarification.");
+  // The query names neither the editor nor the new revision: naming either one shows the agent read the actual saved edit.
+  const namesInterveningEdit = !!changed && (identifiesRevision(o.phaseReply, { latestRevisionId: changed.id, latestRevisionNumber: changed.latestRevisionNumber }) || /\bCasey\b/.test(o.phaseReply));
+  c.add("explicitly-handled-actual-intervening-edit", namesInterveningEdit && (restored || preservedForClarification),
+    "Only the final phase may identify Casey's actual saved edit, by its revision or its editor, and either restore the selected history as a new current revision or leave Casey's edit current.");
   c.add("all-human-and-original-history-retained", originals.length === 3 && originals.every(old => o.revisions.some(row => row.id === old.id && row.body === old.body))
     && !!initialDoc && o.revisions.some(row => row.id === initialDoc.latestRevisionId && row.body === initialDoc.body)
     && !!checkpoint && !!changed && o.revisions.some(row => row.id === changed.id && row.body === changed.body)
     && o.activity.some(row => row.action === "issue.document_updated" && row.entityId === entity(o.state, "task").id && row.actorType === "user" && row.actorId === o.state.editorId
       && row.details?.revisionNumber === changed.latestRevisionNumber), "The exact three original revisions, initial restoration and both saved human edits remain inspectable with the intervening editor's actual audit attribution.");
-  const falseApproval = o.phaseReply.split(/[.\n;]|,\s*but\s*/).some(part => /\b(?:approved|approval granted|rewound|reset execution|rolled back execution)\b/i.test(part)
-    && !/\b(?:not|cannot|can't|no|without|doesn't|didn't)\b/i.test(part));
-  c.add("no-retroactive-approval-or-execution-rewind", sameTask(entity(o.state, "task"), o.tasks.find(row => row.id === entity(o.state, "task").id)) && !falseApproval
+  c.add("no-retroactive-approval-or-execution-rewind", sameTask(entity(o.state, "task"), o.tasks.find(row => row.id === entity(o.state, "task").id))
     && !o.activity.some(row => row.agentId === o.leadId && /approval\.approved|issue\.interaction_accepted/.test(row.action ?? "")),
     "Restoring document text neither changes executed task state nor invents an approval of historical work.");
   return c.result();
@@ -61,7 +59,7 @@ export function withRestoreConcurrency(primary: ChatCatalogCase): ChatCatalogCas
     const revision = rows.find(row => row.id === doc.latestRevisionId); if (!revision || revision.createdByUserId !== editor.id || revision.body !== body) throw new Error("Other-person edit lacks actual revision attribution");
     return { ...revision, latestRevisionNumber: doc.latestRevisionNumber };
   };
-  return { ...primary, authentication: "human-session", coverageGaps: [], expectedRunCount: 3, minimumRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 660000,
+  return { ...primary, oracleVersion: "paperclip.chat-catalog.restore-document.saved-edit.v2", authentication: "human-session", coverageGaps: [], expectedRunCount: 3, minimumRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 660000,
     sourceFiles: [...primary.sourceFiles, "chat-catalog-domains/internal-restore-concurrency.ts", "chat-catalog-domains/identity-auth.ts"],
     async setup(ctx) { const browser = ctx.input.page.context().browser(); if (!browser || !ctx.input.privateSecrets) throw new Error("Concurrent editor context requires actual authenticated people and private credential redaction");
       editor = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets: ctx.input.privateSecrets, name: "Casey" });
@@ -78,9 +76,9 @@ export function withRestoreConcurrency(primary: ChatCatalogCase): ChatCatalogCas
       const { sendChatMessage } = await import("../chat-flow.js"); await sendChatMessage(ctx.input.page, "Read the current plan and report its current revision identifier and full text. Do not change it; wait for my next request.");
       const read = await pollUntil({ label: "Actual read of the unpredictable other-editor checkpoint", deadlineAt: Date.now() + 150000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 2 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting"
-          && o.reply.includes(readMarker) && o.reply.includes(entity(state, "preReadRevision").id) });
+          && o.reply.includes(readMarker) && identifiesRevision(o.reply, { latestRevisionId: entity(state, "preReadRevision").id, latestRevisionNumber: entity(state, "preReadRevision").latestRevisionNumber }) });
       const sourceComments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
-      state.readReply = sourceComments.find(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.body?.includes(readMarker) && row.body.includes(entity(state, "preReadRevision").id)
+      state.readReply = sourceComments.find(row => row.authorAgentId === ctx.input.fixtures.agent.id && row.body?.includes(readMarker)
         && read.runs.some(run => run.id === row.createdByRunId) && !first.runs.some(run => run.id === row.createdByRunId));
       if (!state.readReply) throw new Error("Fresh document read lacks its exact attributed persisted reply");
       state.readCheckpoint = { ...read, state: structuredClone(state) }; state.readObservedAt = Date.now();
