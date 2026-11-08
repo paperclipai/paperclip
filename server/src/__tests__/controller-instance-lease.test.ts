@@ -162,6 +162,24 @@ suite("controller instance lease: a replaced container's records are provable", 
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps renewing while this boot runs a legacy run", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere();
+      vi.setSystemTime(Date.now() + 120_000);
+      const agentId = randomUUID(), runId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Legacy", adapterType: "codex_local", status: "running" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", invocationSource: "on_demand",
+        runtimeMode: "legacy", controllerBootId: currentControllerBootId() });
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      await db.delete(heartbeatRuns);
+      await db.delete(agents);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("proves a cleanly stopped boot gone at once", async () => {
     const stopped = await otherBoot({ liveForMs: 60_000 });
     await db.update(controllerInstances).set({ stoppedAt: sql`now()` }).where(eq(controllerInstances.bootId, stopped));
@@ -351,7 +369,7 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(lost).toHaveBeenCalledWith("fenced");
   });
 
-  it("records a graceful stop, and is off on Railway or when disabled", async () => {
+  it("records a graceful stop, and is off on a volume-exclusive Railway deployment or when disabled", async () => {
     await startHere();
     await stopControllerInstanceLease(db);
     expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("stopped");
@@ -361,6 +379,13 @@ suite("controller instance lease: a replaced container's records are provable", 
     for (const [key, value] of [["RAILWAY_PROJECT_ID", "p"], ["RAILWAY_ENVIRONMENT_ID", "e"], ["RAILWAY_SERVICE_ID", "s"], ["RAILWAY_DEPLOYMENT_ID", "d"]]) {
       vi.stubEnv(key!, value!);
     }
+    // A stateless Railway service has no deployment-replacement proof, so it keeps the lease.
+    expect(controllerInstanceLeaseEnabled()).toBe(true);
+    vi.stubEnv("RAILWAY_VOLUME_ID", "v");
+    vi.stubEnv("RAILWAY_VOLUME_MOUNT_PATH", "/data");
     expect(controllerInstanceLeaseEnabled()).toBe(false);
+    vi.stubEnv("PAPERCLIP_CONTROLLER_INSTANCE_LEASE", "on");
+    expect(controllerInstanceLeaseEnabled()).toBe(true);
+    vi.unstubAllEnvs();
   });
 });

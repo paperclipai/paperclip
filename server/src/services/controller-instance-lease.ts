@@ -54,10 +54,14 @@ type LeaseState = {
 let state: LeaseState | null = null;
 let registeredDb: Db | null = null;
 
-/** Railway proves a replaced deployment on its own; every other host (Docker, Kubernetes, Fly,
- * a rebooted machine) needs the lease to prove a replaced process. */
+/** A Railway deployment with an exclusive volume proves a replaced deployment on its own; every
+ * other host (Docker, Kubernetes, Fly, a stateless Railway service, a rebooted machine) needs the
+ * lease to prove a replaced process. PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off overrides this. */
 export function controllerInstanceLeaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE !== "off" && currentControllerDeployment(env) === null;
+  const setting = env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE;
+  if (setting === "off") return false;
+  if (setting === "on") return true;
+  return currentControllerDeployment(env)?.exclusiveVolume !== true;
 }
 
 function exitOnLostLease(reason: "fenced" | "lease_lost") {
