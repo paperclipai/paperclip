@@ -22,7 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { prepareControllerDatabase } from "../runner-e2e/controller-database.js";
-import { replaceController, type ControllerOutageReceipt } from "../runner-e2e/controller-outage.js";
+import { CONTROLLER_READY_BY_MS, replaceController, type ControllerOutageReceipt } from "../runner-e2e/controller-outage.js";
 import {
   assertIsolatedServerEnvironment, buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment,
   resolvePaperclipRunnerBinaryForHarness,
@@ -259,6 +259,10 @@ export class ChaosSupervisor {
         requestId: `chaos-${receipt.faultId}-${requestedBy}`,
         previousPid: previous.pid,
         outage: { signal: receipt.signal, holdMs },
+        // A K4 hold may outlast the Runner's 7-minute reconnect grace on
+        // purpose (--k4-hold-max-seconds); the replacement still gets the
+        // normal startup allowance after the hold.
+        readyByMs: holdMs + CONTROLLER_READY_BY_MS,
         stop: async signal => {
           if (signal === "SIGKILL") await this.stopper.crashForRestart(previous);
           else await this.stopper(previous, "SIGTERM");

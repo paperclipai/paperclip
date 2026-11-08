@@ -23,7 +23,8 @@ node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 
 Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
-default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
+default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
+`--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
 the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot

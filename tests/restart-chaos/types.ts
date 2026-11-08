@@ -34,6 +34,8 @@ export interface WaveOptions {
   daytonaImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
+  /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
+  k4HoldMaxMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
    * company budget amount but disables its hard stop, so a stuck

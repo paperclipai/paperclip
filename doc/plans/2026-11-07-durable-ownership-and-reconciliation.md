@@ -124,6 +124,10 @@ What the data does and does not show:
 - Track 1 now stamps the PID space on `native_run_finalizations` (#19868) and `heartbeat_runs` (#19871), and the registry reads those stamps. Rows written before them stay `unprovable`. Phase 2 needs the same stamp on every kind it moves before that kind can settle by proof.
 - Restart-crossing dispatches exceeded the TTFT and boot budgets because those metrics spanned the outage. The budget check now judges such dispatches only on restart-recovery latency.
 
+### Phase 2 data: harsh local waves (2026-11-07)
+
+Storms, crash loops and outages up to 588 s, all unmasked, are in [`2026-11-07-phase2-reconciler-data.md`](2026-11-07-phase2-reconciler-data.md). Existing paths settle most run-lifecycle records within 45 s of `ready`. This is not a bound: one environment lease took 119 s, and some native claims stayed proven gone during a load spike. One leak was found: a claimed wake whose run ended without settling it. The unowned pending-cleanup queue and unstamped accounting rows are the main I1 findings. Daytona was not run in this pass (see the data doc).
+
 ## Relationship to the zero-downtime upgrade work
 
 Separate work moves the control plane toward zero-downtime upgrades on an ephemeral filesystem. PostgreSQL holds execution authority and durable protocol state. Object storage holds workspace archives, provider checkpoints, logs, traces and skill assets. Replacement servers reuse stable encryption and signing secrets. Most of the foundations are on master; #19830 is still open. Entry points:
