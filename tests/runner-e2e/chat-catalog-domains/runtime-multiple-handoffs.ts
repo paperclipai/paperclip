@@ -10,6 +10,11 @@ import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.j
 import { runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, runtimeWorker } from "./runtime-support.js";
 type Artifact = Awaited<ReturnType<typeof readRegisteredArtifacts>>[number];
+/** A task is named by its setup-assigned identifier (which chat links) or by a link to its page. */
+function replyNamesTask(reply: string, task: Entity) {
+  const keys = [task.identifier, task.id].filter((key): key is string => !!key);
+  return keys.some(key => new RegExp(`(?<![A-Za-z0-9-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`).test(reply));
+}
 export function gradeMultipleHandoffs(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-two-task-history-and-delivery-evidence", !!o, "Separate real website/logo work, saved source references and exact consuming native input are required."); if (!o) return c.result();
@@ -24,9 +29,9 @@ export function gradeMultipleHandoffs(value: unknown) {
     && before?.contentVerified === true && after?.contentVerified === true && before.attachmentId === after.attachmentId && before.sha256 === after.sha256
     && before.content === after.content && after.content.includes(String(s.logoMarker)) && /<svg\b/i.test(after.content) && s.logoRevisionsUnchanged === true,
   "The separate real Logo task, logo bytes, artifact identity, saved revisions and original worker attribution remain unchanged.");
-  c.add("canonical-reply-honestly-identifies-affected-pending-work", /website/i.test(String(s.queryReply)) && /queue|pending|wait|next|forward|saved/i.test(String(s.queryReply))
-    && !/already (?:implemented|consumed)|headline (?:is|has been) (?:already )?(?:changed|updated)|I(?:'ve| have)? implemented/i.test(String(s.queryReply)),
-  "The canonical reply identifies Website and accurately describes feedback saved behind active work rather than claiming it already executed.");
+  // The reply's account of pending versus applied work is free-form; it is read from the evidence, not matched by wording.
+  c.add("canonical-reply-identifies-affected-task", replyNamesTask(String(s.queryReply), s.task as Entity),
+  "The canonical reply, written while the saved instruction still waits behind active work, names the affected Website task.");
   c.add("real-final-headline-and-original-work-retained", s.finalHeadlineRevision === true && s.originalWebsiteRevisionRetained === true
     && o.tasks.length === 2 && o.tasks.some(row => row.id === (s.task as Entity).id && row.status === "done" && row.assigneeAgentId === (s.worker as Entity).id)
     && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.worker as Entity).id).length === 2
@@ -48,7 +53,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
   const documents = await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents`), revisions: Entity[] = [];
   for (const doc of documents) revisions.push(...await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents/${encodeURIComponent(doc.key!)}/revisions`));
   const busy = await busyRuntimeWorker(ctx); await openStandingChat(ctx);
-  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan and actively waiting for the brief; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered logo is ${new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, ctx.input.api.baseURL).href}. Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
+  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan, who is working on it now; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered logo is ${new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, ctx.input.api.baseURL).href}. Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
   await sendChatMessage(ctx.input.page, message);
   const saved = await pollUntil({ label: "Real source history retains separate active Website and completed Logo", deadlineAt: Date.now() + 150_000,
     load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -58,7 +63,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
   return { ...busy, logoWorker, logoBefore: complete.task, logoRunId: complete.runs[0]!.id, logoMarker, logoArtifactBefore: artifact, logoDocumentsBefore: documents, logoRevisionsBefore: revisions,
     sourceHistoryBound: comments.filter(row => !row.authorAgentId && row.body === message).length === 1, setupRunIds: saved.runs.map(row => row.id) };
 }, gradeMultipleHandoffs, {
-  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000,
+  setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-multiple-handoffs.v3",
   sourceFiles: ["chat-catalog-domains/runtime-multiple-handoffs.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/agent-chat.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
