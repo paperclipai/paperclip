@@ -126,11 +126,12 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
     }
-    const selected = binding ? await aiConnectionService(db).select({
+    const selectAccount = () => aiConnectionService(db).select({
       companyId: agent.companyId, userId: responsibleUserId, agentId: agent.id,
       adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
-      acpxAgent: config.acpxAgent, binding,
-    }) : null;
+      acpxAgent: config.acpxAgent, binding: binding!,
+    });
+    const selected = binding ? await selectAccount() : null;
     // The account and credential generation the binding selected, never the
     // credential: the selected connection and grant, and the current version
     // (and AI session epoch) of every secret its credential reads. Timestamps
@@ -170,7 +171,13 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const verifiedVersions = await readCredentialVersions();
       const sameEpochs = verifiedVersions.length === credentialVersions.length && verifiedVersions.every((row, index) =>
         row.id === credentialVersions[index]!.id && row.aiSessionEpoch === credentialVersions[index]!.aiSessionEpoch);
-      const verifiedDigest = digest && sameEpochs
+      // The managed probe selects the account again when it starts. If the
+      // binding now selects a different account (a default switched meanwhile),
+      // the probe may have tested that one: record nothing.
+      const reselected = selected ? await selectAccount().catch(() => null) : null;
+      const sameAccount = !selected || (reselected?.attribution.connectionId === selected.attribution.connectionId
+        && reselected?.attribution.grantId === selected.attribution.grantId);
+      const verifiedDigest = digest && sameEpochs && sameAccount
         ? harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(verifiedVersions), environmentId, runner })
         : null;
       // Record the pass before the lifecycle step completes, so a restart in

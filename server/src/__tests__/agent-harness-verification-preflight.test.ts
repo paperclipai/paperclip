@@ -231,6 +231,19 @@ describePostgres("saved harness account preflight", () => {
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
   });
 
+  it("records nothing when the default account switches while the probe runs", async () => {
+    probe.mockImplementationOnce(async () => {
+      const other = await aiConnectionService(db).save(agent.companyId, userId, {
+        provider: "openrouter", method: "api_key", ownership: "personal", name: "Second account",
+        apiKey: "fixture-second-key", allAgents: true, agentIds: [],
+      }, "fixture-second-key");
+      await aiConnectionService(db).setDefault(agent.companyId, userId, other.grantId);
+      return passed;
+    });
+    await expect(verify()).resolves.toBe("complete");
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
+  });
+
   it("does not record a failed verification", async () => {
     probe.mockResolvedValueOnce({ ...passed, status: "fail", checks: [{ code: "opencode_hello_probe_timed_out", level: "error", message: "timed out" }] });
     await expect(verify()).rejects.toMatchObject({ code: "harness_probe_timed_out" });
