@@ -185,9 +185,20 @@ export const runtimeHistoryCases = [runtimeDefinition("agent-chat.remember-and-f
     const same = (state.linkedPreviews as LinkedPreview[]).filter(row => row.contentVerified && row.sha256 === preview.sha256).map(row => row.attachmentId);
     const href = (state.queryLinks as string[]).find(link => { try { return same.some(id => new URL(link, o.origin).pathname === `/api/attachments/${id}/content`); } catch { return false; } });
     if (!href) throw new Error("The same persisted preview must be accessible from the rendered answer");
-    const download = ctx.input.page.waitForEvent("download");
-    await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
-    if ((await download).suggestedFilename() !== state.filename) throw new Error("Remembered preview UI downloaded a different file");
+    // Attachment links open the in-app preview panel; its visible download
+    // control must then deliver the same file. A direct download also counts.
+    const page = ctx.input.page; const name = String(state.filename);
+    const direct = page.waitForEvent("download", { timeout: 30_000 }).then(download => ({ download })).catch(() => null);
+    await page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).last().click();
+    const control = page.locator("header").filter({ has: page.getByRole("heading", { name, exact: true }) })
+      .getByRole("link", { name: `Download ${name}`, exact: true }).last();
+    const opened = await Promise.race([direct, control.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ download: null }))]);
+    let download = opened?.download ?? null;
+    if (!download) {
+      await expect(control).toHaveAttribute("href", new RegExp(`/api/attachments/(?:${same.join("|")})/content\\?download=1$`));
+      [download] = await Promise.all([page.waitForEvent("download"), control.click()]);
+    }
+    if (download.suggestedFilename() !== name) throw new Error("Remembered preview UI downloaded a different file");
   },
 }), runtimeDefinition("recovery.browser-reconnect", async ctx => {
   const state = await busyRuntimeWorker(ctx); const source = await openStandingChat(ctx);
