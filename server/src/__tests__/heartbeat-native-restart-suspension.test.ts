@@ -11,7 +11,9 @@ import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
-import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind } from "../services/recovery/ownership-invariant-report.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 
 
@@ -516,4 +518,33 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const settled = await settleOwnableKind(f.db, "native_accepted_result_lease", { runIds: [f.runId] });
     expect(settled.map(record => record.runId)).toEqual([f.runId]);
   }, 60_000);
+
+  it("settles a result lease whose live controller dies after the worker went quiet, with no signal", async () => {
+    // The set stays unchanged across passes, so only the settle watch keeps a
+    // re-check due. The controller then dies without writing anything.
+    const f = await seedAcceptedResult("ACCEPTED-DIES-AFTER-QUIET", (runner) => `${runner}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    const liveBoot = randomUUID();
+    await killedController(f, { bootId: liveBoot, pid: process.pid, processStartedAt: self.processStartedAt,
+      hostHash: currentProcessSpaceHash() });
+    const reports: OwnershipReport[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: f.db, canRun: () => true, onError: () => undefined });
+    const worker = registerOwnershipReconciliationWork(f.db, coordinator, () => true, { onReport: report => reports.push(report) });
+    try {
+      await worker.ready;
+      await expect.poll(() => reports.length, { timeout: 70_000, interval: 250 }).toBeGreaterThanOrEqual(2);
+      const lease = (report: OwnershipReport) => report.kinds.find(kind => kind.kind === "native_accepted_result_lease")!;
+      expect(lease(reports[1]!)).toMatchObject({ settled: 0, verdicts: { alive: expect.any(Number) } });
+      expect(reports[1]!.settleWatch).toBeGreaterThan(0);
+      // Gone quiet would mean no deadline; the watch keeps one due.
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      await killedController(f, deadController(currentProcessSpaceHash()));
+      await expect.poll(async () => {
+        const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        return owner.leaseExpiresAt!.getTime() <= Date.now();
+      }, { timeout: 70_000, interval: 500 }).toBe(true);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 180_000);
 });
