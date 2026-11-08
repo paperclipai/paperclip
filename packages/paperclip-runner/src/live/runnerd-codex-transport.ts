@@ -2912,6 +2912,7 @@ async function settleRetainedRunnerdSessionOwned(
       onProtocolIntegrityError: (error) => {
         failure = error;
       },
+      onPersistenceError: (error) => { failure = error; },
       onSemanticToolInput: async () => {
         // Never delegate a tool from a cleanup connection.
         throw maintenanceDenied();
@@ -5910,6 +5911,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
+      onPersistenceError: (error) => this.#failTransport(error),
       // The runner process is up once it authenticates; provider work follows.
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
@@ -6433,6 +6435,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
+      onPersistenceError: (error) => this.#failTransport(error),
       // The runner process is up once it authenticates; provider work follows.
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },

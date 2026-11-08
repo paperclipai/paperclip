@@ -1055,8 +1055,10 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
     });
     const effects = new Set<string>();
     const commit = vi.fn(async (event: { sourceEventId: string }) => { effects.add(event.sourceEventId); });
+    const persistenceFailure = vi.fn();
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
-      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit, onSemanticToolInput: dispatch });
+      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit, onSemanticToolInput: dispatch,
+      onPersistenceError: persistenceFailure });
     const http = createServer((_req, res) => res.end("responsive"));
     let release!: () => void;
     const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
@@ -1199,6 +1201,8 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
       } else if (mode === "write_failure" || mode === "usage_write_failure" || mode === "command_failure") {
         expect(await receiveSecure(client)).toBeNull();
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
+        expect(persistenceFailure).toHaveBeenCalledTimes(1);
+        expect(persistenceFailure.mock.calls[0]![0].message).toBe("native_runner_authority_persistence_failed: unknown");
       } else if (mode !== "replacement") {
         expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
       }
@@ -1363,9 +1367,10 @@ it("renews one authenticated connection for three weeks without replacing its au
   let now = Date.now();
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   const ttl = 6 * 60 * 60 * 1_000;
+  const persistenceFailure = vi.fn();
   const core = new DurablePrpControlPlane({
     stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
-    connectionLeaseTtlMs: ttl,
+    connectionLeaseTtlMs: ttl, onPersistenceError: persistenceFailure,
   });
   try {
     await core.start();
@@ -1377,6 +1382,7 @@ it("renews one authenticated connection for three weeks without replacing its au
       const request = renewalRequest(client, expiry);
       sendSecure(client, request);
       const reply = (await receiveSecure(client))!;
+      expect(reply, persistenceFailure.mock.calls[0]?.[0]?.message).not.toBeNull();
       expect(reply.kind).toBe("lease_renewed");
       expect(reply.connectionLeaseId).toBe(leaseId);
       expect(reply.connectionId).toBe(client.welcome.connectionId);
