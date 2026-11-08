@@ -1617,6 +1617,20 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        // The controller attaches with the payload it saved before an upgrade
+        // moved the install. A launch of the same shape names the same files;
+        // the runner-owned qualified profile says where they live now.
+        let mut descriptor = descriptor;
+        if let Some(profile) = self
+            .launch_profile
+            .as_ref()
+            .filter(|profile| profile.candidate_admission.is_none())
+        {
+            if same_launch_shape(&descriptor, profile) {
+                descriptor.sidecar_command = profile.command.clone();
+                descriptor.sidecar_args = profile.args.clone();
+            }
+        }
         let mut durable_descriptor = descriptor.clone();
         durable_descriptor.run_id = state.descriptor.run_id.clone();
         // session/load reconnects MCP using this attachment's bindings. All
@@ -6340,9 +6354,8 @@ mod tests {
         let (directory, mut config, payload, _) =
             settled_session_after_runner_upgrade("upgrade-relocated-settled");
         let (command, args) = relocate_upgraded_install(&directory, &mut config);
-        let mut payload = payload;
-        payload["provider"]["sidecarCommand"] = json!(command);
-        payload["provider"]["sidecarArgs"] = json!(args);
+        // The controller attaches with the payload it saved, which still names
+        // the old install's paths.
         let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
         recovered
             .restore()
