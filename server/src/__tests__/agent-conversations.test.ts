@@ -1042,6 +1042,12 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
   });
 
+  it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>#document-<key>");
+  });
+
   it("gives chat replies a usable route for both task and approval sources", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
