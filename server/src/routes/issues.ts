@@ -2199,6 +2199,20 @@ function summarizeIssueReferenceActivityDetails(
   };
 }
 
+function preserveStoredStagesOnMonitorWrite(input: {
+  requested: NormalizedExecutionPolicy | null;
+  stored: NormalizedExecutionPolicy | null;
+  stagesProvidedInBody: boolean;
+}) {
+  const { requested, stored, stagesProvidedInBody } = input;
+  if (!requested || !stored) return requested;
+  if (requested.stages.length > 0) return requested;
+  if (stored.stages.length === 0) return requested;
+  if (!stagesProvidedInBody) return { ...requested, stages: stored.stages };
+  if (monitorPoliciesEqual(requested, stored)) return requested;
+  return { ...requested, stages: stored.stages };
+}
+
 function activityExecutionParticipantKey(
   participant: ActivityExecutionParticipant,
 ): string {
@@ -14860,15 +14874,21 @@ export function issueRoutes(
           }
         }
       }
-      if (req.body.executionPolicy !== undefined) {
-        updateFields.executionPolicy = applyActorMonitorScheduledBy(
-          normalizeIssueExecutionPolicy(req.body.executionPolicy),
-          actor.actorType,
-        );
-      }
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
+      if (req.body.executionPolicy !== undefined) {
+        updateFields.executionPolicy = applyActorMonitorScheduledBy(
+          preserveStoredStagesOnMonitorWrite({
+            requested: normalizeIssueExecutionPolicy(req.body.executionPolicy),
+            stored: previousExecutionPolicy,
+            stagesProvidedInBody: Array.isArray(
+              (req.body.executionPolicy as { stages?: unknown } | null)?.stages,
+            ),
+          }),
+          actor.actorType,
+        );
+      }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
