@@ -925,9 +925,20 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
-    if (input.allowBoardOverride && attemptedStageAdvance) {
+    const selfReviewStage =
+      activeStage.type === "review" &&
+      existingState?.returnAssignee != null &&
+      activeStage.participants.length > 0 &&
+      activeStage.participants.every((participant) =>
+        principalsEqual(participant, existingState!.returnAssignee!),
+      );
+
+    if ((input.allowBoardOverride || selfReviewStage) && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
+        if (selfReviewStage) {
+          Object.assign(patch, patchForPrincipal(existingState!.returnAssignee!));
+        }
         return { patch };
       }
       // Assignee-only override: the issue stays in_review, so clearing the

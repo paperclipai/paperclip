@@ -784,6 +784,67 @@ describe("issue execution policy transitions", () => {
       expect(result.workflowControlledAssignment).toBeUndefined();
     });
 
+    it("non-participant can retreat a self-review stage to todo", () => {
+      const selfReviewPolicy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: selfReviewPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: selfReviewPolicy.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: coderAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: selfReviewPolicy,
+        requestedStatus: "todo",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch).toEqual({ executionState: null, assigneeAgentId: coderAgentId, assigneeUserId: null });
+      expect(result.decision).toBeUndefined();
+    });
+
+    it("non-participant still cannot retreat a review stage held by a different reviewer", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "todo",
+          requestedAssigneePatch: {},
+          actor: { agentId: ctoAgentId },
+        }),
+      ).toThrow("Only the active reviewer or approver can advance");
+    });
+
     it("non-participant can still post non-advancing updates", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
