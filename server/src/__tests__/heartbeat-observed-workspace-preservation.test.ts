@@ -337,7 +337,6 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
     const fenceOf = async () => (await f.db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
       eq(issueRecoveryActions.fingerprint, `native-workspace:${f.runId}`))))[0].evidence.observedWorkspacePreservation as { state: string };
     expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
-    // The coordinator lease only expired: that is never proof.
     const held = await pass(false);
     expect(held.kinds[0]!.reasons.fence_expired_without_provider_proof).toBeGreaterThanOrEqual(1);
     expect(await settleThis()).toEqual([]);
@@ -348,7 +347,6 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
       await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
       const { lease } = await readSource(f);
       expect(hasRemoteTerminationReceipt(lease) && hasConfirmedSandboxStopAndRetain(lease)).toBe(true);
-      // A read-only pass sees the proof but changes nothing.
       const readOnly = await pass(false);
       expect(readOnly.kinds[0]!.reasons.provider_stopped).toBeGreaterThanOrEqual(1);
       expect(await fenceOf()).toMatchObject({ state: "stop_pending" });

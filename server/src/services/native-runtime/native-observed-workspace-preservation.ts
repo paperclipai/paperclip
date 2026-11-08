@@ -174,7 +174,6 @@ export async function pinFailedObservedWorkspace(db: Db, companyId: string, runI
       && lease.metadata?.workspaceRecoveryCleanup == null;
     if (!active) return false;
     await notifyNativeEnvironmentSettlement(tx, { companyId, runId, issueId: task.id });
-    // The ownership worker (on any server) watches the new fence as a backstop.
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport, JSON.stringify({ companyId, runId }));
     const retained = await recordRequiredWorkspaceRestoreFailure(tx, run, { workspaceRestoreFailure: "restore_failed" }, lease);
     if (!retained || !hasRequiredWorkspaceRecovery(retained.resultJson)) throw new Error("observed_workspace_retention_missing");
