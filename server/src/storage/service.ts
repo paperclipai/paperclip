@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { Readable } from "node:stream";
-import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
+import type { StorageService, StorageProvider, PutFileInput, PutFileResult, PutObjectReceipt } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { cleanupStorageFailure } from "./failure-cleanup.js";
 
@@ -114,13 +114,15 @@ export function createStorageService(provider: StorageProvider): StorageService 
       ensureCompanyPrefix(input.companyId, objectKey);
       const byteSize = "byteSize" in input ? input.byteSize : input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
+      let receipt: void | PutObjectReceipt;
       try {
-        await provider.putObject({
+        receipt = await provider.putObject({
           objectKey,
           body: input.body,
           contentType,
           contentLength: byteSize,
           signal: input.signal,
+          ...("sourceFile" in input && input.sourceFile ? { sourceFile: input.sourceFile } : {}),
         });
       } catch (error) {
         await cleanupStorageFailure(signal => provider.deleteObject({ objectKey, signal }));
@@ -136,6 +138,7 @@ export function createStorageService(provider: StorageProvider): StorageService 
         byteSize,
         sha256: "sha256" in input ? input.sha256 : hashBuffer(input.body),
         originalFilename: input.originalFilename,
+        ...(receipt ? { integrity: receipt.integrity } : {}),
       };
     },
 

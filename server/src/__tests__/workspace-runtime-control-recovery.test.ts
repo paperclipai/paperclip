@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   companies,
   createDb,
   executionWorkspaces,
@@ -12,6 +13,8 @@ import {
 } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { setTimeout as delay } from "node:timers/promises";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
   RUNTIME_CONTROL_STALE_AFTER_MS,
   WorkspaceOperationTimeoutError,
@@ -19,7 +22,12 @@ import {
   workspaceOperationService,
   workspaceRuntimeControlOwnerIdForTests,
 } from "../services/workspace-operations.js";
-import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs } from "../services/controller-process-identity.js";
+import {
+  createOwnershipReportState,
+  runOwnershipReconciliationPass,
+} from "../services/recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { getWorkspaceOperationLogStore } from "../services/workspace-operation-log-store.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -60,6 +68,7 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
 
   afterEach(async () => {
     resetWorkspaceRuntimeControlStateForTests();
+    await db.delete(activityLog);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
@@ -126,7 +135,8 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
     companyId: string;
     executionWorkspaceId: string;
     /** hostHash defaults to this process's PID space; null omits it (a legacy stamp). */
-    owner?: { ownerId: string; pid: number; heartbeatAt: Date; hostHash?: string | null };
+    owner?: { ownerId: string; pid: number; heartbeatAt: Date; hostHash?: string | null;
+      bootId?: string; processStartedAt?: string };
     withLog?: boolean;
     startedAt?: Date;
     /**
@@ -162,6 +172,8 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
                 ...(input.owner.hostHash === null ? {} : { hostHash: input.owner.hostHash ?? currentProcessSpaceHash() }),
                 action: "start",
                 heartbeatAt: input.owner.heartbeatAt.toISOString(),
+                ...(input.owner.bootId ? { bootId: input.owner.bootId } : {}),
+                ...(input.owner.processStartedAt ? { processStartedAt: input.owner.processStartedAt } : {}),
               },
             }
           : {}),
@@ -537,5 +549,122 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
       .from(workspaceOperations)
       .where(eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId));
     expect(statuses.map((row) => row.status).sort()).toEqual(["failed", "succeeded"]);
+  });
+
+  describe("shared ownership path (plan Phase 2)", () => {
+    const kind = OWNABLE_KINDS.find((entry) => entry.id === "workspace_runtime_control_operation")!;
+    // The server resolves its own start time at boot; the stamp reads it without I/O.
+    beforeAll(async () => { await currentProcessStartedAtMs(); });
+    const pass = (record = true) => runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
+      kinds: [kind], record });
+    // A previous server whose PID this test process now reuses: same PID space,
+    // same PID, but it started long before this process did.
+    const reusedPidOwner = () => ({ ownerId: randomUUID(), pid: process.pid, heartbeatAt: new Date(),
+      bootId: randomUUID(), processStartedAt: "2000-01-01T00:00:00.000Z" });
+
+    it("recovers at once a start whose owner's PID now belongs to a later process", async () => {
+      const seeded = await seedWorkspace();
+      const staleId = await seedRunningStart({ ...seeded, owner: reusedPidOwner() });
+      const service = workspaceOperationService(db);
+      await expect(service.reconcileStaleRuntimeControlOperations(seeded.executionWorkspaceId)).resolves.toEqual({
+        reconciled: 1, operationIds: [staleId] });
+    });
+
+    it("keeps a start whose owner PID and start time still match a live process", async () => {
+      const seeded = await seedWorkspace();
+      const controller = currentControllerProcessStamp();
+      expect(controller.processStartedAt).toBeTruthy();
+      await seedRunningStart({ ...seeded, owner: { ownerId: randomUUID(), pid: process.pid, heartbeatAt: new Date(),
+        bootId: randomUUID(), processStartedAt: controller.processStartedAt! } });
+      await expect(workspaceOperationService(db).reconcileStaleRuntimeControlOperations(seeded.executionWorkspaceId))
+        .resolves.toEqual({ reconciled: 0, operationIds: [] });
+      const report = await pass();
+      expect(report.kinds[0]).toMatchObject({ inProgress: 1, settled: 0 });
+    });
+
+    it("settles a start whose owner server is gone without waiting for the next control", async () => {
+      const seeded = await seedWorkspace();
+      const staleId = await seedRunningStart({ ...seeded, withLog: true,
+        owner: { ownerId: randomUUID(), pid: 4_194_303, heartbeatAt: new Date() } });
+
+      const report = await pass();
+      expect(report.kinds[0]).toMatchObject({ kind: "workspace_runtime_control_operation", inProgress: 1, settled: 1 });
+      const row = await workspaceOperationService(db).getById(staleId);
+      expect(row).toMatchObject({ status: "failed", metadata: { reconciled: true,
+        reconciliationReason: "orphaned_runtime_control", reconciledBy: "ownership-reconciler", ownerProof: "pid_dead" } });
+      expect(row?.stderrExcerpt).toContain("(pid 4194303) is gone (pid_dead)");
+      const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, staleId));
+      expect(activity).toMatchObject([{ action: "workspace_operation.reconciled", actorId: "ownership-reconciler" }]);
+      await expect(workspaceOperationService(db).assertRuntimeControlAvailable({
+        executionWorkspaceId: seeded.executionWorkspaceId, action: "start" })).resolves.toBeUndefined();
+    });
+
+    it("never settles an owner it cannot prove, and a read-only pass changes nothing", async () => {
+      const seeded = await seedWorkspace();
+      const otherHost = await seedRunningStart({ ...seeded,
+        owner: { ownerId: randomUUID(), pid: 4_194_303, heartbeatAt: new Date(0), hostHash: "another-host-pid-space" } });
+      const proven = await seedRunningStart({ ...seeded,
+        owner: { ownerId: randomUUID(), pid: 4_194_303, heartbeatAt: new Date() } });
+
+      const readOnly = await pass(false);
+      expect(readOnly.kinds[0]).toMatchObject({ inProgress: 2, settled: 0 });
+      expect((await workspaceOperationService(db).getById(proven))?.status).toBe("running");
+
+      await pass();
+      // Even with a long-lapsed heartbeat, age is not proof on the shared path.
+      expect((await workspaceOperationService(db).getById(otherHost))?.status).toBe("running");
+      expect((await workspaceOperationService(db).getById(proven))?.status).toBe("failed");
+    });
+
+    it("keeps an operation whose owner re-stamped after the proof", async () => {
+      const seeded = await seedWorkspace();
+      const id = await seedRunningStart({ ...seeded, owner: { ownerId: randomUUID(), pid: 4_194_303, heartbeatAt: new Date() } });
+      const [record] = (await kind.listInProgress!(db, 10, 0)).records;
+      const controller = currentControllerProcessStamp();
+      await db.update(workspaceOperations).set({ metadata: { action: "start", runtimeControlOwner: {
+        ownerId: randomUUID(), pid: process.pid, hostHash: controller.hostHash, bootId: controller.bootId,
+        processStartedAt: controller.processStartedAt, action: "start", heartbeatAt: new Date().toISOString() } } })
+        .where(eq(workspaceOperations.id, id));
+      await expect(kind.settle!(db, record!, { now: new Date(), proof: { verdict: "gone", reason: "pid_dead" } }))
+        .resolves.toEqual({ settled: false, reason: "owner_changed_since_proof" });
+      expect((await workspaceOperationService(db).getById(id))?.status).toBe("running");
+    });
+
+    it("wakes the ownership worker when a runtime control starts, before its row is visible", async () => {
+      const seeded = await seedWorkspace();
+      const recorder = workspaceOperationService(db).createRecorder({ companyId: seeded.companyId,
+        executionWorkspaceId: seeded.executionWorkspaceId });
+      const hints: string[] = [];
+      const stop = subscribeDatabaseWork(db, DELIVERY_QUEUES.ownershipInvariantReport, (event, eventHints) => {
+        if (event === "settled") hints.push(...(eventHints ?? []));
+      });
+      let operationId: string | undefined;
+      try {
+        await recorder.recordOperation({ phase: "workspace_provision", metadata: { action: "start" }, run: async () => {
+          operationId = (await db.select().from(workspaceOperations).where(eq(workspaceOperations.status, "running")))[0]?.id;
+          return { status: "succeeded" };
+        } });
+        for (let attempt = 0; attempt < 50 && !hints.some(hint => operationId && hint.includes(operationId)); attempt += 1) {
+          await delay(20);
+        }
+      } finally { stop(); }
+      expect(operationId).toBeTruthy();
+      expect(hints.some(hint => hint.includes(operationId!))).toBe(true);
+    });
+
+    it("stamps new operations with the server's boot id and start time", async () => {
+      const seeded = await seedWorkspace();
+      const service = workspaceOperationService(db);
+      const recorder = service.createRecorder({ companyId: seeded.companyId, executionWorkspaceId: seeded.executionWorkspaceId });
+      let seen: Record<string, unknown> | null = null;
+      await recorder.recordOperation({ phase: "workspace_provision", metadata: { action: "start" }, run: async () => {
+        const [row] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.status, "running"));
+        seen = (row?.metadata as Record<string, unknown>).runtimeControlOwner as Record<string, unknown>;
+        return { status: "succeeded" };
+      } });
+      const controller = currentControllerProcessStamp();
+      expect(seen).toMatchObject({ pid: process.pid, hostHash: controller.hostHash, bootId: controller.bootId,
+        processStartedAt: controller.processStartedAt });
+    });
   });
 });

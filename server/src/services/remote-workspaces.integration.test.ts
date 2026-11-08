@@ -1147,8 +1147,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
     const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
-    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
-      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    // New children never share a parent's workspace; `inherited` is the shape an
+    // older release wrote, which saved-file continuation must still handle.
+    const child = (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
+      ...(inherited ? { parentId: ids.issue, executionWorkspaceId: reserved.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode } } : {}) }).returning())[0]!;
     if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
     const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,

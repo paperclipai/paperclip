@@ -29,6 +29,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
+import { bindsRelativesExecutionWorkspace, buildIndependentTaskWorkspaceSettings } from "./task-workspace-lineage.js";
 import { executionWorkspaceRepositoryService, canonicalRepositoryRoot } from "./execution-workspace-repositories.js";
 import { assertSelectedWorkspaceTrust, type TaskWorkspaceCreationTrustContext } from "./task-repository-acquisition.js";
 import { forbidden } from "../errors.js";
@@ -1721,6 +1722,55 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     });
   }
 
+  /**
+   * Releases a subtask from a workspace it shares with an ancestor (the shape
+   * older releases created by default) so this admission realizes the
+   * subtask's own workspace from the project base. The task that created the
+   * workspace keeps it and its files; a relative bound to it (an ancestor that
+   * selected a descendant's workspace included) is the one released. While an earlier run of this subtask is still
+   * running, finalizing, or under recovery, the binding is kept so that writer
+   * can save its files first; a later admission releases it. Never throws for
+   * that wait: the run proceeds on its current binding and nobody is asked to act.
+   */
+  async function releaseAncestorWorkspaceBindingAtAdmission(input: { companyId: string; issueId: string; runId: string }) {
+    // Cheap unlocked pre-check: a task bound to a workspace it created keeps it.
+    // When a relative selected that workspace, the relative is the one that moves.
+    const [candidate] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+      .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
+    if (!candidate || candidate.sourceIssueId === input.issueId) return false;
+    return db.transaction(async tx => {
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+      if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+      if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+        return false;
+      }
+      const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
+        or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+        eq(heartbeatRuns.status, "running"),
+      )).limit(1);
+      if (holder) return false;
+      if (await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId })) return false;
+      const selection = task.workspaceSelection;
+      await notifyStatusCardIssueChange(tx, task.companyId);
+      await tx.update(issues).set({
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        // Without a project workspace the old settings described the relative's
+        // task files; the project's defaults apply instead, as for a top-level task.
+        executionWorkspaceSettings: task.projectWorkspaceId
+          ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+          : null,
+        ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
+        workspaceBindingRevision: task.workspaceBindingRevision + 1,
+        updatedAt: new Date(),
+      }).where(eq(issues.id, task.id));
+      return true;
+    });
+  }
+
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
     return db.transaction(async tx => {
       const [task] = await measureRunPhase("workspace.row_lock", () => tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("no key update"));
@@ -2739,7 +2789,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     assertTaskRepositoryPublicationAllowed: executionWorkspaceRepositoryService(db).assertPublicationAllowed,
     prepareConfiguredRepositoryCopy: executionWorkspaceRepositoryService(db).prepareConfiguredRepositoryCopy,
     assertTaskRepositoryRecoveryBinding: executionWorkspaceRepositoryService(db).assertRecoveryBinding,
-    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
+    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, releaseAncestorWorkspaceBindingAtAdmission, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
