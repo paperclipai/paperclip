@@ -23,7 +23,11 @@ const RENEW_TIMEOUT_MS = 10_000;
 const RETRY_MS = 5_000;
 
 export type ControllerInstanceState = "live" | "grace" | "expired" | "fenced" | "stopped";
-type RenewResult = "holding" | "idle" | "fenced";
+/** "holding" saw an in-progress record held by this boot; "holding_stamp" held only for a recent stamp. */
+type RenewResult = "holding" | "holding_stamp" | "idle" | "fenced";
+/** A stamp whose record no renewal has seen keeps the lease held until the server's tracked work next settles
+ * (its write then committed or rolled back), and at most this long. */
+const UNOBSERVED_STAMP_CAP_MS = 10 * 60_000;
 
 type LeaseState = {
   onLost: (reason: "fenced" | "lease_lost") => void;
@@ -41,6 +45,8 @@ type LeaseState = {
   lastTickAt: number;
   /** Counts stamps, so a stamp taken while a renewal is in flight is never lost. */
   stampSeq: number;
+  /** Wall time of the oldest stamp no renewal has yet seen a held record for. */
+  unobservedStampSince: number | null;
   unsubscribe: () => void;
   wake: () => void;
 };
@@ -84,7 +90,8 @@ function holdsStampedWorkSql(bootId: string) {
 function renewInDatabase(db: Db): (stampedRecently: boolean) => Promise<RenewResult> {
   return async stampedRecently => {
     const bootId = currentControllerBootId();
-    const holds = sql`(${stampedRecently} or ${holdsStampedWorkSql(bootId)})`;
+    const records = holdsStampedWorkSql(bootId);
+    const holds = sql`(${stampedRecently} or ${records})`;
     const expires = sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`;
     const rows = await db.execute(sql`
       insert into controller_instances (boot_id, process_space, pid, lease_expires_at)
@@ -93,11 +100,11 @@ function renewInDatabase(db: Db): (stampedRecently: boolean) => Promise<RenewRes
         lease_expires_at = case when ${holds} then ${expires} else controller_instances.lease_expires_at end,
         renewed_at = case when ${holds} then now() else controller_instances.renewed_at end
       where controller_instances.fenced_at is null and controller_instances.stopped_at is null
-      returning epoch, ${holds} as holds`) as unknown as Array<{ epoch: string | number; holds: boolean }>;
+      returning epoch, ${holds} as holds, ${records} as records`) as unknown as Array<{ epoch: string | number; holds: boolean; records: boolean }>;
     const row = rows[0];
     if (!row) return "fenced";
     if (state) state.epoch = Number(row.epoch);
-    return row.holds ? "holding" : "idle";
+    return row.records ? "holding" : row.holds ? "holding_stamp" : "idle";
   };
 }
 
@@ -124,6 +131,7 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
     renew: options.renew ?? renewInDatabase(db), lastStampAt: Number.NEGATIVE_INFINITY, failingSince: null,
     active: false, epoch: null, stopped: false, unsubscribe: () => {}, wake: () => {},
     lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, stampSeq: 0,
+    unobservedStampSince: null,
   };
   state = current;
   const worker = coordinator.register(DELIVERY_QUEUES.controllerInstanceLease, {
@@ -139,6 +147,7 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
     current.lastStampAt = current.now();
     current.lastStampWallAt = Date.now();
     current.stampSeq += 1;
+    current.unobservedStampSince ??= Date.now();
     current.active = true;
     // The first stamp after an idle lapse renews at once, without delaying the stamping write.
     if (!wasActive && !current.stopped) worker.wake();
@@ -147,6 +156,9 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
   // so an idle server issues no statement after its last work.
   // The rate limit also absorbs the settle of this worker's own run.
   const unsubscribeSettle = subscribeIdleWorkSettled(() => {
+    // All tracked work finished: any ownership write it made has committed or rolled back,
+    // so the holdings query is authoritative from here on.
+    current.unobservedStampSince = null;
     if (current.active && !current.stopped && Date.now() - current.lastTickAt >= SETTLE_RECHECK_MIN_MS) worker.wake();
   });
   current.unsubscribe = () => { unsubscribeStamp(); unsubscribeSettle(); };
@@ -172,18 +184,23 @@ export async function tickControllerInstanceLease(): Promise<void> {
   const attemptStartedAt = current.now();
   const stampSeqAtStart = current.stampSeq;
   current.lastTickAt = Date.now();
-  const stampedRecently = Date.now() - current.lastStampWallAt < STAMP_COMMIT_GRACE_MS;
+  // Held until a renewal sees the stamped record committed (or rolled back past the cap).
+  const stampedRecently = Date.now() - current.lastStampWallAt < STAMP_COMMIT_GRACE_MS
+    || (current.unobservedStampSince !== null && Date.now() - current.unobservedStampSince < UNOBSERVED_STAMP_CAP_MS);
   let result: RenewResult | "failed";
   try { result = await withTimeout(current.renew(stampedRecently), RENEW_TIMEOUT_MS); } catch (error) {
     logger.warn({ err: error }, "controller instance lease renewal failed");
     result = "failed";
   }
-  if (result === "holding" || result === "idle") {
+  if (result === "holding" || result === "holding_stamp" || result === "idle") {
     current.failingSince = null;
     // Idle: the lease lapses with no further statements until the next stamp wakes it.
     // A stamp taken during this attempt was not seen by its snapshot: check again now.
     const stampedDuringAttempt = current.stampSeq !== stampSeqAtStart;
-    current.active = result === "holding" || stampedDuringAttempt;
+    // Records seen: every stamp before this attempt has committed (or its write failed and
+    // left nothing to hold); only a stamp taken during the attempt is still unobserved.
+    if (result !== "holding_stamp") current.unobservedStampSince = stampedDuringAttempt ? current.lastStampWallAt : null;
+    current.active = result !== "idle" || stampedDuringAttempt;
     if (result === "idle" && stampedDuringAttempt) current.wake();
     setControllerLeaseQuiesce(false);
     return;

@@ -251,13 +251,33 @@ suite("controller instance lease: a replaced container's records are provable", 
       await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: null, status: "pending_cleanup", leasePolicy: "ephemeral",
         metadata: { pendingCleanupController: claim, pendingCleanupInFlight: false } });
       await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      // A stamp whose record no renewal saw holds the lease until the 10-minute cap.
       currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
       await tickControllerInstanceLease();
       expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
       await db.update(environmentLeases).set({ metadata: { pendingCleanupController: claim, pendingCleanupInFlight: true } });
       currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
       await tickControllerInstanceLease();
       expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("holds an unobserved stamp only until the server's work settles", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere();
+      vi.setSystemTime(Date.now() + 120_000);
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      beginIdleTrackedWork()();
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
     } finally { vi.useRealTimers(); }
   });
 
