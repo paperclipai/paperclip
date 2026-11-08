@@ -35,6 +35,7 @@ import {
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { normalizeContentType } from "../attachment-types.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -116,17 +117,12 @@ const rawZipBodyParser = express.raw({
   limit: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
 });
 
-function requestContentType(req: Request) {
-  return (req.header("content-type") ?? "").toLowerCase();
+function isMultipartImport(contentType: string) {
+  return contentType === "multipart/form-data";
 }
 
-function isMultipartImport(req: Request) {
-  return requestContentType(req).includes("multipart/form-data");
-}
-
-function isZipImport(req: Request) {
-  const contentType = requestContentType(req);
-  return PORTABLE_ZIP_CONTENT_TYPES.some((type) => contentType.includes(type));
+function isZipImport(contentType: string) {
+  return PORTABLE_ZIP_CONTENT_TYPES.some((type) => contentType === type);
 }
 
 function runMiddleware(
@@ -183,8 +179,9 @@ function importTransferApplyMeta(body: unknown): Record<string, unknown> {
  * corrupt, or empty zip fails closed with a 400/422 before anything is imported.
  */
 async function resolveImportPayload(req: Request, res: Response): Promise<unknown> {
-  const multipart = isMultipartImport(req);
-  const rawZip = isZipImport(req);
+  const contentType = normalizeContentType(req.header("content-type"));
+  const multipart = isMultipartImport(contentType);
+  const rawZip = isZipImport(contentType);
   if (!multipart && !rawZip) {
     return req.body;
   }

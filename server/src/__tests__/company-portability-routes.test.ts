@@ -1272,6 +1272,45 @@ describe("company portability routes", () => {
     );
   });
 
+  it.each(["/import", "/import/preview"])("dispatches %s JSON by media type rather than parameter values", async (path) => {
+    const app = await createBoardApp();
+    const service = path === "/import" ? mockCompanyPortabilityService.importBundle : mockCompanyPortabilityService.previewImport;
+
+    for (const note of ["multipart/form-data", "application/zip", "application/x-zip-compressed"]) {
+      service.mockClear();
+      const res = await request(app)
+        .post(`/api/companies${path}`)
+        .set(TEST_USER_HEADER, "board-user-a")
+        .set("Content-Type", `application/json; note="${note}"`)
+        .send(importRequest);
+
+      expect(res.status).toBe(200);
+      expect(service).toHaveBeenCalledTimes(1);
+      expect(service.mock.calls[0]![0]).toEqual(importRequest);
+    }
+  });
+
+  it.each(["/import", "/import/preview"])("dispatches %s zip uploads by media type rather than parameter values", async (path) => {
+    const app = await createBoardApp();
+    const files = { "COMPANY.md": "---\nname: Test\n---\n" };
+    const zip = buildStoreZip(files, "paperclip");
+    const service = path === "/import" ? mockCompanyPortabilityService.importBundle : mockCompanyPortabilityService.previewImport;
+
+    for (const contentType of ["application/zip", "application/x-zip-compressed"]) {
+      service.mockClear();
+      const res = await request(app)
+        .post(`/api/companies${path}`)
+        .query({ meta: JSON.stringify(importMeta) })
+        .set(TEST_USER_HEADER, "board-user-a")
+        .set("Content-Type", `${contentType}; note="multipart/form-data"`)
+        .send(zip);
+
+      expect(res.status).toBe(200);
+      expect(service).toHaveBeenCalledTimes(1);
+      expect(service.mock.calls[0]![0]).toEqual({ ...importMeta, source: { type: "inline", rootPath: "paperclip", files } });
+    }
+  });
+
   it("imports a company from a multipart zip upload, unzipping into the same inline bundle", async () => {
     const app = await createBoardApp();
     const files = { "COMPANY.md": "---\nname: Test\n---\n", "agents/ceo/AGENTS.md": "---\nname: CEO\n---\n" };
