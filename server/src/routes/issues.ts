@@ -4333,9 +4333,16 @@ export function issueRoutes(
     if (!scheduledRetryRunId) return null;
 
     try {
-      const cancelled = await heartbeat.cancelRun(scheduledRetryRunId, undefined, {
-        expectedStatus: "scheduled_retry",
-      });
+      const cancelled = await heartbeat.cancelRun(
+        scheduledRetryRunId,
+        "Cancelled because a comment superseded the scheduled retry",
+        {
+          expectedStatus: "scheduled_retry",
+          errorCode: "scheduled_retry_superseded",
+          eventMessage: "run cancelled because a comment superseded the scheduled retry",
+          eventPayload: { issueId: input.issue.id },
+        },
+      );
       if (cancelled?.status !== "cancelled") return null;
       const cancelledRunId = cancelled.id;
       await logActivity(db, {
@@ -15602,6 +15609,12 @@ export function issueRoutes(
         try {
           const cancelled = await heartbeat.cancelRun(
             runToCancelForCancelledStatus.id,
+            "Cancelled because the issue was set to cancelled",
+            {
+              errorCode: "issue_cancelled",
+              eventMessage: "run cancelled because the issue was set to cancelled",
+              eventPayload: { issueId: existing.id },
+            },
           );
           if (cancelled) {
             cancelledStatusRunId = cancelled.id;
