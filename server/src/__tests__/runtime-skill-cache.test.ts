@@ -6,7 +6,19 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySkill } from "@paperclipai/shared";
-import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
+import { once } from "node:events";
+import { releaseExitedRuntimeSkillCacheLock, removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheLockHolderExited, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
+import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+
+/** A PID whose process has exited and been reaped. */
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await once(child, "exit");
+  return child.pid!;
+}
+
+const lockStamp = (controller: Record<string, unknown>, token: string = randomUUID()) =>
+  Buffer.from(JSON.stringify({ pid: controller.pid, host: os.hostname(), token, controller }));
 
 async function makeWritable(root: string): Promise<void> {
   const stat = await fs.lstat(root);
@@ -33,7 +45,11 @@ describe("runtime skill revision cache", () => {
     skill = { id: randomUUID(), companyId: randomUUID(), sourceType: "github", sourceLocator: "https://github.com/org/repo",
       sourceRef: "a".repeat(40), slug: "test", markdown: contents["SKILL.md"], metadata: { owner: "org", repo: "repo", repoSkillDir: "skills/test" },
       fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "references/a.md", kind: "reference" }],
-    } as CompanySkill;
+      key: "org/repo/test", name: "Test", description: null, trustLevel: "markdown_only", compatibility: "compatible",
+      iconUrl: null, color: null, tagline: null, authorName: null, homepageUrl: null, categories: [], sharingScope: "company",
+      publicShareToken: null, forkedFromSkillId: null, forkedFromCompanyId: null, starCount: 0, installCount: 0, forkCount: 0,
+      currentVersionId: null, createdAt: new Date(0), updatedAt: new Date(0),
+    };
   });
   afterEach(async () => { await makeWritable(root); await fs.rm(root, { recursive: true, force: true }); });
   const reader = () => vi.fn(async (file: string) => contents[file]);
@@ -79,6 +95,96 @@ describe("runtime skill revision cache", () => {
     expect(first.source).toBe(second.source);
     expect(await fs.readdir(spec.root)).toEqual([spec.fingerprint]);
     expect(await launch()).toEqual({ source: first.source, reads: 0 });
+  });
+
+  it("releases a publication lock at once when its holder provably exited", async () => {
+    const spec = runtimeSkillCacheSpec(root, skill)!;
+    const namespace = path.dirname(spec.root);
+    await fs.mkdir(namespace, { recursive: true });
+    const pid = await exitedPid();
+    const token = randomUUID();
+    const stale = lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }, token);
+    // The crashed holder's owner file and its hard-linked lock, as publishLocked leaves them.
+    await fs.writeFile(path.join(namespace, `.owner-${token}`), stale);
+    await fs.link(path.join(namespace, `.owner-${token}`), path.join(namespace, `${skill.id}.lock`));
+    const startedAt = Date.now();
+    // Concurrent waiters in one process share one build; separate processes race for the claim.
+    const sources = await Promise.all([resolveRuntimeSkillCache(spec, reader()),
+      resolveRuntimeSkillCache(runtimeSkillCacheSpec(root, { ...skill })!, reader())]);
+    expect(new Set(sources)).toEqual(new Set([path.join(spec.entry, "files")]));
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(await fs.readdir(namespace)).not.toContain(`${skill.id}.lock`);
+  });
+
+  it("takes over a release claim whose claimer exited before removing the stale lock", async () => {
+    const spec = runtimeSkillCacheSpec(root, skill)!;
+    const namespace = path.dirname(spec.root);
+    await fs.mkdir(namespace, { recursive: true });
+    const dead = { ...currentControllerProcessStamp(), bootId: randomUUID(), processStartedAt: null };
+    const token = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${token}`), lockStamp({ ...dead, pid: await exitedPid() }, token));
+    await fs.link(path.join(namespace, `.owner-${token}`), path.join(namespace, `${skill.id}.lock`));
+    // The waiter that claimed the stale lock crashed before unlinking it,
+    // leaving its claim published from a kept owner file.
+    const claimToken = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${claimToken}`),
+      JSON.stringify({ token: claimToken, controller: { ...dead, pid: await exitedPid() } }));
+    await fs.link(path.join(namespace, `.owner-${claimToken}`), path.join(namespace, `${skill.id}.lock.released-${token}`));
+    const startedAt = Date.now();
+    expect(await resolveRuntimeSkillCache(spec, reader())).toBe(path.join(spec.entry, "files"));
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("publishes a release claim only with its complete body", async () => {
+    const namespace = path.join(root, "claims");
+    await fs.mkdir(namespace);
+    const lock = path.join(namespace, "skill.lock");
+    const pid = await exitedPid();
+    const token = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${token}`),
+      lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }, token));
+    await fs.link(path.join(namespace, `.owner-${token}`), lock);
+    const stale = await fs.lstat(lock);
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: stale.ino, token });
+    const claim = await fs.readFile(`${lock}.released-${token}`, "utf8");
+    expect(JSON.parse(claim)).toMatchObject({ token: expect.any(String), controller: { pid: process.pid } });
+    // The claim keeps an owner file with the same inode, so its inode is never reused.
+    const claimInode = (await fs.lstat(`${lock}.released-${token}`)).ino;
+    const owners = await Promise.all((await fs.readdir(namespace)).filter(name => name.startsWith(".owner-"))
+      .map(async name => (await fs.lstat(path.join(namespace, name))).ino));
+    expect(owners).toContain(claimInode);
+    await expect(fs.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never removes a newer lock for a waiter that read a stale one late", async () => {
+    const namespace = path.join(root, "locks");
+    await fs.mkdir(namespace);
+    const lock = path.join(namespace, "skill.lock");
+    const staleToken = randomUUID();
+    const liveToken = randomUUID();
+    // The stale lock was already released and a live holder took the path.
+    await fs.writeFile(path.join(namespace, `.owner-${liveToken}`), lockStamp(currentControllerProcessStamp(), liveToken));
+    await fs.link(path.join(namespace, `.owner-${liveToken}`), lock);
+    const live = await fs.lstat(lock);
+    // Another waiter's claim exists: a late waiter does nothing, even when the
+    // live lock happens to reuse the stale inode number.
+    await fs.writeFile(`${lock}.released-${staleToken}`, "{}");
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: live.ino, token: staleToken });
+    expect((await fs.lstat(lock)).ino).toBe(live.ino);
+    // Without a claim, a different inode keeps the live lock too.
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: live.ino + 1, token: randomUUID() });
+    expect((await fs.lstat(lock)).ino).toBe(live.ino);
+  });
+
+  it("never treats age, another host, or a legacy holder as proof that a lock holder exited", async () => {
+    const pid = await exitedPid();
+    const here = { ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null };
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(here))).toBe(true);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...here, hostHash: "another-host" }))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(Buffer.from(JSON.stringify({ pid, host: os.hostname() })))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...here, pid: process.pid }))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(currentControllerProcessStamp()))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(Buffer.from("not json"))).toBe(false);
   });
 
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {

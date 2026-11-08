@@ -27,8 +27,16 @@ export const nativeRunFinalizations = pgTable(
     attempt: integer("attempt").notNull().default(0),
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    // Server process that took a token-only lease (finalizer or cleanup):
+    // {token, bootId, pid, hostHash, processStartedAt}. It names the holder only
+    // while `token` equals lease_owner, so a later lease never inherits it. The
+    // controller_* columns stay the executor's. Null on rows saved before it existed.
+    leaseHolder: jsonb("lease_holder").$type<Record<string, unknown>>(),
     controllerBootId: text("controller_boot_id"),
     controllerPid: integer("controller_pid"),
+    // PID space of controllerPid (controller-process-identity hostHash). Null
+    // on rows saved before it existed.
+    controllerHostHash: text("controller_host_hash"),
     controllerProcessStartedAt: timestamp("controller_process_started_at", {
       withTimezone: true,
     }),
@@ -50,6 +58,25 @@ export const nativeRunFinalizations = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    pendingEffectOwnerIdx: index("native_run_finalizations_pending_effect_owner_idx")
+      .on(table.companyId, table.issueId, table.decisionId)
+      .where(sql`${table.decisionId} is not null AND ${table.resultId} is not null AND ${table.phase} <> 'terminal_failure'`),
+    unsafeExportRecoveryIdx: index("native_run_finalizations_unsafe_export_recovery_idx")
+      .on(table.companyId, table.issueId, table.runId)
+      .where(sql`${table.phase} = 'terminal_failure' AND ${table.failureCode} = 'native_workspace_sync_out_unsafe_archive'`),
+    // The `native_accepted_result_lease` ownership kind: outstanding executor
+    // leases on an accepted result that is not final yet (reconciler listing).
+    // The `native_finalizer_lease` and `native_cleanup_lease` ownership kinds
+    // (reconciler listing and settle watch). Both are sparse.
+    finalizerLeaseIdx: index("native_run_finalizations_finalizer_lease_idx")
+      .on(table.leaseExpiresAt)
+      .where(sql`${table.leaseOwner} like 'native-finalizer:%'`),
+    cleanupLeaseIdx: index("native_run_finalizations_cleanup_lease_idx")
+      .on(table.leaseExpiresAt)
+      .where(sql`${table.leaseOwner} like 'native-cleanup:%'`),
+    acceptedResultLeaseIdx: index("native_run_finalizations_accepted_result_lease_idx")
+      .on(table.leaseExpiresAt)
+      .where(sql`${table.resultId} is not null AND ${table.leaseOwner} is not null AND ${table.phase} not in ('committed', 'terminal_failure', 'applied')`),
     controlDeadlineIdx: index("native_run_finalizations_control_deadline_idx")
       .on(table.controlDeadlineAt).where(sql`${table.controlDeadlineAt} is not null`),
     issueCompanyFk: foreignKey({

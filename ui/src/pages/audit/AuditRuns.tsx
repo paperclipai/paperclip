@@ -6,6 +6,7 @@ import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { routinesApi } from "@/api/routines";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryErrorState, useQueryView, type QueryViewState } from "@/components/QueryView";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,16 +49,14 @@ function routineRunTitle(run: RoutineRunSummary) {
 
 function RoutineScopedRuns({
   runs,
-  isLoading,
-  error,
-  onRetry,
+  view,
 }: {
   runs: RoutineRunSummary[];
-  isLoading: boolean;
-  error: Error | null;
-  onRetry: () => void;
+  view: QueryViewState<RoutineRunSummary[]>;
 }) {
-  if (isLoading) {
+  // A loaded list stays on screen through a failed refetch; an outage before
+  // the first load reads as loading, and only a real failure shows copy.
+  if (view.kind === "loading" || view.kind === "reconnecting") {
     return (
       <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
         Loading routine runs…
@@ -65,12 +64,14 @@ function RoutineScopedRuns({
     );
   }
 
-  if (error) {
+  if (view.kind === "error") {
     return (
-      <div className="flex flex-col items-center gap-3 border-y border-border py-14 text-center">
-        <p className="text-sm text-muted-foreground">{error.message}</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button>
-      </div>
+      <QueryErrorState
+        error={view.error}
+        action="load routine runs"
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     );
   }
 
@@ -126,9 +127,20 @@ function RoutineScopedRuns({
   );
 }
 
-export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
+export function AuditRuns({
+  companyId,
+  routineId,
+  lockedAgentId,
+  hideHeader = false,
+}: {
+  companyId: string;
+  routineId?: string;
+  /** Pin the list to one agent and hide the agent filter (the agent page's Runs). */
+  lockedAgentId?: string;
+  hideHeader?: boolean;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const agentId = searchParams.get("agentId") ?? ALL;
+  const agentId = lockedAgentId ?? searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -150,6 +162,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     enabled: Boolean(routineId),
     refetchInterval: 15_000,
   });
+  const runsView = useQueryView(runs);
+  const routineRunsView = useQueryView(routineRuns);
   const agentById = useMemo(
     () => new Map((agents.data ?? []).map((agent) => [agent.id, agent])),
     [agents.data],
@@ -191,25 +205,25 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     return (
       <RoutineScopedRuns
         runs={routineRuns.data ?? []}
-        isLoading={routineRuns.isLoading}
-        error={routineRuns.error instanceof Error ? routineRuns.error : null}
-        onRetry={() => void routineRuns.refetch()}
+        view={routineRunsView}
       />
     );
   }
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">Runs</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Recent agent executions across the organization. Open a run to inspect its transcript,
-          output, and task context.
-        </p>
-      </div>
+      {hideHeader ? null : (
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Runs</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Recent agent executions across the organization. Open a run to inspect its transcript,
+            output, and task context.
+          </p>
+        </div>
+      )}
 
-      <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
-        <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
+      <div data-canonical-toolbar="audit-runs" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
+        {lockedAgentId ? null : <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>Agent</span>
           <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>
             <SelectTrigger className="w-48">
@@ -224,7 +238,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
               ))}
             </SelectContent>
           </Select>
-        </label>
+        </label>}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>Status</span>
           <Select value={status} onValueChange={(value) => updateFilter("runStatus", value)}>
@@ -241,26 +255,24 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             </SelectContent>
           </Select>
         </label>
-        {agentId !== ALL || status !== ALL ? (
+        {(!lockedAgentId && agentId !== ALL) || status !== ALL ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
             Clear filters
           </Button>
         ) : null}
       </div>
 
-      {runs.isLoading ? (
+      {runsView.kind === "loading" || runsView.kind === "reconnecting" ? (
         <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
           Loading runs…
         </div>
-      ) : runs.error ? (
-        <div className="flex flex-col items-center gap-3 border-y border-border py-14 text-center">
-          <p className="text-sm text-muted-foreground">
-            {runs.error instanceof Error ? runs.error.message : "Failed to load runs."}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => runs.refetch()}>
-            Try again
-          </Button>
-        </div>
+      ) : runsView.kind === "error" ? (
+        <QueryErrorState
+          error={runsView.error}
+          action="load runs"
+          onRetry={runsView.retry}
+          retrying={runsView.isFetching}
+        />
       ) : visibleRuns.length === 0 ? (
         <EmptyState
           icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}

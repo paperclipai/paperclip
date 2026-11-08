@@ -1,10 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { Readable } from "node:stream";
-import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
+import type { StorageService, StorageProvider, PutFileInput, PutFileResult, PutObjectReceipt } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { cleanupStorageFailure } from "./failure-cleanup.js";
 
 const MAX_SEGMENT_LENGTH = 120;
+
+async function cancellable<T>(signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return action();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([action(), cancelled]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
 
 function sanitizeSegment(value: string): string {
   const cleaned = value
@@ -101,15 +114,18 @@ export function createStorageService(provider: StorageProvider): StorageService 
       ensureCompanyPrefix(input.companyId, objectKey);
       const byteSize = "byteSize" in input ? input.byteSize : input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
+      let receipt: void | PutObjectReceipt;
       try {
-        await provider.putObject({
+        receipt = await provider.putObject({
           objectKey,
           body: input.body,
           contentType,
           contentLength: byteSize,
+          signal: input.signal,
+          ...("sourceFile" in input && input.sourceFile ? { sourceFile: input.sourceFile } : {}),
         });
       } catch (error) {
-        await provider.deleteObject({ objectKey }).catch(() => {});
+        await cleanupStorageFailure(signal => provider.deleteObject({ objectKey, signal }));
         throw error;
       } finally {
         if (input.body instanceof Readable) input.body.destroy();
@@ -122,22 +138,24 @@ export function createStorageService(provider: StorageProvider): StorageService 
         byteSize,
         sha256: "sha256" in input ? input.sha256 : hashBuffer(input.body),
         originalFilename: input.originalFilename,
+        ...(receipt ? { integrity: receipt.integrity } : {}),
       };
     },
 
     async getObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.getObject({ objectKey, range: options?.range });
+      return provider.getObject({ objectKey, range: options?.range, signal: options?.signal });
     },
 
-    async headObject(companyId: string, objectKey: string) {
+    async headObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.headObject({ objectKey });
+      return cancellable(options?.signal, () => provider.headObject({ objectKey, signal: options?.signal }));
     },
 
-    async deleteObject(companyId: string, objectKey: string) {
+    async deleteObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      await provider.deleteObject({ objectKey });
+      await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal,
+        ...(options?.allVersions ? { allVersions: true } : {}) }));
     },
   };
 }

@@ -6,6 +6,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
 
+const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
+}));
+
+const mockDesignSandbox = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockDesignSandbox.enabled }));
+vi.mock("./DesignSandboxSidebar", () => ({ DesignSandboxSidebar: () => <div>Proposed sidebar</div> }));
+
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
@@ -206,6 +215,7 @@ vi.mock("../plugins/slots", async () => {
 });
 
 vi.mock("../context/DialogContext", () => ({
+  useDialogState: () => ({ newIssueOpen: false, newProjectOpen: false, newGoalOpen: false, newAgentOpen: false }),
   useDialog: () => ({
     openNewIssue: vi.fn(),
     openOnboarding: vi.fn(),
@@ -219,6 +229,7 @@ vi.mock("../context/DialogContext", () => ({
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
     togglePanelVisible: vi.fn(),
+    setPanelVisible: vi.fn(),
   }),
 }));
 
@@ -307,6 +318,8 @@ describe("Layout", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    classicWorkspace.enabled = true;
+    mockDesignSandbox.enabled = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     currentPathname = "/PAP/dashboard";
@@ -345,6 +358,20 @@ describe("Layout", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("uses the standard workspace presentation when Classic is off", async () => {
+    classicWorkspace.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.querySelector(".coordinator-workspace")).not.toBeNull();
+      classicWorkspace.enabled = true;
+      await act(async () => renderLayoutView(root, queryClient));
+      expect(container.querySelector(".coordinator-workspace")).toBeNull();
+    } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
   it("does not render the deployment explainer in the shared layout", async () => {
@@ -512,6 +539,20 @@ describe("Layout", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("retains settings navigation and route content beside the proposed sandbox sidebar", async () => {
+    currentPathname = "/PAP/company/settings/access";
+    mockDesignSandbox.enabled = true;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Layout /></QueryClientProvider>); });
+    await flushReact();
+    expect(container.textContent).toContain("Proposed sidebar");
+    expect(container.textContent).toContain("Company settings sidebar");
+    expect(container.textContent).toContain("Outlet content");
+    expect(container.textContent).not.toContain("Main company nav");
+    await act(async () => { root.unmount(); });
   });
 
   it("replaces the app sidebar with settings navigation on Streamlined settings routes", async () => {
@@ -868,7 +909,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps global navigation beside Skills, Agent, and Routine details", async () => {
+  it("keeps global navigation beside Agent and Routine details", async () => {
     async function renderAt(pathname: string) {
       currentPathname = pathname;
       const root = createRoot(container);
@@ -885,7 +926,6 @@ describe("Layout", () => {
     }
 
     for (const [pathname, sidebarText] of [
-      ["/PAP/skills/studio", "Skills sidebar"],
       ["/PAP/agents/briefing-analyst/skills", "Agent sidebar briefing-analyst"],
       [
         "/PAP/agents/briefing-analyst/runs/run-1",
@@ -946,6 +986,21 @@ describe("Layout", () => {
       await act(async () => {
         root.unmount();
       });
+      container.innerHTML = "";
+    }
+  });
+
+  it("uses the global rail without secondary Skills navigation in the streamlined shell", async () => {
+    for (const path of ["/PAP/skills", "/PAP/skills?tab=discover", "/PAP/skills/studio", "/PAP/skills/sources"]) {
+      currentPathname = path;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => { root.render(<QueryClientProvider client={queryClient}><Layout /></QueryClientProvider>); });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Main company nav");
+      expect(container.textContent).not.toContain("Skills sidebar");
+      await act(async () => root.unmount());
       container.innerHTML = "";
     }
   });

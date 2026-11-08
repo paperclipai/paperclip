@@ -67,10 +67,15 @@ Apply this gate to tests added or changed during gardening:
 
 ## Completion and reporting
 
+Keep audit decisions, plans, ledgers, and validation evidence in the task and
+PR description. Do not create or modify repository documentation, including
+`doc/plans/` audit receipts or reports, unless the human explicitly requests
+documentation changes. A test cleanup does not need a repository report.
+
 Report removals and keepers, retained/deferred candidates, checks and limitations,
 distinct cases versus repeated executions, and test/support versus production
-LOC. Count documentation separately. Label cost evidence as measured, estimated,
-or historical; a proven simplification does not require a measurable speedup.
+LOC. Label cost evidence as measured, estimated, or historical; a proven
+simplification does not require a measurable speedup.
 
 State the actual endpoint: findings, validated local patch, published PR,
 intermediate merge, or landed in the intended target. Stop at the requested

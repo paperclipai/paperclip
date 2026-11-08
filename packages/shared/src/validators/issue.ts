@@ -1,5 +1,9 @@
+import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
+import { maxStringLength } from "./text.js";
+import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
@@ -43,6 +47,12 @@ import {
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
 import { questionSetToAskUserQuestionsPayload } from "../question-set.js";
+
+export const issueSummariesQuerySchema = z.object({
+  ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
+    .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
+    .transform((ids) => [...new Set(ids)]),
+}).strict();
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -299,6 +309,8 @@ export const issueAssigneeAdapterOverridesSchema = z
   .object({
     adapterConfig: z.record(z.string(), z.unknown())
       .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
+      .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => key.toUpperCase() === "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"), "Prepared harness homes must be provisioned by the execution environment, not on a task")
+      .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => ["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"].includes(key.toUpperCase())), "Managed shell helpers must be provisioned by the execution environment, not on a task")
       .optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -435,7 +447,19 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const requiredQualityReviewSchema = z.object({
+  version: z.literal(1),
+  deliverables: z.array(z.object({
+    key: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
+    label: z.string().trim().min(1).max(120),
+  }).strict()).min(1).max(10),
+}).strict().superRefine((value, ctx) => {
+  if (new Set(value.deliverables.map(item => item.key)).size !== value.deliverables.length)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Quality review deliverable keys must be unique", path: ["deliverables"] });
+});
+
 export const issueExecutionPolicySchema = z.object({
+  requiredQualityReview: requiredQualityReviewSchema.optional(),
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
@@ -567,10 +591,40 @@ export const resumeWorkspaceFinalizationSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+/** Board attestation that a native run's previous server stopped, for a
+ * controller row an ephemeral server cannot judge by PID. */
+export const confirmNativeControllerStoppedSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
 export const retryWorkspaceExportSchema = z.object({
   actionId: z.string().guid(),
   runId: z.string().guid(),
   repairNote: z.string().trim().min(20).max(12000),
+}).strict();
+
+export const taskRetrySchema = z.object({
+  idempotencyKey: z.string().guid(),
+  observedRunId: z.string().guid().nullable(),
+}).strict();
+
+export const recoverWorkspaceSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  idempotencyKey: z.string().guid(),
+}).strict();
+
+export const reconstructWorkspaceSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  expectedStatusVersion: z.number().int().nonnegative(),
+  attachmentIds: z.array(z.string().guid()).min(1).max(20).refine(ids => new Set(ids).size === ids.length),
+  missingWork: z.string().trim().min(20).max(12000),
+  actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
+  outcomeEvidence: z.string().trim().min(20).max(12000),
+  acknowledgeLostWork: z.literal(true),
 }).strict();
 
 export const resolveIssueRecoveryActionSchema = z
@@ -725,6 +779,10 @@ const createIssueBaseSchema = z.object({
     .strict()
     .optional()
     .nullable(),
+  /**
+   * Inherit the project and workspace strategy of this issue. The new task never
+   * shares the source issue's realized workspace; it gets its own from the project base.
+   */
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
@@ -904,6 +962,7 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    expectedStatusVersion: z.number().int().nonnegative().optional(),
     /** Reject a policy write if the policy changed after the caller read it. */
     expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
@@ -1055,7 +1114,15 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
-    sourceChannel: z.literal("imessage-photon").optional(),
+    chatMessage: z.object({
+      sourceTaskId: z.uuid(),
+      sourceTaskIdentifier: z.string().min(1).max(80),
+      sourceRunId: z.uuid(),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional(),
+    recoveryResponsibility: z.enum(["system", "user"]).optional(),
+    attachmentPreparation: z.object({ attachmentId: z.uuid() }).strict().optional(),
+    sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()
@@ -1077,6 +1144,13 @@ export const issueCommentMetadataSchema = z
   .strict();
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
+
+export const sendChatMessageSchema = z.object({
+  body: multilineTextSchema.pipe(z.string().trim().min(1).max(20000)),
+  idempotencyKey: z.string().trim().min(1).max(240),
+}).strict();
+
+export const markIssueReadSchema = z.object({ throughCommentId: z.uuid().optional() }).strict();
 
 export const addIssueCommentSchema = z.object({
   clientRequestId: z.string().uuid().optional(),
@@ -1137,6 +1211,15 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    setupAccess: z.object({
+      connectionId: z.string().guid(),
+      access: z.union([z.literal("all_agents"), z.object({ agentIds: z.array(z.string().guid()).max(250) }).strict()]),
+    }).strict().optional(),
+    savedSetup: z.object({ endpointId: z.string().guid(), connectionId: z.string().guid(), action: z.enum(["enter_credentials", "rotate_credentials", "confirm_identity"]).optional(), credentialRotation: z.object({ previousId: z.string().guid().nullable() }).strict().optional(), credentialEntry: z.object({
+      previousGenerations: z.record(z.string().refine(field => ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"].includes(field)), z.string().uuid().nullable()).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 5),
+      requireAll: z.boolean(),
+    }).strict().optional() }).strict()
+      .refine(value => value.action !== "rotate_credentials" || !!value.credentialRotation, "Rotation requests need a completion boundary").optional(),
     accessRequest: z.object({
       connectionId: z.string().guid(),
       connectionName: z.string().trim().min(1).max(160),
@@ -1145,7 +1228,7 @@ export const connectionIntentPayloadSchema = z
         toolName: z.string().trim().min(1).max(160),
         versionHash: z.string().min(1).max(256),
         permission: z.enum(["allowed", "ask_first"]),
-      }).strict()).min(1).max(20).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
+      }).strict()).min(1).max(500).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
     }).strict().optional(),
     upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
     purpose: z.enum(["ai", "channel"]).optional(),
@@ -1207,6 +1290,8 @@ export const suggestedTaskDraftSchema = z
       .pipe(z.string().trim().max(20000))
       .nullable()
       .optional(),
+    initialPlan: z.string().trim().min(1).max(200000).nullable().optional(),
+    requiredQualityReview: requiredQualityReviewSchema.optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
@@ -1294,18 +1379,18 @@ export const askUserQuestionsQuestionSchema = z.object({
 });
 
 const paperclipQuestionOptionSchema = z.object({
-  id: z.string().min(1).max(160),
-  label: z.string().min(1).max(1000),
-  description: z.string().max(4000).optional(),
+  id: maxStringLength(z.string().min(1), 160),
+  label: maxStringLength(z.string().min(1), 1000),
+  description: maxStringLength(z.string(), 4000).optional(),
   recommended: z.boolean().optional(),
 });
 
 const paperclipQuestionSchema = z
   .object({
-    id: z.string().min(1).max(160),
-    header: z.string().max(1000).optional(),
-    prompt: z.string().min(1).max(4000),
-    helpText: z.string().max(4000).optional(),
+    id: maxStringLength(z.string().min(1), 160),
+    header: maxStringLength(z.string(), 1000).optional(),
+    prompt: maxStringLength(z.string().min(1), 4000),
+    helpText: maxStringLength(z.string(), 4000).optional(),
     required: z.boolean(),
     answerMode: z.enum(["single_select", "multi_select", "text"]),
     initialText: z.string().refine(value => value.length <= 200000 && Array.from(value).length <= 100000, "initial text exceeds 100000 Unicode code points").optional(),
@@ -1313,15 +1398,15 @@ const paperclipQuestionSchema = z
     customAnswer: z
       .object({
         enabled: z.literal(true),
-        label: z.string().max(1000).optional(),
-        placeholder: z.string().max(1000).optional(),
+        label: maxStringLength(z.string(), 1000).optional(),
+        placeholder: maxStringLength(z.string(), 1000).optional(),
       })
       .optional(),
     textValidation: z
       .object({
         minLength: z.number().int().min(0).max(100000).optional(),
         maxLength: z.number().int().min(0).max(100000).optional(),
-        pattern: z.string().max(1000).optional(),
+        pattern: maxStringLength(z.string(), 1000).optional(),
         inputType: z.enum(["text", "number", "integer"]).optional(),
         minimum: z.number().finite().optional(),
         maximum: z.number().finite().optional(),
@@ -1406,9 +1491,9 @@ const paperclipQuestionSchema = z
 export const paperclipQuestionSetPayloadSchema = z
   .object({
     schema: z.literal("paperclip.question_set.v1"),
-    title: z.string().max(1000).optional(),
-    description: z.string().max(100_000).optional(),
-    submitLabel: z.string().max(200).optional(),
+    title: maxStringLength(z.string(), 1000).optional(),
+    description: maxStringLength(z.string(), 100_000).optional(),
+    submitLabel: maxStringLength(z.string(), 200).optional(),
     questions: z.array(paperclipQuestionSchema).min(1).max(64),
   })
   .superRefine((value, ctx) => {
@@ -1542,8 +1627,18 @@ export const requestConfirmationCustomTargetSchema =
     revisionNumber: z.number().int().positive().nullable().optional(),
   });
 
+export const requestConfirmationIssueAttachmentTargetSchema =
+  requestConfirmationTargetBaseSchema.extend({
+    type: z.literal("issue_attachment"),
+    issueId: z.string().guid().nullable().optional(),
+    attachmentId: z.string().guid(),
+    assetId: z.string().guid(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/, "sha256 must identify the exact attachment bytes"),
+  });
+
 export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
   requestConfirmationCustomTargetSchema,
 ]);
 
@@ -1575,7 +1670,13 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+const qualityReviewBindingSchema = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
+  requirementHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
+
 export const requestConfirmationPayloadSchema = z.object({
+  qualityReview: qualityReviewBindingSchema.optional(),
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
@@ -1792,6 +1893,8 @@ export const requestItemVerdictValueSchema = z.enum([
 ]);
 
 export const requestItemVerdictsItemSchema = z.object({
+  qualityReview: qualityReviewBindingSchema.optional(),
+  target: requestConfirmationTargetSchema.nullable().optional(),
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
@@ -1827,7 +1930,12 @@ export const requestItemVerdictsPayloadSchema = z
   })
   .superRefine((value, ctx) => {
     const itemIds = new Set<string>();
+    const qualityKeys = new Set<string>();
     for (const [index, item] of value.items.entries()) {
+      if (item.qualityReview) {
+        if (qualityKeys.has(item.qualityReview.key)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Quality review keys must be unique within one request", path: ["items", index, "qualityReview", "key"] });
+        qualityKeys.add(item.qualityReview.key);
+      }
       if (itemIds.has(item.id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

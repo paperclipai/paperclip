@@ -22,11 +22,20 @@ const HARNESS_MESSAGE_SCHEMA: &str = "paperclip.fake_harness.message.v1";
 const CONTROLLER_COMMAND_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalRunnerError(String);
+pub struct LocalRunnerError(String, Option<Value>);
 
 impl LocalRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(message.into(), None)
+    }
+
+    pub fn with_provider_failure(mut self, value: Option<Value>) -> Self {
+        self.1 = crate::provider_failure::validated_provider_failure(value);
+        self
+    }
+
+    pub fn provider_failure(&self) -> Option<Value> {
+        self.1.clone()
     }
 }
 

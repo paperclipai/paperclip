@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -57,6 +58,22 @@ impl CommandExecutor for SelectedExecutor {
             Self::Acpx(executor) => executor.poll_events(),
             Self::Managed(executor) => executor.poll_events(),
             Self::Dot(executor) => executor.poll_events(),
+        }
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.poll_disconnected_events(),
+            Self::Acpx(executor) => executor.poll_disconnected_events(),
+            Self::Managed(executor) => executor.poll_disconnected_events(),
+            Self::Dot(executor) => executor.poll_disconnected_events(),
+        }
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.maintain_disconnected_provider(),
+            _ => Ok(None),
         }
     }
 
@@ -133,6 +150,32 @@ impl NativeProviderCommandExecutor {
     }
 
     fn select_recovery(&mut self) -> Result<(), DurableRunnerError> {
+        if !self.recovery_checked
+            && self
+                .config
+                .acpx_launch_profile
+                .as_ref()
+                .is_some_and(|profile| {
+                    profile
+                        .candidate_admission
+                        .as_ref()
+                        .is_some_and(|admission| admission.agent == "antigravity")
+                })
+            && [
+                CODEX_PROVIDER_STATE_FILE,
+                ACPX_PROVIDER_STATE_FILE,
+                MANAGED_PROVIDER_STATE_FILE,
+                DOT_PROVIDER_STATE_FILE,
+                MUSE_PROVIDER_STATE_FILE,
+                "credential-observer-state.json",
+            ]
+            .iter()
+            .any(|file| self.state_dir.join(file).exists())
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot adopt a prior durable runner activation",
+            ));
+        }
         self.credentials.restore()?;
         if self.recovery_checked {
             return Ok(());
@@ -181,6 +224,35 @@ impl NativeProviderCommandExecutor {
         Ok(())
     }
 
+    fn poll_with_credentials(
+        &mut self,
+        poll: fn(&mut SelectedExecutor) -> Result<Vec<PolledEvent>, DurableRunnerError>,
+    ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.credentials.poll(false)?;
+        if let Some(event) = self.credentials.pending() {
+            return Ok(vec![event]);
+        }
+        let events = self
+            .selected
+            .as_mut()
+            .map_or_else(|| Ok(Vec::new()), poll)?;
+        let terminal = events.iter().any(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "turn.completed"
+                    | "turn.failed"
+                    | "turn.interrupted"
+                    | "turn.cancelled"
+                    | "harness.exited"
+            )
+        });
+        self.credentials.poll(terminal)?;
+        Ok(self
+            .credentials
+            .pending()
+            .map_or(events, |event| vec![event]))
+    }
+
     fn select_from_payload(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
         let kind = payload
             .pointer("/provider/kind")
@@ -190,6 +262,32 @@ impl NativeProviderCommandExecutor {
                     "run.prepare requires a supported provider kind before runner execution",
                 )
             })?;
+        if let Some(admission) = self
+            .config
+            .acpx_launch_profile
+            .as_ref()
+            .and_then(|profile| profile.candidate_admission.as_ref())
+        {
+            if kind != "acpx" {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX candidate cannot authorize another provider kind",
+                ));
+            }
+            admission
+                .validate_binding(
+                    payload
+                        .pointer("/provider/agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    payload
+                        .pointer("/provider/model")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    &self.config.run_id,
+                    &self.config.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         self.selected = Some(match kind {
             "muse" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
                 &self.state_dir,
@@ -205,7 +303,7 @@ impl NativeProviderCommandExecutor {
                 &self.config,
                 ExternalProviderCodec::Grok,
             )),
-            "codex" | "opencode" => SelectedExecutor::LocalFacade(
+            "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
@@ -226,6 +324,35 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
+
+    fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.observe_recovery_state(state),
+            Some(SelectedExecutor::Acpx(executor)) => executor.observe_recovery_state(state),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected
@@ -287,29 +414,17 @@ impl CommandExecutor for NativeProviderCommandExecutor {
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.select_recovery()?;
-        self.credentials.poll(false)?;
-        if let Some(event) = self.credentials.pending() {
-            return Ok(vec![event]);
-        }
-        let events = self
-            .selected
+        self.poll_with_credentials(CommandExecutor::poll_events)
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.poll_with_credentials(CommandExecutor::poll_disconnected_events)
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        self.selected
             .as_mut()
-            .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)?;
-        let terminal = events.iter().any(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "turn.completed"
-                    | "turn.failed"
-                    | "turn.interrupted"
-                    | "turn.cancelled"
-                    | "harness.exited"
-            )
-        });
-        self.credentials.poll(terminal)?;
-        Ok(self
-            .credentials
-            .pending()
-            .map_or(events, |event| vec![event]))
+            .map_or(Ok(None), CommandExecutor::maintain_disconnected_provider)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {

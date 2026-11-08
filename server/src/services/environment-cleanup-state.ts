@@ -1,0 +1,53 @@
+import { and, eq, or, sql } from "drizzle-orm";
+import { environmentLeases, sandboxCreationOperations, type Db } from "@paperclipai/db";
+import { hasDeferredEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+
+export const ENVIRONMENT_CLEANUP_RETRY_MS = 5 * 60_000;
+
+export function recoverableSandboxCreationCondition() {
+  return or(eq(sandboxCreationOperations.state, "pending"), and(
+    eq(sandboxCreationOperations.state, "needs_reconciliation"),
+    sql`coalesce(${sandboxCreationOperations.metadata}->>'creationReconciliationReason', '') <> 'company_deleted'`,
+    sql`${sandboxCreationOperations.metadata}->>'runnerTaskLease' = 'true'`,
+    sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'runnerTaskCreationContextId') = 'string' and ${sandboxCreationOperations.metadata}->>'runnerTaskCreationContextId' <> ''`,
+    or(sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'creationProviderLeaseId') = 'string' and ${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' <> ''`,
+      and(sql`${sandboxCreationOperations.metadata}->>'creationOperationVersion' = '1'`,
+        sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'providerMetadata') = 'object'`)),
+  ));
+}
+
+/** A run lease the ownership settle moved to cleanup, before its first
+ * cleanup attempt. Its holder is proven gone, so the first stop or teardown is
+ * due now regardless of how recently the lease was used; a failed attempt
+ * counts and the normal retry backoff applies from then on. */
+export function recoveredOrphanFirstAttemptSql() {
+  return sql`(${environmentLeases.failureReason} = 'orphaned_active_lease_recovered'
+    or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true')
+    and coalesce(${environmentLeases.metadata}->>'pendingCleanupRetryAttempts', '0') = '0'
+    and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`;
+}
+
+export function pendingCleanupDeadlineSql(now = Date.now()) {
+  const deadline = sql`case
+    when ${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'
+      and ${environmentLeases.metadata} ? 'pendingCleanupLeaseExpiresAtMs'
+      then ${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs'
+    else ${environmentLeases.metadata}->'pendingCleanupRetryAfterMs' end`;
+  return sql`case when jsonb_typeof(${deadline}) = 'number' then
+    case when (${deadline})::numeric <= ${now + 30 * 60_000 + 1_000}
+      then greatest(0, (${deadline})::numeric) else 0 end
+    else 0 end`;
+}
+
+export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_CLEANUP_RETRY_MS): Promise<number | null> {
+  const [row] = await db.select({ next: sql<string | null>`min(case when ${recoveredOrphanFirstAttemptSql()}
+    then ${pendingCleanupDeadlineSql()} else greatest(
+    extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${backoffMs},
+    ${pendingCleanupDeadlineSql()}) end)` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));
+  const [creation] = await db.select({ next: sql<string | null>`min(extract(epoch from ${sandboxCreationOperations.nextAttemptAt}) * 1000)` })
+    .from(sandboxCreationOperations).where(recoverableSandboxCreationCondition());
+  const deadlines = [row?.next, creation?.next].filter((value): value is string => value != null).map(Number);
+  const saved = deadlines.length ? Math.min(...deadlines) : null;
+  const buffered = hasDeferredEnvironmentCleanup(db) ? Date.now() + backoffMs : null;
+  return saved === null ? buffered : buffered === null ? saved : Math.min(saved, buffered);
+}

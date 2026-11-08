@@ -9,6 +9,7 @@ import {
   asString,
   parseObject,
   ensurePathInEnv,
+  sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   asStringArray,
@@ -17,6 +18,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   describeAdapterExecutionTarget,
@@ -120,6 +122,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "pi_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -189,7 +192,7 @@ export async function testEnvironment(
       }
     }
 
-    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }));
 
     const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
     if (cwdInvalid) {

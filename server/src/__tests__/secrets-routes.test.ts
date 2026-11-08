@@ -303,6 +303,17 @@ describe("secret routes", () => {
     );
   });
 
+  it("does not turn agent discovery of personal entry into human identity authority", async () => {
+    const app = createApp({ type: "agent", agentId: "agent-1", companyId: "company-1" });
+    expect((await request(app).get("/api/companies/company-1/user-secret-definitions")).status).toBe(403);
+    expect((await request(app).get("/api/companies/company-1/me/user-secrets")).status).toBe(403);
+    expect((await request(app).post("/api/companies/company-1/me/user-secrets").send({
+      definitionKey: "github_token", value: "synthetic-value",
+    })).status).toBe(403);
+    expect(mockSecretService.listUserSecretDefinitions).not.toHaveBeenCalled();
+    expect(mockSecretService.createCurrentUserSecretValue).not.toHaveBeenCalled();
+  });
+
   it("creates current-user secret values for the authenticated user only", async () => {
     mockSecretService.createCurrentUserSecretValue.mockResolvedValue({
       id: "secret-1",

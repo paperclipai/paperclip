@@ -34,6 +34,7 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileConfiguration,
   ToolProfileNewToolReviewDecision,
   ToolProfileNewToolsReview,
   ToolProfileNewToolsReviewResult,
@@ -42,6 +43,7 @@ import type {
   ReorderToolPolicies,
   AppDefinition,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
@@ -66,7 +68,7 @@ import type {
   ToolConnectionCreateCapabilities,
   ToolAppMetadataPreflightResult,
 } from "@paperclipai/shared";
-import { api, detachInflightGet } from "./client";
+import { api, detachInflightGet, type RequestOptions } from "./client";
 
 /**
  * Tools & Access API client (Phase 6, PAP-10389).
@@ -309,6 +311,7 @@ export const toolsApi = {
       asCurrentUser?: boolean;
       asAgentId?: string;
       interactionId?: string;
+      workspaceServices?: import("@paperclipai/shared").GoogleWorkspaceServiceSelection;
     } = {},
   ) =>
     api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, input),
@@ -332,10 +335,13 @@ export const toolsApi = {
       `/companies/${companyId}/tools/apps/${connectionId}/finish`,
       input,
     ),
+  getConnectionReviewCounts: (connectionId: string) =>
+    api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
-  listApplications: (companyId: string) =>
-    api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
+  listApplications: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`, options)
+      : api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
   createApplication: (companyId: string, input: CreateToolApplicationInput) =>
     api.post<ToolApplication>(`/companies/${companyId}/tools/applications`, input),
   updateApplication: (applicationId: string, input: UpdateToolApplicationInput) =>
@@ -344,8 +350,9 @@ export const toolsApi = {
     api.delete<ToolApplication>(`/tool-applications/${applicationId}`),
 
   // --- Connections ---
-  listConnections: (companyId: string) =>
-    api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
+  listConnections: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`, options)
+      : api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
   getConnection: (connectionId: string) =>
     api.get<ToolConnection>(`/tool-connections/${connectionId}`),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
@@ -366,8 +373,8 @@ export const toolsApi = {
   // --- Identity grants (PAP-17835): who a connection acts as. The response
   // carries server-computed capabilities and the audience member directory, so
   // the UI never rebuilds the permission matrix from `membershipRole`.
-  listConnectionGrants: (connectionId: string) =>
-    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`),
+  listConnectionGrants: (connectionId: string, options?: RequestOptions) =>
+    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`, { timeoutMs: 15_000, ...options }),
   createConnectionGrantDelegation: (connectionId: string, grantId: string, agentId: string) =>
     api.post<ConnectionGrantDelegation>(
       `/tool-connections/${connectionId}/grants/${grantId}/delegations`,
@@ -479,6 +486,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
+  listConnectionProfileConfiguration: (connectionId: string) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>

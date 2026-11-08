@@ -1,3 +1,4 @@
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -18,6 +19,14 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 import { issues } from "./issues.js";
+
+// Literal allowlist shared by bounded projections and the matching partial index.
+// Constants are quoted here so PostgreSQL can prove the index predicate even
+// when callers use prepared statements.
+export const workspaceRestoreFailureCodesSql = sql.join(
+  WORKSPACE_RESTORE_FAILURE_CODES.map(code => sql.raw(`'${code.replaceAll("'", "''")}'`)),
+  sql`, `,
+);
 
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
@@ -87,6 +96,10 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // PID space of processPid (controller-process-identity hostHash), or
+    // "remote" for a sandbox PID. Null on rows saved before it existed.
+    processHostHash: text("process_host_hash"),
+    legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),
@@ -94,6 +107,9 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    // Legacy: no writer since process loss moved onto the durable failure
+    // retry budget (contextSnapshot.executionRetryAccounting). Kept so rows and
+    // readers from earlier releases stay valid; never gate retries on it.
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
@@ -111,11 +127,30 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    nativeUnpresentedResponseIdx: index("heartbeat_runs_native_unpresented_response_idx")
+      .on(table.companyId, table.nativeIssueId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} in ('succeeded', 'failed', 'timed_out') AND ${table.finishedAt} is not null AND jsonb_typeof(${table.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`),
+    cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
+        AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+        AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`),
+    retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
+      .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+        and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')
+        and ${table.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`),
     scopeBindingCheck: check(
       "heartbeat_runs_scope_binding_check",
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
         OR ${table.scopeKind} = 'issue'`,
     ),
+    scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
+      .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Runs a dispatch gate refused for a pause; that hold's release resumes them.
+    treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
+      .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
+      .where(sql`${table.status} = 'cancelled' and ${table.resultJson} ? 'treeHoldSuppression'`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

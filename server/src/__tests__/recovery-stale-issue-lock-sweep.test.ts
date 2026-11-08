@@ -1,7 +1,11 @@
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  subscribeDatabaseWork,
   costEvents,
   activityLog,
   agents,
@@ -25,9 +29,11 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { recoveryService } from "../services/recovery/service.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_STALE_LOCK_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -43,8 +49,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-lock-sweep-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-lock-sweep-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -64,6 +70,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -389,6 +396,52 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(second.cleared).toBe(0);
   });
 
+  it.each([[false, true], [true, false]] as const)(
+    "judges a pre-upgrade pid with no recorded space only on a single-host server (ephemeral: %s)", async (ephemeral, terminalized) => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", ephemeral ? "true" : "");
+    try {
+      const { companyId, agentId, runningRunId } = await seed();
+      await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: null })
+        .where(eq(heartbeatRuns.id, runningRunId));
+      await db.insert(issues).values({ id: randomUUID(), companyId, title: "Pre-upgrade orphan", status: "in_progress",
+        priority: "high", assigneeAgentId: agentId, checkoutRunId: runningRunId, executionRunId: runningRunId,
+        executionLockedAt: new Date() });
+      const result = await heartbeatService(db).sweepStaleIssueLocks();
+      expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
+      const events = await db.select({ details: activityLog.details }).from(activityLog)
+        .where(and(eq(activityLog.runId, runningRunId), eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")));
+      expect(events).toHaveLength(terminalized ? 1 : 0);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([["local", true], ["remote", false]] as const)("stamps a %s process pid with its PID space", async (targetKind, local) => {
+    const { runningRunId } = await seed();
+    await persistHeartbeatRunProcessMetadata(db, runningRunId, { pid: process.pid, processGroupId: null,
+      startedAt: new Date().toISOString(), targetKind });
+    const [run] = await db.select({ processHostHash: heartbeatRuns.processHostHash }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId));
+    expect(run?.processHostHash).toBe(local ? currentProcessSpaceHash() : "remote");
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space", false],
+    ["a sandbox", "remote", false],
+    ["an unreadable PID space", "unknown", false],
+    ["this PID space", "current", true],
+  ] as const)("judges a dead recorded pid only in its own PID space (%s)", async (_name, space, terminalized) => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000,
+      processHostHash: space === "current" ? currentProcessSpaceHash() : space })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({ id: randomUUID(), companyId, title: "Cross-host orphan", status: "in_progress",
+      priority: "high", assigneeAgentId: agentId, checkoutRunId: runningRunId, executionRunId: runningRunId,
+      executionLockedAt: new Date() });
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
+    const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run?.status).toBe(terminalized ? "interrupted" : "running");
+  });
+
   it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid, but the process and its sandbox are gone. A pid
@@ -585,8 +638,15 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   it.each(["observed", "workspace_finalizing", "ready_for_assessment", "arbitrating", "retryable_failure"])(
     "preserves a completed native result in %s after its provider exits", async phase => {
       const { runningRunId, issueId } = await seedPendingNativeResult(phase);
-      const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
-      expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => events.push(event));
+      try {
+        const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+        for (let pass = 0; pass < 3; pass++) {
+          expect(await recovery.sweepStaleIssueLocks()).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+        }
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
       expect(await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running", errorCode: null }]);
       expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)

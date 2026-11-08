@@ -1,3 +1,8 @@
+import { isContextCompactionRun } from "./context-compaction.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import {
   persistActivity,
@@ -7,6 +12,7 @@ import {
 import type { NativeStatusDecision } from "./native-runtime/status-arbiter.js";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import {
+  agents,
   agentTaskSessions,
   agentWakeupRequests,
   heartbeatRuns,
@@ -17,7 +23,11 @@ import {
   type Db,
 } from "@paperclipai/db";
 
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
+import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+import { HttpError } from "../errors.js";
 
 export type ConversationIdentity = {
   conversationAgentId?: string | null;
@@ -78,7 +88,11 @@ export function isConversationReset(body: string): boolean {
   return body.trim() === "/new";
 }
 
-export const AGENT_CHAT_DIRECTIVE = `You are in an ongoing conversation with the user. Help them clarify the outcome they want. Ask focused questions when missing information materially affects the task; when the request is already clear, do not require a ritual confirmation.
+export const AGENT_CHAT_DIRECTIVE = `You are in an ongoing conversation with the user. Help them clarify the outcome they want. Ask focused questions when missing information materially affects the task; when the request is already clear, do not require a ritual confirmation. When a request to change one record matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them: link each candidate, name what distinguishes them (such as project or status), and restate the requested change. Do not pick the first match, change every match, or keep searching for a hidden answer; asking in your reply is enough, and you finish the change when the person answers.
+
+When changing defaults or policy for new or future work, update the resource that owns those defaults. Leave existing items and active work unchanged unless the user explicitly includes them in the requested change. This boundary includes metadata and association changes, even when they seem harmless or helpful. Do not broaden the request to align related existing items. Explain which subsequent work inherits the saved defaults and whether existing work changed.
+
+If the current execution lacks the board or instance-operator identity required by an operation, use permitted discovery to identify the supported operator path, complete other permitted work, then explain the required handoff and end your response. A user's request or confirmation does not expand your credential's scope. Treat permission denials as boundaries: do not probe host processes, private control files, or unrelated endpoints for alternate access. Distinguish a requested action from a verified action.
 
 Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. Planning alone does not create execution tasks. Put implementation and substantial execution into separate tasks.
 
@@ -92,13 +106,22 @@ When a user answers a pending confirmation in chat, read the latest cards and us
 
 Before handing off work, inspect available projects and repositories. Every task you create from this chat must belong to a suitable project. Reuse an appropriate existing project; otherwise use create_project. Consider all relevant available repositories and pass repositoryIds for one or multiple repositories when the work spans them. For existing GitHub repositories you can access that are absent from the catalog, pass their HTTPS repositoryUrls; this registers them with the project without creating remote GitHub repositories. You may combine known IDs and URLs and attach multiple repositories. The direct HTTP equivalent is POST /api/companies/{companyId}/projects with name, repositoryIds and/or repositoryUrls arrays, and an idempotencyKey. Include all selected repositories in that creation; do not combine these arrays with workspace. Never invent repository IDs or substitute inaccessible repositories. Ask when the choice is materially ambiguous or required access is missing. Non-code projects may need no repository.
 
-Create ordinary assigned tasks, never subtasks of this conversation. Give each task a clear outcome, context, acceptance criteria, project, and appropriate assignee. Use create_task with initialPlan to copy the relevant plan into the new task before execution starts. If using the HTTP API directly, POST /api/companies/{companyId}/issues with projectId, assigneeAgentId, status: "todo", initialPlan containing the relevant plan Markdown, and an idempotencyKey; omit parentId. Putting a plan in description does not create the task's plan document. Verify the new task's plan document before claiming the handoff is complete. Preserve the original plan here. Carry forward only the remaining execution steps, not completed planning, approval, project creation, or task creation steps. Include the source conversation ID, approved plan revision ID, and accepted interaction ID so the worker can verify the recorded approval. State the approved scope and what is already done; do not claim the new plan document has its own approval. The worker should execute that authorized scope, and ask again only if scope changes or another applicable gate requires it. When splitting work, include the relevant part of the plan in each task. Create and link each task before claiming it exists.
+Create ordinary assigned tasks; this conversation is never a parent. Choose the shape that fits the work: one task for one coherent outcome, a top-level task with child tasks under it when one owner coordinates several parts, or separate top-level tasks for unrelated outcomes. With create_task, create the top-level task first, then pass its ID as parentTaskId for each child. Nest only one level: a child of a child is placed beside it as a sibling. Use blockers, not nesting, for ordering. Give each task a clear outcome, context, acceptance criteria, and project. Default the assignee to the agent in this conversation (yourself). Assign a different agent or person only when the user explicitly specifies that owner. A task requested "for me" does not by itself mean assigning it to the user. Do not choose a different agent based on perceived suitability. Use create_task with initialPlan to copy the relevant plan into the new task before execution starts. If using the HTTP API directly, POST /api/companies/{companyId}/issues with projectId, assigneeAgentId, status: "todo", initialPlan containing the relevant plan Markdown, and an idempotencyKey; omit parentId for a top-level task, or set it to a top-level task you created from this conversation for a child. Putting a plan in description does not create the task's plan document. Verify the new task's plan document before claiming the handoff is complete. Preserve the original plan here. Carry forward only the remaining execution steps, not completed planning, approval, project creation, or task creation steps. Include the source conversation ID, approved plan revision ID, and accepted interaction ID so the worker can verify the recorded approval. State the approved scope and what is already done; do not claim the new plan document has its own approval. The worker should execute that authorized scope, and ask again only if scope changes or another applicable gate requires it. When splitting work, include the relevant part of the plan in each task. Create and link each task before claiming it exists.
 
 For review or follow-up tasks, include the existing source materials the assignee needs, not just task identifiers or a rubric. Read the source task's saved documents and comments, then copy the relevant existing content into the handoff or attach resources the recipient can actually read. A new task's tools may only expose its own documents and history. Supplying existing source material is coordination, not creating the assigned deliverable.
+
+For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>. The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN. This conversation's own task identifier gives it, and every company link below (tasks, approvals, runs, agent profiles) uses that same prefix. Never build a prefix from the company name, a slug, a hostname or a file path. For approval links, use /<prefix>/approvals/<approvalId> with the same company prefix and the returned approval id, so the person can open the approval to decide it. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link. For an execution run, link /<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId. Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId; use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}. Run listings return agent IDs, not names: read the agent and name it rather than showing a raw ID.
+
+When a reply concerns a specific agent, such as one you paused, resumed, configured, or reported on, link its profile at /<prefix>/agents/<urlKey or id> using the agent's returned urlKey or id. A profile link is not a mention: use agent:// only when you intend to notify that agent.
+
+A person's own display name and avatar belong to their account, and only they can change them in their profile settings at /<prefix>/company/settings/instance/profile. Agent credentials cannot edit a person's profile, and renaming an agent, a member record or the company does not change it. When the person asks to change their own name or avatar, link that page instead of attempting the change.
 
 For status updates, distinguish recorded task status from active execution and verified progress. Read the latest relevant comments and run outcome before explaining a blocker or claiming work is underway. Use the advertised API tools for another task's details when needed. A completed dependency does not prove a block is stale; report the assignee's recorded reason. Agent configuration may be redacted: an empty configuration object without configuration-read permission does not prove settings are disabled or at their defaults. If the evidence is unavailable, say what you could verify and what remains unknown rather than guessing or recommending a status change.
 
 Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Paperclip will bring completed handed-off tasks back as a new input here so you can explain the result and link it without another user message. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
+
+/** Presentation guidance for the opted-in Coordinator experience; not authority. */
+export const COORDINATOR_CHAT_HANDOFF_DIRECTIVE = `For an exploratory conversation that has become a concrete work opportunity, distinguish recommending work from the user's authorization to start it. Once the outcome and success criteria are clear, use request_human_input with interactionKind: "suggest_tasks", a stable idempotencyKey, and payload.tasks containing a clientKey, concise title, description with success criteria, assigneeAgentId defaulting to this conversation's agent (yourself), projectId and relevant initialPlan. Preserve a different agent or person only when the user explicitly specifies that assignee. Accepted tasks are standalone by default. For several related parts one owner coordinates, propose one top-level task plus child tasks that set parentClientKey to it; for unrelated outcomes, propose separate tasks. Nest only one level. The suggestion card is a proposal, not a created task. Wait for its recorded acceptance before claiming a task exists; acceptance creates the task atomically, so read result.createdTasks instead of creating it again. Revise or clarify an ambiguous proposal in chat. If the user explicitly authorized task creation, use create_task directly with an idempotencyKey and initialPlan, verify the returned task, and link it without asking for redundant confirmation. An existing approved plan also retains its normal handoff authority. Ask mode remains non-mutating.`;
 
 /** A reset keeps history visible, but parked input from a stopped session cannot become a new turn. */
 export function currentConversationCommentCondition() {
@@ -132,6 +155,23 @@ export async function prepareConversationTurn(
       .for("update");
     if (!isConversation(issue))
       return { context, reset: false, conversation: false };
+    let generation = issue.conversationSessionGeneration;
+    if (
+      typeof context.conversationSessionGeneration === "number" &&
+      context.conversationSessionGeneration !== generation
+    ) {
+      throw new Error(
+        "Conversation session changed; this older turn cannot resume",
+      );
+    }
+    // Compaction maintains this session; it is not a new conversation turn.
+    // Keep the parked state and unanswered interactions while carrying the
+    // same session-generation context into the normal native runtime.
+    if (isContextCompactionRun(context)) {
+      const next = { ...context, conversationSessionGeneration: generation, conversationMode: true };
+      await tx.update(heartbeatRuns).set({ contextSnapshot: next }).where(eq(heartbeatRuns.id, run.id));
+      return { context: next, reset: false, conversation: true };
+    }
     const commentId =
       typeof context.wakeCommentId === "string"
         ? context.wakeCommentId
@@ -153,17 +193,9 @@ export async function prepareConversationTurn(
     const reset = Boolean(
       comment && comment.authorUserId && isConversationReset(comment.body),
     );
-    let generation = issue.conversationSessionGeneration;
-    if (
-      typeof context.conversationSessionGeneration === "number" &&
-      context.conversationSessionGeneration !== generation
-    ) {
-      throw new Error(
-        "Conversation session changed; this older turn cannot resume",
-      );
-    }
     // The boundary lives on the command comment. A crash/retry reuses it instead of resetting twice.
     if (reset && comment && comment.conversationSessionGeneration == null) {
+      await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });
       generation += 1;
       await tx
         .update(issues)
@@ -256,6 +288,9 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
+    await notifyStatusCardIssueChange(tx, issue.companyId);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx
       .update(issues)
       .set({
@@ -282,7 +317,7 @@ export async function prepareConversationTurn(
 /** Finalizers only park a turn with a durable response, interaction, or processed /new. */
 export async function settleConversationTurn(
   db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "contextSnapshot">,
 ) {
   if (run.status !== "succeeded") return false;
   const context = run.contextSnapshot ?? {};
@@ -291,7 +326,12 @@ export async function settleConversationTurn(
   let publication: ActivityPublication | null = null;
   const settled = await db.transaction(async (tx) => {
     const [issue] = await tx
-      .select()
+      .select({
+        id: issues.id, companyId: issues.companyId, status: issues.status,
+        conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+        conversationState: issues.conversationState, conversationSessionGeneration: issues.conversationSessionGeneration,
+        executionRunId: issues.executionRunId,
+      })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .for("update");
@@ -344,7 +384,7 @@ export async function settleConversationTurn(
     const [wake] =
       typeof wakeId === "string"
         ? await tx
-            .select()
+            .select({ id: issueComments.id })
             .from(issueComments)
             .where(eq(issueComments.id, wakeId))
         : [];
@@ -369,6 +409,10 @@ export async function settleConversationTurn(
       issue.conversationState === conversationState
     )
       return true;
+    await notifyStatusCardIssueChange(tx, issue.companyId);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+    if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
     await tx
       .update(issues)
       .set({
@@ -405,6 +449,26 @@ export async function settleConversationTurn(
   });
   if (publication) publishActivity(publication);
   return settled;
+}
+
+export async function settleConversationTurnForRun(
+  db: Db,
+  companyId: string,
+  runId: string,
+) {
+  const [run] = await db.select({
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, status: heartbeatRuns.status,
+    contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+      then jsonb_build_object(
+        'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+        'conversationReset', ${heartbeatRuns.contextSnapshot}->'conversationReset',
+        'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
+        'conversationReplyBoundaryCommentId', ${heartbeatRuns.contextSnapshot}->'conversationReplyBoundaryCommentId',
+        'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
+        'commentId', ${heartbeatRuns.contextSnapshot}->'commentId'
+      ) else null end`,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+  return run ? settleConversationTurn(db, run) : false;
 }
 
 /** Fresh provider context uses only messages in this session, up to this turn. */
@@ -483,6 +547,9 @@ export async function undeliveredConversationComments(
         eq(issueComments.companyId, companyId),
         eq(issueComments.issueId, issueId),
         isNull(issueComments.deletedAt),
+        sql`${issueComments.authorUserId} is not null`,
+        isNull(issueComments.authorAgentId),
+        eq(issueComments.origin, "comment"),
         sql`${issueComments.clientRequestId} is not null`,
         sql`not exists (select 1 from ${agentWakeupRequests} where ${agentWakeupRequests.companyId} = ${companyId}
       and ${agentWakeupRequests.idempotencyKey} = 'conversation-comment:' || ${issueComments.id}::text)`,
@@ -501,6 +568,7 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
       eq(issues.id, comment.issueId), eq(issues.companyId, comment.companyId),
     )).for("update");
     if (!isConversation(issue) || comment.conversationSessionGeneration != null) return;
+    await notifyIssueRecovery(tx, { companyId: issue.companyId });
     const released = await tx.update(issueTreeHolds).set({
       status: "released", releasedAt: new Date(), updatedAt: new Date(),
       releasedByActorType: "user", releasedByUserId: comment.authorUserId,
@@ -538,6 +606,15 @@ export async function deliverConversationComments(
   ) => Promise<unknown>,
 ) {
   if (!issue.conversationAgentId) return;
+  const canDeliver = async (connection: Db) => {
+    const [agent] = await connection.select().from(agents).where(and(
+      eq(agents.id, issue.conversationAgentId!), eq(agents.companyId, issue.companyId),
+    ));
+    // Match queue admission: setup may retain accepted work, but a pause or
+    // invalid reporting chain must leave the durable comment outbox untouched.
+    return evaluateAgentInvokabilityFromDb(connection,
+      agent && isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
+  };
   for (;;) {
     const delivered = await db.transaction(async (tx) => {
       // Contenders release their connection while waiting so concurrent sends
@@ -545,34 +622,47 @@ export async function deliverConversationComments(
       const locks = await tx.execute(
         sql`select pg_try_advisory_xact_lock(hashtextextended(${"conversation-delivery:" + issue.id}, 0)) as acquired`,
       );
-      if (!locks[0]?.acquired) return false;
+      if (!locks[0]?.acquired) return "retry" as const;
       for (const comment of await undeliveredConversationComments(
         tx as unknown as Db,
         issue.companyId,
         issue.id,
       )) {
+        if (!(await canDeliver(tx as unknown as Db)).invokable) return "deferred" as const;
         await resumeConversationForReset(db, comment);
-        await enqueue(issue.conversationAgentId!, {
-          source: "on_demand",
-          triggerDetail: "manual",
-          reason: "issue_commented",
-          idempotencyKey: `conversation-comment:${comment.id}`,
-          requestedByActorType: "user",
-          requestedByActorId: comment.authorUserId,
-          payload: { issueId: issue.id, commentId: comment.id },
-          contextSnapshot: {
-            issueId: issue.id,
-            taskKey: issue.id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeCommentIds: [comment.id],
-            source: "issue.comment",
-          },
-        });
+        try {
+          await enqueue(issue.conversationAgentId!, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "issue_commented",
+            idempotencyKey: `conversation-comment:${comment.id}`,
+            requestedByActorType: "user",
+            requestedByActorId: comment.authorUserId,
+            payload: { issueId: issue.id, commentId: comment.id },
+            contextSnapshot: {
+              issueId: issue.id,
+              taskKey: issue.id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              wakeCommentIds: [comment.id],
+              source: "issue.comment",
+            },
+          });
+        } catch (error) {
+          // Admission remains authoritative if eligibility changes after our
+          // read. Only defer the matching invokability conflict; other failures
+          // must remain visible and must not be reported as delivered.
+          const current = error instanceof HttpError && error.status === 409
+            ? await canDeliver(tx as unknown as Db) : null;
+          const reason = error instanceof HttpError && error.details && typeof error.details === "object"
+            ? (error.details as Record<string, unknown>).reason : null;
+          if (current && !current.invokable && reason === current.reason) return "deferred" as const;
+          throw error;
+        }
       }
-      return true;
+      return "delivered" as const;
     });
-    if (delivered) return;
+    if (delivered !== "retry") return delivered;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }

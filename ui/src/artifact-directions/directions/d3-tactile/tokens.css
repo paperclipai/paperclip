@@ -1,0 +1,233 @@
+/*
+  3 · Tactile — custom properties, scoped to the wrapper every frame puts
+  around a kit slot. Light values first, dark overrides below. The object-size
+  table is in tokens-sizes.css.
+
+  Naming: --tac-<role>. Materials are complete colours. Nothing here is
+  consumed outside directions/d3-tactile.
+*/
+
+[data-direction="d3-tactile"] {
+  /* ---- type on paper --------------------------------------------------- */
+  --tac-font-serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+
+  /* ---- paper ----------------------------------------------------------- */
+  --tac-paper: oklch(0.992 0.004 90);
+  --tac-paper-back: oklch(0.945 0.007 88); /* a second sheet lying under the first */
+  --tac-fold: linear-gradient(225deg, oklch(0.84 0.01 88) 0%, oklch(0.9 0.008 88) 48%, oklch(0.975 0.005 90) 100%);
+  --tac-fold-shadow: drop-shadow(-1px 1px 1.5px oklch(0.25 0.02 80 / 0.28));
+  --tac-ink: oklch(0.24 0.012 70);
+  --tac-ink-soft: oklch(0.44 0.012 70);
+  --tac-ink-faint: oklch(0.82 0.008 85); /* greeked lines, rules */
+  --tac-paper-edge: inset 0 1px 0 oklch(1 0 0 / 0.95), inset 0 0 0 1px oklch(0.3 0.02 80 / 0.07);
+  --tac-fade-bottom: linear-gradient(to bottom, black 0%, black 52%, transparent 94%);
+  /* Setting the page: em-based, so they follow the per-size type below. */
+  --tac-lead-title: 1.14;
+  --tac-lead-body: 1.5;
+  --tac-gap-block: 0.8em;
+  --tac-gap-para: 0.55em;
+  --tac-bar-h: 0.5em;
+  --tac-bar-gap: 0.64em;
+  --tac-back-dx: 4%;
+  --tac-back-dy: 2.5%;
+  --tac-rule-w: 0.1em;
+  --tac-glyph: 1.15em; /* a printed mark the size of the type beside it */
+  --tac-gutter: 2.3em; /* the code sheet's line-number column */
+  --tac-ledger-margin: 2em;
+  --tac-ledger-row: 2.1em;
+  /* Holes through the paper: binder punches down a ledger's margin. */
+  --tac-mask-punch: radial-gradient(circle at 1em 20%, transparent 0.4em, black 0.46em), radial-gradient(circle at 1em 50%, transparent 0.4em, black 0.46em),
+    radial-gradient(circle at 1em 80%, transparent 0.4em, black 0.46em);
+  --tac-fade-end: linear-gradient(to bottom, black 0%, black 68%, transparent 100%); /* a title that runs past its box dissolves; nothing on paper is ellipsized */
+
+  /* ---- prints ---------------------------------------------------------- */
+  --tac-print: oklch(0.998 0.002 90);
+  --tac-emulsion: oklch(0.88 0.006 85); /* an undeveloped print: missing or failed thumbnail */
+  --tac-emulsion-ink: oklch(0.47 0.008 85);
+  --tac-emulsion-edge: inset 0 0 0 1px oklch(0.2 0.01 80 / 0.14);
+  --tac-film: oklch(0.2 0.008 80);
+  --tac-film-ink: oklch(0.97 0.004 90);
+  --tac-print-r: 0.09375rem;
+
+  /* ---- kind markings --------------------------------------------------- */
+  --tac-tab-pdf: oklch(0.55 0.2 27);
+  --tac-tab-slides: oklch(0.74 0.16 62);
+  --tac-tab-sheet: oklch(0.52 0.13 155);
+  --tac-tab-code: oklch(0.9 0.06 230); /* pale, so it reads on the blue sheet */
+  --tac-tab-ink-code: oklch(0.27 0.07 258);
+  --tac-tab-note: oklch(0.4 0.012 260); /* Markdown and anything without a hue of its own */
+  --tac-tab-ink: oklch(0.99 0.003 90);
+  --tac-tab-ink-dark: oklch(0.22 0.03 60); /* on the slides tab, the one light tab */
+  --tac-tab-shadow: 0 1px 1px oklch(0.2 0.02 60 / 0.35);
+  /* The tab's own box, in ems of --tac-type-tab. */
+  --tac-tab-px: 0.36em;
+  --tac-tab-py: 0.26em;
+  --tac-tab-r: 0.14em;
+  --tac-tab-out: 0.32em;
+  --tac-tab-rise: 0.6em;
+  --tac-tab-up: 0.82em; /* an index tab standing above a top edge (slides) */
+  --tac-spine-w: 0.17em;
+
+  --tac-stamp: oklch(0.43 0.07 262 / 0.82); /* the "rev N" rubber stamp on a task document: stamp-pad blue-black */
+  --tac-stamp-edge: 0.13em;
+  --tac-stamp-tilt: -5deg;
+  --tac-ledger-rule: oklch(0.72 0.09 155);
+  --tac-ledger-head: oklch(0.93 0.045 155);
+  --tac-ledger-ink: oklch(0.36 0.09 155);
+  --tac-carbon: oklch(0.34 0.075 258); /* the code sheet: blueprint blue, never paper-white */
+  --tac-carbon-gutter: oklch(0.29 0.07 258);
+  --tac-carbon-fold: linear-gradient(225deg, oklch(0.26 0.06 258) 0%, oklch(0.42 0.08 258) 55%, oklch(0.52 0.085 258) 100%);
+  --tac-carbon-edge: inset 0 1px 0 oklch(1 0 0 / 0.22), inset 0 0 0 1px oklch(1 0 0 / 0.06);
+  --tac-code-ink: oklch(0.95 0.015 250);
+  --tac-code-dim: oklch(0.7 0.05 255);
+  --tac-code-tag: oklch(0.88 0.09 205);
+  --tac-code-note: oklch(0.88 0.1 150);
+  --tac-kraft: oklch(0.72 0.075 72);
+  --tac-kraft-lid: oklch(0.65 0.078 68);
+  --tac-kraft-dark: oklch(0.38 0.05 60);
+  --tac-kraft-edge: inset 0 1px 0 oklch(1 0 0 / 0.28), inset 0 -1px 0 oklch(0.2 0.03 60 / 0.25);
+  --tac-kraft-shade: linear-gradient(to bottom, oklch(0.2 0.03 60 / 0.32), oklch(0.2 0.03 60 / 0));
+  --tac-kraft-hole: inset 0 2px 3px oklch(0 0 0 / 0.45);
+  /* A link is an address card: pale blue stock (manila is for folders), the address printed in a white bar. */
+  --tac-card: oklch(0.95 0.026 236);
+  --tac-card-bar: oklch(0.995 0.003 236);
+  --tac-card-bar-edge: inset 0 1px 1.5px oklch(0.3 0.05 250 / 0.22), 0 1px 0 oklch(1 0 0 / 0.8);
+  --tac-card-ink: oklch(0.3 0.06 255);
+  --tac-card-soft: oklch(0.5 0.05 250);
+  --tac-card-dot: oklch(0.62 0.13 250);
+  --tac-card-edge: inset 0 1px 0 oklch(1 0 0 / 0.9), inset 0 0 0 1px oklch(0.3 0.06 250 / 0.1);
+
+  /* ---- state: a sticky flag in the status colour ----------------------- */
+  --tac-flag-ink: oklch(0.995 0 0);
+  --tac-flag-glue: oklch(1 0 0 / 0.3);
+  --tac-flag-key: oklch(1 0 0 / 0.7); /* a 1px film edge round the flag, so its shape holds on dark trays and on kraft */
+  --tac-flag-shadow: drop-shadow(0 1px 1px oklch(0.2 0.02 80 / 0.3));
+  --tac-clip-flag: polygon(0 0, 100% 0, calc(100% - 0.3125rem) 50%, 100% 100%, 0 100%);
+  --tac-clip-nub: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 0.1875rem), 0 100%);
+  --tac-flag-h: 1.125rem;
+  --tac-nub-w: 0.4375rem;
+  --tac-nub-h: 0.9375rem;
+  --tac-nub-rise: 0.375rem; /* how far a flag stands proud of the edge it is stuck to */
+
+  /* ---- the ground: what paper lies on, the same warm tone on every surface -----
+     thread: the tray · panel: the desk · gallery: the mat under an opened stack's
+     rows and under a stack of one. Deep enough in light that white paper holds
+     its edge on it (about 1.2:1 before the shadow). */
+  --tac-ground: oklch(0.925 0.009 85);
+  --tac-tray: var(--tac-ground);
+  --tac-tray-hover: oklch(0.905 0.01 85);
+  --tac-tray-press: oklch(0.885 0.011 85);
+  --tac-tray-rim: inset 0 2px 3px oklch(0.3 0.02 80 / 0.14), inset 0 0 0 1px oklch(0.3 0.02 80 / 0.1), 0 1px 0 oklch(1 0 0 / 1);
+  --tac-tray-max: 40rem; /* a tray's own measure in a wide column; in a column under 48rem it runs the full width */
+  --tac-desk-cell: 7.75rem; /* one place on the attachments tray */
+  --tac-desk-cols: repeat(auto-fill, minmax(7rem, 1fr));
+  --tac-meta: oklch(0.45 0.008 85); /* secondary text on the ground: 5.9:1 */
+
+  /* ---- the lip: one physical edge on every surface ---------------------------
+     A strip of the ground's own material, lit along the top, throwing a crisp
+     shadow on whatever stands behind it. thread: the front of the tray, hiding
+     an object's foot · panel: the rail a sheet slides under · gallery and
+     attachments: the front of the ledge a row of objects stands on. */
+  --tac-ledge: oklch(0.955 0.007 85);
+  --tac-ledge-edge: inset 0 1px 0 oklch(1 0 0 / 0.95), inset 0 -1px 0 oklch(0.3 0.02 80 / 0.1), 0 -1px 0 oklch(0.3 0.02 80 / 0.2), 0 -3px 3px -1px oklch(0.3 0.02 80 / 0.24);
+  --tac-ledge-under: 0 2px 3px -1px oklch(0.3 0.02 80 / 0.22); /* added under a ledge that stands out from the mat */
+  --tac-shelf-edge: var(--tac-ledge-edge), var(--tac-ledge-under);
+  --tac-lip-h: 0.375rem;
+  --tac-lip-tuck: 0.25rem; /* how much of an object's foot is behind the lip */
+  --tac-row-pb: calc(var(--tac-lip-h) + 0.25rem); /* a thread row's text clears the lip */
+  --tac-row-foot: calc(var(--tac-lip-h) - var(--tac-lip-tuck)); /* …and its object stands this far above the tray's bottom edge */
+  --tac-clip-stand: inset(-4rem -2rem 0 -2rem); /* a standing object's shadow stops at the lip too */
+  --tac-run: 100vw; /* a ledge runs past its own item to the edges of the tray, which clips it */
+
+  /* ---- focus: a strong ring with a gap in the colour of what the control lies on (set by the caller) */
+  --tac-ring: color-mix(in oklab, var(--foreground) 72%, transparent);
+  --tac-mono-scale: 0.92em; /* mono beside the UI face, optically level */
+
+  /* ---- folder board: the panel's divider tabs, the gallery's folders ---- */
+  --tac-folder: oklch(0.878 0.042 84);
+  --tac-folder-back: oklch(0.8 0.048 82);
+  --tac-folder-ink: oklch(0.27 0.03 70);
+  --tac-folder-meta: oklch(0.4 0.03 72);
+  --tac-folder-edge: inset 0 1px 0 oklch(1 0 0 / 0.7), inset 0 0 0 1px oklch(0.3 0.03 70 / 0.08);
+
+  /* ---- grain: feTurbulence, baked faint on paper, twice as strong on board ----
+     --tac-grain / -light   paper and prints: barely there, so type stays crisp
+     --tac-board-grain      folder board and the lip (dark specks in light, light specks in dark)
+     --tac-ground-grain     tray, desk, mat: between the two, since UI type is set on it
+     --tac-kraft-grain      the box: the same speck plus a horizontal fibre */
+  --tac-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.16 0 0 0 0 0.1 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.1'/%3E%3C/svg%3E");
+  --tac-grain-light: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.07'/%3E%3C/svg%3E");
+
+  --tac-board-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.15 0 0 0 0 0.08 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.24'/%3E%3C/svg%3E");
+  --tac-ground-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.15 0 0 0 0 0.08 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.13'/%3E%3C/svg%3E");
+  --tac-kraft-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='120'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.55' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.25 0 0 0 0 0.16 0 0 0 0 0.06 0 0 0 1.1 -0.1'/%3E%3C/filter%3E%3Crect width='240' height='120' filter='url(%23f)' opacity='0.34'/%3E%3C/svg%3E"), var(--tac-board-grain);
+
+  /* ---- light: one source, top-left -------------------------------------- */
+  --tac-shadow-contact: oklch(0.3 0.03 75 / 0.36);
+  --tac-shadow-ambient: oklch(0.3 0.03 75 / 0.24);
+  --tac-shadow-hairline: oklch(0.3 0.03 75 / 0.38);
+
+  /* ---- repose: nothing lies perfectly square ---------------------------- */
+  --tac-tilt-a: -2.5deg;
+  --tac-tilt-b: 1.5deg;
+  --tac-tilt-c: -1deg;
+  --tac-tilt-d: 2.5deg;
+  /* Something lying across a whole pane is tilted by the same few px at its corners, so by a smaller angle. */
+  --tac-tilt-wide-a: -0.8deg;
+  --tac-tilt-wide-b: 0.6deg;
+  --tac-tilt-flag: 2deg;
+  --tac-tilt-back: 3deg;
+  --tac-lift: -0.125rem;
+  --tac-tp-lift: translate, rotate, filter, background-color;
+}
+
+.dark [data-direction="d3-tactile"] {
+  /* Paper comes a step off white so it does not glare on the dark canvas. */
+  --tac-paper: oklch(0.94 0.009 90);
+  --tac-paper-back: oklch(0.86 0.01 88);
+  --tac-fold: linear-gradient(225deg, oklch(0.72 0.012 88) 0%, oklch(0.83 0.01 88) 48%, oklch(0.92 0.008 90) 100%);
+  --tac-fold-shadow: drop-shadow(-1px 1px 1.5px oklch(0.15 0.02 80 / 0.4));
+  --tac-ink-faint: oklch(0.76 0.01 85);
+  --tac-paper-edge: inset 0 1px 0 oklch(1 0 0 / 0.75), inset 0 0 0 1px oklch(0.2 0.02 80 / 0.06);
+
+  --tac-print: oklch(0.955 0.006 90);
+  --tac-emulsion: oklch(0.8 0.008 85);
+  --tac-emulsion-ink: oklch(0.38 0.008 85);
+  --tac-film: oklch(0.16 0.006 80);
+
+  --tac-tab-pdf: oklch(0.56 0.2 27);
+  --tac-tab-note: oklch(0.36 0.012 260);
+  --tac-carbon: oklch(0.44 0.095 258);
+  --tac-carbon-gutter: oklch(0.38 0.09 258);
+  --tac-carbon-fold: linear-gradient(225deg, oklch(0.3 0.07 258) 0%, oklch(0.48 0.09 258) 55%, oklch(0.58 0.09 258) 100%);
+  --tac-carbon-edge: inset 0 1px 0 oklch(1 0 0 / 0.3), inset 0 0 0 1px oklch(1 0 0 / 0.08);
+  --tac-kraft: oklch(0.68 0.075 72);
+  --tac-kraft-lid: oklch(0.6 0.078 68);
+  --tac-card: oklch(0.9 0.032 236);
+  --tac-card-bar: oklch(0.975 0.006 236);
+  --tac-stamp: oklch(0.4 0.075 262 / 0.85);
+
+  --tac-flag-key: oklch(1 0 0 / 0.62);
+
+  --tac-ground: oklch(0.268 0.005 85);
+  --tac-tray-hover: oklch(0.305 0.006 85);
+  --tac-tray-press: oklch(0.245 0.005 85);
+  --tac-ledge: oklch(0.335 0.006 85);
+  --tac-ledge-edge: inset 0 1px 0 oklch(1 0 0 / 0.16), inset 0 -1px 0 oklch(0 0 0 / 0.3), 0 -1px 0 oklch(0 0 0 / 0.55), 0 -3px 3px -1px oklch(0 0 0 / 0.5);
+  --tac-ledge-under: 0 2px 3px -1px oklch(0 0 0 / 0.5);
+  --tac-board-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.15'/%3E%3C/svg%3E");
+  --tac-ground-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.07'/%3E%3C/svg%3E");
+  --tac-tray-rim: inset 0 2px 4px oklch(0 0 0 / 0.5), inset 0 0 0 1px oklch(0 0 0 / 0.3), inset 0 -1px 0 oklch(1 0 0 / 0.035), 0 1px 0 oklch(1 0 0 / 0.08);
+  --tac-meta: oklch(0.74 0.006 85);
+
+  /* Graphite, a few steps off the canvas, so the bright paper stays the hero. */
+  --tac-folder: oklch(0.335 0.006 265);
+  --tac-folder-back: oklch(0.275 0.006 265);
+  --tac-folder-ink: oklch(0.96 0.004 90);
+  --tac-folder-meta: oklch(0.76 0.006 265);
+  --tac-folder-edge: inset 0 1px 0 oklch(1 0 0 / 0.12), inset 0 0 0 1px oklch(1 0 0 / 0.04);
+
+  --tac-shadow-contact: oklch(0 0 0 / 0.55);
+  --tac-shadow-ambient: oklch(0 0 0 / 0.42);
+  --tac-shadow-hairline: oklch(0 0 0 / 0);
+}

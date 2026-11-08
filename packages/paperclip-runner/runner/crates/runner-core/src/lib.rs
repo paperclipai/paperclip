@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod acpx_candidate_admission;
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
 pub mod acpx_provider_backend;
@@ -12,27 +13,39 @@ pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
 pub mod codex_provider;
 mod codex_startup_trust;
+mod codex_usage;
 mod configured_environment;
 mod credential_observer;
+mod cursor_cloud_proxy;
 pub mod dot_provider_backend;
 pub mod durable;
 pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;
+mod governance_events;
+#[cfg(unix)]
+pub mod host_control;
 pub mod local_runner;
 pub mod managed_provider;
 pub mod managed_provider_backend;
 pub mod native_provider_backend;
+pub mod oom_score;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod process_lineage;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;
 pub mod provider_events;
+pub mod provider_failure;
+pub mod provider_rate_limits;
 pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;
 mod stable_identity;
 pub mod stdio_mcp;
+pub mod task_memory;
+pub mod tool_file_changes;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -369,3 +382,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(unix)]
+pub mod runtime_notifications;

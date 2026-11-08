@@ -22,10 +22,28 @@ import {
 } from "./test-embedded-postgres.js";
 
 const cleanups: Array<() => Promise<void>> = [];
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const historyExternalVariables = {
+  master0346: ["PAPERCLIP_DB_HISTORY_MASTER_REFERENCE_URL", "PAPERCLIP_DB_HISTORY_MASTER_TARGET_URL"],
+  muse0348: ["PAPERCLIP_DB_HISTORY_MUSE_REFERENCE_URL", "PAPERCLIP_DB_HISTORY_MUSE_TARGET_URL"],
+} as const;
+const anyHistoryExternal = Object.values(historyExternalVariables).flat().some(name => process.env[name]);
+const historyExternal = anyHistoryExternal ? Object.fromEntries(Object.entries(historyExternalVariables).map(([baseline, names]) => {
+  const values = names.map(name => {
+    const raw = process.env[name];
+    if (!raw) throw new Error(`Supply all explicit retained-history fixture URLs: missing ${name}`);
+    const url = new URL(raw);
+    if (!["postgres:", "postgresql:"].includes(url.protocol) || !/^[A-Za-z0-9_]+_test$/.test(decodeURIComponent(url.pathname.slice(1)))
+      || url.search || url.hash) throw new Error(`${name} requires an explicit dedicated *_test database without overrides`);
+    return raw;
+  });
+  return [baseline, { reference: values[0]!, target: values[1]! }];
+})) : undefined;
+if (historyExternal && new Set(Object.values(historyExternal).flatMap(pair => [new URL(pair.reference).pathname, new URL(pair.target).pathname])).size !== 4) throw new Error("Retained-history fixture databases must be distinct");
+const embeddedPostgresSupport: Awaited<ReturnType<typeof getEmbeddedPostgresTestSupport>> = historyExternal ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createTempDatabase(): Promise<string> {
+  if (historyExternal) throw new Error("Explicit retained-history mode permits only its two selected migration cases");
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
   cleanups.push(db.cleanup);
   return db.connectionString;
@@ -230,6 +248,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     }
   }
 
+  // Later migrations may add columns; retained rows must keep every earlier value.
+  function retainedColumns<T extends Record<string, Record<string, unknown> | null>>(after: T, before: T): T {
+    return Object.fromEntries(Object.entries(after).map(([table, row]) => {
+      const earlier = before[table];
+      return [table, row && earlier ? Object.fromEntries(Object.keys(earlier).map(key => [key, row[key]])) : row];
+    })) as T;
+  }
+
   async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
     const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
     const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
@@ -267,12 +293,16 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
   }
 
   it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
-    const referenceUrl = await createTempDatabase();
+    const externalPair = historyExternal?.[baseline];
+    const referenceUrl = externalPair?.reference ?? await createTempDatabase();
+    if (externalPair) await applyPendingMigrations(referenceUrl);
     const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
-    adminUrl.pathname = "/postgres";
-    await ensurePostgresDatabase(adminUrl.toString(), databaseName);
-    adminUrl.pathname = `/${databaseName}`;
-    const connectionString = adminUrl.toString();
+    if (!externalPair) {
+      adminUrl.pathname = "/postgres";
+      await ensurePostgresDatabase(adminUrl.toString(), databaseName);
+      adminUrl.pathname = `/${databaseName}`;
+    }
+    const connectionString = externalPair?.target ?? adminUrl.toString();
     const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
     const reference = postgres(referenceUrl, { max: 1, onnotice: () => {} });
     try {
@@ -294,6 +324,9 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const beforeHistory = baseline === "fresh" ? [] : await historyRows(sql);
       const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
       const beforeRows = await retainedRows?.();
+      const expectedRetainedRows = beforeRows
+        ? { ...beforeRows, run: { ...beforeRows.run, legacy_process_settlement: null }, grant: { ...beforeRows.grant, revocation_index_receipt: null, revocation_revision: 0 } }
+        : beforeRows;
       const state = await inspectMigrations(connectionString);
       expect(state.status).toBe("needsMigrations");
       const laterMigrations = journal.entries.filter(entry => entry.idx > 353).map(entry => `${entry.tag}.sql`);
@@ -319,7 +352,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) {
+        const afterRows = await retainedRows();
+        expect(retainedColumns(afterRows, expectedRetainedRows!)).toEqual(expectedRetainedRows);
+        expect(afterRows).toMatchObject({
+          run: { legacy_process_settlement: null },
+          grant: { revocation_index_receipt: null, revocation_revision: 0 },
+        });
+      }
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -336,7 +376,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) {
+        const afterRows = await retainedRows();
+        expect(retainedColumns(afterRows, expectedRetainedRows!)).toEqual(expectedRetainedRows);
+        expect(afterRows).toMatchObject({
+          run: { legacy_process_settlement: null },
+          grant: { revocation_index_receipt: null, revocation_revision: 0 },
+        });
+      }
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }
@@ -2132,6 +2179,24 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           triggerCount: 1,
           finalizationCount: 1,
         }]);
+        await replaySql`UPDATE issues SET assignee_agent_id = ${agentId} WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 2 }]);
+        await replaySql`UPDATE issues SET status = 'backlog', assignee_agent_id = null,
+          assignee_user_id = 'handoff-owner' WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        const assignmentVersionHash = await migrationHash("0358_issue_assignment_status_version.sql");
+        await replaySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${assignmentVersionHash}`;
+        await applyPendingMigrations(connectionString);
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        expect(await replaySql`SELECT count(*)::int AS count FROM pg_trigger
+          WHERE tgname = 'paperclip_issue_assignment_version_trigger' AND NOT tgisinternal`)
+          .toEqual([{ count: 1 }]);
+        await replaySql`UPDATE issues SET assignee_user_id = null WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 4 }]);
       } finally {
         await replaySql.end();
       }

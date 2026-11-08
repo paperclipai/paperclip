@@ -1,3 +1,6 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from './delivery-work-notifications.js';
+import type { createDeliveryWorkCoordinator } from './delivery-work-coordinator.js';
+import type { DeadlineReconciliationSnapshot } from './deadline-reconciliation.js';
 import { lockProjectRootMutation } from './projects.js';
 import { reserveInitialSkillWork, settleInitialSkillWork } from './skill-source-import-budget.js';
 import { admitDeferredSkillImports, lockSkillImportQueue, SKILL_IMPORT_CAPACITY_WAIT } from './skill-source-import-queue.js';
@@ -101,7 +104,7 @@ function setupActor(setup: Setup): AuthorizationActor {
     onBehalfOfUserId: setup.refreshUserId === 'local-board' ? null : setup.refreshUserId, source: 'agent_key' }
     : { type: 'board', userId: setup.refreshUserId, source: setup.refreshLocalTrusted ? 'local_implicit' : 'session', companyIds: [setup.companyId] };
 }
-async function setupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
+export async function skillSourceSetupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
   if (!setup.refreshUserId && !setup.refreshLocalTrusted) throw forbidden('Choose a GitHub connection to enable automatic updates.');
   if (!setup.refreshLocalTrusted) {
     const [member] = await db.select({ id: companyMemberships.id }).from(companyMemberships)
@@ -150,10 +153,16 @@ async function setupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
 }
 
 export function skillSourceSyncService(db: Db, options: { context?: (setup: Setup) => Promise<SkillSourceContext> } = {}) {
-  const contextFor = options.context ?? (setup => setupContext(db, setup));
+  const contextFor = options.context ?? (setup => skillSourceSetupContext(db, setup));
   const sources = skillSourceService(db);
   let running: Promise<{ imported: number; checked: number }> | null = null;
   const shutdown = new AbortController();
+  const reconciliationId = randomUUID();
+  let revision = 0, requested = 0, completed = -1, manual = 0;
+  let started = false, reconciling = false;
+  let requestReconciliation: (() => void) | undefined;
+  const reconciliationSnapshot = (): DeadlineReconciliationSnapshot => ({ revision: `${reconciliationId}:${revision}`,
+    reconciled: started && !shutdown.signal.aborted && !reconciling && !running && manual === 0 && requested === completed });
 
   async function recoverSetup(source: typeof companySkillSources.$inferSelect) {
     if (source.refreshUserId || source.refreshLocalTrusted || source.refreshAgentId) return source;
@@ -209,7 +218,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
         try {
           const result = await sources.create(binding.companyId, { repositoryUrl: scan.repositoryUrl, trackingRef: binding.trackingRef,
             commitSha: scan.commitSha, packageMode: scan.packageMode, selectedPaths: scan.candidates.map(candidate => candidate.path),
-            connectionId: scan.connectionId ?? binding.connectionId }, { ...context, projectBindingId: binding.id, projectBindingLeaseToken: token }, scan);
+            connectionId: scan.connectionId ?? binding.connectionId }, { ...context, signal: shutdown.signal, projectBindingId: binding.id, projectBindingLeaseToken: token }, scan);
           sourceId = result.source.id;
         } catch (error) {
           if (!(error instanceof Error && 'status' in error && error.status === 409)) throw error;
@@ -288,9 +297,10 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
         }
       }
     }
+    for (const id of ids) await admitDeferredSkillImports(db, id, new Date());
     return { imported, checked };
   }
-  async function refreshSource(companyId: string, sourceId: string, initiator: SkillSourceContext) {
+  async function performRefreshSource(companyId: string, sourceId: string, initiator: SkillSourceContext) {
     const [source] = await db.select().from(companySkillSources).where(and(eq(companySkillSources.companyId, companyId), eq(companySkillSources.id, sourceId)));
     if (!source) throw notFound('Skill source not found');
     await initiator.authorize('skills.update', { sourceType: 'git', sourceLocator: source.repositoryUrl });
@@ -312,8 +322,60 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
   function tick(now = new Date()) {
     if (shutdown.signal.aborted) return Promise.resolve({ imported: 0, checked: 0 });
     if (running) return running;
-    running = sweep(now).finally(() => { running = null; });
+    revision++;
+    requested++;
+    running = sweep(now).finally(() => {
+      running = null; revision++;
+      if (!reconciling) requestReconciliation?.();
+    });
     return running;
   }
-  return { tick, refreshSource, stop: async () => { shutdown.abort(); await running; } };
+  function start(coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, 'register'>) {
+    started = true; revision++;
+    let nextDeadline: number | null = null;
+    const registration = coordinator.register(DELIVERY_QUEUES.skillSourceSync, {
+      retryMs: 5_000,
+      pausePassiveMaintenance: true,
+      onSettled: () => { requested++; revision++; },
+      onStop: () => { started = false; revision++; requestReconciliation = undefined; },
+      async run() {
+        reconciling = true; revision++;
+        try {
+          const pending = tick();
+          const generation = requested;
+          await pending;
+          const [row] = await db.execute<{ next_at: string | Date | null }>(sql`
+            SELECT min(at) AS next_at FROM (
+              SELECT greatest(b.next_sync_at, CASE WHEN b.lease_token IS NOT NULL THEN b.lease_expires_at END) AS at
+              FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
+              WHERE c.status = 'active' AND b.active AND b.source_id IS NULL
+              UNION ALL
+              SELECT greatest(s.next_sync_at, CASE WHEN s.lease_token IS NOT NULL THEN s.lease_expires_at END) AS at
+              FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
+              WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
+                AND (s.access_scope = 'company' OR EXISTS (
+                  SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))
+            ) deadlines`);
+          if (!row || row.next_at === undefined) throw new Error('Skill sync deadline query returned no result');
+          nextDeadline = row.next_at === null ? null : new Date(row.next_at).getTime();
+          if (nextDeadline !== null) {
+            if (!Number.isFinite(nextDeadline)) throw new Error('Invalid skill sync deadline');
+            if (nextDeadline <= Date.now()) nextDeadline = Date.now() + 5_000;
+          }
+          completed = generation;
+        } finally { reconciling = false; revision++; }
+      },
+      hasPending: async () => false,
+      nextRunAt: () => completed !== requested ? Date.now() + 5_000 : nextDeadline,
+    });
+    requestReconciliation = registration.wake;
+    return registration;
+  }
+  async function refreshSource(companyId: string, sourceId: string, initiator: SkillSourceContext) {
+    manual++; requested++; revision++;
+    try { return await performRefreshSource(companyId, sourceId, initiator); }
+    finally { manual--; revision++; requestReconciliation?.(); }
+  }
+  return { tick, start, refreshSource, reconciliationSnapshot,
+    stop: async () => { revision++; shutdown.abort(); await running; } };
 }
