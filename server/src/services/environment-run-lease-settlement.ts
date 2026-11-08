@@ -56,10 +56,12 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
     const [run] = await tx.select({ status: heartbeatRuns.status, controllerBootId: heartbeatRuns.controllerBootId })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     if (run && !TERMINAL_RUN_STATUSES.includes(run.status)) return { settled: false, reason: "owner_run_active" };
-    if (record.owner.kind === "run" && await currentBootOwnsRun(tx, lease, run?.controllerBootId ?? null)) {
+    if (record.owner.kind === "run" && !context.proof.localExecutionsKnown
+      && await currentBootOwnsRun(tx, lease, run?.controllerBootId ?? null)) {
       // A lease saved before holders were stamped: this boot may be releasing
       // it right now (a hot-restart adoption), so only an earlier boot's
-      // lease is released by the run fact alone.
+      // lease is released by the run fact alone, unless the caller named every
+      // run this process executes.
       return { settled: false, reason: "current_boot_owns_run" };
     }
     const kept = await keptByAnotherObligation(tx, lease);

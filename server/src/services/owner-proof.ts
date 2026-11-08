@@ -74,6 +74,9 @@ export type OwnerProof = {
   reason: OwnerProofReason;
   /** The local proof judged a row saved before its PID space was recorded. */
   legacyHostFallback?: true;
+  /** The caller named every run this process executes, so a record of another
+   * run is not held here (`settleOwnableKind` with `currentProcessIdle`). */
+  localExecutionsKnown?: true;
 };
 
 export type OwnerProofReason =

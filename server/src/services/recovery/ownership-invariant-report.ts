@@ -140,7 +140,7 @@ const INTENT_LOOKBACK_MS = 60 * 60_000;
  * PostgreSQL case-insensitive regular expression. */
 const TEMPORARY_REFUSAL_PATTERN = "budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout";
 
-type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true };
+type Classification = { verdict: OwnerProof["verdict"]; reason: string; legacyHostFallback?: true; localExecutionsKnown?: true };
 
 async function classifyRunOwners(db: Db, records: InProgressRecord[]): Promise<Map<string, Classification>> {
   const runIds = [...new Set(records.flatMap(record => record.owner.kind === "run" ? [record.owner.runId] : []))];
@@ -256,6 +256,7 @@ async function settleKind(db: Db, kindId: string, options: {
     if (options.currentProcessIdle && record.runId && proof.verdict === "alive" && proof.reason === "current_process") {
       proof = { verdict: "gone", reason: "current_process_idle" };
     }
+    if (options.currentProcessIdle) proof = { ...proof, localExecutionsKnown: true };
     const outcome = await settleOrSurface(db, kind, record, proof, now);
     if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });

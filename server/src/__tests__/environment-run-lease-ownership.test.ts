@@ -268,6 +268,10 @@ suite("environment_run_lease_active on the shared ownership path", () => {
       const leaseId = await lease(runId, null);
       await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
       expect((await row(leaseId)).status).toBe("active");
+      // This process knows it is not executing the run: the local path settles it.
+      expect(await settleOwnableKind(db, "environment_run_lease_active", { runIds: [runId],
+        skipRunIds: new Set([randomUUID()]), currentProcessIdle: true })).toHaveLength(1);
+      expect((await row(leaseId)).status).toBe("pending_cleanup");
     });
 
     it("names no owner on an ephemeral server, where the host cannot be known", async () => {

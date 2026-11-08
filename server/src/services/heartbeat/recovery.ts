@@ -1689,9 +1689,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         runIds, skipRunIds: localRuns, currentProcessIdle: true,
       });
       recovered += settled.filter(record => scoped.some(({ lease }) => lease.id === record.recordId)).length;
-      // A live holder (here or in another process) releases the lease itself;
-      // look again later in case it dies without writing a signal.
-      if (opts.onDeferredDeadline && settled.length < scoped.length) opts.onDeferredDeadline(Date.now() + 60_000);
+      // A lease kept for a live holder needs no timer here: the holder releases
+      // it, and the ownership settle watch re-proves holders that might die
+      // without a signal. A lease kept by another obligation waits for that
+      // obligation's own signal.
     }
 
     const cutoff = new Date(Date.now() - opts.backoffMs);
