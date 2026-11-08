@@ -809,6 +809,8 @@ function SkillCategoryChip({ label }: { label: string }) {
 type SkillCardProps = {
   card: DiscoveryCard;
   folders?: FolderListItem[];
+  /** Folders by id, built once per grid so each item looks up its folder without scanning. */
+  folderById?: ReadonlyMap<string, FolderListItem>;
   selected?: boolean;
   selectMode?: boolean;
   /** Show the card's folder so search results reveal where an item lives (user story 5). */
@@ -821,11 +823,13 @@ type SkillCardProps = {
 };
 
 // Shared by the card and list layouts so both open, select and move skills the same way.
-function skillCardFolderState(card: DiscoveryCard, folders: FolderListItem[] | undefined, showFolderBadge: boolean) {
-  const badgeFolder = showFolderBadge && card.installed
-    ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
-    : undefined;
-  const cardFolder = card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null;
+function skillCardFolderState(
+  card: DiscoveryCard,
+  folderById: ReadonlyMap<string, FolderListItem> | undefined,
+  showFolderBadge: boolean,
+) {
+  const cardFolder = card.folderId ? folderById?.get(card.folderId) ?? null : null;
+  const badgeFolder = showFolderBadge && card.installed ? cardFolder : undefined;
   const canMove = card.installed
     && !card.required
     && !(cardFolder && isBundledFolder(cardFolder));
@@ -911,6 +915,7 @@ function SkillCardActions({
 function SkillCard({
   card,
   folders,
+  folderById,
   selected = false,
   selectMode = false,
   showFolderBadge = false,
@@ -920,7 +925,7 @@ function SkillCard({
   onCreateFolderAndMove,
   onOpenMove,
 }: SkillCardProps) {
-  const { badgeFolder, canMove } = skillCardFolderState(card, folders, showFolderBadge);
+  const { badgeFolder, canMove } = skillCardFolderState(card, folderById, showFolderBadge);
   return (
     <div
       {...skillOpenHandlers(card, onOpen)}
@@ -1029,6 +1034,7 @@ function SkillCard({
 function SkillRow({
   card,
   folders,
+  folderById,
   selected = false,
   selectMode = false,
   showFolderBadge = false,
@@ -1040,7 +1046,7 @@ function SkillRow({
 }: SkillCardProps) {
   const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
   const SourceIcon = source.icon;
-  const { badgeFolder, canMove } = skillCardFolderState(card, folders, showFolderBadge);
+  const { badgeFolder, canMove } = skillCardFolderState(card, folderById, showFolderBadge);
   const summary = resolveSkillSummaryText({
     tagline: card.tagline,
     description: card.description,
@@ -1164,6 +1170,9 @@ function CategoryNav({
   );
 }
 
+// Stable default so the selection Set memo is not rebuilt on every render.
+const NO_SELECTED_SKILL_IDS: string[] = [];
+
 export function DiscoveryGrid({
   tab,
   tabCounts,
@@ -1196,7 +1205,7 @@ export function DiscoveryGrid({
   folderSelection = "all",
   foldersLoading = false,
   selectMode = false,
-  selectedSkillIds = [],
+  selectedSkillIds = NO_SELECTED_SKILL_IDS,
   onFolderSelect,
   onCreateFolder,
   onRenameFolder,
@@ -1305,10 +1314,16 @@ export function DiscoveryGrid({
   }, [folderResult, folderSelection]);
   const activeProjectId = activeProjectFolder?.systemKey?.slice("project:".length) || null;
 
+  const folderById = useMemo(
+    () => new Map((folderResult?.folders ?? []).map((folder) => [folder.id, folder])),
+    [folderResult],
+  );
+  const selectedSkillIdSet = useMemo(() => new Set(selectedSkillIds), [selectedSkillIds]);
   const skillItemProps = (card: DiscoveryCard) => ({
     card,
     folders: folderResult?.folders,
-    selected: selectedSkillIds.includes(card.skillId ?? ""),
+    folderById,
+    selected: selectedSkillIdSet.has(card.skillId ?? ""),
     selectMode,
     showFolderBadge: Boolean(folderResult && search.trim()),
     onOpen: onOpenCard,

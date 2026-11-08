@@ -19,7 +19,7 @@ import {
 } from "./CompanySkills";
 import { ApiError } from "../api/client";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
-import { CompanySkills as ProductionCompanySkills } from "./CompanySkills.production";
+import { CompanySkills as ProductionCompanySkills, DiscoveryGrid as ProductionDiscoveryGrid } from "./CompanySkills.production";
 import { queryKeys } from "../lib/queryKeys";
 
 const readVersion = vi.hoisted(() => vi.fn());
@@ -289,14 +289,17 @@ async function renderSkillDetail(
   return container;
 }
 
-async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof DiscoveryGrid>> = {}) {
+async function renderDiscoveryGrid(
+  props: Partial<ComponentProps<typeof DiscoveryGrid>> = {},
+  Grid: typeof DiscoveryGrid = DiscoveryGrid,
+) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
 
   await act(async () => {
     root?.render(
-      <DiscoveryGrid
+      <Grid
         tab="installed"
         categories={[]}
         categoryTotal={0}
@@ -789,6 +792,102 @@ describe("DiscoveryGrid list layout", () => {
 
     await click(buttonsNamed(row, "Move to folder…")[0]!);
     expect(onOpenMoveCard).toHaveBeenCalledWith(expect.objectContaining({ key: "demo-skill" }));
+  });
+});
+
+// The production grid also needs tab counts; the helper's defaults cover every other prop.
+const productionGridDefaults = { tabCounts: { all: 0, installed: 0, catalog: 0, bundled: 0 } };
+
+describe.each([
+  ["current", DiscoveryGrid, {}],
+  ["production", ProductionDiscoveryGrid as unknown as typeof DiscoveryGrid, productionGridDefaults],
+] as const)("%s DiscoveryGrid at realistic size", (_name, Grid, gridDefaults) => {
+  const SKILL_COUNT = 300;
+  const FOLDER_COUNT = 30;
+  // Lookups per render must not grow with the number of skills.
+  const LOOKUP_LIMIT = 40;
+
+  // Counts scans of a collection and throws as soon as they pass the limit,
+  // so a per-item scan fails at once instead of stalling the worker.
+  function countScans<T>(items: T[], counter: { calls: number }): T[] {
+    for (const method of ["find", "findIndex", "some", "every", "filter", "includes", "indexOf"] as const) {
+      const original = Array.prototype[method] as (...args: unknown[]) => unknown;
+      Object.defineProperty(items, method, {
+        value(...args: unknown[]) {
+          counter.calls += 1;
+          if (counter.calls > LOOKUP_LIMIT) throw new Error(`more than ${LOOKUP_LIMIT} collection scans in one render`);
+          return original.apply(this, args);
+        },
+      });
+    }
+    return items;
+  }
+
+  it("keeps folder and selection lookups bounded with search, folders and select mode on", async () => {
+    const folderScans = { calls: 0 };
+    const selectionScans = { calls: 0 };
+    const folders = countScans(
+      Array.from({ length: FOLDER_COUNT }, (_, index) => ({
+        ...projectFolderResult.folders[0]!,
+        id: `folder-${index}`,
+        name: `Folder ${index}`,
+        slug: `folder-${index}`,
+        systemKey: null,
+        path: `folder-${index}`,
+      })),
+      folderScans,
+    );
+    const cards = Array.from({ length: SKILL_COUNT }, (_, index) => ({
+      key: `skill-${index}`,
+      skillId: `skill-id-${index}`,
+      folderId: `folder-${index % FOLDER_COUNT}`,
+      catalogRef: null,
+      name: `Skill ${index}`,
+      slug: `skill-${index}`,
+      author: "Paperclip",
+      version: null,
+      tagline: "Demo skill",
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    }));
+    const selectedSkillIds = countScans(
+      cards.filter((_, index) => index % 2 === 0).map((card) => card.skillId),
+      selectionScans,
+    );
+
+    const node = await renderDiscoveryGrid({
+      ...(gridDefaults as Partial<ComponentProps<typeof DiscoveryGrid>>),
+      cards,
+      totalCount: SKILL_COUNT,
+      layout: "list",
+      onLayoutChange: vi.fn(),
+      search: "skill",
+      selectMode: true,
+      selectedSkillIds,
+      onSelectCard: vi.fn(),
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onMoveSelected: vi.fn(),
+      onCreateFolderAndMoveSelected: vi.fn(),
+      onClearSelected: vi.fn(),
+      folderResult: { kind: "skill", folders, allCount: SKILL_COUNT, unfiledCount: 0 },
+    }, Grid);
+
+    expect(node.querySelectorAll("[data-skill-row]")).toHaveLength(SKILL_COUNT);
+    expect(node.querySelector('[data-skill-row="skill-7"]')?.textContent).toContain("Folder 7");
+    expect(node.querySelector<HTMLInputElement>('input[aria-label="Select Skill 4"]')?.checked).toBe(true);
+    expect(node.querySelector<HTMLInputElement>('input[aria-label="Select Skill 5"]')?.checked).toBe(false);
+    expect(folderScans.calls).toBeLessThanOrEqual(LOOKUP_LIMIT);
+    expect(selectionScans.calls).toBeLessThanOrEqual(LOOKUP_LIMIT);
   });
 });
 
