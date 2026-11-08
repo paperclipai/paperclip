@@ -16,7 +16,7 @@ export interface BaselineRun {
   adapter: string;
   environment: string;
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
-  phase: "cold" | "warm" | "restart";
+  phase: "cold" | "warm" | "restart" | "midturn";
   events: BaselineEvent[];
 }
 
