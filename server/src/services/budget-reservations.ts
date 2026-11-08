@@ -76,6 +76,18 @@ export async function recheckRunBudgetReservationInTransaction(
   return null;
 }
 
+const RESERVATION_RUN_COLUMNS = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  status: heartbeatRuns.status,
+  costAccountedAt: heartbeatRuns.costAccountedAt,
+  resultJson: heartbeatRuns.resultJson,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  usageJson: heartbeatRuns.usageJson,
+};
+
 /** Reserve before dispatch, under the same company lock as charges and policy
  * changes. Estimates constrain admission; they cannot cap a provider's bill.
  * A reservation survives timeouts and restarts until accounting proves closure. */
@@ -87,7 +99,8 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     if (!hint) throw notFound("Run not found");
     await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, hint.agentId))).for("share");
     await lockRunBudgetRecoveryOwnerInTransaction(tx, companyId, runId, recoveryLeaseOwner);
-    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
+    const [run] = await tx.select(RESERVATION_RUN_COLUMNS).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
     if (!run) throw notFound("Run not found");
     const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
     if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) throw conflict("Run cancellation already requested");
