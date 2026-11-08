@@ -2213,7 +2213,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/preview",
   tags: ["companies"],
   summary: "Preview company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2222,7 +2226,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/apply",
   tags: ["companies"],
   summary: "Apply company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityImportSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
