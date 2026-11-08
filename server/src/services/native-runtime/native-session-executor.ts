@@ -68,7 +68,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
+import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -122,7 +122,7 @@ import {
   boundedExecutionCleanup,
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
@@ -241,7 +241,7 @@ import { assertNativeRetainedSandboxBinding, deferNativeControllerRecovery, Nati
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { appendNativeCredentialUpdate } from "./native-credential-updates.js";
-import { nativeSha256 } from "./canonical.js";
+import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
@@ -669,22 +669,15 @@ type WarmNativeSession = {
   runId: string;
   issueId: string;
   instructionWorkingCopy?: NativeInstructionWorkingCopy;
-  // Keep the admitted physical root independent of the per-run collection
-  // capability, which instruction preparation adopts before final admission.
-  instructionRoot?: string;
   instructionPreparationRunId?: string;
   agentId: string;
   instructionCopy?: { runId: string; root?: string; targetIdentity: string; collectStopped: () => Promise<void> };
   preparingRunId?: string;
-  managedAiCredentialIdentity?: string;
-  credentialRunId?: string;
   githubAccess?: NativeGitHubAccess;
-  githubAuthenticationMode?: string;
-  networkAccess: boolean;
   session: NativeSession;
   ownerToken: symbol;
   configDigest: string;
-  configuredEnvironmentDigest: string;
+  processConfigDigest?: string;
   ownerScope: string;
   normalizedSessionId: string;
   companyId: string;
@@ -7605,15 +7598,27 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
-function warmNativeProcessConfigDigest(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
-  if (needsCoreGitHubAccess(input) || input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN || input.instructionWorkingCopy) return undefined;
+function nativeProcessReuseKey(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
+  const environment = input.runnerEnvironment;
+  if (!input.managedGitHub && environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) return undefined;
+  const schema = "paperclip.native-process-reuse.v2";
+  const providerCredentials = PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS.flatMap(key => environment?.[key] ? [[key, environment[key]]] : []);
   return nativeSha256({
-    environment: configuredEnvironment(input.runnerEnvironment),
+    schema,
+    environment: configuredEnvironment(environment),
+    providerCredentials: createHmac("sha256", `${schema}:${nativeSessionScopeKey(input.execution)}`)
+      .update(canonicalNativeJson(providerCredentials)).digest("hex"),
     managedAiCredentialIdentity: input.managedAiCredentialIdentity ?? null,
     observabilityCompatibilityKey: input.observability?.compatibilityKey ?? null,
-    githubAuthenticationMode: input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ?? null,
-    networkAccess: input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
+    githubAuthenticationMode: environment?.PAPERCLIP_GITHUB_AUTH_MODE ?? null,
+    networkAccess: environment?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
+    coreGitHubAccess: needsCoreGitHubAccess(input),
+    instructionRoot: input.instructionWorkingCopy?.root ?? null,
   });
+}
+
+function canReuseNativeProcess(input: Parameters<typeof executePaperclipNativeSession>[0], processConfigDigest: unknown): boolean {
+  return input.refreshTools !== true && typeof processConfigDigest === "string" && processConfigDigest === nativeProcessReuseKey(input);
 }
 
 function loadWarmNativeCheckpoint(
@@ -9631,13 +9636,9 @@ async function executePaperclipNativeSessionWithinScope(
           }
           return loadWarmNativeCheckpoint(previous, nativeSessionConfigDigest(previous, "remote"), "remote");
         },
-        canReuseProcess: previous => {
-          const expected = warmNativeProcessConfigDigest(input);
-          if (!expected) return false;
-          const envelope = record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
-            NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8")));
-          return envelope.processConfigDigest === expected;
-        },
+        canReuseProcess: previous => !needsCoreGitHubAccess(input) && canReuseNativeProcess(input,
+          record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
+            NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       });
       remoteWarmRecovery.releasedSource = releasedSource;
     }
@@ -10192,7 +10193,7 @@ async function executePaperclipNativeSessionWithinScope(
   };
   const controllerCompatibility = {
     configDigest: nativeSessionConfigDigest(input.execution, input.runnerExecutionTarget?.kind ?? "local"),
-    processConfigDigest: warmNativeProcessConfigDigest(input) ?? null,
+    processConfigDigest: nativeProcessReuseKey(input) ?? null,
   };
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
@@ -10539,9 +10540,6 @@ async function executePaperclipNativeSessionWithinScope(
     lifecyclePolicy.mode === "warm"
       ? controllerCompatibility.configDigest
       : null;
-  const configuredEnvironmentDigest = createHash("sha256")
-    .update(JSON.stringify(configuredEnvironment(input.runnerEnvironment)))
-    .digest("hex");
   const warmSessionOwnerToken = Symbol(
     `native-warm-session:${input.execution.binding.runId}`,
   );
@@ -10592,34 +10590,15 @@ async function executePaperclipNativeSessionWithinScope(
       }
     }
     if (entry) {
-      // Old run-scoped environments still require process replacement. A
-      // session-owned broker can change run authority without replacing it.
-      const hasBrokerCapability = Boolean(
-        !input.managedGitHub && input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN,
-      );
-      const credentialRunChanged =
-        Boolean(entry.credentialRunId) !== hasBrokerCapability ||
-        (hasBrokerCapability &&
-          entry.credentialRunId !== input.execution.binding.runId);
       if (
         (entry.pluginTaskId !== undefined && (input.runnerExecutionTarget?.kind !== "remote" || input.runnerExecutionTarget.transport !== "sandbox" ||
           entry.pluginTaskId !== input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId)) ||
-        input.refreshTools === true ||
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
-        entry.observabilityCompatibilityKey !== input.observability?.compatibilityKey ||
-        entry.configuredEnvironmentDigest !== configuredEnvironmentDigest ||
-        entry.instructionRoot !== input.instructionWorkingCopy?.root ||
-        entry.managedAiCredentialIdentity !== input.managedAiCredentialIdentity ||
-        credentialRunChanged ||
+        !canReuseNativeProcess(input, entry.processConfigDigest) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
-        (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget)) ||
-        entry.githubAuthenticationMode !==
-          input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ||
-        entry.networkAccess !==
-          (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS ===
-            "enabled")
+        (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))
       ) {
         await finishStartupContextForFallback();
         pluginTaskDescription=undefined;
@@ -11153,24 +11132,13 @@ async function executePaperclipNativeSessionWithinScope(
                     runId: input.execution.binding.runId,
                     issueId: input.execution.binding.issueId,
                     instructionWorkingCopy: input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy,
-                    instructionRoot: input.instructionWorkingCopy?.root,
                     agentId: input.execution.binding.agentId,
-                    managedAiCredentialIdentity: input.managedAiCredentialIdentity,
-                    githubAuthenticationMode:
-                      input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
-                    networkAccess:
-                      input.runnerEnvironment
-                        ?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
                     githubAccess,
-                    credentialRunId: !input.managedGitHub && input.runnerEnvironment
-                      ?.PAPERCLIP_GITHUB_BROKER_TOKEN
-                      ? input.execution.binding.runId
-                      : undefined,
                     session,
                     ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
+                    processConfigDigest: controllerCompatibility.processConfigDigest ?? undefined,
                     observabilityCompatibilityKey: input.observability?.compatibilityKey,
-                    configuredEnvironmentDigest,
                     ownerScope: nativeSessionOwnerScope(
                       input.execution, input.runnerExecutionTarget?.environmentId ?? null,
                     ),
