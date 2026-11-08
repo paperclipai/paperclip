@@ -55,17 +55,17 @@
     {
       "path": "schemas/event-v2.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
-      "sha256": "d7459d9fc186f142b0ea648fd116a2bee52cf7ea71001946be6e2991ccd2ed55"
+      "sha256": "8c1a4264a49b6f8d6713cab666747d2368f57136ebf1c0970a9c67a012bf480a"
     },
     {
       "path": "schemas/event-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/event.schema.json",
-      "sha256": "f600e7445e3db04eb394c2d9bb6ab85130f6944b47636372fe9f46f4f8a18939"
+      "sha256": "e357c7b063595e6baa38617541d3b7361c4a54d5d1f8e3711fffc84d660e584e"
     },
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "8fd8437758a6e75006a8806bd5e64558393f4d5777febf4e64fbb60c1f4b86e6"
+      "sha256": "ee66887550f3a940c34e91549433da8432ff1050f18e0c0a6c801c41fb82665a"
     },
     {
       "path": "schemas/fixture.schema.json",

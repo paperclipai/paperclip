@@ -353,6 +353,13 @@ pub struct DurableState {
     v2_replay_events: BTreeMap<String, StoredV2ReplayEvent>,
     #[serde(default)]
     pub last_connection_protocol_version: Option<u64>,
+    /// The runner process generation that emits events (durable-ownership
+    /// plan, section G). Each runner process that loads existing state starts
+    /// the next generation, and every event envelope carries it, so a consumer
+    /// can record an earlier generation's events as history. State saved
+    /// before this field existed loads as generation 0.
+    #[serde(default)]
+    pub generation: u64,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
@@ -405,10 +412,18 @@ impl DurableState {
             executor_event_receipts: BTreeMap::new(),
             v2_replay_events: BTreeMap::new(),
             last_connection_protocol_version: None,
+            generation: 1,
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
         }
+    }
+
+    /// Starts the next event generation for a runner process that recovered
+    /// existing state. It is persisted with the next save, so recovery adds no
+    /// write before the first turn.
+    pub fn begin_recovered_generation(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 
     pub fn outbox_bytes(&self) -> usize {
@@ -638,6 +653,7 @@ impl DurableState {
                 "sourceSeq": source_seq,
                 "sourceInstanceId": self.runner_instance_id,
                 "sourceKind": "runner",
+                "generation": self.generation,
                 "runId": self.run_id,
                 "normalizedSessionId": self.normalized_session_id,
                 "turnId": self.turn_id,
@@ -2857,6 +2873,51 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    // Section G: every runner event carries the runner process generation, so
+    // a consumer can record an earlier generation's events as history.
+    #[test]
+    fn stamps_every_event_with_the_runner_process_generation() {
+        let directory = temporary_directory("event-generation");
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut first, recovered) = store.load_or_create(&config).unwrap();
+        assert!(!recovered);
+        assert_eq!(first.generation, 1);
+        first
+            .enqueue_event(&config, "harness.ready", EventPriority::P1, json!({}))
+            .unwrap();
+        assert_eq!(first.outbox[0].envelope["payload"]["generation"], 1);
+        store.save(&first).unwrap();
+
+        // A restarted runner process starts the next generation. Events it
+        // still has to deliver keep the generation that emitted them.
+        let (mut second, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        // Loading alone never changes state; the runner starts the generation.
+        assert_eq!(second.generation, 1);
+        second.begin_recovered_generation();
+        assert_eq!(second.generation, 2);
+        second
+            .enqueue_event(&config, "harness.ready", EventPriority::P1, json!({}))
+            .unwrap();
+        assert_eq!(second.outbox[0].envelope["payload"]["generation"], 1);
+        assert_eq!(second.outbox[1].envelope["payload"]["generation"], 2);
+
+        // State saved before the field existed loads as generation 0, so its
+        // next process is generation 1.
+        let mut legacy = serde_json::to_value(&second).unwrap();
+        legacy.as_object_mut().unwrap().remove("generation");
+        store
+            .save(&serde_json::from_value::<DurableState>(legacy).unwrap())
+            .unwrap();
+        let (mut upgraded, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(upgraded.generation, 0);
+        upgraded.begin_recovered_generation();
+        assert_eq!(upgraded.generation, 1);
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
