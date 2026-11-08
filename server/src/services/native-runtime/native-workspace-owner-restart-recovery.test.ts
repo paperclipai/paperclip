@@ -8,7 +8,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
-import { copybackOwnerOnAnotherHost, proveLocalWorkspaceOwnerStopped } from "./native-workspace-owner-stop-proof.js";
+import { copybackOwnerOnAnotherHost, proveCopybackOwnerGone, proveLocalWorkspaceOwnerStopped } from "./native-workspace-owner-stop-proof.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../recovery/ownership-registry.js";
@@ -264,6 +264,13 @@ describe("native workspace owner recovery after a restart", () => {
       expect(after.kinds[0]!.inProgress).toBe(before.kinds[0]!.inProgress + 1);
       expect(after.kinds[0]!.reasons.pid_dead).toBe((before.kinds[0]!.reasons.pid_dead ?? 0) + 1);
       expect(after.settleWatch).toBe(before.settleWatch);
+    });
+
+    it("lets the board attest an owner on another hostname even when its PID space is unreadable", async () => {
+      const proof = await proveCopybackOwnerGone({ hostname: "another-host", pid: 4_194_303,
+        processStartedAt: new Date(0).toISOString(), hostHash: "unknown" });
+      expect(proof).toMatchObject({ verdict: "unprovable", reason: "different_host" });
+      expect(copybackOwnerOnAnotherHost(proof)).toBe(true);
     });
 
     it("never treats an unreadable local PID space as an owner on another host", () => {

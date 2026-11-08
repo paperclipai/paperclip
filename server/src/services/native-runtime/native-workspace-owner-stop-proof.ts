@@ -55,8 +55,10 @@ export async function proveCopybackOwnerGone(owner: LocalWorkspaceOwner, overrid
     pidExists: overrides.isProcessAlive ?? base.pidExists,
     readStartedAt: overrides.readProcessStartedAt ?? base.readStartedAt };
   const stamp = copybackOwnerStamp(owner);
+  // A known different hostname is decided first: an unreadable PID space
+  // (here or on the stamp) must not hide that the owner ran on another host.
+  if (owner.hostname !== os.hostname()) return { verdict: "unprovable", reason: "different_host" };
   if (!stamp.processSpace) {
-    if (owner.hostname !== os.hostname()) return { verdict: "unprovable", reason: "different_host" };
     return proveOwnerGone({ ...stamp, host: null, processSpace: probe.processSpace }, probe);
   }
   return proveOwnerGone(stamp, probe);
