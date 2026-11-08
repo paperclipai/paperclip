@@ -1,5 +1,5 @@
 import { consumeMcpDeviceMintContext,assertCurrentMcpDeviceMint,type McpDeviceMintContext } from "./device-mint-authority.js";
-import { requiresMcpDeviceBroker } from "./device-cutover.js";
+import { assertDotDeviceProfileAck,requiresMcpDeviceBroker } from "./device-cutover.js";
 import { prepareMcpClientMutation, recordMcpClientChange } from "./client-mirror-mutations.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { authorizeExternalBotOperator, externalBotEnabled } from "../external-bot-authority.js";
@@ -446,7 +446,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const sourceHash = hashMcpSecret(config.resource + ":" + source);
       await db.transaction(async tx => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
-        if(mintAuthority)assertCurrentMcpDeviceMint(mintAuthority,config.resource);
+        if(mintAuthority){
+          assertCurrentMcpDeviceMint(mintAuthority,config.resource);
+          if(dotAgentConnection)await assertDotDeviceProfileAck(tx,config.resource,mintAuthority.instanceId);
+        }
         if(await requiresMcpDeviceBroker(tx as unknown as Db,config.resource)&&!mintAuthority)throw new McpOAuthError("invalid_request","Use the canonical Paperclip device authorization endpoint.");
         await prepareMcpClientMutation(tx as unknown as Db);
         await tx.execute(sql`SELECT pg_advisory_xact_lock(736721043)`);
@@ -455,6 +458,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         const [count] = await tx.select({ total: sql<number>`count(*)::int`, source: sql<number>`(count(*) FILTER (WHERE ${mcpOauthDeviceRequests.sourceHash} = ${sourceHash}))::int` }).from(mcpOauthDeviceRequests);
         if (!count || count.total >= 1000 || count.source >= 10) throw new McpOAuthError("temporarily_unavailable", "Too many device connection attempts. Try again later.", 429);
         await retainMetadataClient(tx as unknown as Db, client, source);
+        if(mintAuthority)assertCurrentMcpDeviceMint(mintAuthority,config.resource);
         await tx.insert(mcpOauthDeviceRequests).values({ clientId: client.id, ingressOwner:mintAuthority?"cloud":"tenant",deviceCodeHash: hashMcpSecret(deviceCode), userCodeHash: deviceHash(userCode),
           resource: config.resource, scopes, requestedCompanyId: p.data.company_id ?? null, sourceHash, expiresAt: new Date(now.getTime() + 10 * minute) });
       });

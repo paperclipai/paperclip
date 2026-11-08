@@ -1,17 +1,18 @@
 import {beforeEach,describe,it,expect,vi} from "vitest";
 import type {Db} from "@paperclipai/db";
-const current=vi.hoisted(()=>({identity:null as null|{stackId:string;canonicalOrigin:string}}));
+const current=vi.hoisted(()=>({identity:null as null|{stackId:string;canonicalOrigin:string},connector:null as null|{instanceId:string}}));
+vi.mock("../paperclip-cloud-connector.js",()=>({paperclipCloudConnectorConfigFromEnv:()=>current.connector}));
 vi.mock("../cloud-runtime-identity.js",()=>({getCloudRuntimeIdentity:()=>current.identity}));
 vi.mock("../delivery-work-notifications.js",async importOriginal=>({...await importOriginal<typeof import("../delivery-work-notifications.js")>(),notifyDeliveryWork:vi.fn(async()=>{})}));
 import {mcpClientMirrorGeneration} from "./client-mirror-contract.js";
-import {requiresMcpDeviceBroker,currentMcpDeviceCutoverStack,installMcpDeviceCutover} from "./device-cutover.js";
+import {requiresMcpDeviceBroker,currentMcpDeviceCutoverStack,installMcpDeviceCutover,assertDotDeviceProfileAck} from "./device-cutover.js";
 
 const resource="https://tenant.example.test/mcp/paperclip";
 const identity={version:1 as const,instanceId:"instance",origin:"https://tenant.example.test",revision:1};
 const receipt={...identity,enabled:true,frontDoor:"tenant-personal-v1" as const,deviceStatus:{keyId:"a".repeat(64),generation:"b".repeat(64),count:0},generation:""};receipt.generation=mcpClientMirrorGeneration(receipt);
 function fixture(row:unknown){let reads=0;const tx={select:()=>{reads++;return{from:()=>({where:async()=>row?[row]:[]})};}} as unknown as Pick<Db,"select">;return{tx,reads:()=>reads};}
 describe("one-time managed device cutover",()=>{
-  beforeEach(()=>{current.identity=null;});
+  beforeEach(()=>{current.identity=null;current.connector=null;});
   it("persisted managed cutover is inert after legitimate selfhost/no-Cloud startup",async()=>{
     const f=fixture({stackId:"old-stack",at:new Date(1)});
     expect(await requiresMcpDeviceBroker(f.tx,resource)).toBe(false);expect(f.reads()).toBe(0);
@@ -62,4 +63,52 @@ describe("one-time managed device cutover",()=>{
     await installMcpDeviceCutover(tx,{...receipt,origin:"https://foreign.example.test"});expect(updates).toEqual([]);
   });
 
+});
+
+
+describe("full hosted Dot namespace mint latch", () => {
+  beforeEach(() => { current.identity = { stackId: "stack", canonicalOrigin: identity.origin }; current.connector = { instanceId: identity.instanceId }; });
+  const dotResource = identity.origin + "/mcp/runner";
+  const latch = { version: 1 as const, profile: "hosted-dot-v1" as const, stackId: "stack", instanceId: identity.instanceId, origin: identity.origin };
+  it("an enabled existing namespace without a completed Dot ACK never acquires a mint fence", async () => {
+    expect(await requiresMcpDeviceBroker(fixture({ latch: null, receipt }).tx, dotResource)).toBe(false);
+    expect(await requiresMcpDeviceBroker(fixture({ latch: { ...latch, profile: "code-device-v1" }, receipt }).tx, dotResource)).toBe(false);
+  });
+  it("same acknowledged namespace retains the fence through receipt clear and owner reconstruction", async () => {
+    const f = fixture({ latch, receipt: null });
+    expect(await requiresMcpDeviceBroker(f.tx, dotResource)).toBe(true);
+    current.connector = { instanceId: identity.instanceId };
+    expect(await requiresMcpDeviceBroker(f.tx, dotResource)).toBe(true);
+    current.connector = { instanceId: "replacement-instance" };
+    expect(await requiresMcpDeviceBroker(f.tx, dotResource)).toBe(false);
+    current.connector = { instanceId: identity.instanceId }; current.identity = { stackId: "replacement-stack", canonicalOrigin: identity.origin };
+    expect(await requiresMcpDeviceBroker(f.tx, dotResource)).toBe(false);
+  });
+  it("only the exact full ACK at the current revision installs the latch in its committing transaction", async () => {
+    const full = { ...receipt, dotProfile: "hosted-dot-v1" as const, generation: "" }; full.generation = mcpClientMirrorGeneration(full);
+    const updates: Array<Record<string, unknown>> = [];
+    let revision = 1;
+    const tx = { select: () => ({ from: () => ({ where: () => ({ for: async () => [{ revision, deviceCutoverStackId: "stack", deviceCutoverAt: new Date(1), dotDeviceCutover: null }] }) }) }),
+      update: () => ({ set: (value: Record<string, unknown>) => { updates.push(value); return { where: async () => [] }; } }) } as unknown as Db;
+    await installMcpDeviceCutover(tx, full);
+    expect(updates).toEqual([{ dotDeviceCutover: latch }]);
+    updates.length = 0; revision = 2; await installMcpDeviceCutover(tx, full); expect(updates).toEqual([]);
+    revision = 1; await installMcpDeviceCutover(tx, { ...full, instanceId: "foreign" }); expect(updates).toEqual([]);
+    await installMcpDeviceCutover(tx, receipt); expect(updates).toEqual([]);
+  });
+});
+
+
+describe("normal signed Dot mint admission", () => {
+  it("requires current full receipt plus latch and rejects receipt-clear or revision/instance replacement", async () => {
+    current.identity = { stackId: "stack", canonicalOrigin: identity.origin }; current.connector = { instanceId: identity.instanceId };
+    const full = { ...receipt, dotProfile: "hosted-dot-v1" as const, generation: "" }; full.generation = mcpClientMirrorGeneration(full);
+    const row = { revision: 1, enabled: true, remoteResponsibility: true, receipt: full,
+      dotDeviceCutover: { version: 1, profile: "hosted-dot-v1", stackId: "stack", instanceId: identity.instanceId, origin: identity.origin } };
+    await expect(assertDotDeviceProfileAck(fixture(row).tx, identity.origin + "/mcp/runner", identity.instanceId)).resolves.toBeUndefined();
+    for (const change of [{ receipt: null }, { revision: 2 }, { dotDeviceCutover: null }, { enabled: false }, { remoteResponsibility: false }]) {
+      await expect(assertDotDeviceProfileAck(fixture({ ...row, ...change }).tx, identity.origin + "/mcp/runner", identity.instanceId)).rejects.toMatchObject({ status: 503 });
+    }
+    await expect(assertDotDeviceProfileAck(fixture(row).tx, identity.origin + "/mcp/runner", "replacement")).rejects.toMatchObject({ status: 503 });
+  });
 });

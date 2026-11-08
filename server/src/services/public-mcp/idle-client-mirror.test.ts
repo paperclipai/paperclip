@@ -68,3 +68,25 @@ describe("MCP client mirror inspection",()=>{
   });
 
 });
+
+
+describe("hosted Dot sleep responsibility", () => {
+  it("personal or partial ACK never makes an existing Dot flag sleep-safe", async () => {
+    const f = fixture(rowFor(complete));
+    expect((await readIdleMcpClientMirror(f.tx, { ...f.context, dotEnabled: true })).blocked).toBe(true);
+    const full = { ...complete, dotProfile: "hosted-dot-v1" as const, generation: "" }; full.generation = mcpClientMirrorGeneration(full);
+    const missing = fixture(rowFor(full));
+    expect((await readIdleMcpClientMirror(missing.tx, { ...missing.context, dotEnabled: true })).blocked).toBe(true);
+  });
+  it("only full ACK and same stack, instance and origin latch allow the existing proof", async () => {
+    const full = { ...complete, dotProfile: "hosted-dot-v1" as const, generation: "" }; full.generation = mcpClientMirrorGeneration(full);
+    const latch = { version: 1, profile: "hosted-dot-v1", stackId: "stack", instanceId: identity.instanceId, origin: identity.origin };
+    const f = fixture({ ...rowFor(full), dotDeviceCutover: latch });
+    expect((await readIdleMcpClientMirror(f.tx, { ...f.context, dotEnabled: true })).blocked).toBe(false);
+    for (const delta of [{ stackId: "foreign" }, { instanceId: "foreign" }, { origin: "https://foreign.example.test" }, { profile: "code-device-v1" }]) {
+      const replaced = fixture({ ...rowFor(full), dotDeviceCutover: { ...latch, ...delta } });
+      expect((await readIdleMcpClientMirror(replaced.tx, { ...replaced.context, dotEnabled: true })).blocked).toBe(true);
+    }
+    expect((await readIdleMcpClientMirror(f.tx, { ...f.context, dotEnabled: true, unsupportedProfiles: true })).blocked).toBe(true);
+  });
+});

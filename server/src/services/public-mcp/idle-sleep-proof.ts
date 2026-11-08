@@ -37,13 +37,13 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   const services = owners.get(owner);
   await context.budget.beforeRead();
   const feature = await instanceSettingsService(tx as Db).getExperimentalReadOnly();
-  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:feature.enablePublicMcp,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,unsupportedProfiles:feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner});
+  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:feature.enablePublicMcp||feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,dotEnabled:feature.enableOpenAiDot,unsupportedProfiles:feature.enableGrokBot&&feature.enableNativeRunner});
   const ingress = await readIdleMcpWakeProof(tx, { ...context,
     clientMirror:frontDoor.receipt,
     personalResource: services?.config?.resource ?? "", dotResource: services?.config ? services.config.origin + "/mcp/runner" : "",
-    discovery: services?.config && feature.enablePublicMcp ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
-      profiles: ["personal-mcp", ...(feature.enableOpenAiDot || feature.enableGrokBot && feature.enableNativeRunner ? ["dot-mcp" as const] : [])] } : undefined,
-    personalEnabled: feature.enablePublicMcp, dotEnabled: feature.enablePublicMcp && feature.enableOpenAiDot });
+    discovery: services?.config && (feature.enablePublicMcp || feature.enableOpenAiDot) ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
+      profiles: [...(feature.enablePublicMcp ? ["personal-mcp" as const] : []), ...(feature.enableOpenAiDot ? ["dot-mcp" as const] : [])] } : undefined,
+    personalEnabled: feature.enablePublicMcp, dotEnabled: feature.enableOpenAiDot });
   const absent = { revision: "absent", reconciled: false };
   const personal = services?.personal?.reconciliationSnapshot() ?? absent, dot = services?.dot?.reconciliationSnapshot() ?? absent;
   const personalDestination = services?.personal?.createIdleDestinationInspector();
@@ -51,8 +51,8 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   const subscriptions = await readIdleMcpSubscriptionProof(tx, { now: context.now, ingress, personal, dot, budget: context.budget,
     inspectDestination: row => (row.bindingId ? dotDestination : personalDestination)?.(row) ?? Promise.resolve(false) });
   const retries = await readIdleMcpEventSchedule(tx, { now: context.now, coveredGrantIds: ingress.grantIds, personal, dot, budget: context.budget });
-  const deviceStatus=await readIdleMcpDeviceStatus(tx,{enabled:feature.enablePublicMcp,receipt:frontDoor.receipt,budget:context.budget});
-  const legacyDevices=feature.enablePublicMcp?await readIdleMcpDeviceCutover(tx,context):{blocked:false,state:"absent",deadlines:[]};
+  const deviceStatus=await readIdleMcpDeviceStatus(tx,{enabled:feature.enablePublicMcp||feature.enableOpenAiDot,receipt:frontDoor.receipt,budget:context.budget});
+  const legacyDevices=feature.enablePublicMcp||feature.enableOpenAiDot?await readIdleMcpDeviceCutover(tx,context):{blocked:false,state:"absent",deadlines:[]};
   const transfers = await readIdleMcpTransferSchedule(tx, context);
   const handoffs = await readIdleMcpAuthorizationHandoffs(tx, context);
   const schedule = { blocked: frontDoor.blocked || deviceStatus.blocked || legacyDevices.blocked || retries.blocked || transfers.blocked || handoffs.blocked, state: [frontDoor.state,deviceStatus.state,legacyDevices.state,retries.state,transfers.state,handoffs.state], deadlines: [...legacyDevices.deadlines,...retries.deadlines,...transfers.deadlines,...handoffs.deadlines] };

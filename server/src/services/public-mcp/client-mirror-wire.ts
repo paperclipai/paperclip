@@ -1,7 +1,7 @@
 const maxInteger = Number.MAX_SAFE_INTEGER;
 const digest = "f".repeat(64);
 const identity = {
-  version: 1, instanceId: "", origin: "", revision: maxInteger,
+  version: 1, dotProfile: "hosted-dot-v1", instanceId: "", origin: "", revision: maxInteger,
   baseRevision: maxInteger, expectedRecords: maxInteger, authorizationOrigin: "",
   deviceStatus: { keyId: digest, generation: digest, count: 1000 },
 };

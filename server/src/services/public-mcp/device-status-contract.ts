@@ -17,6 +17,6 @@ export function mcpDeviceStatusFingerprint(key:string,hash:string,clientId:strin
 export function mcpDeviceStatusGeneration(input:{instanceId:string;origin:string;revision:number;keyId:string},entries:McpDeviceStatusEntry[]){
   if(entries.length>1000)throw new Error("MCP device status set exceeds canonical1000 admission bound");
   const parsed=entries.map(entry=>mcpDeviceStatusEntrySchema.parse(entry)).sort((a,b)=>Buffer.compare(Buffer.from(a.requestId),Buffer.from(b.requestId)));
-  if(new Set(parsed.map(entry=>entry.requestId)).size!==parsed.length||new Set(parsed.map(entry=>entry.fingerprint)).size!==parsed.length||parsed.some(entry=>entry.resource!==input.origin+"/mcp/paperclip"))throw new Error("MCP device status identity changed");
+  if(new Set(parsed.map(entry=>entry.requestId)).size!==parsed.length||new Set(parsed.map(entry=>entry.fingerprint)).size!==parsed.length||parsed.some(entry=>entry.resource!==input.origin+"/mcp/paperclip"&&entry.resource!==input.origin+"/mcp/runner"))throw new Error("MCP device status identity changed");
   return createHash("sha256").update(JSON.stringify(["mcp-device-status-snapshot-v1",input,parsed])).digest("hex");
 }

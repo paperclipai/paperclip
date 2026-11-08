@@ -7,7 +7,7 @@ import {readIdleMcpClientMirror} from "./idle-client-mirror.js";
 import {McpEventError} from "./event-webhooks.js";
 import type {PublicMcpConfig} from "./oauth.js";
 
-export const cloudEventAuthoritySchema=z.object({token:z.string().min(1).max(24000),expiresAt:z.number().finite(),transport:z.literal("tenant-personal-v1").optional()}).strict();
+export const cloudEventAuthoritySchema=z.object({token:z.string().min(1).max(24000),expiresAt:z.number().finite(),transport:z.enum(["tenant-personal-v1","tenant-dot-v1"]).optional()}).strict();
 export type CloudEventAuthority=z.infer<typeof cloudEventAuthoritySchema>;
 export function currentTenantEventOrigin(config:PublicMcpConfig){
   const identity=getCloudRuntimeIdentity();
@@ -18,6 +18,7 @@ export async function cloudEventValidationOrigin(db:Db,config:PublicMcpConfig,ce
   const parsed=cloudEventAuthoritySchema.safeParse(authority);
   if(!parsed.success)throw new McpEventError(-32602,"Invalid hosted subscription authority.");
   if(parsed.data.transport===undefined)return centralOrigin;
+  if(parsed.data.transport!=="tenant-personal-v1")throw new McpEventError(-32602,"Invalid hosted subscription authority.");
   const identity=currentTenantEventOrigin(config),connector=paperclipCloudConnectorConfigFromEnv();
   if(!centralOrigin||!connector)throw new McpEventError(-32602,"The hosted subscription authority is unavailable.");
   const feature=await instanceSettingsService(db).getExperimentalReadOnly();

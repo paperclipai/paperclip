@@ -5,7 +5,7 @@ import { deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypte
 import { prepareMcpClientMutation } from "./client-mirror-mutations.js";
 import { installMcpDeviceCutover } from "./device-cutover.js";
 import { prepareMcpClientMirrorPolicy } from "./client-mirror-mutations.js";
-import { and, eq, gt, lte, sql } from "drizzle-orm";
+import { inArray, and, eq, gt, lte, sql } from "drizzle-orm";
 import { mcpOauthClients as clients,mcpOauthDeviceRequests as devices, mcpOauthClientMirrorState as state, mcpOauthClientChanges as changes, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "../instance-settings.js";
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../paperclip-cloud-connector.js";
@@ -17,7 +17,7 @@ import { mcpClientMirrorGeneration, mcpClientMirrorReceiptSchema, mcpClientMirro
 export function sameMcpClientMirrorReceipt(left:McpClientMirrorReceipt,right:McpClientMirrorReceipt){
   return left.version===right.version&&left.instanceId===right.instanceId&&left.origin===right.origin
     &&left.revision===right.revision&&left.enabled===right.enabled&&left.generation===right.generation
-    &&left.frontDoor===right.frontDoor&&(left.authorizationOrigin??left.origin)===(right.authorizationOrigin??right.origin)
+    &&left.dotProfile===right.dotProfile&&left.frontDoor===right.frontDoor&&(left.authorizationOrigin??left.origin)===(right.authorizationOrigin??right.origin)
     &&left.deviceStatus?.keyId===right.deviceStatus?.keyId&&left.deviceStatus?.generation===right.deviceStatus?.generation
     &&left.deviceStatus?.count===right.deviceStatus?.count;
 }
@@ -37,9 +37,11 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
       const managedIdentity=getCloudRuntimeIdentity();
       if(!managedIdentity)return;
       if (!origin || !instanceId || !publish) return;
-      let enabled=false,publicationAttempted=false;
+      let enabled=false,dotProfile:false|"hosted-dot-v1"=false,publicationAttempted=false;
       try {
-        enabled=(await instanceSettingsService(db).getExperimentalReadOnly()).enablePublicMcp;
+        const experimental=await instanceSettingsService(db).getExperimentalReadOnly();
+        dotProfile=experimental.enableOpenAiDot?"hosted-dot-v1":false;
+        enabled=experimental.enablePublicMcp||Boolean(dotProfile);
         const assertCurrentAuthority=()=>{
           const identity=getCloudRuntimeIdentity(),currentConfig=paperclipCloudConnectorConfigFromEnv();
           if(!identity||identity.stackId!==managedIdentity.stackId||boundStackId!==undefined&&identity.stackId!==boundStackId
@@ -67,8 +69,8 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         if(enabled&&captured&&fullRecovery)reserveFullRevision=false;
         if(!captured&&!enabled)return;
         if (!captured || !Number.isSafeInteger(captured.revision) || captured.revision < 0) throw new Error("Invalid MCP client mirror state");
-        const generation = mcpClientMirrorGeneration({instanceId,origin,revision:captured.revision,enabled});
         const old = mcpClientMirrorReceiptSchema.safeParse(captured.receipt);
+        const generation = mcpClientMirrorGeneration({instanceId,origin,revision:captured.revision,enabled});
         const baseRevision = !fullRecovery && old.success && old.data.instanceId===instanceId && old.data.origin===origin && old.data.revision<=captured.revision
           && old.data.generation===mcpClientMirrorGeneration(old.data) ? old.data.revision : null;
         if (!enabled&&baseRevision===captured.revision&&old.success&&old.data.enabled===false) return;
@@ -81,12 +83,12 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
           return;
         }
         const deviceKey=deriveLocalEncryptedInstanceSecret(`mcp-device-status:v1:${instanceId}`),keyId=mcpDeviceStatusKeyId(deviceKey);
-        const deviceRows=await db.select({requestId:devices.id,deviceCodeHash:devices.deviceCodeHash,clientId:devices.clientId,resource:devices.resource,ingressOwner:devices.ingressOwner,status:devices.status,expiresAt:devices.expiresAt}).from(devices).where(eq(devices.resource,origin+"/mcp/paperclip")).orderBy(devices.id).limit(1001);
+        const deviceRows=await db.select({requestId:devices.id,deviceCodeHash:devices.deviceCodeHash,clientId:devices.clientId,resource:devices.resource,ingressOwner:devices.ingressOwner,status:devices.status,expiresAt:devices.expiresAt}).from(devices).where(inArray(devices.resource,dotProfile?[origin+"/mcp/paperclip",origin+"/mcp/runner"]:[origin+"/mcp/paperclip"])).orderBy(devices.id).limit(1001);
         if(deviceRows.length>1000)throw new Error("MCP retained device set exceeds canonical1000 admission bound");
         const entries=deviceRows.map(row=>mcpDeviceStatusEntrySchema.parse({requestId:row.requestId,clientId:row.clientId,resource:row.resource,ingressOwner:row.ingressOwner,status:row.status,expiresAt:row.expiresAt.getTime(),fingerprint:mcpDeviceStatusFingerprint(deviceKey,row.deviceCodeHash,row.clientId,row.resource)}));
         const deviceStatus={keyId,generation:mcpDeviceStatusGeneration({instanceId,origin,revision:captured.revision,keyId},entries),count:entries.length};
         if(baseRevision===captured.revision&&old.success){
-          if(JSON.stringify(old.data.deviceStatus)===JSON.stringify(deviceStatus)&&(old.data.authorizationOrigin??origin)===(input.authorizationOrigin??origin))return;
+          if((old.data.dotProfile??false)===dotProfile&&JSON.stringify(old.data.deviceStatus)===JSON.stringify(deviceStatus)&&(old.data.authorizationOrigin??origin)===(input.authorizationOrigin??origin))return;
           await db.transaction(async tx=>{
             await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
             const [current]=await tx.select({revision:state.revision}).from(state).where(eq(state.id,"public")).for("update");
@@ -97,7 +99,7 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         const [count] = baseRevision===null ? await db.select({total:sql<number>`count(*)::int`}).from(clients)
           : await db.select({total:sql<number>`count(*)::int`}).from(changes).where(and(gt(changes.revision,baseRevision),lte(changes.revision,captured.revision)));
         if (!count || !Number.isSafeInteger(count.total) || count.total<0) throw new Error("Invalid MCP client mirror count");
-        const identity = {version:1 as const,instanceId,origin,revision:captured.revision,baseRevision,expectedRecords:count.total,deviceStatus,...(input.authorizationOrigin?{authorizationOrigin:input.authorizationOrigin}:{})};
+        const identity = {version:1 as const,...(dotProfile?{dotProfile}:{}),instanceId,origin,revision:captured.revision,baseRevision,expectedRecords:count.total,deviceStatus,...(input.authorizationOrigin?{authorizationOrigin:input.authorizationOrigin}:{})};
         const [owned]=await db.update(state).set({remoteResponsibility:true}).where(and(eq(state.id,"public"),eq(state.revision,captured.revision))).returning({id:state.id});
         if(!owned){pending=true;return;}
         let result = mcpClientMirrorResponseSchema.parse(await publishEnabled({...identity,operation:"begin",deviceKey}));
@@ -134,7 +136,7 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
           if(current?.revision!==captured.revision || sent!==count.total)throw new Error("MCP client mirror changed during publication");
           result=mcpClientMirrorResponseSchema.parse(await publishEnabled({...identity,operation:"complete"}));
         }
-        if(!result.complete||!result.receipt.enabled||JSON.stringify(result.receipt.deviceStatus)!==JSON.stringify(deviceStatus)||result.receipt.instanceId!==instanceId||result.receipt.origin!==origin||result.receipt.revision!==captured.revision||result.receipt.generation!==mcpClientMirrorGeneration(result.receipt))throw new Error("MCP client mirror was not acknowledged");
+        if(!result.complete||!result.receipt.enabled||(result.receipt.dotProfile??false)!==dotProfile||JSON.stringify(result.receipt.deviceStatus)!==JSON.stringify(deviceStatus)||result.receipt.instanceId!==instanceId||result.receipt.origin!==origin||result.receipt.revision!==captured.revision||result.receipt.generation!==mcpClientMirrorGeneration(result.receipt))throw new Error("MCP client mirror was not acknowledged");
         const receipt=result.receipt;
         let retained=false;
         await db.transaction(async tx=>{

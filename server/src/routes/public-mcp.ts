@@ -74,7 +74,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     profiles: [agentConnection ? "dot-mcp" : "personal-mcp"] })) router.get(entry.path, (_req,res) => res.json(entry.document));
   router.use(oauthPath, authRateLimit(), express.urlencoded({ extended: false, limit: "16kb" }));
   router.post(oauthPath + "/register", async (req, res) => res.status(201).json(await oauth.register(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown")));
-  router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown",verifyMcpDeviceMintContext(req,oauth.config.resource))));
+  router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown",verifyMcpDeviceMintContext(req,oauth.config.resource,req.body))));
   router.get(oauthPath + "/authorize", async (req, res) => res.redirect(303, await oauth.authorize(req.query, req.ip ?? req.socket.remoteAddress ?? "unknown")));
   router.post(oauthPath + "/token", async (req, res) => res.json(await oauth.token(req.body ?? {})));
   router.post(oauthPath + "/revoke", async (req, res) => {

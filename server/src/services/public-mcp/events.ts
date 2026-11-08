@@ -1,3 +1,4 @@
+import { authorizeDotCloudEvent, currentDotEventNamespace } from "./dot-cloud-event-authority.js";
 import {cloudEventAuthoritySchema,cloudEventValidationOrigin,currentTenantEventOrigin,type CloudEventAuthority} from "./cloud-event-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, count, inArray, eq, gt, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
@@ -79,6 +80,12 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   }
   async function authorizeCloud(principal: McpPrincipal, authority?: CloudEventAuthority) {
     if(authority!==undefined&&!cloudEventAuthoritySchema.safeParse(authority).success)throw new McpEventError(-32602,"Invalid hosted subscription authority.");
+    if (options.enableDotRunner) {
+      if (authority === undefined) return; // Existing raw awake Dot clients stay local.
+      if (authority.transport !== "tenant-dot-v1") throw new McpEventError(-32602, "Invalid hosted Dot subscription authority.");
+      await authorizeDotCloudEvent(oauth, principal, authority, fetcher, now);
+      return;
+    }
     if (!cloudOrigin&&authority?.transport===undefined) return;
     if (!authority || !Number.isFinite(authority.expiresAt) || authority.expiresAt <= now() || authority.token.length > 24000) throw new McpEventError(-32602, "Refresh the hosted connection before subscribing.");
     const validationOrigin=await cloudEventValidationOrigin(db,oauth.config,cloudOrigin,authority);
@@ -109,6 +116,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   async function subscribe(principal: McpPrincipal, raw: unknown, cloud?: CloudEventAuthority) {
     await oauth.assertEnabled();
     const requestedAt = new Date(now());
+    const hosted = options.enableDotRunner ? cloud !== undefined : Boolean(cloudOrigin);
     const input = subscribeSchema.parse(raw);
     validate(input);
     if (!input.delivery.secret) throw new McpEventError(-32602, "A webhook signing secret is required.");
@@ -140,7 +148,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
           throw new McpEventError(-32602, "Subscription limit reached. Stop an existing monitor first.");
         }
       }
-      if (!verify && !cloudOrigin) return { existing, previous, verify, lease: null };
+      if (!verify && !hosted) return { existing, previous, verify, lease: null };
       const attempts = await tx.select().from(admissions);
       const companyAttempts = attempts.filter(r => r.companyId === principal.grant.companyId);
       const grantAttempts = companyAttempts.filter(r => r.grantId === principal.grant.id);
@@ -160,7 +168,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
       // Remote waits must not retain database connections or stale authority.
       const current = await oauth.authorizeGrant(principal.grant.id);
       await authorize(current, input.arguments);
-      const material = !verify && !cloudOrigin ? existing!.deliveryMaterial : await encrypt({ url, secret, ...(cloudOrigin ? { cloud } : {}),
+      const material = !verify && !hosted ? existing!.deliveryMaterial : await encrypt({ url, secret, ...(hosted ? { cloud } : {}),
         ...(previous && previous.secret !== secret ? { previousSecret: previous.secret, previousUntil: now() + rotationMs }
           : previous?.previousUntil && previous.previousUntil > now() ? { previousSecret: previous.previousSecret, previousUntil: previous.previousUntil } : {}) });
       return await db.transaction(async tx => {
@@ -182,11 +190,11 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
           if (!held || held.stoppedAt || held.expiresAt.getTime() <= now() || pending || canonical(held.deliveryMaterial) !== canonical(existing!.deliveryMaterial)) throw new McpEventError(-32602, "The monitor changed or was stopped. Retry the subscription.");
           retainedExpiry = held.expiresAt.getTime();
         }
-        if (cloudOrigin && cloud!.expiresAt <= now()) throw new McpEventError(-32602, "Refresh the hosted connection before subscribing.");
+        if (hosted && cloud!.expiresAt <= now()) throw new McpEventError(-32602, "Refresh the hosted connection before subscribing.");
         // Refreshes extend the same monitor; a shorter overlapping request must
         // not revoke a lifetime already promised to another caller. Hosted
         // authority still caps the lifetime to its current proof.
-        const expiresAt = new Date(Math.min(Math.max(retainedExpiry, now() + Math.min(Math.max(input.ttlMs ?? lifetime, 30_000), lifetime)), cloudOrigin ? Math.min(now() + rotationMs, cloud!.expiresAt) : Infinity));
+        const expiresAt = new Date(Math.min(Math.max(retainedExpiry, now() + Math.min(Math.max(input.ttlMs ?? lifetime, 30_000), lifetime)), hosted ? Math.min(now() + rotationMs, cloud!.expiresAt) : Infinity));
         const value = { companyId: principal.grant.companyId, grantId: principal.grant.id, name: input.name, taskId: input.arguments.taskId ?? null, bindingId: input.arguments.bindingId ?? null,
           arguments: input.arguments, deliveryMaterial: material, expiresAt, stoppedAt: null,
           verifiedAt: verify ? new Date(now()) : existing!.verifiedAt, startsAt: existing?.startsAt ?? requestedAt, scannedAt: new Date(now()) };
@@ -450,6 +458,11 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
       if (destination.previousUntil !== undefined && !Number.isFinite(destination.previousUntil)) return false;
 
 
+      if (destination.cloud?.transport === "tenant-dot-v1") {
+        if (!options.enableDotRunner || !cloudEventAuthoritySchema.safeParse(destination.cloud).success) return false;
+        currentDotEventNamespace(oauth);
+        return s.expiresAt.getTime() <= now() || destination.cloud.expiresAt > now();
+      }
       if(destination.cloud?.transport!==undefined){
         if(!cloudEventAuthoritySchema.safeParse(destination.cloud).success||!cloudOrigin)return false;
         currentTenantEventOrigin(oauth.config);
