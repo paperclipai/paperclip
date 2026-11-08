@@ -261,6 +261,7 @@ import {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmOwnerGoneSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -11061,6 +11062,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Confirm that a native run's previous server stopped when its host was not recorded",
   body: confirmNativeControllerStoppedSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-owner-gone",
+  tags: ["issues"],
+  summary: "Confirm that the unrecorded server holding a stuck recovery record stopped, so recovery can release it",
+  body: confirmOwnerGoneSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

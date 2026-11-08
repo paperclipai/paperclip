@@ -6,7 +6,8 @@ import { pendingCleanupMetadataObjectSql } from "./environment-cleanup-state.js"
 import { readEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { allowLegacyShutdownWorkspaceCleanup } from "./legacy-shutdown-workspace-settlement.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
-import type { OwnerProof } from "./owner-proof.js";
+import { OPERATOR_ATTESTED_PROCESS_SPACE, type OwnerProof } from "./owner-proof.js";
+import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
@@ -96,6 +97,8 @@ export function holderUnchanged(lease: LeaseRow, record: InProgressRecord): bool
   if (record.owner.kind === "run") return holder === null;
   if (record.owner.kind !== "process") return false;
   const stamp = record.owner.stamp;
+  // The board attested that the unrecorded holder stopped; still no holder stamped since.
+  if (stamp.processSpace === OPERATOR_ATTESTED_PROCESS_SPACE) return holder === null && Boolean(lease.metadata?.[OWNER_GONE_ATTESTATION_KEY]);
   return holder !== null && holder.bootId === stamp.bootId && holder.pid === stamp.pid
     && holder.hostHash === stamp.processSpace && holder.processStartedAt === (stamp.processStartedAt ?? null);
 }
