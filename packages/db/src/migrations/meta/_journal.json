@@ -3123,6 +3123,13 @@
       "when": 1794105389611,
       "tag": "0447_legacy_controller_process",
       "breakpoints": true
+    },
+    {
+      "idx": 448,
+      "version": "7",
+      "when": 1794135798799,
+      "tag": "0448_agent_harness_verified_digest",
+      "breakpoints": true
     }
   ]
 }
