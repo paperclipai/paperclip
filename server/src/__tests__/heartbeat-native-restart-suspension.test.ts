@@ -372,6 +372,22 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
   }, 90_000);
 
+  // H1 bug A: a budget pause cancelled the run 0.36 s after its result was
+  // accepted, then a hard kill took the controller. The dead controller's
+  // result lease held finalization, and with it the agent's pause, for the
+  // lease's 20 minutes.
+  it("finalizes an accepted result whose run a pause cancelled before a hard kill took its controller", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-CANCELLED-THEN-SIGKILL", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, deadController(currentProcessSpaceHash()));
+    await f.db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const { owner } = await restart(f);
+    // The agent's pause waits only while an accepted result stays leased
+    // (agentExecutionsHaveStopped); finalization has now released it.
+    expect(owner.leaseOwner).toBeNull();
+    expect(owner.phase).not.toBe("workspace_finalizing");
+  }, 90_000);
+
   it("releases a dead controller's lease whose expiry Postgres stored with microsecond precision", async () => {
     // The controller writes its lease with SQL time arithmetic, so the stored
     // expiry carries microseconds that a JavaScript Date cannot round-trip.
