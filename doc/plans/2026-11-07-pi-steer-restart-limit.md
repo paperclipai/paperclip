@@ -5,7 +5,7 @@ Context: [#19962](https://github.com/paperclipai/paperclip/pull/19962) (restart 
 
 ## Summary
 
-- **Codex: exactly once.** Restart recovery reads the run log. A steered message counts as read when a `userMessage` item for it follows the steering acknowledgement. The restart continuation delivers only the acknowledged messages that have not been read.
+- **Codex: exactly once.** Restart recovery reads the run log. Each `userMessage` item after the turn's own input reads the oldest unread steer in that turn. If the read arrives before its acknowledgement, it waits for the next acknowledgement in that turn. The restart continuation delivers only the acknowledged messages that have not been read.
 - **Pi: never lost, sometimes duplicated.** Pi gives the run log no read evidence for a steer. If Pi read a steer and a restart then interrupts the same turn, the restart continuation delivers that message again. The agent sees it twice. It is never lost.
 - **This is rare and visible:** it needs a steer, a read, and a restart in the same turn, and the duplicate shows in the transcript.
 
