@@ -18,6 +18,7 @@ export interface BaselineRun {
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
   phase: "cold" | "warm" | "restart" | "midturn" | "verify";
   events: BaselineEvent[];
+  workspaceCreated?: boolean;
 }
 
 export interface BaselineFault {
