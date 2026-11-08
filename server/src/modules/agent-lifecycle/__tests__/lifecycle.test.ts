@@ -604,6 +604,53 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
   });
 
+  it("checks historical cancellation proofs without trusting unrelated settled runs", async () => {
+    const agent = await hire();
+    // Historical successful runs may contain large execution transcripts. They
+    // have no bearing on a later cancellation's termination authority.
+    for (let i = 0; i < 12; i++) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, status: "succeeded",
+        invocationSource: "on_demand", runtimeMode: "legacy",
+        startedAt: new Date(), finishedAt: new Date(),
+        resultJson: { transcript: "a".repeat(16_384), index: i },
+      });
+    }
+    const [cancelled] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(),
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      executionStage: "settled",
+    }).returning();
+    // A terminal, pid-less conversation run is not enough on its own.
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({
+      resultJson: { executionCancellation: { state: "acknowledged" } },
+    }).where(eq(heartbeatRuns.id, cancelled.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+
+    const [remote] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(),
+    }).returning();
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId, heartbeatRunId: remote.id, provider: "ssh",
+      providerLeaseId: "ssh://agent@test:22/work", status: "expired",
+      releasedAt: new Date(),
+    }).returning();
+    // An expired SSH lease remains blocked until real remote stop proof exists.
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(environmentLeases).set({
+      cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: remoteTerminationReceipt(
+        lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" },
+      ) },
+    }).where(eq(environmentLeases.id, lease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
   it("does not prepare a proposed hire until approval", async () => {
     const observed: string[] = [];
     const work = worker(async agent => { observed.push(agent.lifecycleState); return "complete"; });
