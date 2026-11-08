@@ -521,6 +521,14 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
+      // A start replayed for an earlier generation's turn (for example, one
+      // the runner recorded after the previous controller detached and then
+      // lost on restore) is history, never a start of this session's turn. A
+      // restart of a turn this generation settled still fails closed.
+      if (state.priorGenerationTurns.has(turnId) && state.isHistoryTurn(turnId)) {
+        state.recordHistoryEvent(notification.method, turnId);
+        return;
+      }
       const autonomousGoalTurn = state.currentGoal?.status === "active"
         && state.activeTurnId === null
         && !state.turnStartPending

@@ -213,6 +213,8 @@ export class CodexSessionState {
     dispositionOnlyRecoveryTurnId?: string | null;
     /** A recovered turn whose turn.accepted the previous controller never emitted. */
     adoptedAcceptedTurnId?: string | null;
+    /** A turn the runner accepted for an earlier generation that the restore lost. */
+    lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     goal?: HarnessThreadGoal | null;
@@ -342,7 +344,7 @@ export class CodexSessionState {
     // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
     // live while it stays active; once reconcile settles it, its late reports
     // are history too.
-    for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
+    for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId, input.lostAcceptedTurnId])
       if (turnId) this.priorGenerationTurns.add(turnId);
     if (dispositionOnlyRecoveryTurnId && dispositionOnlyRecoveryTurnId !== this.activeTurnId)
       this.priorGenerationTurns.add(dispositionOnlyRecoveryTurnId);
