@@ -214,6 +214,13 @@ export interface DocumentRevision {
   createdAt: Date;
 }
 
+/** One exact revision plus the document's current revision, so a pinned read never passes as the latest. */
+export interface ExactDocumentRevision extends DocumentRevision {
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  isLatest: boolean;
+}
+
 export interface LegacyPlanDocument {
   key: "plan";
   body: string;
