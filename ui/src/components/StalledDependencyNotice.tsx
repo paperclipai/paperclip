@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { useTaskRetry } from "../hooks/useTaskRetry";
+import { describeError } from "../api/errors";
 
 /**
  * Children and blockers of this task that stopped on a recovery action that
@@ -42,6 +43,9 @@ function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext
   });
   const retry = useTaskRetry(child);
   const canRetry = child?.interruption?.canRetry === true;
+  // Same states as the task's own Retry (ExecutionBlockerNotice): a refused
+  // request explains why, and a lost response can be retried.
+  const failed = Boolean(retry.error) && !retry.optimistic && !retry.takingLonger;
   return (
     <li data-testid="stalled-dependency-row" className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-xs text-amber-800 dark:text-amber-200">
@@ -54,17 +58,23 @@ function StalledDependencyRow({ entry }: { entry: IssueBlockerStalledWakeContext
       {entry.recoveryAction.nextAction ? (
         <span className="basis-full text-xs text-amber-800 dark:text-amber-200">{entry.recoveryAction.nextAction}</span>
       ) : null}
-      {canRetry ? (
+      {failed ? (
+        <span role="alert" className="basis-full text-xs text-destructive">{describeError(retry.error).body}</span>
+      ) : null}
+      {retry.takingLonger ? (
+        <span role="status" className="basis-full text-xs text-muted-foreground">Taking longer than usual…</span>
+      ) : null}
+      {canRetry || failed || retry.takingLonger ? (
         <Button
           size="sm"
           variant="outline"
-          disabled={retry.optimistic}
+          disabled={retry.optimistic && !retry.takingLonger}
           onClick={retry.retry}
           aria-label={`Retry ${entry.stalledIssueIdentifier ?? "task"}`}
           className="h-7 gap-1 border-amber-300/80 bg-background/80 text-amber-950 shadow-none hover:bg-amber-100 dark:border-amber-500/50 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
         >
           <RotateCcw className="h-3 w-3" aria-hidden />
-          {retry.optimistic ? "Retrying…" : "Retry"}
+          {retry.optimistic && !retry.takingLonger ? "Retrying…" : "Retry"}
         </Button>
       ) : null}
     </li>

@@ -20,13 +20,23 @@
  * recovery action, so a repeated sweep never wakes twice, and a later stall
  * (a new action after a Retry or another failure) wakes again.
  */
-import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
+import { and, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { agents, agentWakeupRequests, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, type IssueBlockerStalledWakeContext, type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
+import { parseHeartbeatPolicy } from "../heartbeat/timer-policy.js";
 
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
+/** Waiters that may be woken: not finished, and not parked in the backlog by the board. */
+const WAKEABLE_WAITER_STATUSES = ["todo", "in_progress", "in_review", "blocked"];
 const MAX_STALLS_PER_PASS = 200;
+/** A wake row with one of these statuses was delivered or is still pending. */
+const DELIVERED_OR_PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed", "coalesced", "completed"];
+/** A refused wake (skipped, failed, cancelled) is retried, but not more often than this. */
+const REFUSED_WAKE_RETRY_MS = 10 * 60_000;
+const NON_INVOKABLE_AGENT_STATUSES = ["paused", "terminated", "pending_approval"];
+/** Company-wide passes resume after the last stall a capped pass reached, so every stall is visited. */
+const companyCursors = new Map<string, string>();
 
 export type BlockerStallWakeup = (agentId: string, input: {
   source: "automation";
@@ -37,13 +47,15 @@ export type BlockerStallWakeup = (agentId: string, input: {
   requestedByActorType: "system";
   requestedByActorId: string;
   contextSnapshot: Record<string, unknown>;
+  allowRunCoalescing: false;
+  issueStateGuard: { statuses: string[]; assigneeAgentId: string };
 }) => Promise<unknown>;
 
 export function issueBlockerStalledWakeKey(input: { waiterIssueId: string; stalledIssueId: string; recoveryActionId: string }) {
   return [ISSUE_BLOCKER_STALLED_WAKE_REASON, input.waiterIssueId, input.stalledIssueId, input.recoveryActionId].join(":");
 }
 
-type StallFilter = { companyId?: string | null; issueId?: string | null; issueIds?: readonly string[] };
+type StallFilter = { companyId?: string | null; issueId?: string | null; issueIds?: readonly string[]; afterActionId?: string | null };
 
 /** The stalled issues matching `filter` and the recovery action each one waits on. */
 async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PASS) {
@@ -59,6 +71,7 @@ async function readStalls(db: Db, filter: StallFilter, limit = MAX_STALLS_PER_PA
       filter.companyId ? eq(issueRecoveryActions.companyId, filter.companyId) : undefined,
       filter.issueId ? eq(issueRecoveryActions.sourceIssueId, filter.issueId) : undefined,
       filter.issueIds ? inArray(issueRecoveryActions.sourceIssueId, [...filter.issueIds]) : undefined,
+      filter.afterActionId ? gt(issueRecoveryActions.id, filter.afterActionId) : undefined,
       notInArray(issues.status, TERMINAL_ISSUE_STATUSES),
       or(
         and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -106,19 +119,47 @@ export async function listStalledDependencies(db: Db, input: { companyId: string
 }
 
 export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerStallWakeup,
-  opts: { companyId?: string | null; issueId?: string | null } = {}) {
+  opts: { companyId?: string | null; issueId?: string | null; maxStalls?: number } = {}) {
   const result = { stalls: 0, woken: 0, alreadyWoken: 0, deferred: 0, failed: 0 };
-  const stalled = await readStalls(db, opts);
+  const maxStalls = opts.maxStalls ?? MAX_STALLS_PER_PASS;
+  let stalled: StallRow[];
+  if (opts.issueId) {
+    // The per-issue sweep checks the issue itself and its own children and
+    // blockers, so a stalled dependency that this sweep never visits (for
+    // example an unassigned blocker) still reaches the waiting issue.
+    const scope = opts.companyId ? [eq(issues.companyId, opts.companyId)] : [];
+    const children = await db.select({ id: issues.id }).from(issues).where(and(...scope, eq(issues.parentId, opts.issueId)));
+    const blockers = await db.select({ id: issueRelations.issueId }).from(issueRelations)
+      .where(and(eq(issueRelations.type, "blocks"), eq(issueRelations.relatedIssueId, opts.issueId),
+        opts.companyId ? eq(issueRelations.companyId, opts.companyId) : undefined));
+    stalled = await readStalls(db, { companyId: opts.companyId,
+      issueIds: [...new Set([opts.issueId, ...children.map(row => row.id), ...blockers.map(row => row.id)])] }, maxStalls);
+  } else {
+    const cursorKey = opts.companyId ?? "*";
+    stalled = await readStalls(db, { companyId: opts.companyId, afterActionId: companyCursors.get(cursorKey) ?? null }, maxStalls);
+    if (stalled.length >= maxStalls) companyCursors.set(cursorKey, stalled.at(-1)!.actionId);
+    else companyCursors.delete(cursorKey);
+  }
+  const agentAcceptsWakes = new Map<string, boolean>();
+  const acceptsWakes = async (agentId: string) => {
+    if (!agentAcceptsWakes.has(agentId)) {
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      agentAcceptsWakes.set(agentId, Boolean(agent) && !NON_INVOKABLE_AGENT_STATUSES.includes(agent!.status)
+        && parseHeartbeatPolicy(agent!).wakeOnDemand);
+    }
+    return agentAcceptsWakes.get(agentId)!;
+  };
 
   for (const stall of stalled) {
     result.stalls += 1;
     const waiters = await db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
+      status: issues.status,
       relation: sql<"child" | "blocker">`case when ${issues.id} = ${stall.parentId ?? null} then 'child' else 'blocker' end` })
       .from(issues)
       .where(and(
         eq(issues.companyId, stall.companyId),
         ne(issues.id, stall.issueId),
-        notInArray(issues.status, TERMINAL_ISSUE_STATUSES),
+        inArray(issues.status, WAKEABLE_WAITER_STATUSES),
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
         or(
@@ -129,12 +170,18 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
       ));
     for (const waiter of waiters) {
       const idempotencyKey = issueBlockerStalledWakeKey({ waiterIssueId: waiter.id, stalledIssueId: stall.issueId, recoveryActionId: stall.actionId });
+      // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.
+      // A delivered or pending wake ends it. A refused one (wake-on-demand off,
+      // agent paused) is retried once the refusal is old, so re-enabling wakes
+      // still delivers the stall.
       const [existing] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
-        // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.
         .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${waiter.id}`,
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey))).limit(1);
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES),
+            gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
       if (existing) { result.alreadyWoken += 1; continue; }
+      if (!(await acceptsWakes(waiter.assigneeAgentId!))) { result.deferred += 1; continue; }
       const context = stallContext(stall, waiter.relation);
       try {
         const wake = await enqueueWakeup(waiter.assigneeAgentId!, {
@@ -143,6 +190,10 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           requestedByActorType: "system", requestedByActorId: "issue-blocker-stall",
           contextSnapshot: { issueId: waiter.id, taskId: waiter.id, wakeReason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
             source: "issue.blocker_stalled", blockerStall: context },
+          // One stall per run: coalescing would keep only the last blockerStall
+          // context while marking every merged stall as delivered.
+          allowRunCoalescing: false,
+          issueStateGuard: { statuses: WAKEABLE_WAITER_STATUSES, assigneeAgentId: waiter.assigneeAgentId! },
         });
         // Null is a normal deferral (for example wake-on-demand disabled): no
         // wake row exists yet, so a later sweep tries again.
@@ -162,4 +213,32 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
     }
   }
   return result;
+}
+
+/**
+ * Whether a wake's `issue_blocker_stalled` context is real, so it may run past
+ * the waiter's unresolved blockers. The reason string alone is not trusted:
+ * the wake must come from the system, name a recovery action that is the
+ * stalled issue's current stall, and that issue must be a child or blocker of
+ * the waking issue. Anything else falls back to the ordinary dependency gate.
+ */
+export async function verifyBlockerStallWake(db: Db, input: {
+  companyId: string;
+  issueId: string;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  requestedByActorType: string | null | undefined;
+}): Promise<boolean> {
+  if (input.contextSnapshot?.wakeReason !== ISSUE_BLOCKER_STALLED_WAKE_REASON) return false;
+  if (input.requestedByActorType !== "system") return false;
+  const stall = input.contextSnapshot.blockerStall as Partial<IssueBlockerStalledWakeContext> | undefined;
+  const stalledIssueId = typeof stall?.stalledIssueId === "string" ? stall.stalledIssueId : null;
+  const actionId = typeof stall?.recoveryAction?.id === "string" ? stall.recoveryAction.id : null;
+  if (!stalledIssueId || !actionId || stalledIssueId === input.issueId) return false;
+  const [current] = await readStalls(db, { companyId: input.companyId, issueIds: [stalledIssueId] }, 1);
+  if (!current || current.actionId !== actionId) return false;
+  if (current.parentId === input.issueId) return true;
+  const [edge] = await db.select({ id: issueRelations.id }).from(issueRelations)
+    .where(and(eq(issueRelations.companyId, input.companyId), eq(issueRelations.type, "blocks"),
+      eq(issueRelations.issueId, stalledIssueId), eq(issueRelations.relatedIssueId, input.issueId))).limit(1);
+  return Boolean(edge);
 }

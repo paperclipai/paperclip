@@ -837,16 +837,25 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         responsibleUserId: "responsible-user" },
     ]);
     await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: dependentId, type: "blocks" });
-
-    const stalledWake = await heartbeat.wakeup(agentId, {
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: blockerId, kind: "run_recovery",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "native_session_retry_exhausted",
+      fingerprint: "stall", nextAction: "Retry", resolvedAt: new Date() }).returning();
+    const stallWake = (requestedByActorType: "system" | "agent") => heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blocker_stalled",
       payload: { issueId: dependentId, stalledIssueId: blockerId },
-      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:action-1`,
+      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:${action.id}:${requestedByActorType}`,
+      requestedByActorType,
+      requestedByActorId: requestedByActorType === "system" ? "issue-blocker-stall" : agentId,
       contextSnapshot: { issueId: dependentId, wakeReason: "issue_blocker_stalled",
-        blockerStall: { stalledIssueId: blockerId, relation: "blocker" } },
+        blockerStall: { stalledIssueId: blockerId, relation: "blocker", recoveryAction: { id: action.id } } },
     });
+
+    // The reason string alone is not trusted: an agent cannot use it to skip the blocker gate.
+    expect(await stallWake("agent")).toBeNull();
+
+    const stalledWake = await stallWake("system");
     expect(stalledWake).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })

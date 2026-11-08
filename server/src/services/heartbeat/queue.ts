@@ -1,3 +1,4 @@
+import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
@@ -1021,11 +1022,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      // The run's wake request records who asked for it.
+      const blockerStallVerified = unresolvedBlockerCount > 0 && await verifyBlockerStallWake(db, {
+        companyId: run.companyId, issueId, contextSnapshot: context,
+        requestedByActorType: run.wakeupRequestId
+          ? (await db.select({ actor: agentWakeupRequests.requestedByActorType }).from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId)).then(rows => rows[0]?.actor ?? null))
+          : null,
+      });
       if (
         unresolvedBlockerCount > 0 &&
         !allowsDependencyBlockedWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          blockerStallVerified,
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -3914,6 +3924,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+              await verifyBlockerStallWake(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+                contextSnapshot: enrichedContextSnapshot, requestedByActorType: opts.requestedByActorType }),
             );
 
           if (blockedInteractionWake) {

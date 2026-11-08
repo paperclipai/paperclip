@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueBlockerStalledWakeContext } from "@paperclipai/shared";
 import { StalledDependencyNotice } from "./StalledDependencyNotice";
+import { ApiError } from "../api/client";
 
 const getIssue = vi.hoisted(() => vi.fn());
 const retryTask = vi.hoisted(() => vi.fn());
@@ -83,6 +84,28 @@ describe("StalledDependencyNotice", () => {
     expect(button).not.toBeNull();
     await act(async () => { button!.click(); });
     expect(retryTask).toHaveBeenCalledWith("child-1", expect.objectContaining({ observedRunId: "run-1" }));
+  });
+
+  it("explains a refused Retry and lets the board try again", async () => {
+    getIssue.mockResolvedValue({ id: "child-1", identifier: "CHA-8", interruption: { canRetry: true, observedRunId: "run-1" } });
+    retryTask.mockRejectedValue(new ApiError("Retry is not allowed while the run is still stopping", 409, {}));
+    const node = await render([stall()]);
+    const button = await waitFor(() => node.querySelector<HTMLButtonElement>("button[aria-label='Retry CHA-8']"));
+    await act(async () => { button!.click(); });
+    const alert = await waitFor(() => node.querySelector("[role='alert']"));
+    expect(alert?.textContent).toBeTruthy();
+    expect(node.querySelector<HTMLButtonElement>("button[aria-label='Retry CHA-8']")?.disabled).toBe(false);
+  });
+
+  it("shows a lost response as taking longer, with Retry still available", async () => {
+    getIssue.mockResolvedValue({ id: "child-1", identifier: "CHA-8", interruption: { canRetry: true, observedRunId: "run-1" } });
+    retryTask.mockRejectedValue(new Error("network down"));
+    const node = await render([stall()]);
+    const button = await waitFor(() => node.querySelector<HTMLButtonElement>("button[aria-label='Retry CHA-8']"));
+    await act(async () => { button!.click(); });
+    const status = await waitFor(() => [...node.querySelectorAll("[role='status']")].find(element => element.textContent?.includes("Taking longer")) ?? null);
+    expect(status).toBeTruthy();
+    expect(node.querySelector<HTMLButtonElement>("button[aria-label='Retry CHA-8']")?.disabled).toBe(false);
   });
 
   it("omits Retry when the child's task state does not offer it", async () => {

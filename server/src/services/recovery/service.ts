@@ -246,6 +246,7 @@ type RecoveryWakeupOptions = {
     statuses: string[];
     assigneeAgentId: string;
   };
+  allowRunCoalescing?: boolean;
 };
 
 type RecoveryWakeup = (

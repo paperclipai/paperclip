@@ -6,7 +6,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON } from "@paperclipai/shared";
 import { recoveryService } from "../services/recovery/service.js";
-import { issueBlockerStalledWakeKey, listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
+import { issueBlockerStalledWakeKey, listStalledDependencies, wakeWaitersOfStalledIssues } from "../services/recovery/blocker-stall-wakeups.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
@@ -142,6 +142,71 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, blocker.id));
     expect((await listStalledDependencies(db, { companyId: f.companyId, issueId: f.parent.id })).map(entry => entry.stalledIssueId))
       .toEqual([f.child.id]);
+  });
+
+  it("never wakes a waiter parked in the backlog", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, f.parent.id));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await recoveryService(db, { enqueueWakeup: enqueueWakeup as never }).reconcileActiveRecoveryActions({ companyId: f.companyId });
+    expect(calls).toEqual([]);
+  });
+
+  it("does not let a merged run swallow a second stall, and guards the waiter's state", async () => {
+    const f = await fixture();
+    const [second] = await db.insert(issues).values({ companyId: f.companyId, title: "Second child", status: "blocked",
+      parentId: f.parent.id, assigneeAgentId: f.childAgent }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: second.id, kind: "run_recovery",
+      status: "escalated", ownerType: "board", cause: "execution_recovery_budget_exhausted", fingerprint: "second", nextAction: "Retry" });
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await recoveryService(db, { enqueueWakeup: enqueueWakeup as never }).reconcileActiveRecoveryActions({ companyId: f.companyId });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.input).toMatchObject({ allowRunCoalescing: false,
+        issueStateGuard: { statuses: expect.not.arrayContaining(["backlog", "done", "cancelled"]), assigneeAgentId: f.parentAgent } });
+    }
+  });
+
+  it("defers while the agent takes no wakes, and retries a refused wake once the refusal is old", async () => {
+    const f = await fixture();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, f.parentAgent));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const result = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(result).toMatchObject({ woken: 0, deferred: 1 });
+    expect(calls).toEqual([]);
+
+    // Wakes enabled again; an earlier refusal row exists for this stall.
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, f.parentAgent));
+    const key = issueBlockerStalledWakeKey({ waiterIssueId: f.parent.id, stalledIssueId: f.child.id, recoveryActionId: f.action.id });
+    const [refused] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.parentAgent, source: "automation",
+      triggerDetail: "system", reason: "heartbeat.wakeOnDemand.disabled", payload: { issueId: f.parent.id }, idempotencyKey: key,
+      status: "skipped" }).returning();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toEqual([]); // a fresh refusal is not retried at once
+    await db.update(agentWakeupRequests).set({ requestedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(agentWakeupRequests.id, refused.id));
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reaches a waiter through its own sweep when the stalled blocker is unassigned", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ parentId: null, assigneeAgentId: null }).where(eq(issues.id, f.child.id));
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.child.id, relatedIssueId: f.parent.id, type: "blocks" });
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: f.parent.id });
+    expect(calls.map(call => call.agentId)).toEqual([f.parentAgent]);
+  });
+
+  it("makes progress past the per-pass cap", async () => {
+    const f = await fixture();
+    const [second] = await db.insert(issues).values({ companyId: f.companyId, title: "Second child", status: "blocked",
+      parentId: f.parent.id, assigneeAgentId: f.childAgent }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: second.id, kind: "run_recovery",
+      status: "escalated", ownerType: "board", cause: "c", fingerprint: "second", nextAction: "Retry" });
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 1 });
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 1 });
+    expect(new Set(calls.map(call => call.input.contextSnapshot.blockerStall.stalledIssueId))).toEqual(new Set([f.child.id, second.id]));
   });
 
   it("ignores an action resolved any other way", async () => {
