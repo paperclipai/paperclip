@@ -4,7 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../../errors.js";
 import { agentRecordQueries, type CreateAgentOptions, type CreateAgentData } from "../../../lib/agent-records.js";
-import { isAgentSetupDraft } from "../domain/policy.js";
+import { isAgentSetupDraft, canConfigureAgentConnection } from "../domain/policy.js";
 
 export function agentRecords(db: Db, effects: LifecycleEffects) {
   const { getById } = agentRecordQueries(db);
@@ -40,6 +40,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const lifecycleState = status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated"
           : prepareSetup ? "preparing" : status === "paused" ? "paused" : companyHolds.length ? "pausing" : "preparing";
         if (lifecycleState === "preparing" || lifecycleState === "pausing") await effects.notifyWork(tx);
+        const createdStatus=status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused";
         const values: typeof agents.$inferInsert = {
           ...prepared,
           createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
@@ -49,9 +50,10 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           pauseReason: holds[0] ?? null,
           pausedAt: holds.length ? new Date() : null,
           lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, resumeState: "preparing" as const, responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
-          status: status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused",
+          status: createdStatus,
           companyId,
         };
+        if(setup&&!canConfigureAgentConnection(setup)&&canConfigureAgentConnection({lifecycleState,status:createdStatus}))await effects.beforeConnectionEligibilityRestore?.(txDb,companyId,setup.id);
         const created = await (options?.setupAgentId
           ? tx.update(agents).set({ ...values, updatedAt: new Date() }).where(eq(agents.id, options.setupAgentId))
           : tx.insert(agents).values(values))
@@ -127,6 +129,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const holds = existing.lifecycleHolds.filter(hold => hold !== "company_paused" && hold !== "company_archived");
         if (company?.status === "paused") holds.push("company_paused");
         if (company?.status === "archived") holds.push("company_archived");
+        if(!holds.length)await effects.beforeConnectionEligibilityRestore?.(txDb,existing.companyId,existing.id);
         await effects.notifyWork(txDb);
         const updated = await tx
           .update(agents)

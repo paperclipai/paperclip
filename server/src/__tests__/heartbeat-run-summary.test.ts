@@ -448,29 +448,78 @@ describe("resolveHeartbeatRunResponse", () => {
     }
   });
 
-  it("posts the complete accepted answer instead of a run-log preview the runner bounded", () => {
-    const complete = "**Open work — 501 tasks**\n\n### Morgan\n" + Array.from({ length: 501 }, (_, i) => `RUN-${i + 1}`).join(", ");
+  describe("run-log previews of the final message", () => {
+    const complete = "**Open work — 501 tasks**\n\n### Morgan\n" +
+      Array.from({ length: 501 }, (_, i) => `RUN-${i + 1}`).join(", ");
     const preview = complete.slice(0, 3_988) + "…[truncated]";
-    const accepted = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: complete } };
-    for (const channel of ["final", "unknown"] as const) {
-      expect(resolveHeartbeatRunResponse({
-        resultJson: accepted,
-        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel },
-      })).toMatchObject({
-        text: complete,
-        decision: { chosenSource: "semantic_result_summary", commentAction: "create",
-          reasonCodes: ["bounded_final_agent_message_completed_by_semantic_summary"] },
-      });
-    }
-  });
+    const accepted = (summary: string) => ({
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary },
+    });
 
-  it("keeps a bounded final message when the accepted summary is not its complete text", () => {
-    const preview = "x".repeat(3_988) + "…[truncated]";
-    const unrelated = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Short different summary." } };
-    expect(resolveHeartbeatRunResponse({
-      resultJson: unrelated,
-      finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
-    })).toMatchObject({ text: preview, decision: { chosenSource: "final_agent_message" } });
+    it("posts a complete final message longer than the run-log preview bound", () => {
+      expect(complete.length).toBeGreaterThan(4_000);
+      expect(resolveHeartbeatRunResponse({
+        resultJson: accepted("Short summary."),
+        finalAgentMessage: { text: complete, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({ text: complete, decision: { chosenSource: "final_agent_message" } });
+    });
+
+    it("posts the complete accepted answer when the preview is its exact prefix", () => {
+      for (const channel of ["final", "unknown"] as const) {
+        expect(resolveHeartbeatRunResponse({
+          resultJson: accepted(complete),
+          finalAgentMessage: { text: preview, sourceEventId: "event-1", channel },
+        })).toMatchObject({
+          text: complete,
+          decision: {
+            chosenSource: "semantic_result_summary",
+            reasonCodes: ["bounded_final_agent_message_replaced_by_semantic_summary"],
+          },
+        });
+      }
+    });
+
+    it("posts the complete accepted answer when the final prose differs from it", () => {
+      const different = "Here is every open task, grouped by owner.\n\n" + complete;
+      for (const preferFinalResponseOverExistingComment of [false, true]) {
+        expect(resolveHeartbeatRunResponse({
+          resultJson: accepted(different),
+          preferFinalResponseOverExistingComment,
+          finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+        })).toMatchObject({ text: different, decision: { chosenSource: "semantic_result_summary" } });
+      }
+    });
+
+    it("never prefers a preview over a marked adapter final response", () => {
+      expect(resolveHeartbeatRunResponse({
+        resultJson: { ...accepted("summary"), finalResponse: { disposition: "final", text: complete } },
+        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({ text: complete, decision: { chosenSource: "adapter_final_response" } });
+    });
+
+    it("posts the marked preview only when no complete text exists", () => {
+      expect(resolveHeartbeatRunResponse({
+        resultJson: {},
+        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({
+        text: preview,
+        decision: {
+          chosenSource: "final_agent_message",
+          reasonCodes: ["bounded_final_agent_message_without_complete_source"],
+        },
+      });
+    });
+
+    it("marks a stored preview candidate as bounded", () => {
+      expect(readCompletedAssistantMessageCandidate({
+        seq: 3,
+        prpEvent: { sourceEventId: "event-3", payload: { kind: "agentMessage", channel: "final", text: preview } },
+      })).toMatchObject({ text: preview, bounded: true });
+      expect(readCompletedAssistantMessageCandidate({
+        seq: 4,
+        prpEvent: { sourceEventId: "event-4", payload: { kind: "agentMessage", channel: "final", text: complete } },
+      })).not.toHaveProperty("bounded");
+    });
   });
 
   it("applies comment, explicit provider, adapter, terminal fallback, and semantic precedence", () => {

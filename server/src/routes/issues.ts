@@ -39,6 +39,7 @@ import { resolveConfirmationFromComment } from "../services/confirmation-comment
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
@@ -122,6 +123,7 @@ import {
   recoverWorkspaceSchema,
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -3000,6 +3002,19 @@ const ISSUE_LIST_STORM_WINDOW_MS = 500;
 const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
 
+/** Page position of a capped issue-list response, exposed as response headers. */
+export type IssueListPagination = {
+  limit: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+  nextAfterId: string | null;
+};
+
+export const ISSUE_LIST_HAS_MORE_HEADER = "X-Paperclip-Has-More";
+export const ISSUE_LIST_LIMIT_HEADER = "X-Paperclip-Limit";
+export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
+export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
+
 type IssueListPreparedResponse =
   | { kind: "inbox"; body: unknown }
   | {
@@ -3007,11 +3022,21 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      pagination?: IssueListPagination;
     }
   | {
       kind: "full";
       body: unknown[];
+      pagination?: IssueListPagination;
     };
+
+function setIssueListPaginationHeaders(res: Response, pagination: IssueListPagination | undefined) {
+  if (!pagination) return;
+  res.setHeader(ISSUE_LIST_HAS_MORE_HEADER, String(pagination.hasMore));
+  res.setHeader(ISSUE_LIST_LIMIT_HEADER, String(pagination.limit));
+  if (pagination.nextOffset !== null) res.setHeader(ISSUE_LIST_NEXT_OFFSET_HEADER, String(pagination.nextOffset));
+  if (pagination.nextAfterId !== null) res.setHeader(ISSUE_LIST_NEXT_AFTER_ID_HEADER, pagination.nextAfterId);
+}
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
 
@@ -8527,16 +8552,47 @@ export function issueRoutes(
     res.json(summaries);
   });
 
-  async function prepareIssueListForActor(req: Request, companyId: string, listFilters: IssueFilters, view: string | undefined): Promise<IssueListPreparedResponse> {
+  async function prepareIssueListForActor(
+    req: Request,
+    companyId: string,
+    listFilters: IssueFilters,
+    view: string | undefined,
+    options: { reportPagination?: boolean } = {},
+  ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
-    const rawResult = await svc.list(companyId, listFilters);
-    const visibleRows = await actorCanReadCompanyScope(req, companyId)
+    const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
+    // Pagination describes the raw query page. An actor whose rows are filtered
+    // after the query (for example a low-trust agent) gets no pagination: the
+    // raw page's cursor and has-more state would reveal tasks it cannot read.
+    const pageLimit = options.reportPagination && canReadCompanyScope && typeof listFilters.limit === "number"
+      ? listFilters.limit
+      : null;
+    // Probe one row past the page so a capped response can say more exist.
+    const probedResult = await svc.list(
+      companyId,
+      pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
+    );
+    const hasMore = pageLimit !== null && probedResult.length > pageLimit;
+    const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
+    // An id cursor is valid only when the query is ordered by id alone.
+    // oneChildPerParent orders by parentId first, so it pages by offset.
+    const cursorOrder = listFilters.sortField === "id"
+      && listFilters.sortDir === "asc"
+      && !listFilters.offset
+      && !listFilters.oneChildPerParent;
+    const pagination: IssueListPagination | undefined = pageLimit === null ? undefined : {
+      limit: pageLimit,
+      hasMore,
+      nextOffset: hasMore && !listFilters.afterId ? (listFilters.offset ?? 0) + pageLimit : null,
+      nextAfterId: hasMore && cursorOrder ? rawResult[rawResult.length - 1]?.id ?? null : null,
+    };
+    const visibleRows = canReadCompanyScope
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
     const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
     if (view === "index") {
       const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
-      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
+      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate", pagination };
     }
     const issueIds = result.map((issue) => issue.id);
     const interruptions = await taskInterruptionPresentations(db, companyId, result);
@@ -8574,6 +8630,7 @@ export function issueRoutes(
         body: compactResult,
         etag: compactIssueListEtag(compactResult),
         cacheControl: "private, must-revalidate",
+        pagination,
       };
     }
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8604,6 +8661,7 @@ export function issueRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         interruption: interruptions.get(issue.id) ?? null,
       })),
+      pagination,
     };
   }
 
@@ -8967,7 +9025,7 @@ export function issueRoutes(
       allowTtlCache: view === "compact",
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        return prepareIssueListForActor(req, companyId, listFilters, view);
+        return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
       },
     });
 
@@ -8993,6 +9051,9 @@ export function issueRoutes(
       return;
     }
 
+    if (coordinated.response.kind !== "inbox") {
+      setIssueListPaginationHeaders(res, coordinated.response.pagination);
+    }
     if (coordinated.response.kind === "compact") {
       res.setHeader("Cache-Control", coordinated.response.cacheControl);
       res.setHeader("ETag", coordinated.response.etag);
@@ -10025,6 +10086,17 @@ export function issueRoutes(
     res.status(202).json(receipt);
   });
 
+  router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await confirmNativeControllerStopped({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
   router.post("/issues/:id/recovery-actions/retry-workspace-export", validate(retryWorkspaceExportSchema), async (req, res) => {
     assertBoard(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
@@ -10289,8 +10361,12 @@ export function issueRoutes(
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
         }
 
+        if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === NATIVE_CONTROLLER_HOST_UNVERIFIED) {
+          throw conflict("Confirm that the previous server stopped to resume this run.", { code: "native_controller_stop_required" });
+        }
+
         if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === "native_workspace_finalization_owner_unverified") {
-          throw conflict("Verify the previous controller and its copyback processes stopped, then use Resume saved result.", { code: "workspace_owner_stop_required" });
+          throw conflict("Paperclip is still confirming that the previous server stopped. Saving resumes without repeating the agent's work.", { code: "workspace_owner_stop_required" });
         }
 
         if (outcome === "restored" && isNativeWorkspaceExportRepairCause(activeRecoveryAction.cause)) {

@@ -8,6 +8,7 @@ import { assertEnvironmentCompanyBinding, environmentService } from "./environme
 import { ENVIRONMENT_CLEANUP_RETRY_MS, recoverableSandboxCreationCondition } from "./environment-cleanup-state.js";
 import { logger } from "../middleware/logger.js";
 import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
 
@@ -122,7 +123,9 @@ export async function createOwnedSandbox(
       metadata: { ...existing.metadata, creationOperationId: operation.id } };
   }
   try {
+    crashPoint("sandbox.create.after_intent_before_provider");
     const lease = await create({ id, runId });
+    crashPoint("sandbox.create.after_provider_before_lease");
     return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
   } catch (error) {
     if (recoverableTaskCreation(operation)) {

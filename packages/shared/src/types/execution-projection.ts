@@ -98,6 +98,22 @@ export interface ExecutionReconciliation {
     sources: Array<{ attachmentId: string; sha256: string; byteSize: number; filename: string | null }>;
     interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
   };
+  /**
+   * The system continued from the last committed workspace save because the
+   * retained source of this run could not be verified. Its unsaved files were
+   * never applied; when readable they are attached to the task, unverified.
+   */
+  retainedSourceFallback?: {
+    schema: "paperclip.retained-source-fallback.v1";
+    outcome: "retained_source_unverifiable_continued_from_last_saved";
+    workspaceId: string;
+    abandonedEpoch: number;
+    epoch: number;
+    snapshotId: string | null;
+    quarantine:
+      | { state: "captured"; attachmentId: string; filename: string; sha256: string; byteSize: number }
+      | { state: "unreadable"; reason: string };
+  };
 }
 /** A task-level view of one interruption. Diagnostics keep the underlying runs
  * and recovery records; ordinary product surfaces render this projection. */

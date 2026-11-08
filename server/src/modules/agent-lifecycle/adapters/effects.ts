@@ -11,6 +11,7 @@ export interface LifecycleEffects {
   environmentRequiresNewPlugin(db: Db, environmentId: string | null | undefined, selectedPluginIds: string[] | null): Promise<boolean>;
   notifyWork(db: Db): Promise<void>;
   beforeStatusChange(db: Db, companyId: string, agentId: string, before: string, after: string): Promise<void>;
+  beforeConnectionEligibilityRestore?(db: Db, companyId: string, agentId: string): Promise<void>;
   reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;

@@ -66,13 +66,23 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
 }
 
 /**
+ * Marker the runner appends when it cuts provider text to a run-log display
+ * preview. Text ending with it is an incomplete copy, never a final reply.
+ */
+export const RUN_EVENT_TEXT_BOUND_MARKER = "…[truncated]";
+
+export function isBoundedRunEventText(value: unknown): boolean {
+  return typeof value === "string" && value.endsWith(RUN_EVENT_TEXT_BOUND_MARKER);
+}
+
+/**
  * The posted reply leaves a proposal to its Plan document. A stored message
  * preview can be cut inside the block; its cut-off remainder is hidden too.
  */
 function withoutProposedPlanBlock(value: string): string {
   const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
   if (plan !== null) return rest;
-  if (!value.endsWith("…[truncated]") || unclosedStart === null) return value;
+  if (!isBoundedRunEventText(value) || unclosedStart === null) return value;
   return value.slice(0, unclosedStart).trim();
 }
 
@@ -194,6 +204,8 @@ export interface CompletedFinalAgentMessageCandidate {
   text: string;
   sourceEventId: string | null;
   channel: "final" | "unknown";
+  /** The run log kept only a display preview of this message. */
+  bounded?: boolean;
 }
 
 /**
@@ -323,27 +335,8 @@ export function readCompletedAssistantMessageCandidate(input: {
     text,
     sourceEventId: readCommentText(prpEvent.sourceEventId),
     channel: payload.channel,
+    ...(isBoundedRunEventText(payload.text) ? { bounded: true } : {}),
   };
-}
-
-/** Marker the runner appends when it bounds a provider message for the run log. */
-export const RUN_EVENT_TEXT_BOUND_MARKER = "…[truncated]";
-
-/**
- * Run-log events keep only a display-bounded preview of a long provider
- * message. That preview must never become the durable reply: when the
- * accepted semantic summary is the complete text the preview was cut from,
- * return the complete text. Any other preview is left to the caller unchanged.
- */
-export function completeBoundedFinalAgentMessage(
-  preview: string,
-  resultJson: Record<string, unknown>,
-): string | null {
-  if (!preview.endsWith(RUN_EVENT_TEXT_BOUND_MARKER)) return null;
-  const retained = preview.slice(0, -RUN_EVENT_TEXT_BOUND_MARKER.length).trimEnd();
-  if (!retained) return null;
-  const summary = readAcceptedSemanticSummary(resultJson);
-  return summary && summary.length > retained.length && summary.startsWith(retained) ? summary : null;
 }
 
 function readAcceptedSemanticSummary(resultJson: Record<string, unknown>) {
@@ -510,6 +503,7 @@ export function resolveHeartbeatRunResponse(input: {
     sourceEventId: string | null;
     channel: "final" | "unknown";
     reasonCode?: string;
+    bounded?: boolean;
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
@@ -531,23 +525,19 @@ export function resolveHeartbeatRunResponse(input: {
       }),
     };
   }
-  const finalAgentText = readCommentText(input.finalAgentMessage?.text);
+  const rawFinalAgentText = readCommentText(input.finalAgentMessage?.text);
+  // A run-log preview is an incomplete copy of the agent's message. It never
+  // outranks a complete source; it is posted only when no complete text exists.
+  const boundedFinalAgentText =
+    rawFinalAgentText &&
+    (input.finalAgentMessage?.bounded === true || isBoundedRunEventText(rawFinalAgentText))
+      ? rawFinalAgentText
+      : null;
+  const finalAgentText = boundedFinalAgentText ? null : rawFinalAgentText;
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
   const resolveCompletedUpstreamResponse = (allowCompatibility = true) => {
-    const completedPreview = finalAgentText
-      ? completeBoundedFinalAgentMessage(finalAgentText, resultJson)
-      : null;
-    if (completedPreview && (explicitProviderFinal || (allowCompatibility && compatibleTerminalAssistant))) {
-      return {
-        text: completedPreview,
-        decision: decision("semantic_result_summary", {
-          commentAction: "create",
-          reasonCodes: ["bounded_final_agent_message_completed_by_semantic_summary"],
-        }),
-      } satisfies ResolvedHeartbeatRunResponse;
-    }
     if (
       explicitProviderFinal &&
       finalAgentText &&
@@ -601,7 +591,21 @@ export function resolveHeartbeatRunResponse(input: {
         text: semanticSummary,
         decision: decision("semantic_result_summary", {
           commentAction: "create",
-          reasonCodes: ["accepted_semantic_result_summary"],
+          reasonCodes: boundedFinalAgentText
+            ? ["bounded_final_agent_message_replaced_by_semantic_summary"]
+            : ["accepted_semantic_result_summary"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    if (boundedFinalAgentText && !isStructuredSemanticResultText(boundedFinalAgentText)) {
+      // No complete source exists. The visible marker says the text was cut.
+      return {
+        text: boundedFinalAgentText,
+        decision: decision("final_agent_message", {
+          sourceEventId: input.finalAgentMessage?.sourceEventId,
+          commentAction: "create",
+          reasonCodes: ["bounded_final_agent_message_without_complete_source"],
         }),
       } satisfies ResolvedHeartbeatRunResponse;
     }

@@ -55,6 +55,20 @@ function deliveredInteractionRunExists(companyId: string, issueId: string) {
       AND delivered_run.status IN ('running', 'succeeded'))`;
 }
 
+/**
+ * The explicit steering message for a resolved interaction. It preserves the
+ * question labels, selected options, custom answers, approval target and exact
+ * revision.
+ */
+export function queuedInteractionSteeringBody(interaction: {
+  id: string; kind: string; status: string; title?: string | null; payload?: unknown; result?: unknown;
+}): string {
+  return `${queuedInteractionSummary(interaction)}\n\n${JSON.stringify({
+    interactionId: interaction.id, kind: interaction.kind, status: interaction.status,
+    payload: interaction.payload, result: record(interaction.result),
+  }, null, 2)}`;
+}
+
 export type QueuedInteractionResponse = NonNullable<Awaited<ReturnType<typeof readQueuedInteractionResponse>>>;
 
 export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
@@ -70,15 +84,8 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
   ));
   const interaction = row?.interaction;
   if (!interaction || interaction.status !== record(payload).interactionStatus || row.delivered) return null;
-  const p = record(interaction.payload);
-  const result = record(interaction.result);
   const heading = queuedInteractionSummary(interaction);
-  // Preserve the question labels, selected options, custom answers, approval
-  // target and exact revision. This is also the explicit steering message.
-  const body = `${heading}\n\n${JSON.stringify({
-    interactionId: interaction.id, kind: interaction.kind, status: interaction.status,
-    payload: interaction.payload, result,
-  }, null, 2)}`;
+  const body = queuedInteractionSteeringBody(interaction);
   const comment: IssueComment = {
     id: interaction.id, companyId, issueId, authorType: interaction.resolvedByUserId ? "user" : "agent",
     authorUserId: interaction.resolvedByUserId, authorAgentId: interaction.resolvedByAgentId,

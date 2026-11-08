@@ -1,11 +1,19 @@
 import { notifyActiveExecutionRecovery, notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
+import { randomUUID } from "node:crypto";
+import {
+  currentControllerBootId,
+  currentControllerProcessStamp,
+  readControllerProcess,
+} from "./controller-process-identity.js";
+import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-proof.js";
+import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 
-// A boot UUID has meaning across containers; a numeric PID does not.
-export const legacyControllerBootId = randomUUID();
+// A boot UUID has meaning across containers; a numeric PID does not. Legacy
+// leases stamp the single process boot id shared with native claims.
+export const legacyControllerBootId = currentControllerBootId();
 export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
@@ -32,6 +40,9 @@ export function legacyControllerClaim(runtimeMode: string) {
   return {
     legacyProcessSettlement: null,
     controllerBootId: legacyControllerBootId,
+    // This process, so a hard-killed controller is proven gone on the shared
+    // ownership path (no I/O: the claim is on the dispatch path).
+    controllerProcess: currentControllerProcessStamp(),
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     executionStage: "preparing",
   };
@@ -138,6 +149,74 @@ export async function revokeExpiredLegacyControllerWithState(
   });
   });
   return revoked ?? null;
+}
+
+/**
+ * The recorded controller process of a legacy lease (plan Phase 2), or null.
+ * `controller_process` names the controller only while its boot id equals
+ * `controller_boot_id`: revocation swaps in a random boot id, so a revoked
+ * lease never keeps it. Rows saved by the previous release have none; their
+ * lease stays a boot-id fence (expiry, revocation and the age guard).
+ */
+export function legacyControllerOwnerStamp(
+  run: Pick<Run, "controllerBootId" | "controllerProcess">,
+): LocalOwnerStamp | null {
+  const controller = readControllerProcess(run.controllerProcess);
+  if (!controller || !run.controllerBootId || controller.bootId !== run.controllerBootId) return null;
+  return { kind: "local", scope: "legacy_controller_lease", generation: null, host: null,
+    processSpace: controller.hostHash, bootId: controller.bootId, pid: controller.pid,
+    processStartedAt: controller.processStartedAt, processGroupId: null };
+}
+
+/** True only when the shared prover proves the recorded legacy controller gone. */
+export async function legacyControllerProvenGone(
+  run: Pick<Run, "runtimeMode" | "controllerBootId" | "controllerProcess">,
+): Promise<boolean> {
+  if (run.runtimeMode === "native") return false;
+  const stamp = legacyControllerOwnerStamp(run);
+  return stamp !== null && (await proveOwnerGone(stamp)).verdict === "gone";
+}
+
+/**
+ * Settle of the `legacy_controller_lease` ownership kind. The shared
+ * reconciler calls it only after `proveOwnerGone` proved the recorded
+ * controller gone. It expires exactly that controller's outstanding lease
+ * (compare-and-swap on run, boot id and recorded pid) after waking live-run
+ * recovery, which then revokes it and settles the run as a lost process under
+ * its own checks (a live child process still keeps it running). It settles
+ * ownership only.
+ */
+export async function settleLegacyControllerLease(db: Db, record: InProgressRecord,
+  context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
+  if (record.owner.kind !== "process" || !record.companyId) return { settled: false, reason: "owner_not_a_process" };
+  const stamp = record.owner.stamp;
+  if (!stamp.bootId) return { settled: false, reason: "owner_not_a_process" };
+  const companyId = record.companyId;
+  const bootId = stamp.bootId;
+  return db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    const [row] = await tx.select({ agentId: heartbeatRuns.agentId, controllerProcess: heartbeatRuns.controllerProcess,
+      controllerBootId: heartbeatRuns.controllerBootId })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, record.recordId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
+        eq(heartbeatRuns.controllerBootId, bootId), gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`)))
+      .for("update");
+    if (!row) return { settled: false, reason: "lease_no_longer_held" };
+    const current = legacyControllerOwnerStamp(row);
+    // The proof judged this exact process; the lease has moved on since.
+    if (!current || current.pid !== stamp.pid || current.processSpace !== stamp.processSpace
+      || (current.processStartedAt ?? null) !== (stamp.processStartedAt ?? null)) {
+      return { settled: false, reason: "owner_changed_since_proof" };
+    }
+    // Work intent before the write it announces (sleep-aware background work).
+    await notifyLiveRunRecovery(tx, { companyId, runId: record.recordId, agentId: row.agentId });
+    const updated = await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp()` })
+      .where(and(eq(heartbeatRuns.id, record.recordId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.controllerBootId, bootId),
+        gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`)))
+      .returning({ id: heartbeatRuns.id });
+    return updated.length ? { settled: true, reason: context.proof.reason } : { settled: false, reason: "lease_no_longer_held" };
+  });
 }
 
 export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<boolean> {

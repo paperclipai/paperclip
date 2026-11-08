@@ -82,6 +82,8 @@ export interface CodexAppServerTransport {
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    /** The attaching run's own completion contract. */
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void>;
   /** Records post-rehydration driver mapping without affecting run authority. */
   recordTraceInterpretation?(input: CodexTraceInterpretation): void;

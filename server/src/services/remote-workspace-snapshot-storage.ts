@@ -12,11 +12,13 @@ import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
 import { notifyRemoteWorkspaceSnapshots, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
+import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 const SCHEMA = "paperclip.workspace-snapshot.v1";
 const KEY_SCHEMA = "paperclip.workspace-snapshot-key.v1";
 const MAGIC = Buffer.from("PCWSE1\n");
 const FORMAT = "paperclip.remote-workspace-archive.v1";
+const DOWNLOAD_IDLE_TIMEOUT_MS = 5 * 60_000;
 type SnapshotRow = typeof executionWorkspaceSnapshots.$inferSelect;
 export interface WorkspaceSnapshotRef {
   schema: typeof SCHEMA;
@@ -54,8 +56,12 @@ function validateReference(ref: WorkspaceSnapshotRef) {
 }
 async function digestFile(file: string, signal?: AbortSignal) {
   const digest = createHash("sha256"); let byteSize = 0;
-  for await (const part of createReadStream(file, { signal })) { digest.update(part); byteSize += part.length; }
+  for await (const part of createReadStream(file, { signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { digest.update(part); byteSize += part.length; }
   return { sha256: digest.digest("hex"), byteSize };
+}
+async function verifyStoredSize(storage: StorageService, ref: WorkspaceSnapshotRef, signal?: AbortSignal) {
+  const head = await storage.headObject(ref.companyId, ref.objectKey, { signal });
+  if (!head.exists || head.contentLength !== ref.byteSize) failure("object_size_mismatch");
 }
 async function verifyObject(storage: StorageService, ref: WorkspaceSnapshotRef, signal?: AbortSignal) {
   const object = await storage.getObject(ref.companyId, ref.objectKey, { signal });
@@ -133,7 +139,7 @@ type WorkspaceSnapshotUpload = {
 /** Upload attempts are journaled before remote I/O. The caller owns publication. */
 export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
   if (input.verifiedArchivePath === undefined)
-    return uploadVerifiedWorkspaceSnapshot(input, ref => verifyObject(input.storage, ref, input.signal));
+    return uploadVerifiedWorkspaceSnapshot(input, ref => verifyObject(input.storage, ref, input.signal), { acceptServerVerifiedUpload: true });
   input.signal?.throwIfAborted();
   const target = input.verifiedArchivePath, parent = path.dirname(target);
   if (!path.isAbsolute(target) || path.normalize(target) !== target) failure("readback_parent_invalid");
@@ -158,7 +164,8 @@ export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): P
     verified.push({ ref: structuredClone(ref), file });
   };
   try {
-    const ref = await uploadVerifiedWorkspaceSnapshot(input, verify);
+    // This caller keeps the read-back file, so every upload is read back.
+    const ref = await uploadVerifiedWorkspaceSnapshot(input, verify, { acceptServerVerifiedUpload: false });
     await verify(ref);
     const file = verified.find(saved => isDeepStrictEqual(saved.ref, ref))!.file;
     const wrapped = await snapshotKey(ref), handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -166,7 +173,7 @@ export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): P
       const before = await handle.stat(), digest = createHash("sha256"); let bytes = 0;
       if (!before.isFile() || (before.mode & 0o777) !== 0o600 || before.nlink !== 1
         || typeof process.getuid === "function" && before.uid !== process.getuid()) failure("readback_file_changed");
-      for await (const chunk of createReadStream(file, { fd: handle.fd, autoClose: false, signal: input.signal })) {
+      for await (const chunk of createReadStream(file, { fd: handle.fd, autoClose: false, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) {
         digest.update(chunk); bytes += chunk.length;
       }
       const after = await handle.stat(), named = await lstat(file);
@@ -181,7 +188,8 @@ export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): P
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
-async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, verify: (ref: WorkspaceSnapshotRef) => Promise<void>): Promise<WorkspaceSnapshotRef> {
+async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, verify: (ref: WorkspaceSnapshotRef) => Promise<void>,
+  options: { acceptServerVerifiedUpload: boolean }): Promise<WorkspaceSnapshotRef> {
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
   if (input.unpublishedRecapture && row!.sourceOperationId !== input.unpublishedRecapture.sourceOperationId) failure("operation_binding_changed");
@@ -233,17 +241,23 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
   try {
     const encrypted = path.join(scratch, "archive.encrypted"), dataKey = randomBytes(32), iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", dataKey, iv); cipher.setAAD(aad(identity));
-    const plaintext = await digestFile(input.archivePath, input.signal);
-    const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ schema: KEY_SCHEMA,
-      ...identity, dataKey: dataKey.toString("base64"), plaintextSha256: plaintext.sha256, plaintextBytes: plaintext.byteSize }) });
     const header = await open(encrypted, "wx", 0o600);
     try { await header.writeFile(Buffer.concat([MAGIC, iv])); } finally { await header.close(); }
+    // One read of the archive both digests and encrypts it. An unchanged file
+    // identity across that read replaces the separate digest pass.
+    const before = await lstat(input.archivePath);
     const incomingDigest = createHash("sha256"); let incomingBytes = 0;
     const observed = new Transform({ transform(bytes, _encoding, callback) { incomingDigest.update(bytes); incomingBytes += bytes.length; callback(null, bytes); } });
-    await pipeline(createReadStream(input.archivePath, { signal: input.signal }), observed, cipher, createWriteStream(encrypted, { flags: "a", mode: 0o600 }), { signal: input.signal });
-    if (incomingBytes !== plaintext.byteSize || incomingDigest.digest("hex") !== plaintext.sha256) failure("archive_changed");
+    await pipeline(createReadStream(input.archivePath, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), observed, cipher, createWriteStream(encrypted, { flags: "a", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
+    const after = await lstat(input.archivePath);
+    if (!before.isFile() || before.isSymbolicLink() || incomingBytes !== before.size || after.dev !== before.dev || after.ino !== before.ino
+      || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) failure("archive_changed");
+    const plaintext = { sha256: incomingDigest.digest("hex"), byteSize: incomingBytes };
     const footer = await open(encrypted, "a"); try { await footer.writeFile(cipher.getAuthTag()); } finally { await footer.close(); }
+    const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ schema: KEY_SCHEMA,
+      ...identity, dataKey: dataKey.toString("base64"), plaintextSha256: plaintext.sha256, plaintextBytes: plaintext.byteSize }) });
     dataKey.fill(0);
+    // Digest the encrypted file as stored: upload parts are read from these bytes.
     const content = await digestFile(encrypted, input.signal);
     const attempt: UploadAttempt = { objectKey: `${identity.companyId}/workspace-snapshots/${identity.workspaceId}/${identity.id}/${randomUUID()}.pcws`,
       ...content, key: material, manifestDigest: input.manifestDigest };
@@ -273,10 +287,15 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     }
     // The object key is unique per attempt, so a late losing uploader cannot
     // overwrite an object already used by a committed generation.
-    await input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
-      originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
-      byteSize: attempt.byteSize, sha256: attempt.sha256, signal: input.signal });
-    await verify({ schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef);
+    const stored = await input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
+      originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
+      byteSize: attempt.byteSize, sha256: attempt.sha256, sourceFile: encrypted, signal: input.signal });
+    const uploaded = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
+    // The backend checked every part of this upload against digests of these
+    // exact bytes, so only its size needs confirming. Any other provider, and
+    // a caller that needs the bytes back, still reads the object back.
+    if (options.acceptServerVerifiedUpload && stored.integrity === "server_verified_md5") await verifyStoredSize(input.storage, uploaded, input.signal);
+    else await verify(uploaded);
     if (recapture) {
       const recovered = await availableAttempt(attempts);
       if (recovered) return publish(recovered);
@@ -304,14 +323,25 @@ export async function loadWorkspaceSnapshotArchive(input: {
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
-    const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal: input.signal });
     let received = 0; const digest = createHash("sha256");
-    const bounded = new Transform({ transform(bytes, _encoding, callback) {
-      received += bytes.length; digest.update(bytes);
-      callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
-    } });
-    try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600 }), { signal: input.signal }); }
-    finally { object.stream.destroy(); }
+    const stalled = new DOMException("remote_workspace_snapshot_download_stalled", "TimeoutError");
+    const idle = new AbortController();
+    const signal = input.signal ? AbortSignal.any([input.signal, idle.signal]) : idle.signal;
+    const timer = setTimeout(() => idle.abort(stalled), DOWNLOAD_IDLE_TIMEOUT_MS);
+    timer.unref();
+    try {
+      const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
+      const bounded = new Transform({ transform(bytes, _encoding, callback) {
+        if (bytes.length > 0) timer.refresh();
+        received += bytes.length; digest.update(bytes);
+        callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
+      } });
+      try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal }); }
+      finally { object.stream.destroy(); }
+    } catch (error) {
+      if (signal.aborted && signal.reason === stalled) throw stalled;
+      throw error;
+    } finally { clearTimeout(timer); }
     if (received !== ref.byteSize || digest.digest("hex") !== ref.sha256) failure("object_hash_mismatch");
     const file = await open(ciphertext, "r"), header = Buffer.alloc(MAGIC.length + 12), tag = Buffer.alloc(16);
     try { await file.read(header, 0, header.length, 0); await file.read(tag, 0, tag.length, ref.byteSize - tag.length); } finally { await file.close(); }
@@ -320,8 +350,8 @@ export async function loadWorkspaceSnapshotArchive(input: {
     const decipher = createDecipheriv("aes-256-gcm", key, header.subarray(MAGIC.length));
     decipher.setAAD(aad(ref)); decipher.setAuthTag(tag);
     try {
-      await pipeline(createReadStream(ciphertext, { start: header.length, end: ref.byteSize - tag.length - 1, signal: input.signal }),
-        decipher, createWriteStream(plaintext, { flags: "wx", mode: 0o600 }), { signal: input.signal });
+      await pipeline(createReadStream(ciphertext, { start: header.length, end: ref.byteSize - tag.length - 1, signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
+        decipher, createWriteStream(plaintext, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
     } finally { key.fill(0); }
     const actual = await digestFile(plaintext, input.signal);
     if (actual.sha256 !== wrapped.plaintextSha256 || actual.byteSize !== wrapped.plaintextBytes) failure("plaintext_hash_mismatch");
@@ -329,7 +359,7 @@ export async function loadWorkspaceSnapshotArchive(input: {
     // failed/cancelled relay cannot leave a plaintext cache that looks complete.
     const staged = path.join(path.dirname(input.targetPath), `.workspace-snapshot-${randomUUID()}.tmp`);
     try {
-      await pipeline(createReadStream(plaintext, { signal: input.signal }), createWriteStream(staged, { flags: "wx", mode: 0o600 }), { signal: input.signal });
+      await pipeline(createReadStream(plaintext, { signal: input.signal, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), createWriteStream(staged, { flags: "wx", mode: 0o600, highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }), { signal: input.signal });
       input.signal?.throwIfAborted(); await link(staged, input.targetPath);
     } finally { await rm(staged, { force: true }); }
   } finally { await rm(scratch, { recursive: true, force: true }); }

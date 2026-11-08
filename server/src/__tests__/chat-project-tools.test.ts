@@ -4,7 +4,7 @@ import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
@@ -337,7 +337,13 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
       expect(await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toEqual(before);
 
       await server.db.update(issues).set({ executionWorkspaceId: executionWorkspace.id }).where(eq(issues.id, f.issueId));
-      await expect(call(f, "create_task", { title: "Inherited source cannot escape", idempotencyKey: "inherited-source-denied", status: "backlog" })).rejects.toThrow(/outside.*boundary/i);
+      // A child never inherits its parent's workspace, so the parent's
+      // out-of-boundary files cannot leak into the child either.
+      await call(f, "create_task", { title: "Inherited source cannot escape", idempotencyKey: "inherited-source-denied", status: "backlog" });
+      const [inheritedChild] = await server.db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+        .where(and(eq(issues.companyId, f.companyId), eq(issues.title, "Inherited source cannot escape")));
+      expect(inheritedChild?.executionWorkspaceId).toBeNull();
+      await server.db.delete(issues).where(and(eq(issues.companyId, f.companyId), eq(issues.title, "Inherited source cannot escape")));
       await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
         trustBoundary: { ...boundary, projectIds: [f.projectId] },
       } } }).where(eq(agents.id, f.agentId));

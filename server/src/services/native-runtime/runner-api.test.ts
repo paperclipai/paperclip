@@ -39,6 +39,41 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
   }),
 });
 
+describe("capped list pagination", () => {
+  const listIssues = "GET /api/companies/{companyId}/issues";
+  const page = (headers: Record<string, string>, rows = [{ id: "a" }, { id: "b" }]) =>
+    vi.fn(async () => new Response(JSON.stringify(rows), { headers: { "content-type": "application/json", ...headers } }));
+
+  it("tells the agent a capped list is incomplete and how to fetch the next page", async () => {
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "2", "x-paperclip-next-offset": "2" });
+    const result = await executeRunnerApi({ operationId: listIssues, query: { limit: 2 } }, context, io(fetcher));
+    expect(result).toMatchObject({
+      ok: true,
+      data: [{ id: "a" }, { id: "b" }],
+      pagination: { hasMore: true, truncated: true, limit: 2, nextOffset: 2 },
+    });
+    expect((result as unknown as { pagination: { guidance: string } }).pagination.guidance).toContain("offset=2");
+  });
+
+  it("carries the cursor and the signal when the capped body is saved as an artifact", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) => ({ id: `row-${index}`, title: "x".repeat(80) }));
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "600", "x-paperclip-next-offset": "600", "x-paperclip-next-after-id": "row-599" }, rows);
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(fetcher));
+    expect(result).toMatchObject({ ok: true, artifact: { artifactId: "artifact-a" }, pagination: { hasMore: true, nextOffset: 600, nextAfterId: "row-599" } });
+  });
+
+  it("reports a complete list as complete", async () => {
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(page({ "x-paperclip-has-more": "false", "x-paperclip-limit": "500" })));
+    expect(result).toMatchObject({ ok: true, pagination: { hasMore: false, truncated: false, nextOffset: null } });
+    expect((result as unknown as { pagination: object }).pagination).not.toHaveProperty("guidance");
+  });
+
+  it("adds nothing for routes that do not page", async () => {
+    const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
+    expect(result).not.toHaveProperty("pagination");
+  });
+});
+
 describe("bounded response capture receipts", () => {
   it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
     const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
@@ -143,6 +178,9 @@ describe("runner API catalog", () => {
     expect(JSON.stringify(catalog)).not.toContain('"$ref"');
     expect(runnerApiOperation("GET /api/companies/{companyId}/decisions").authorization.actor).toBe("board");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").authorization.actor).toBe("board");
+    // Agents read their own commentary (or all with commentary:view), so the catalog must not say board-only.
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary").authorization.actor).toBe("board_or_agent");
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary/{id}").authorization.actor).toBe("board_or_agent");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").dedicatedTools).toEqual([]);
     expect(runnerApiOperation(createProject).requestBody?.content["application/json"].schema.required).toContain("name");
     expect(runnerApiOperation(createProject).dedicatedTools).toEqual(["create_project"]);
