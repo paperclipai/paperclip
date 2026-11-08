@@ -22,6 +22,12 @@ describe("completion requirement agent guard", () => {
     ).not.toThrow();
   });
 
+  it("refuses an agent-supplied null on create, so the workspace default applies", () => {
+    expect(() =>
+      assertNoAgentCompletionRequirementSupply(reqAs("agent"), null, "the completion requirement"),
+    ).toThrow(/cannot set the completion requirement/);
+  });
+
   it("refuses an agent clearing the field on update", () => {
     expect(() =>
       assertNoAgentCompletionRequirementChange(reqAs("agent"), { defaultCompletionRequirement: null }, "defaultCompletionRequirement", "the workspace default completion requirement"),
