@@ -48,6 +48,10 @@ const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accept
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
 export const CHILD_WAKE_GRACE_MS = 60_000;
+
+export function childrenPending(children: ReadonlyArray<{ status: string | null }> | null): boolean {
+  return !children || children.some(child => !["done", "cancelled", "blocked"].includes(child.status ?? ""));
+}
 /** Extra time granted after a Retry click before R3 is graded as timed out. */
 export const RETRY_BUDGET_MS = 15 * 60_000;
 
@@ -356,6 +360,15 @@ export class TaskObserver {
     if (startedAt !== undefined) this.record.lastFaultAt = Math.max(this.record.lastFaultAt ?? 0, startedAt);
   }
 
+  markUnfinished() {
+    if (this.done) return;
+    const last = this.record.samples.at(-1);
+    this.record.timedOut = true;
+    this.record.finalStatus = last?.issueStatus ?? this.record.finalStatus;
+    this.done = true;
+    this.timeline.add("task_unfinished_at_interrupt", { taskId: this.plan.taskId, status: this.record.finalStatus });
+  }
+
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
 
@@ -461,7 +474,11 @@ export class TaskObserver {
     const faultSinceRetry = this.record.retry !== null && (this.record.lastFaultAt ?? 0) > this.record.retry.at;
     if (status !== "done" && this.definition.collect.childDocuments && this.record.issueId) {
       const children = await this.collectChildren(this.record.issueId).catch(() => null);
-      const pending = !children || children.some(child => !["done", "cancelled"].includes(child.status ?? ""));
+      const pending = childrenPending(children);
+      const blocked = (children ?? []).filter(child => child.status === "blocked").map(child => child.id);
+      if (!pending && blocked.length && this.childrenSettledAt === null) {
+        this.timeline.add("task_child_blocked", { taskId: this.plan.taskId, childIssueIds: blocked });
+      }
       this.childrenSettledAt = pending ? null : (this.childrenSettledAt ?? now);
       if (pending || now - this.childrenSettledAt! < CHILD_WAKE_GRACE_MS) {
         this.restCandidateSince = null;

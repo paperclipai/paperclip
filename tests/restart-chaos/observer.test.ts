@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, listWorkspaceFiles } from "./observer.js";
+import { REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
 import type { TaskPlan } from "./types.js";
@@ -115,4 +115,13 @@ describe("fixture repository", () => {
     const record = parseBenchRecord(await readFile(path.join(root, ".bench", "run-abcd1234.txt"), "utf8"));
     expect(record?.result).toBe(BENCH_EXPECTED);
   }, 60_000);
+});
+
+describe("childrenPending", () => {
+  it("waits on running subtasks and stops waiting once each is done, cancelled or blocked", () => {
+    expect(childrenPending(null)).toBe(true);
+    expect(childrenPending([{ status: "done" }, { status: "in_progress" }])).toBe(true);
+    expect(childrenPending([{ status: "done" }, { status: "cancelled" }])).toBe(false);
+    expect(childrenPending([{ status: "done" }, { status: "blocked" }])).toBe(false);
+  });
 });

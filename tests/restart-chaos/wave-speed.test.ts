@@ -4,8 +4,8 @@ import type { FaultReceipt } from "./types.js";
 import { breachesOf, budgetFor, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
 import { runMetrics } from "./ttft-baseline-stats.js";
 
-const span = (name: string, startOffsetMs: number, durationMs: number) =>
-  ({ eventType: "run.performance.span", createdAt: "2026-11-08T00:00:00.000Z", payload: { span: name, startOffsetMs, durationMs } });
+const span = (name: string, startOffsetMs: number, durationMs: number, extra: Record<string, unknown> = {}) =>
+  ({ eventType: "run.performance.span", createdAt: "2026-11-08T00:00:00.000Z", payload: { span: name, startOffsetMs, durationMs, ...extra } });
 
 const run = (runId: string, adapter: string, ttftMs: number, extra: BaselineRun["events"] = []): BaselineRun => ({
   runId, adapter, environment: "local", phase: "cold",
@@ -30,8 +30,9 @@ describe("wave speed grade", () => {
   });
 
   it("judges time to first agent activity when the run logs it, net of the wait behind a live turn", () => {
-    const withActivity = run("a", "codex", 40_000, [span("task.time_to_first_agent_activity", 0, 9_000),
-      span("comment.to_run_created", 0, 4_000)]);
+    const withActivity: BaselineRun = { runId: "a", adapter: "codex", environment: "local", phase: "cold",
+      events: [span("comment.to_run_created", 0, 4_000), span("heartbeat.queue", 4_000, 100), span("runner.turn.submit", 4_100, 900),
+        span("task.time_to_first_agent_activity", 0, 9_000, { anchor: "comment" }), span("task.time_to_first_token", 0, 40_000, { anchor: "comment" })] };
     expect(firstActivityMs(withActivity)).toBe(5_000);
     expect(firstActivityMs(run("b", "codex", 7_000))).toBe(7_000);
     const speed = gradeWaveSpeed("local", [withActivity], [], 0);
