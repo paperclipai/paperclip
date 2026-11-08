@@ -8360,7 +8360,10 @@ describe("native terminal-turn accounting", () => {
           const nextRun = randomUUID();
           await db.insert(tables.heartbeatRuns).values({ id: nextRun, companyId, agentId, status: "queued", runtimeMode: "native" });
           await expect(reserveRunBudget(db, companyId, nextRun, null)).resolves.toMatchObject({ reused: false });
-        } else expect(block, scenario).not.toBeNull();
+        // Only a settled unpriced charge under a blocking policy refuses work.
+        // Pending accounting is exposure, never a gate (invariant 3).
+        } else if (ready) expect(block, scenario).not.toBeNull();
+        else expect(block, scenario).toBeNull();
       }
     } finally { await db.$client.end(); await database.cleanup(); await rm(directory, { recursive: true, force: true }); }
   }, 90_000);

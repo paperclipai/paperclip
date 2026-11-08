@@ -1760,26 +1760,37 @@ Financial changes append independent durable evaluation inputs. The existing
 worker coalesces notifications over one second and publishes budget holds,
 incidents and durable Stop intent from a consistent snapshot. Policy/control
 publication is fenced separately from settlement. Inputs arriving or committing
-later stay pending; no global sequence watermark consumes them. Limited-budget
-admission refuses relevant unevaluated inputs older than fifteen seconds.
-Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Runs that ended without succeeding and
-await accounting hold new work only: they never open a hard-stop incident, pause
-a scope, or stop running work. Only spend at the limit, or unpriced usage under
-a blocking policy, does that. A succeeded run with only its usage report
-outstanding, whose provider already reported observed usage, does not hold new
-work: its provider work is over, so it is bounded like a running run. A
-succeeded run with no observed cost still holds new work. Its observed cost counts toward spend and reservation
-capacity, and its settled charge can still reach the hard stop. A run that
-failed, was cancelled, timed out or was interrupted still holds new work,
-because its provider may not have stopped. Temporary holds (accounting that awaits
-settlement, recovering runs, budget inputs that await evaluation) gate new work
-only. They never refuse an admitted run's own tool mutations or an owned
-recovery; a hard stop or pause still does, through the normal pause and
-cancellation path. Provider reporting and cancellation delays
-remain additional to evaluation lag. Cancellation delivery is asynchronous and
-scoped; committed per-run Stop survives policy changes and restart until existing
-stop proof succeeds. Budget resume cannot clear a manual hold.
+later stay pending; no global sequence watermark consumes them. Admission does
+not wait for them: it reads the ledger and live exposure itself, so a reached
+hard stop refuses new work even while evaluation lags.
+
+**Admission is independent of cleanup and accounting.** Admitting new work never
+waits on another run's cleanup or accounting completeness. Only these refuse it:
+
+- spend at the limit (ledger plus observed running spend), or unpriced usage
+  under a blocking policy (the hard stop);
+- an explicit pause of the company, project or agent;
+- an inactive company.
+
+A run whose accounting is unfinished (its final receipt has not closed, its
+native coordinator is still recovering, its usage capture failed, or a late
+receipt is outstanding) contributes its bounded estimate to exposure: the
+larger of its held reservation and its observed cost. It never creates a
+company-wide or scope-wide gate, and it never pauses a scope or opens a
+hard-stop incident. A budget-owned scope hold whose policies no longer reach a
+hard stop is stale; the budget worker releases it, and budget admission does
+not refuse work while it waits. Unevaluated budget inputs are not a gate.
+Provider reporting and cancellation delays remain additional to evaluation lag.
+Cancellation delivery is asynchronous and scoped; committed per-run Stop
+survives policy changes and restart until existing stop proof succeeds. Budget
+resume cannot clear a manual hold.
+
+A successor run on the same task still waits while its predecessor owns
+resources that the successor would reuse (a live environment lease, an open
+native finalization coordinator, or workspace finalization). That wait is
+per task, ends when the owner releases them, and wakes the successor through
+the work-intent promotion path. A predecessor run row that no longer exists
+owns nothing and never holds its successor.
 
 Accepted cumulative per-run usage checkpoints contribute observed running spend
 before the final ledger charge. Admission counts each unfinished operation's
