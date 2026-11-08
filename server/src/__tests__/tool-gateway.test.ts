@@ -1801,7 +1801,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
     it("returns an empty server error when notification verification loses its database client", async () => {
       const { app: healthyApp, company, endpoints, token } = await createRunGatewayProtocolFixture(db, deploymentMode);
-      const notificationDb = createDb(tempDb!.connectionString);
+      const notificationDb = createDb(externalTestDatabase ?? tempDb!.connectionString);
       try {
         const app = createGatewayRouteApp(db, createTestToolGatewayService(notificationDb), undefined, {
           withActorMiddleware: true,
