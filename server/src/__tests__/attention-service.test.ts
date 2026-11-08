@@ -283,10 +283,13 @@ describeEmbeddedPostgres("attention service", () => {
     } else if (reader === "list") {
       const feed = await service.list(companyId, options);
       expect(feed.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual(expected.sort());
+    } else if (reader === "taskIndex") {
+      const index = await service.taskIndex(companyId, options);
+      expect(index.countsBySourceKind.issue_thread_interaction).toBe(expected.length);
+      expect(index.taskIds.sort()).toEqual([...new Set(expectedIssueIds)].sort());
     } else {
-      const result = await service[reader](companyId, options);
-      expect(result.countsBySourceKind.issue_thread_interaction).toBe(expected.length);
-      if ("taskIds" in result) expect(result.taskIds.sort()).toEqual([...new Set(expectedIssueIds)].sort());
+      const summary = await service.summary(companyId, options);
+      expect(summary.countsBySourceKind.issue_thread_interaction).toBe(expected.length);
     }
   });
 
