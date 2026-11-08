@@ -3574,12 +3574,16 @@ const SERVER_ONLY_SECRET_ENV_KEYS = new Set([
   "PAPERCLIP_ID_CONNECTOR_SEAL_PRIVATE_KEY",
 ]);
 const SERVER_ONLY_SECRET_ENV_PREFIXES = ["PAPERCLIP_SECRETS_AWS_"];
+// Per-provider tool OAuth secrets: PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_SECRET
+// (see oauthEnvName in server/src/services/tool-access/oauth/client-settings.ts).
+const SERVER_ONLY_SECRET_ENV_PATTERNS = [/^PAPERCLIP_TOOL_OAUTH_.+_CLIENT_SECRET$/];
 
 export function isServerOnlySecretEnvKey(key: string): boolean {
   const upper = key.toUpperCase();
   return (
     SERVER_ONLY_SECRET_ENV_KEYS.has(upper) ||
-    SERVER_ONLY_SECRET_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))
+    SERVER_ONLY_SECRET_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)) ||
+    SERVER_ONLY_SECRET_ENV_PATTERNS.some((pattern) => pattern.test(upper))
   );
 }
 

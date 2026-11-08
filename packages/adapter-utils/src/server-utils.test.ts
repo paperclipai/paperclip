@@ -763,6 +763,7 @@ describe("runChildProcess", () => {
       BETTER_AUTH_SECRET: fake("auth"),
       PAPERCLIP_SECRETS_MASTER_KEY: fake("master"),
       PAPERCLIP_SECRETS_AWS_KMS_KEY_ID: fake("kms"),
+      PAPERCLIP_TOOL_OAUTH_GOOGLE_CLIENT_SECRET: fake("oauth"),
     };
     const providerKey = fake("provider");
     const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -771,10 +772,11 @@ describe("runChildProcess", () => {
       "const { createHash } = require('node:crypto');",
       "const sha = (v) => createHash('sha256').update(v).digest('hex');",
       "const secretHashes = new Set(JSON.parse(process.argv[1]));",
+      "const seededKeys = new Set(JSON.parse(process.argv[3]));",
       "const env = process.env;",
       "const argvText = process.argv.join('\\n');",
       "process.stdout.write(JSON.stringify({",
-      "  secretKeysInEnv: Object.keys(env).filter((k) => /JWT_SECRET|AUTH_SECRET|MASTER_KEY|SECRETS_AWS_/.test(k)).sort(),",
+      "  secretKeysInEnv: Object.keys(env).filter((k) => seededKeys.has(k)).sort(),",
       "  secretValuesInEnv: Object.values(env).filter((v) => secretHashes.has(sha(v))).length,",
       "  injectedValuesInArgv: process.argv.filter((a) => secretHashes.has(sha(a))).length",
       "    + (argvText.includes(env.TEST_PROVIDER_API_KEY ?? '\\0') ? 1 : 0),",
@@ -788,7 +790,13 @@ describe("runChildProcess", () => {
       const result = await runChildProcess(
         randomUUID(),
         process.execPath,
-        ["-e", childScript, JSON.stringify(Object.values(secrets).map(sha)), sha(providerKey)],
+        [
+          "-e",
+          childScript,
+          JSON.stringify(Object.values(secrets).map(sha)),
+          sha(providerKey),
+          JSON.stringify(Object.keys(secrets)),
+        ],
         {
           cwd: process.cwd(),
           env: {
