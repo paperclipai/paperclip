@@ -7,6 +7,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
+import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { proveOwnerGone } from "./owner-proof.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
@@ -26,7 +28,7 @@ function absent(pid: number): boolean {
 /** A fresh workspace is not process containment. Bind an OS observation to
  * the original host, process birth, and launch event before accepting it. */
 export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt">) {
+  "id" | "companyId" | "processPid" | "processGroupId" | "processStartedAt"> & { processHostHash?: string | null }) {
   const [identity] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
@@ -36,8 +38,15 @@ export async function recordedLocalExecutionStopped(db: Db, run: Pick<typeof hea
   if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
       recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
       !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
-  return Boolean(run.processPid && absent(run.processPid) &&
-    (!run.processGroupId || absent(-run.processGroupId)));
+  if (!run.processPid) return false;
+  // The shared prover judges the bound identity: the PID is dead or reused by
+  // a later process, and its group is empty or led by a later process. The
+  // recorded PID space is used when the row has one; older rows were bound to
+  // this host by the launch event above.
+  const proof = await proveOwnerGone({ kind: "local", scope: "native_local_process", generation: null, host: null,
+    processSpace: run.processHostHash ?? currentProcessSpaceHash(), bootId: null, pid: run.processPid,
+    processStartedAt: run.processStartedAt.toISOString(), processGroupId: run.processGroupId });
+  return proof.verdict === "gone";
 }
 
 /**
@@ -132,6 +141,21 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
     payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" },
   });
   return true;
+}
+
+/** A native run that an admission fence refused before it requested any
+ * runner launch (a quarantined prior-session cleanup is checked before the
+ * provider starts) never had a process: there is nothing to stop. Any launch
+ * request or identity record keeps the normal stop proofs. */
+export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid || run.processGroupId ||
+      run.errorCode !== "native_session_cleanup_quarantined") return false;
+  const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+  )).limit(1);
+  return !launch;
 }
 
 /** Pre-receipt native runs can retain an exact suspended session after their

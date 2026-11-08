@@ -121,6 +121,7 @@ describe("automatic retained workspace recovery", () => {
     { title: "a restart lost its sandbox before the turn started", turn: "none" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
     { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable", initial: false },
     { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
+    { title: "a same-run retry named the lease check that failed", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_status", initial: false },
   ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error, initial }) => {
     const f = await restartAllocationLostSource(turn, error);
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
@@ -507,7 +508,7 @@ describe("automatic retained workspace recovery", () => {
       const stable = (row: typeof after) => ({ ...row, updatedAt: null, ownerType: null, nextAction: null,
         evidence: { ...row.evidence, workspaceRecovery: { ...(row.evidence.workspaceRecovery as object), message: null } } });
       if (spent) {
-        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry recovery/) });
+        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry to try again/) });
         expect(stable(after)).toEqual(stable(before));
       } else expect(after).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");

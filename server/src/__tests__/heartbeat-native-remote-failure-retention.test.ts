@@ -227,7 +227,9 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       await heartbeat.drainActiveRunExecutions();
       expect(readyAllocation).toHaveBeenCalledOnce();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-      expect(run).toMatchObject({ status: "failed", error: "native_remote_recovery_lease_mismatch" });
+      // The run records which check failed: the provider no longer resumes the lease.
+      expect(run).toMatchObject({ status: "failed",
+        error: "native_remote_recovery_lease_mismatch: stage=environment_resume field=lease" });
       const retryKey = `task-retry:restart-interrupted-turn:${f.runId}`;
       await vi.waitFor(async () => {
         const retries = await db.select().from(agentWakeupRequests).where(and(

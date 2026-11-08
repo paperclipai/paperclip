@@ -260,6 +260,7 @@ import {
   retryWorkspaceExportSchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1686,7 +1687,8 @@ function resolveOperationAuthLevel(
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
-  if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "board";
+  // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
+  if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -2185,7 +2187,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2194,7 +2200,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/exports/preview",
   tags: ["companies"],
   summary: "Preview company export",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Omitting include exports only the company and agents (projects, skills and issues default to false); set include.projects and include.skills for a reusable company setup.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityExportSchema),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2203,7 +2213,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/preview",
   tags: ["companies"],
   summary: "Preview company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -2212,7 +2226,11 @@ registry.registerPath({
   path: "/api/companies/{companyId}/imports/apply",
   tags: ["companies"],
   summary: "Apply company import",
-  request: { params: z.object({ companyId: z.string() }) },
+  description: "Safe import into this company only: target must be { mode: \"existing_company\", companyId } for the route company or a new company, and collisionStrategy may be \"rename\" or \"skip\" (\"replace\" is rejected, so an existing agent is never overwritten). nameOverrides maps an incoming agent, project or issue slug to the name it should get. Preview never changes the company; apply creates or reuses resources and returns them.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyPortabilityImportSchema),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -3441,6 +3459,9 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}",
   tags: ["status-cards"],
   summary: "Update, archive, or restore a status card",
+  description: "Archiving (archived: true) hides the card from the active list but keeps the card, its summary and its update history; it is not deleted. "
+    + "A person views and restores archived cards on the company's Status page (Show archived, then Restore); give them the returned href as a Markdown link. "
+    + "Restoring (archived: false) starts a fresh full summary for a card with a compiled query, so restored content is regenerated before it is current.",
   body: patchStatusCardSchema,
 });
 
@@ -4262,7 +4283,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access.",
+    "Use view=index for collection membership/order without task bodies or diagnostic enrichment; view=rows enriches visible rows without task bodies. These responses include listProjection and cannot stand in for a full issue. view=compact retains the board row compatibility contract. The default response remains the broad compatibility contract. All projections enforce company and task access. Results are paged: limit defaults to 500 (maximum 1000) and offset to 0. For actors who can read the whole company's task list, every page sets X-Paperclip-Has-More (true when more results exist) and X-Paperclip-Limit; a capped page also sets X-Paperclip-Next-Offset, or X-Paperclip-Next-After-Id for sortField=id&sortDir=asc cursor paging (not with oneChildPerParent). Actors whose rows are filtered by task access, such as low-trust agents, get no pagination headers. Agent call_api results carry these as pagination.hasMore/nextOffset/nextAfterId. A page whose hasMore is true is not the complete list: repeat the request with the same filters and the next offset or afterId until hasMore is false.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -4270,6 +4291,11 @@ registry.registerPath({
       ids: z.string().optional().describe("One to 100 comma-separated task UUIDs; requires index or rows without attention."),
       parentIds: z.string().optional().describe("One to 100 comma-separated parent UUIDs; requires index or rows without attention."),
       oneChildPerParent: z.boolean().optional().describe("Return at most one readable child per parent; requires view=index and parentIds."),
+      limit: z.number().int().min(1).max(1000).optional().describe("Page size; defaults to 500, at most 1000. Check X-Paperclip-Has-More (call_api: pagination.hasMore) for more results."),
+      offset: z.number().int().min(0).optional().describe("Rows to skip; use X-Paperclip-Next-Offset (call_api: pagination.nextOffset) from the previous page."),
+      sortField: z.enum(["updated", "created", "id"]).optional(),
+      sortDir: z.enum(["asc", "desc"]).optional(),
+      afterId: z.string().uuid().optional().describe("Cursor paging: return rows after this task UUID; requires sortField=id, sortDir=asc and no offset. Use X-Paperclip-Next-After-Id (call_api: pagination.nextAfterId)."),
     }).passthrough(),
   },
   responses: {
@@ -4612,7 +4638,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get an exact issue document revision",
   description:
-    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. This read does not restore or modify the document.",
+    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. The response also carries the document's current latestRevisionId and latestRevisionNumber, and isLatest says whether this revision is still current; to read the current text, use GET /api/issues/{id}/documents/{key}. This read does not restore or modify the document.",
   request: {
     params: z.object({
       id: z.string(),
@@ -5810,7 +5836,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary",
   tags: ["agents"],
   summary: "Browse agent suggestions and complaints",
-  description: "Board-only. Requires company membership and commentary:view, granted by default to all human company roles. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
+  description: "Board members need company membership and commentary:view, granted by default to all human company roles. An agent may list only its own commentary (agentId set to itself) unless it holds commentary:view, which is never a default agent grant; otherwise it gets 403 with a remediation naming the Commentary page. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
   request: { params: z.object({ companyId: z.string() }), query: agentCommentaryQuerySchema },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -5820,7 +5846,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary/{id}",
   tags: ["agents"],
   summary: "Read a full agent commentary message",
-  description: "Same board, permission and task-privacy gates as the list. Returns the full body with agent, task and run context. Foreign-company and invisible entries return 404.",
+  description: "Same permission and task-privacy gates as the list. An agent may read its own entry, or any entry with commentary:view; another agent's entry returns 403 with a remediation. Returns the full body with agent, task and run context. Foreign-company and invisible entries return 404.",
   request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -11022,6 +11048,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Resume a saved native result after operator verification of the prior workspace owner's stop",
   body: resumeWorkspaceFinalizationSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-controller-stopped",
+  tags: ["issues"],
+  summary: "Confirm that a native run's previous server stopped when its host was not recorded",
+  body: confirmNativeControllerStoppedSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

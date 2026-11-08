@@ -1,3 +1,4 @@
+import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -368,6 +369,137 @@ describePostgres("heartbeat recovery module ownership", () => {
       expect(child.alive()).toBe(true);
     } finally { kill.mockRestore(); try { await f.cleanup(); } finally { await child.stop(); } }
   });
+
+  // Staging shape: a chat continuation inherited its predecessor's saved
+  // provider session and warm runner identity, then failed while staging its
+  // provider pack, before it ever asked for a runner of its own. Its workspace
+  // reference is saved and its own sandbox lease is still active.
+  type InheritedCase = "staging" | "own_turn" | "own_launch" | "own_checkpoint" | "no_predecessor"
+    | "pending_side_effect" | "legacy_detail";
+  async function inheritedRunnerRetry(pid: number, condition: InheritedCase) {
+    const f = await remoteRetryFixture(pid, "remote_workspace");
+    const run = await f.current();
+    // The PID came from the predecessor, so this run recorded no process identity.
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    if (condition !== "own_checkpoint") await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.run.id));
+    const profile = run.runnerProfileJson ?? {};
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    await db.update(agents).set({ status: "active" }).where(eq(agents.id, f.run.agentId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativeExecutionInput: { fixture: true },
+      remoteWorkspace: { ...(profile.remoteWorkspace as Record<string, unknown>), state: "saved" },
+      sessionCheckpoint: { ...checkpoint, activeTurnId: null,
+        pendingRuntimeRequests: condition === "pending_side_effect" ? [{ requestId: "tool-1", kind: "tool_call" }] : [] },
+    } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(environmentLeases).set({ executionWorkspaceId: null }).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, failureDetail: {
+      message: "runner_remote_provider_archive_invalid", recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+      providerSessionEstablished: true, ...(condition === "legacy_detail" ? {} : { providerEventsExist: false }),
+    } }).where(eq(nativeRunFinalizations.runId, f.run.id));
+    const predecessorId = randomUUID();
+    if (condition !== "no_predecessor") await db.insert(heartbeatRuns).values({ id: predecessorId,
+      companyId: f.run.companyId, agentId: f.run.agentId, issueId: f.run.issueId, invocationSource: "automation",
+      status: "succeeded", runtimeMode: "native", nativeSessionId: run.nativeSessionId, createdAt: new Date(Date.now() - 600_000),
+      finishedAt: new Date(Date.now() - 300_000), processPid: run.processPid, processGroupId: run.processGroupId,
+      processStartedAt: run.processStartedAt });
+    if (condition === "own_turn") await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+      agentId: f.run.agentId, eventType: "turn.started", stream: "system", level: "info", message: "turn.started" });
+    if (condition === "own_launch") await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+      agentId: f.run.agentId, eventType: PROCESS_START_REQUESTED, stream: "system", level: "info" });
+    return { ...f, predecessorId, async cleanupAll() {
+      try { await f.cleanup(); } finally { await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, predecessorId)); }
+    } };
+  }
+
+  it("resumes a continuation that never launched its own runner in its retained sandbox, without reattaching", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    try {
+      native.claims.mockClear();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id });
+      await Promise.all([...f.deps.activeRunExecutionPromises]);
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).toHaveBeenCalledExactlyOnceWith(f.run.id, { nativeLeaseOwner: expect.any(String) });
+      const current = await f.current();
+      expect(current).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+      expect(current.runnerProfileJson?.nativeInheritedRunnerRetirement).toEqual({
+        schema: "paperclip.native-inherited-runner-retirement.v1", predecessorRunId: f.predecessorId,
+        retainedSandbox: { leaseId: f.lease.id, providerLeaseId: f.lease.providerLeaseId, remoteCwd: "/work" } });
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.find(event => event.payload?.reason === "inherited_runner_never_launched")?.payload)
+        .toMatchObject({ predecessorRunId: f.predecessorId, retainedSandbox: true });
+      // The retained sandbox lease stays the run's only lease; nothing new was acquired.
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.run.id)))
+        .toMatchObject([{ id: f.lease.id, status: "active" }]);
+      expect(f.deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
+      expect(child.alive()).toBe(true);
+    } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+  });
+
+  it("routes a run another sweep already retired to the same resume", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    try {
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.filter(event => event.payload?.reason === "inherited_runner_never_launched")).toHaveLength(1);
+    } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+  });
+
+  it("defers instead of reattaching when the retirement cannot take its locks", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const holding = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.run.issueId!)).for("update");
+      locked();
+      await released;
+    });
+    try {
+      await holding;
+      native.claims.mockClear();
+      const deferred = vi.fn();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id, onDeferredDeadline: deferred });
+      expect(deferred).toHaveBeenCalled();
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+      expect((await f.current()).processPid).toBe(child.pid);
+    } finally {
+      release(); await holder;
+      try { await f.cleanupAll(); } finally { await child.stop(); }
+    }
+  }, 30_000);
+
+  it("keeps the existing recovery path for a non-transient retirement error", async () => {
+    const failing = { transaction: async () => { throw new Error("unexpected retirement fault"); } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(failing, randomUUID())).toBe("not_applicable");
+    const lockTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("lock timeout"), { code: "55P03" }) });
+    const contended = { transaction: async () => { throw lockTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(contended, randomUUID())).toBe("transient");
+    const statementTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("statement timeout"), { code: "57014" }) });
+    const slow = { transaction: async () => { throw statementTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(slow, randomUUID())).toBe("transient");
+  });
+
+  it.each(["own_turn", "own_launch", "own_checkpoint", "no_predecessor", "pending_side_effect", "legacy_detail"] as const)(
+    "keeps verified reattachment when the run's own runner may hold work or the proof is incomplete: %s", async condition => {
+      const child = await ownedProcess();
+      const f = await inheritedRunnerRetry(child.pid, condition);
+      try {
+        native.claims.mockClear();
+        await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id });
+        await Promise.all([...f.deps.activeRunExecutionPromises]);
+        expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(true);
+        expect(f.deps.executeRun).not.toHaveBeenCalledWith(f.run.id, { nativeLeaseOwner: expect.any(String) });
+        const current = await f.current();
+        expect(current.processPid).toBe(child.pid);
+        expect(current.runnerProfileJson).not.toHaveProperty("nativeInheritedRunnerRetirement");
+      } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+    },
+  );
 
   it("routes a due plugin-task retry through its existing remote lease", async () => {
     const child = await ownedProcess();

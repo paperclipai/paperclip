@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { inspectFinalizedWorkspaceRecoveryHold, type FinalizedWorkspaceRecoveryHold } from "./finalized-workspace-recovery-migration.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { workspaceExportCauses } from "./workspace-recovery-source.js";
+import { inspectWorkspaceRecoverySource, WorkspaceSourceInspectionLimit, workspaceExportCauses } from "./workspace-recovery-source.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 
 type ReadDb = Pick<Db, "select">;
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "sourceIssueId">;
@@ -114,6 +116,31 @@ export type OnlineLegacyWorkspaceRecoveryHold = {
   preparedSource?: LegacyWorkspaceRecoverySource;
 };
 
+async function coveredHistoricalSource(db: ReadDb, workspace: Workspace, recovery: Recovery, source: LegacyWorkspaceRecoverySource) {
+  const raw = recovery.evidence.historicalWorkspaceSource;
+  if (raw == null) return true;
+  if (typeof raw !== "object" || Array.isArray(raw)) return false;
+  const historical = raw as Record<string, unknown>, ids = historical.leaseIds;
+  const covered = new Map([...(source.reference ? [source.reference] : []), ...(source.recoveryAllocations ?? [])]
+    .map(binding => [binding.leaseId, binding]));
+  if (historical.schema !== "paperclip.historical-workspace-source.v1" || historical.runId !== source.runId
+    || Object.keys(historical).some(key => !["schema", "runId", "leaseIds"].includes(key))
+    || !Array.isArray(ids) || !ids.length || ids.length > covered.size || new Set(ids).size !== ids.length
+    || ids.some(id => typeof id !== "string" || !covered.has(id))) return false;
+  try {
+    const inspected = await inspectWorkspaceRecoverySource(db as Db, { companyId: workspace.companyId,
+      issueId: source.issueId, runId: source.runId, actionId: recovery.id }, { maximumSources: covered.size });
+    const verifiedIds = new Set(inspected.sources.map(item => item.lease.id));
+    return ids.every(id => verifiedIds.has(id)) && inspected.sources.every(item => {
+      const binding = covered.get(item.lease.id);
+      return binding && binding.providerLeaseId === item.lease.providerLeaseId && binding.remoteCwd === item.remoteCwd;
+    });
+  } catch (error) {
+    if (error instanceof SystemRecoveryFailure || error instanceof WorkspaceSourceInspectionLimit) return false;
+    throw error;
+  }
+}
+
 export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input: {
   workspace: Workspace; recovery: Recovery;
 }): Promise<OnlineLegacyWorkspaceRecoveryHold | null> {
@@ -129,6 +156,30 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
   if (typeof recovery.evidence?.runId !== "string") return null;
   const settled = await settledRun(db, input.workspace, recovery.evidence.runId);
   if (!settled) return null;
+  const failureBlock = recovery.evidence.nativeFailureBlock as { runId?: unknown; statusVersion?: unknown } | undefined;
+  if (recovery.kind === "active_run_watchdog" && recovery.status === "active"
+    && ["runner_remote_provider_artifact_incompatible", "native_session_interrupted"].includes(recovery.cause) && settled.run.status === "failed"
+    && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null && settled.owner.resultId === null
+    && settled.owner.failureCode === recovery.cause && recovery.sourceIssueId === settled.run.nativeIssueId
+    && recovery.ownerType === "board" && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId
+    && recovery.wakePolicy === null && recovery.evidence.sourceFailureCode === recovery.cause
+    && recovery.evidence.recoveryDisposition === recovery.cause
+    && (recovery.cause === "native_session_interrupted"
+      ? typeof recovery.evidence.providerSessionEstablished === "boolean" && recovery.evidence.recoveryMode === "ambiguous_state"
+      : recovery.evidence.providerSessionEstablished === true && recovery.evidence.recoveryMode === "exact_checkpoint_resume")
+    && failureBlock?.runId === settled.run.id
+    && Number.isSafeInteger(failureBlock.statusVersion) && Number(failureBlock.statusVersion) > 0
+    && recovery.fingerprint === createHash("sha256").update(`${settled.run.id}:${recovery.cause}`).digest("hex")
+    && !fileKeys.filter(key => key !== "nativeFailureBlock").some(key => recovery.evidence?.[key] != null)) {
+    const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
+      executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+      eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
+    if (!task || task.status !== "blocked" || task.statusVersion !== failureBlock.statusVersion
+      || task.executionRunId !== null || task.checkoutRunId !== null) return null;
+    const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
+    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId && source.recoveryAllocations?.length)
+      return { fingerprint: fingerprint({ recovery, source, task }), finalizedHold: null, preparedSource: source };
+  }
   if (recovery.kind === "active_run_watchdog" && workspaceExportCauses.includes(recovery.cause)
     && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null
     && settled.owner.failureCode === recovery.cause && recovery.ownerType === "board"
@@ -138,6 +189,30 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
     if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId)
       return { fingerprint: fingerprint({ recovery, source }), finalizedHold: null, preparedSource: source };
+  }
+  const system = readSystemRecovery(recovery.evidence), workspaceRecovery = readWorkspaceRecovery(recovery.evidence);
+  if (recovery.kind === "active_run_watchdog" && recovery.status === "active"
+    && recovery.cause === "native_workspace_sync_out_retry_exhausted" && settled.run.status === "failed"
+    && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null && settled.owner.resultId
+    && settled.owner.failureCode === recovery.cause && settled.run.completionContractId
+    && recovery.sourceIssueId === settled.run.nativeIssueId && ["system", "board"].includes(recovery.ownerType)
+    && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId && recovery.wakePolicy === null
+    && recovery.fingerprint === nativeSha256({ runId: settled.run.id, failureCode: recovery.cause })
+    && system?.sourceRunId === settled.run.id && system.state === "exhausted" && system.nextAttemptAt === null
+    && workspaceRecovery?.runId === settled.run.id && workspaceRecovery.status === "blocked"
+    && !["workspaceRestoreRecovery", "nativeFailureBlock"].some(key => recovery.evidence?.[key] != null)) {
+    const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
+      executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+      eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
+    const [result] = await db.select().from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, input.workspace.companyId), eq(nativeRunResults.issueId, recovery.sourceIssueId),
+      eq(nativeRunResults.runId, settled.run.id), eq(nativeRunResults.id, settled.owner.resultId),
+      eq(nativeRunResults.completionContractId, settled.run.completionContractId), eq(nativeRunResults.schemaStatus, "accepted")));
+    if (!task || task.status !== "blocked" || task.executionRunId !== null || task.checkoutRunId !== null || !result) return null;
+    const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
+    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId
+      && await coveredHistoricalSource(db, input.workspace, recovery, source))
+      return { fingerprint: fingerprint({ recovery, system, workspaceRecovery, source, task, result }), finalizedHold: null, preparedSource: source };
   }
   const held = await inspectFinalizedWorkspaceRecoveryHold(db, {
     companyId: input.workspace.companyId, workspaceId: input.workspace.id, recovery,

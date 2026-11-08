@@ -19,6 +19,7 @@ import {
   workspaceOperationService,
   workspaceRuntimeControlOwnerIdForTests,
 } from "../services/workspace-operations.js";
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { getWorkspaceOperationLogStore } from "../services/workspace-operation-log-store.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -124,7 +125,8 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
   async function seedRunningStart(input: {
     companyId: string;
     executionWorkspaceId: string;
-    owner?: { ownerId: string; pid: number; heartbeatAt: Date };
+    /** hostHash defaults to this process's PID space; null omits it (a legacy stamp). */
+    owner?: { ownerId: string; pid: number; heartbeatAt: Date; hostHash?: string | null };
     withLog?: boolean;
     startedAt?: Date;
     /**
@@ -157,6 +159,7 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
               runtimeControlOwner: {
                 ownerId: input.owner.ownerId,
                 pid: input.owner.pid,
+                ...(input.owner.hostHash === null ? {} : { hostHash: input.owner.hostHash ?? currentProcessSpaceHash() }),
                 action: "start",
                 heartbeatAt: input.owner.heartbeatAt.toISOString(),
               },
@@ -202,6 +205,25 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
     await expect(
       service.assertRuntimeControlAvailable({ executionWorkspaceId, action: "stop" }),
     ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space"],
+    ["an unreadable PID space", "unknown"],
+    ["a stamp with no recorded PID space", null],
+  ] as const)("never treats a dead local pid as proof for an owner on %s", async (_name, hostHash) => {
+    const { executionWorkspaceId } = await seedWorkspace().then(async (seeded) => {
+      await seedRunningStart({ ...seeded,
+        owner: { ownerId: randomUUID(), pid: 4_194_303, heartbeatAt: new Date(), hostHash } });
+      return seeded;
+    });
+    const service = workspaceOperationService(db);
+    // Unprovable: inside the staleness window the operation stays live.
+    await expect(service.reconcileStaleRuntimeControlOperations(executionWorkspaceId)).resolves.toEqual({
+      reconciled: 0, operationIds: [] });
+    // Its existing TTL still applies once the owner's heartbeat lapses.
+    await expect(service.reconcileStaleRuntimeControlOperations(executionWorkspaceId, {
+      now: new Date(Date.now() + 60 * 60_000) })).resolves.toMatchObject({ reconciled: 1 });
   });
 
   it("refuses to steal a start whose owning process is still alive inside the staleness window", async () => {

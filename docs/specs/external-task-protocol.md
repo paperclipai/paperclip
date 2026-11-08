@@ -732,9 +732,10 @@ Profile requirements:
 
 ### 9.4 Workspaces
 
-Per-issue isolation is provided by host execution workspaces/worktrees keyed by issue. Links and
-follow-up issues that must share a checkout use host workspace-inheritance
-(`inheritExecutionWorkspaceFromIssueId`); the connector never manages filesystem workspaces.
+Per-issue isolation is provided by host execution workspaces/worktrees keyed by issue. Follow-up
+issues can inherit the source issue's project and workspace strategy
+(`inheritExecutionWorkspaceFromIssueId`), but each gets its own workspace; code carries over through
+pushed branches, not a shared checkout. The connector never manages filesystem workspaces.
 
 ### 9.5 Workflow Policy
 

@@ -5,11 +5,12 @@ import { isUserCommentContinuationReason } from "../explicit-native-continuation
 import { requestTaskRetry } from "../task-retry.js";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH } from "../native-runtime/remote-recovery-lease-mismatch.js";
 
 /** Reattachment could not find the run's original runner or allocation: the
  * sandbox lease or plugin task is gone, or the remote runner process is not
  * there to verify. This is infrastructure, not the task's own failure. */
-const REATTACHMENT_LOST_ERRORS = ["native_remote_recovery_lease_mismatch", "native_plugin_recovery_lease_mismatch",
+const REATTACHMENT_LOST_ERRORS = [NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, "native_plugin_recovery_lease_mismatch",
   "runner_remote_process_identity_unavailable", "runner_continuity_break_archive_failed"];
 
 /** A failure message is one of the closed codes, optionally followed by

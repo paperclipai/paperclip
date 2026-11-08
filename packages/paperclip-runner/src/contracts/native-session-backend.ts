@@ -201,7 +201,8 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
-  attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
+  /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
+  attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */

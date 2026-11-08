@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { inspectImportedWorkspaceSourcePaths, inspectOnlineOrdinarySource, physicalPath, requiresOnlineOrdinarySource, type WorkspaceSourceScope } from "./remote-workspace-migration-tree.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
-import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
+import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitLinkedRoots, readWorkspaceGitSourceRoots, type WorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceRecoverySource, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import type { LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { hasPendingGitExpiration } from "./git-workspace-expiration.js";
@@ -65,36 +66,75 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const cwd = workspace.cwd ?? workspace.providerRef;
   if (!cwd || !path.isAbsolute(cwd) || !["local_fs", "git_worktree"].includes(workspace.providerType)) return null;
   const ordinary = await inspectOnlineOrdinarySource(db, workspace);
+  let nestedGit: WorkspaceGitSourceRoots[] = [];
   if (ordinary) {
     const marker = await fs.lstat(path.join(ordinary.root, ".git")).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error; return null;
     });
-    if (!marker) return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
+    if (!marker) {
+      try { nestedGit = await readNestedWorkspaceGitSourceRoots(ordinary.root); } catch { return null; }
+      if (!nestedGit.length) return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
+    }
   }
   let selected: Identities;
-  try { selected = await workspaceSourceIdentities(workspace.companyId, cwd); } catch { return null; }
-  if (!selected.git || selected.git.root !== await physicalPath(cwd) || selected.unownedPaths.length || !workspace.sourceIssueId
+  try {
+    selected = nestedGit.length && ordinary ? { projectIds: ordinary.projectId ? [ordinary.projectId] : [],
+      issueIds: [...ordinary.issueIds], unownedPaths: [], git: null } : await workspaceSourceIdentities(workspace.companyId, cwd);
+    for (const source of nestedGit) {
+      const nested = await workspaceSourceIdentities(workspace.companyId, source.root);
+      if (!nested.git || nested.git.fingerprint !== source.fingerprint) return null;
+      selected.projectIds = [...new Set([...selected.projectIds, ...nested.projectIds])].sort();
+      selected.issueIds = [...new Set([...selected.issueIds, ...nested.issueIds])].sort();
+      selected.unownedPaths = [...new Set([...selected.unownedPaths, ...nested.unownedPaths])].sort();
+    }
+  } catch { return null; }
+  const captureRoot = await physicalPath(cwd), gitSources = selected.git ? [selected.git] : nestedGit;
+  if (!gitSources.length || selected.git && selected.git.root !== captureRoot || selected.unownedPaths.length || !workspace.sourceIssueId
     || workspace.cwd && workspace.providerRef && workspace.cwd !== workspace.providerRef) return null;
-  const head = await fs.lstat(path.join(selected.git.gitDirectory.path, "HEAD")).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error; return null;
-  });
-  if (!head || !head.isFile() && !head.isSymbolicLink()) return null;
+  for (const source of gitSources) {
+    const head = await fs.lstat(path.join(source.gitDirectory.path, "HEAD")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error; return null;
+    });
+    if (!head || !head.isFile() && !head.isSymbolicLink()) return null;
+  }
+  const linkedSources = new Map<string, Awaited<ReturnType<typeof readWorkspaceGitLinkedRoots>>[number]>();
+  try {
+    for (const source of gitSources) {
+      for (const proof of await readWorkspaceGitLinkedRoots(source)) {
+        const existing = linkedSources.get(proof.commonDirectory.path);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(proof)) return null;
+        linkedSources.set(proof.commonDirectory.path, proof);
+      }
+    }
+    for (const proof of linkedSources.values()) {
+      for (const link of proof.links) {
+        const linked = await workspaceSourceIdentities(workspace.companyId, link.root.path);
+        if (!linked.git || linked.git.gitDirectory.path !== link.gitDirectory.path) return null;
+        selected.projectIds = [...new Set([...selected.projectIds, ...linked.projectIds])].sort();
+        selected.issueIds = [...new Set([...selected.issueIds, ...linked.issueIds])].sort();
+        selected.unownedPaths = [...new Set([...selected.unownedPaths, ...linked.unownedPaths])].sort();
+      }
+    }
+  } catch { return null; }
+  if (selected.unownedPaths.length) return null;
+  const selectedFingerprint = createHash("sha256").update(JSON.stringify([gitSources, [...linkedSources.values()]])).digest("hex");
   const entry = await fs.lstat(cwd);
   const rows = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, workspace.companyId),
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]))).orderBy(executionWorkspaces.id).limit(1001);
   if (rows.length > 1000) return null;
-  const nodes: Array<{ row: Workspace; identities: Identities }> = [];
+  const nodes: Array<{ row: Workspace; identities: Identities; fingerprint: string | null }> = [];
   for (const row of rows) {
     const paths = localWorkspaceSourcePaths(row);
     if (!paths.length || paths.some(cwd => !path.isAbsolute(cwd))) return null;
     try {
-      const identities = await workspaceSourceIdentities(workspace.companyId, paths[0]);
+      const identities = paths[0] === captureRoot ? { ...selected, projectIds: [...selected.projectIds], issueIds: [...selected.issueIds] }
+        : await workspaceSourceIdentities(workspace.companyId, paths[0]);
       for (const cwd of paths.slice(1)) {
         const alternate = await workspaceSourceIdentities(workspace.companyId, cwd);
         identities.projectIds = [...new Set([...identities.projectIds, ...alternate.projectIds])].sort();
         identities.issueIds = [...new Set([...identities.issueIds, ...alternate.issueIds])].sort();
       }
-      nodes.push({ row, identities });
+      nodes.push({ row, identities, fingerprint: paths[0] === captureRoot ? selectedFingerprint : identities.git?.fingerprint ?? null });
     } catch { return null; }
   }
   const projectIds = new Set(selected.projectIds), physicalIssueIds = new Set(selected.issueIds), aliases = new Set<string>();
@@ -128,6 +168,9 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   if (!aliases.has(workspace.id) || aliases.size > 256) return null;
   const included = nodes.filter(node => aliases.has(node.row.id));
+  const registeredRoots = await Promise.all(included.flatMap(node => localWorkspaceSourcePaths(node.row)).map(physicalPath));
+  if ([...linkedSources.values()].some(proof => proof.links.some(link => !registeredRoots.some(root =>
+    link.root.path === root || link.root.path.startsWith(root + path.sep))))) return null;
   const issueIds = [...new Set([...physicalIssueIds, ...included.map(node => node.row.sourceIssueId!)])].sort();
   if (issueIds.length + projectIds.size > 128) return null;
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
@@ -179,11 +222,11 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     if (proof.sources.length) settledPreparedWorkspaceIds.push(proof.workspaceId);
     for (const id of proof.recoveryIssueIds) settledRecoveryIssueIds.add(id);
   }
-  return { kind: "git", root: selected.git.root, projectId: null, projectIds: [...projectIds].sort(), issueIds,
+  return { kind: "git", root: captureRoot, projectId: null, projectIds: [...projectIds].sort(), issueIds,
     workspaceIds: [...aliases].sort(), device: entry.dev, inode: entry.ino, gitSourceRoots, companions,
     physicalRoots: included.flatMap(node => localWorkspaceSourcePaths(node.row)).sort(),
     settledPreparedWorkspaceIds: settledPreparedWorkspaceIds.sort(), settledRecoveryIssueIds: [...settledRecoveryIssueIds].sort(),
     settledFinalizationRunIds: [...new Set(companions.flatMap(proof => proof.sources.map(source => source.runId)))].sort(),
-    gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.identities.git?.fingerprint ?? null })), importedChildren,
+    gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.fingerprint })), importedChildren,
   };
 }

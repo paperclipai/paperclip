@@ -45,6 +45,7 @@ import {
   type DurableRecoveryIdentity,
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
+import { crashPoint } from "../crash-point.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -305,6 +306,8 @@ export interface DurablePrpControlPlaneOptions {
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  /** Diagnostic only: called synchronously after each runner connection is authenticated. */
+  onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
 
@@ -2035,6 +2038,7 @@ export class DurablePrpControlPlane {
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
+  #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
@@ -2093,6 +2097,7 @@ export class DurablePrpControlPlane {
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
+    this.#onAuthenticatedConnection = options.onAuthenticatedConnection;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
@@ -3773,6 +3778,7 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    try { this.#onAuthenticatedConnection?.(); } catch { /* Diagnostics never change admission. */ }
     this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
@@ -4025,9 +4031,12 @@ export class DurablePrpControlPlane {
       this.#ackWarmTransition(connection, receipt);
       return;
     }
+    const turnStart = command.type === "turn.start";
+    if (turnStart) crashPoint("runner.turn_start.after_runner_accept_before_controller_checkpoint");
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
+    if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
     this.#ackTerminalCommandResult(connection, command);
     this.#releaseServingLifecycle(connection, command);
     if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
