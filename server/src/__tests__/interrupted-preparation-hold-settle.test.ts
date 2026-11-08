@@ -161,6 +161,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
       interruptedPreparation({ holdEvidence: { ownerGoneAttestation: { actorId: "board-user" } } })],
     ["the user already continued", async () =>
       interruptedPreparation({ holdEvidence: { explicitUserContinuation: { actorId: "board-user" } } })],
+    ["it is a workspace-restore hold owned by restore recovery", async () =>
+      interruptedPreparation({ holdEvidence: { workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [] } } })],
   ] as const)("keeps the hold when %s", async (_label, arrange) => {
     const f = await arrange();
     const before = await hold(f.holdId);
@@ -169,6 +172,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
   });
 
   it("settles exactly once when two processes judge the same hold", async () => {
+    heartbeatService(db);
     const f = await interruptedPreparation();
     const record = { recordId: f.runId, companyId, runId: f.runId, issueId: f.issueId, owner: { kind: "none" as const },
       updatedAt: null };

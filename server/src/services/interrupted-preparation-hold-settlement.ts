@@ -19,7 +19,8 @@ import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js
  *
  * Only holds the system recorded itself are listed: an operator decision (an
  * owner-gone attestation, an explicit user continuation, an assigned owner) is
- * never reopened. A run with a lease still cleaning up is not listed yet; the
+ * never reopened, and a workspace-restore hold (restore failure or recovery
+ * evidence) belongs to restore recovery, not to this kind. A run with a lease still cleaning up is not listed yet; the
  * next pass lists it once the lease settles.
  */
 export function heldInterruptedPreparationWhere() {
@@ -31,7 +32,8 @@ export function heldInterruptedPreparationWhere() {
       and hold.status = 'resolved' and hold.outcome = 'blocked' and hold.owner_user_id is null
       and hold.evidence->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'
       and hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
-      and not (hold.evidence ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation']))`,
+      and not (hold.evidence ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation',
+        'workspaceRestoreFailure', 'workspaceRestoreRecovery']))`,
     sql`not exists (select 1 from environment_leases lease where lease.company_id = ${heartbeatRuns.companyId}
       and lease.heartbeat_run_id = ${heartbeatRuns.id}
       and (lease.released_at is null or lease.status = 'pending_cleanup' or lease.cleanup_status = 'failed'))`);
@@ -66,19 +68,19 @@ export async function settleHeldInterruptedPreparation(db: Db, record: InProgres
   if (!await isInterruptedNativePreparation(db, run)) {
     return { settled: false, reason: "provider_work_not_disproved", watch: false };
   }
+  // Settling without the resume path would leave the task with no successor;
+  // keep the hold for a process that runs the heartbeat service.
+  if (!heldPreparationResumer) return { settled: false, reason: "resume_path_unavailable" };
   let resolved = 0;
   await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false, proof: context.proof.reason,
     onHoldsResolved: count => { resolved = count; } });
   if (resolved === 0) return { settled: false, reason: "hold_changed_since_proof" };
   // Only the call that resolved the hold starts the replay, so it starts once.
-  // Without a registered resumer (no heartbeat service in this process), the
-  // pending continuation stays recorded for the next resume of this run.
-  if (heldPreparationResumer) {
-    await heldPreparationResumer({ companyId: record.companyId, runId: run.id }).catch(error => {
-      // The hold is settled either way; its pending continuation stays recorded
-      // for the next resume of this run (a wake, a cleanup completion).
-      logger.warn({ err: error, runId: run.id }, "settled interrupted preparation could not schedule its replay");
-    });
-  }
+  await heldPreparationResumer({ companyId: record.companyId, runId: run.id }).catch(error => {
+    // The hold is settled; its pending continuation stays recorded, and the
+    // run's next resume (a wake or a cleanup completion) delivers it, as on
+    // the run-control path. Logged so a stuck replay is visible.
+    logger.warn({ err: error, runId: run.id }, "settled interrupted preparation could not schedule its replay");
+  });
   return { settled: true, reason: context.proof.reason };
 }
