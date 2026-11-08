@@ -115,6 +115,8 @@ export class ChaosSupervisor {
   private crashPointControl: CrashPointControl | null = null;
   /** Called with the receipt of a crash-point self-kill once the replacement is ready (or failed). */
   onCrashPoint: ((receipt: FaultReceipt) => void) | null = null;
+  /** Crash-point suite: keep the control plane down this long after a self-kill (a K4-style hold). */
+  crashPointHoldMs = 0;
 
   private constructor(readonly repositoryRoot: string, readonly port: number, readonly paths: SupervisorPaths,
     private readonly timeline: Timeline) {
@@ -302,7 +304,8 @@ export class ChaosSupervisor {
     this.faultCount += 1;
     const now = Date.now();
     const receipt: FaultReceipt = {
-      faultId: `f${String(this.faultCount).padStart(2, "0")}`, kind: "K1", requestedBy: "crash-point", signal: "SIGKILL", holdMs: 0,
+      faultId: `f${String(this.faultCount).padStart(2, "0")}`, kind: this.crashPointHoldMs ? "K4" : "K1", requestedBy: "crash-point",
+      signal: "SIGKILL", holdMs: this.crashPointHoldMs,
       loadAvg1m: Math.round(os.loadavg()[0]! * 100) / 100, crashPoint: hit,
       requestedAt: now, startedAt: now, stoppedAt: null, restartedAt: null, healthyAt: null, readyAt: null,
       phases: [], serverLogOffsetAtStart: this.serverLogOffset(), serverLogOffsetAtReady: null, error: null,
@@ -322,6 +325,10 @@ export class ChaosSupervisor {
         if (this.child === previous) this.child = null;
         await this.waitForHealthToStop();
         receipt.stoppedAt = Date.now();
+        if (this.crashPointHoldMs) {
+          this.timeline.add("crash_point_hold", { faultId: receipt.faultId, holdMs: this.crashPointHoldMs });
+          await delay(this.crashPointHoldMs);
+        }
         receipt.restartedAt = Date.now();
         const child = await this.spawnServer();
         receipt.healthyAt = await this.waitForHealth(child, receipt.phases);

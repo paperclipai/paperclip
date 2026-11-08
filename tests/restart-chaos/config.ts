@@ -90,13 +90,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       lifecycle: { type: "string" },
       "k4-hold-max-seconds": { type: "string" },
       "crash-point": { type: "string" },
+      "crash-point-hold-ms": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -149,7 +150,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     ...(values["k4-hold-max-seconds"] !== undefined
       ? { k4HoldMaxMs: integer(values["k4-hold-max-seconds"], "k4-hold-max-seconds", 300, 120, 600) * 1000 } : {}),
     ...(crashPoint ? { crashPoint } : {}),
+    ...(crashPoint && values["crash-point-hold-ms"] !== undefined
+      ? { crashPointHoldMs: integer(values["crash-point-hold-ms"], "crash-point-hold-ms", 0, 0, 600_000) } : {}),
   };
+  if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
