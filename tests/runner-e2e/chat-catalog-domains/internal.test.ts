@@ -650,6 +650,25 @@ describe("delegated attachment context calibration", () => {
     const o = valid("tasks.attachment-brief"); Object.assign(o, { workerDownloadedHash: "b".repeat(64) });
     expect(gradeInternal(o).passed).toBe(false);
   });
+  const inlineBrief = "# Acorn Field Notes\nBuild a simple accessible website.\nUse headline: Research without the busywork.\nOffer early signup with invitation code ORCHID-n1.\n";
+  const inlined = (description: string, workerReadInlineBrief = true) => {
+    const o = valid("tasks.attachment-brief"); o.state.briefBody = inlineBrief; o.tasks[0]!.description = description.slice(0, 40);
+    Object.assign(o, { workAttachments: [], durablePath: undefined, workerDownloadStatus: undefined, workerDownloadedHash: undefined,
+      workDescription: description, workerReadInlineBrief });
+    return o;
+  };
+  it("accepts the complete exact brief copied into the full saved task that Morgan reads", () => {
+    const filler = "Acceptance criteria follow. ".repeat(60);
+    expect(gradeInternal(inlined(`${filler}\n\nBRIEF (verbatim):\n${inlineBrief}`)).passed).toBe(true);
+    expect(gradeInternal(inlined(`Brief:\r\n${inlineBrief.split("\n").map(line => `> ${line}`).join("\r\n")}`)).passed).toBe(true);
+    expect(gradeInternal(inlined(`Ship a marketing site.\n\`\`\`md\n${inlineBrief}\`\`\``)).passed).toBe(true);
+  });
+  it("rejects a paraphrased, partial or Morgan-unreadable inline brief", () => {
+    expect(gradeInternal(inlined("Build a site for research teams with headline Research without the busywork and code ORCHID-n1.")).passed).toBe(false);
+    expect(gradeInternal(inlined(inlineBrief.split("\n").slice(0, 3).join("\n"))).passed).toBe(false);
+    expect(gradeInternal(inlined(`Use website-brief.md from the chat.`)).passed).toBe(false);
+    expect(gradeInternal(inlined(inlineBrief, false)).passed).toBe(false);
+  });
 });
 
 describe("governed completion calibration", () => {

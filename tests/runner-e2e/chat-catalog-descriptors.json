@@ -5784,7 +5784,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-query-attachments.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.attachment-brief.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,
