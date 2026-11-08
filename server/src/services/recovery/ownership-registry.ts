@@ -34,6 +34,7 @@ import {
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -842,16 +843,34 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   recoveryActionKind("system_recovery_attempt", "System recovery attempt for retained work", "workspace_preservation",
     sql`${issueRecoveryActions.evidence}->'systemRecovery'->>'state' in ('scheduled', 'running', 'awaiting_evidence')`,
     () => ({ kind: "none" })),
-  recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
-    sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
-    row => {
-      const owner = json(json(json(row.evidence).workspaceOwnerRecovery).owner);
-      const pid = int(owner.pid);
-      // The receipt records a hostname but no PID space: unprovable by design.
-      return pid ? { kind: "process", stamp: { kind: "local", scope: "copyback_owner_hold", generation: null,
-        host: str(owner.hostname), processSpace: null, bootId: str(owner.controllerBootId), pid,
-        processStartedAt: str(owner.processStartedAt), processGroupId: null } } : { kind: "none" };
-    }),
+  {
+    // Shared path since Phase 2: receipts record their PID space, so the shared
+    // prover judges the owner (older receipts name none and stay unprovable).
+    // A proven-gone owner wakes the waiting recheck; the worker still proves the
+    // copyback process group before it takes ownership, so this never settles
+    // the hold itself.
+    ...recoveryActionKind("copyback_owner_hold", "Copyback-owner hold (RC-50)", "ownership",
+      sql`${issueRecoveryActions.evidence}->'workspaceOwnerRecovery'->>'state' = 'operator_required'`,
+      row => {
+        const owner = json(json(json(row.evidence).workspaceOwnerRecovery).owner);
+        const pid = int(owner.pid);
+        const hostname = str(owner.hostname);
+        const processStartedAt = str(owner.processStartedAt);
+        if (!pid || !hostname || !processStartedAt) return { kind: "none" };
+        return { kind: "process", stamp: { ...copybackOwnerStamp({ hostname, pid, processStartedAt,
+          ...(str(owner.controllerBootId) ? { controllerBootId: str(owner.controllerBootId)! } : {}),
+          ...(str(owner.hostHash) ? { hostHash: str(owner.hostHash)! } : {}) }), scope: "copyback_owner_hold" } };
+      }),
+    settle: async (db, record, context) => {
+      if (record.owner.kind !== "process" || !record.companyId) return { settled: false, reason: "owner_not_provable" };
+      const { wakeCopybackOwnerRecheck } = await import("../workspace-recovery.js");
+      const stamp = record.owner.stamp;
+      const woke = await wakeCopybackOwnerRecheck(db, { companyId: record.companyId, actionId: record.recordId,
+        now: context.now, owner: { pid: stamp.pid, processStartedAt: stamp.processStartedAt, bootId: stamp.bootId,
+          processSpace: stamp.processSpace } });
+      return { settled: false, reason: woke ? "copyback_recheck_woken" : "copyback_recheck_not_waiting" };
+    },
+  },
   recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
     sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
     row => {
