@@ -56,3 +56,16 @@ it("reads task links saved in the reply even before they render", () => {
   expect(replyLinkHrefs("Discard it on [RUN-1](/RUN/issues/RUN-1).", [])).toEqual(["/RUN/issues/RUN-1"]);
   expect(replyLinkHrefs("Discard it on RUN-1.", [])).toEqual([]);
 });
+it("rejects a native prompt that carries other comments but not the direction comment, raw or JSON-escaped", () => {
+  const body = "New direction.\n\n- Remove the contact section.\n- Keep the font guidance.";
+  const other = "I have changed my mind: add a contact section.\nKeep the font requirement.";
+  const prompt = `{"messages":[{"body":${JSON.stringify(other)}}]}\n${other}`;
+  expect(promptCarries(prompt, body)).toBe(false);
+  // A prefix of the direction is not the direction.
+  expect(promptCarries(`{"body":${JSON.stringify("New direction.\n\n- Remove the contact section.")}}`, body)).toBe(false);
+  expect(promptCarries(prompt, "")).toBe(false);
+});
+it("rejects an unbound later worker in the grade when its prompt lacks the direction", () => {
+  const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
+  expect(gradeDiscard(o).passed).toBe(false);
+});

@@ -15,7 +15,7 @@ import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime
 const contactText = "Also add a contact section to the website.";
 /** Native prompts embed task comments as JSON, so a multi-line body appears with escaped newlines. */
 export function promptCarries(prompt: string | undefined, body: string) {
-  return !!prompt && (prompt.includes(body) || prompt.includes(JSON.stringify(body).slice(1, -1)));
+  return !!prompt && body.trim().length > 0 && (prompt.includes(body) || prompt.includes(JSON.stringify(body).slice(1, -1)));
 }
 /** Links the reply saved in Markdown, plus links already rendered when the reply was observed. */
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
