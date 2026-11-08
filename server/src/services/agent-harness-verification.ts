@@ -155,7 +155,8 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }
       : await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
-    let probedAccount: { connectionId: string; grantId: string } | null = null;
+    // A holder, so the account the probe callback records survives control-flow narrowing.
+    const probed: { account: { connectionId: string; grantId: string } | null } = { account: null };
     try {
       if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });
       const input = { companyId: agent.companyId, adapterType: agent.adapterType, config,
@@ -163,7 +164,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const result = binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },
         managed => {
           // The account this probe actually uses; the recorded digest must describe it.
-          probedAccount = { connectionId: managed.attribution.connectionId, grantId: managed.attribution.grantId };
+          probed.account = { connectionId: managed.attribution.connectionId, grantId: managed.attribution.grantId };
           return tests.testManagedEnvironment(agent.adapterType, { ...input, config: managed.config }, binding!, managed, agent.id);
         })
         : await requireServerAdapter(agent.adapterType).testEnvironment(input);
@@ -178,8 +179,8 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         row.id === credentialVersions[index]!.id && row.aiSessionEpoch === credentialVersions[index]!.aiSessionEpoch);
       // The managed probe selects the account again when it starts. Record the
       // pass only for the account it actually tested.
-      const sameAccount = !selected || (probedAccount?.connectionId === selected.attribution.connectionId
-        && probedAccount?.grantId === selected.attribution.grantId);
+      const sameAccount = !selected || (probed.account?.connectionId === selected.attribution.connectionId
+        && probed.account?.grantId === selected.attribution.grantId);
       const verifiedDigest = digest && sameEpochs && sameAccount
         ? harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(verifiedVersions), environmentId, runner })
         : null;
