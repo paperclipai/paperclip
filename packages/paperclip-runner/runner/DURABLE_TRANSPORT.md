@@ -219,7 +219,10 @@ the Runner records a diagnostic, replies `conflict`, and stays unparked with its
 controller connection. The Launcher then keeps its wake hold. The default hook
 is the executor's ordinary `shutdown`. Native Codex and ACPX run that shutdown
 and then re-arm the restore that a fresh Runner performs on its first command.
-Their saved provider state is unchanged. The Runner process stays resident with
+Their saved provider state is unchanged. A shutdown can fail after the process
+tree already stopped, for example when the ACPX close reply fails. The park is
+still refused, but the executor drops the stopped handle and re-arms the same
+restore, so later work resumes the saved session. The Runner process stays resident with
 its durable state and journals. It drops its controller connection and
 credentials and blocks on host control without provider polling. Ordinary
 reconnect grace does not expire a parked Runner. The configured process lifetime
@@ -230,8 +233,9 @@ It resumes authenticated PRP under the retained authority; ordinary `run.attach`
 must still establish the next authority before new work. Pending reconnect and
 live commands both reject execution before that attachment; snapshots, drain,
 and cleanup remain available. Replaying the same claim returns its acknowledgement without consuming another ticket.
-The provider stays stopped, and the Runner does not poll it, until it admits
-the first command after the claim. That command, usually the warm-attachment
+The provider stays stopped, and the Runner does not poll it, until a command
+after the claim reaches the executor. A replayed command result does not count.
+That command, usually the warm-attachment
 snapshot or `run.attach`, starts the provider again on the saved session:
 Codex resumes its thread with `thread/resume` and ACPX loads its session. ACPX
 still replaces that sidecar during `run.attach`, as it does after any restore. A

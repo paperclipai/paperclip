@@ -855,6 +855,7 @@ pub struct CodexProvider {
     runtime_request_scope: [u8; 16],
     next_runtime_request_sequence: u64,
     expected_shutdown: bool,
+    process_terminated: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
     observed_completed_turn_authority: Option<CompletedTurnAuthority>,
@@ -1286,6 +1287,7 @@ impl CodexProvider {
             runtime_request_scope,
             next_runtime_request_sequence: 1,
             expected_shutdown: false,
+            process_terminated: false,
             process_generation,
             completed_turn_authority: None,
             observed_completed_turn_authority: None,
@@ -3768,16 +3770,17 @@ impl CodexProvider {
         } else {
             Ok(())
         };
-        let result = self
-            .process
-            .terminate_group()
-            .map(|_| ())
-            .and(remote_termination)
-            .and(cancellation);
+        let terminated = self.process.terminate_group().map(|_| ());
+        self.process_terminated = terminated.is_ok();
+        let result = terminated.and(remote_termination).and(cancellation);
         if let Some(trace) = self.trace.as_mut() {
             trace.finish();
         }
         result
+    }
+
+    pub(crate) fn process_terminated(&self) -> bool {
+        self.process_terminated
     }
 
     pub(crate) fn provider_termination_receipt(&self) -> Option<&Value> {
@@ -5202,6 +5205,26 @@ done
         provider.deliver_tool_rejection(&rejection).unwrap();
         assert!(provider.pending_tool_requests.is_empty());
         assert!(provider.completed_tool_call_ids.contains("denied-call"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_records_a_completed_process_stop_when_a_courtesy_reply_fails() {
+        let mut provider = completion_tail_provider();
+        provider.config.provider = "opencode".to_owned();
+        provider.pending_tool_requests.insert(
+            "pending-call".to_owned(),
+            PendingToolRequest {
+                rpc_id: json!(92),
+                operation_id: "pending-operation".to_owned(),
+                input: json!({}),
+                retained_bytes: 0,
+            },
+        );
+        provider.process.terminate_group_immediately().unwrap();
+        assert!(!provider.process_terminated());
+        assert!(provider.shutdown().is_err());
+        assert!(provider.process_terminated());
     }
 
     #[cfg(unix)]

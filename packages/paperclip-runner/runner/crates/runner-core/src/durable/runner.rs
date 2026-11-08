@@ -922,9 +922,18 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 connection.protocol_version,
             )?;
             #[cfg(unix)]
-            admit_host_claim(host_control.as_mut(), &command, next_authority.as_ref())?;
-            let (result, lifecycle) =
-                process_command(&mut state, &store, &config, &mut executor, &command)?;
+            admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
+            let mut executed = false;
+            let (result, lifecycle) = process_admitted_command(
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                &command,
+                &mut executed,
+            )?;
+            #[cfg(unix)]
+            resume_stopped_provider(host_control.as_mut(), executed);
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
             if let Some(durable_lifecycle) = lifecycle.durable_state() {
                 persist_lifecycle_before_command_delivery(
@@ -1230,9 +1239,18 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         connection.protocol_version,
                     )?;
                     #[cfg(unix)]
-                    admit_host_claim(host_control.as_mut(), &command, next_authority.as_ref())?;
-                    let (result, lifecycle) =
-                        process_command(&mut state, &store, &config, &mut executor, &command)?;
+                    admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
+                    let mut executed = false;
+                    let (result, lifecycle) = process_admitted_command(
+                        &mut state,
+                        &store,
+                        &config,
+                        &mut executor,
+                        &command,
+                        &mut executed,
+                    )?;
+                    #[cfg(unix)]
+                    resume_stopped_provider(host_control.as_mut(), executed);
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
                     if let Some(durable_lifecycle) = lifecycle.durable_state() {
                         persist_lifecycle_before_command_delivery(
@@ -1425,14 +1443,11 @@ enum HostAction {
 
 #[cfg(unix)]
 fn admit_host_claim(
-    control: Option<&mut HostedRunnerControl>,
+    control: Option<&HostedRunnerControl>,
     command: &Command,
     next_authority: Option<&DurableRunnerConfig>,
 ) -> Result<(), DurableRunnerError> {
-    let Some(control) = control else {
-        return Ok(());
-    };
-    if control.claiming.is_some()
+    if control.is_some_and(|control| control.claiming.is_some())
         && !(matches!(
             command.command_type.as_str(),
             "session.snapshot"
@@ -1446,8 +1461,14 @@ fn admit_host_claim(
             "claimed Runner requires authority attachment before execution",
         ));
     }
-    control.provider_stopped = false;
     Ok(())
+}
+
+#[cfg(unix)]
+fn resume_stopped_provider(control: Option<&mut HostedRunnerControl>, executed: bool) {
+    if let Some(control) = control.filter(|_| executed) {
+        control.provider_stopped = false;
+    }
 }
 
 #[cfg(unix)]
@@ -2334,6 +2355,17 @@ fn process_command<E: CommandExecutor>(
     executor: &mut E,
     command: &Command,
 ) -> Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError> {
+    process_admitted_command(state, store, config, executor, command, &mut false)
+}
+
+fn process_admitted_command<E: CommandExecutor>(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+    command: &Command,
+    executed: &mut bool,
+) -> Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError> {
     if let Some(pending) = state.pending_provider_cleanup.as_ref() {
         let fresh_stop =
             command.command_type == "turn.stop" && command.controller_seq > pending.controller_seq;
@@ -2379,6 +2411,7 @@ fn process_command<E: CommandExecutor>(
     // in the effect window, recovery remains indeterminate unless the provider
     // explicitly supports exact, idempotent semantic result delivery above.
     store.save(state)?;
+    *executed = true;
     let mut execution = match executor.execute(command) {
         Ok(execution) => execution,
         Err(error) => {
@@ -3157,13 +3190,13 @@ mod tests {
             exchange(&claim, &mut state, &mut control, &mut executor, false).0,
             HostAction::None
         ));
-        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_err());
-        assert!(admit_host_claim(Some(&mut control), &command("session.snapshot"), None).is_ok());
-        assert!(admit_host_claim(Some(&mut control), &command("run.attach"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
         let mut next_authority = config.clone();
         next_authority.run_id = "next-run".to_owned();
         assert!(admit_host_claim(
-            Some(&mut control),
+            Some(&control),
             &command("run.attach"),
             Some(&next_authority)
         )
@@ -3224,6 +3257,7 @@ mod tests {
             .1["status"],
             "conflict"
         );
+        resume_stopped_provider(Some(&mut control), true);
         executor.ready = false;
         assert_eq!(
             exchange(
@@ -3240,7 +3274,7 @@ mod tests {
         executor.ready = true;
         // Simulate completed run.attach before a later exact parked cut.
         control.claiming = None;
-        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_ok());
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
         let mut next_park = park.clone();
         next_park["id"] = json!("park-2");
         assert!(matches!(
@@ -3380,22 +3414,53 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn hosted_claim_keeps_the_stopped_provider_idle_until_a_command_is_admitted() {
+    fn hosted_claim_keeps_the_stopped_provider_idle_until_a_command_executes() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-host-claim-replay-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let mut state = DurableState::new(&config);
+        let mut executor = CountingExecutor { calls: 0 };
         let (socket, _host) = std::os::unix::net::UnixStream::pair().unwrap();
         let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
         control.provider_stopped = true;
         control.claiming = Some(("park-1".to_owned(), "claim-1".to_owned()));
-        assert!(admit_host_claim(Some(&mut control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        let snapshot = command("session.snapshot");
+        admit_host_claim(Some(&control), &snapshot, None).unwrap();
         assert!(provider_stopped(Some(&control)));
-        let mut next_authority = config(PathBuf::from("unused"));
-        next_authority.run_id = "next-run".to_owned();
-        admit_host_claim(
-            Some(&mut control),
-            &command("run.attach"),
-            Some(&next_authority),
+        let mut executed = false;
+        process_admitted_command(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            &snapshot,
+            &mut executed,
         )
         .unwrap();
+        assert!(executed);
+        assert_eq!(executor.calls, 1);
+        control.provider_stopped = true;
+        let mut executed = false;
+        process_admitted_command(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            &snapshot,
+            &mut executed,
+        )
+        .unwrap();
+        assert!(!executed);
+        assert_eq!(executor.calls, 1);
+        resume_stopped_provider(Some(&mut control), executed);
+        assert!(provider_stopped(Some(&control)));
+        resume_stopped_provider(Some(&mut control), true);
         assert!(!provider_stopped(Some(&control)));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

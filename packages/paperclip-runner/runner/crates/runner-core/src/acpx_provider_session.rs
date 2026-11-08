@@ -1288,6 +1288,10 @@ impl AcpxProviderSession {
         self.terminate_transport()
     }
 
+    pub(crate) fn transport_terminated(&self) -> bool {
+        self.transport_terminated
+    }
+
     fn terminate_transport(&mut self) -> Result<(), LocalRunnerError> {
         if self.transport_terminated {
             return Ok(());

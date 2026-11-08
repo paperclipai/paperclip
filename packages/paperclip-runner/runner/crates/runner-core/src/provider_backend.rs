@@ -5902,9 +5902,17 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
-        self.shutdown()?;
-        self.restore_after_park = true;
-        Ok(())
+        let stopped = self.shutdown();
+        if stopped.is_ok()
+            || self
+                .provider
+                .as_ref()
+                .is_some_and(CodexProvider::process_terminated)
+        {
+            self.provider = None;
+            self.restore_after_park = true;
+        }
+        stopped
     }
 
     fn reconcile_terminal_delivery(

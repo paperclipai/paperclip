@@ -2920,9 +2920,17 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn park_provider(&mut self) -> Result<(), DurableRunnerError> {
-        self.shutdown()?;
-        self.restore_after_park = true;
-        Ok(())
+        let stopped = self.shutdown();
+        if stopped.is_ok()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::transport_terminated)
+        {
+            self.session = None;
+            self.restore_after_park = true;
+        }
+        stopped
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {

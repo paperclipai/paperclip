@@ -278,6 +278,57 @@ fn hosted_park_stops_acpx_and_attachment_resumes_the_same_session() {
 }
 
 #[test]
+fn hosted_park_acpx_refused_after_a_failed_close_still_resumes_the_session() {
+    let (fixture, _config, mut executor, opened) = fixture("claude");
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"first", "text":"Complete before parking."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    assert!(executor.host_park_ready().unwrap());
+    fs::write(fixture.0.join("fault"), "reject-close").unwrap();
+    assert!(executor.park_provider().is_err());
+    fs::write(fixture.0.join("fault"), "").unwrap();
+    assert!(!std::process::Command::new("kill")
+        .args(["-0", &opened["processId"].to_string()])
+        .status()
+        .unwrap()
+        .success());
+    for _ in 0..3 {
+        assert!(executor.poll_events().unwrap().is_empty());
+    }
+    let state: Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("acpx-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["lifecycle"], "session_open");
+    let attached = executor
+        .execute(&command(
+            4,
+            "run.attach",
+            json!({"provider": state["descriptor"]}),
+        ))
+        .unwrap();
+    assert_eq!(attached.result["status"], "resumed");
+    assert_eq!(
+        attached.result["providerSessionId"],
+        opened["providerSessionId"]
+    );
+    executor
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId":"second", "text":"Continue after the refused park."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    assert!(executor.host_park_ready().unwrap());
+    executor.shutdown().unwrap();
+}
+
+#[test]
 fn hosted_park_acpx_preserves_late_goals_and_rejects_foreign_or_busy_observations() {
     for agent in ["codex", "claude"] {
         let (fixture, _config, mut executor, _) = fixture(agent);

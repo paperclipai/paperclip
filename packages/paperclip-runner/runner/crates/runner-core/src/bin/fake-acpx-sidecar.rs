@@ -220,6 +220,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if (command == "session.goal.get" && fault == "reject-goal")
                 || (command == "session.snapshot" && fault == "reject-snapshot")
+                || (command == "session.close" && fault == "reject-close")
             {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
