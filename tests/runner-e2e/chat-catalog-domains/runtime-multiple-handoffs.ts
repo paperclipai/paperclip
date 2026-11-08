@@ -7,19 +7,10 @@ import { readRegisteredArtifacts } from "../registered-artifact.js";
 import { checks, sameTask, type Entity } from "./internal-support.js";
 import { openStandingChat } from "./identity-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
-import { runtimeQueueCases } from "./runtime-queue.js";
+import { promptCarriesComment, replyNamesTask, runtimeQueueCases } from "./runtime-queue.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, runtimeWorker } from "./runtime-support.js";
+export { promptCarriesComment } from "./runtime-queue.js";
 type Artifact = Awaited<ReturnType<typeof readRegisteredArtifacts>>[number];
-/** A task is named by its setup-assigned identifier (which chat links) or by a link to its page. */
-function replyNamesTask(reply: string, task: Entity) {
-  const keys = [task.identifier, task.id].filter((key): key is string => !!key);
-  return keys.some(key => new RegExp(`(?<![A-Za-z0-9-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`).test(reply));
-}
-/** Native continuations embed new comments as JSON, so a body with quotes or newlines appears JSON-escaped. */
-export function promptCarriesComment(prompt: string | undefined, comment: { id: string; body: string }) {
-  return typeof prompt === "string" && prompt.includes(comment.id)
-    && (prompt.includes(comment.body) || prompt.includes(JSON.stringify(comment.body).slice(1, -1)));
-}
 export function gradeMultipleHandoffs(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-two-task-history-and-delivery-evidence", !!o, "Separate real website/logo work, saved source references and exact consuming native input are required."); if (!o) return c.result();
