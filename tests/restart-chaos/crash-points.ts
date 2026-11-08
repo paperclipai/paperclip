@@ -24,6 +24,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { CRASH_POINTS, type CrashPointDefinition, type CrashPointName } from "../../packages/shared/src/crash-point-registry.js";
+import { knownSecretValues, redactKnownSecrets } from "./evidence.js";
 import { ADAPTER_IDS, WORKLOAD_IDS, type AdapterId, type WorkloadId } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -191,9 +192,12 @@ async function main(): Promise<number> {
   const { results, exitCode } = await runSuite(selected, options, runDir);
   const summary = renderSummary(runId, options, results)
     + `\nWave exit ${exitCode}; ${((Date.now() - startedAt) / 60_000).toFixed(1)} min in all (one boot, then one point at a time).\n`;
-  await writeFile(path.join(runDir, "SUMMARY.md"), summary, { mode: 0o600 });
-  await writeFile(path.join(runDir, "summary.json"), `${JSON.stringify({ runId, options, exitCode, results }, null, 2)}\n`, { mode: 0o600 });
-  console.info(`\n${summary}\nResults: ${runDir}`);
+  // Violation evidence carries run and wake error text; CI uploads both files.
+  const secrets = knownSecretValues();
+  await writeFile(path.join(runDir, "SUMMARY.md"), redactKnownSecrets(summary, secrets), { mode: 0o600 });
+  await writeFile(path.join(runDir, "summary.json"),
+    `${redactKnownSecrets(JSON.stringify({ runId, options, exitCode, results }, null, 2), secrets)}\n`, { mode: 0o600 });
+  console.info(`\n${redactKnownSecrets(summary, secrets)}\nResults: ${runDir}`);
   // Exit 1 with every point clean is a wave-level failure (for example a Daytona leak); see the wave timeline.
   if (exitCode === 2 || exitCode === null) return 2;
   if (results.some(result => result.outcome === "harness_error")) return 2;

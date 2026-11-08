@@ -17,7 +17,7 @@ import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "
 import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
-import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
+import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
@@ -301,7 +301,8 @@ async function main(): Promise<number> {
       const fresh = check.violations.filter(violation => !point.baseline.has(violationKey(violation)));
       point.invariants = { ...check, violations: fresh, byInvariant: summarizeViolations(fresh) };
       timeline.add("crash_point_settled", { point: point.point, token: point.token, reached: point.fault?.crashPoint ?? null,
-        seconds: Math.round((point.restedAt - point.armedAt) / 1000), byInvariant: point.invariants.byInvariant, errors: check.errors });
+        seconds: Math.round((point.restedAt - point.armedAt) / 1000), byInvariant: point.invariants.byInvariant,
+        errors: check.errors.map(error => redactKnownSecrets(error, knownSecretValues())) });
     };
 
     while (!interrupted && (pending.length || active.length)) {
@@ -429,7 +430,8 @@ async function main(): Promise<number> {
         if (point.invariants?.violations.length) anyFailure = true;
         if (point.invariants?.errors.length) harnessError ??= new Error(`Invariant check incomplete at ${point.point}: ${point.invariants.errors.join("; ")}`);
       }
-      await writeFile(path.join(waveDir, "crash-point.json"), `${JSON.stringify({
+      // Evidence carries run and wake error text; CI uploads this file.
+      await writeFile(path.join(waveDir, "crash-point.json"), `${redactKnownSecrets(JSON.stringify({
         schema: "paperclip.restart-chaos.crash-point/v2", gitSha, gitDirty,
         // The server kills itself without warning, so no pre-fault workspace
         // snapshot exists: R2 checks workspace failures, not lost files.
@@ -439,7 +441,7 @@ async function main(): Promise<number> {
           tasks: point.taskIds.flatMap(id => { const line = byTask.get(id); return line ? [{ taskId: id, adapter: line.adapter,
             workload: line.workload, pass: line.pass, signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T }] : []; }),
         })),
-      }, null, 2)}\n`, { mode: 0o600 });
+      }, null, 2), knownSecretValues())}\n`, { mode: 0o600 });
     }
     // R6 at wave level: a leak no task's runs account for (e.g. the setup probe) still fails the wave.
     if (sandboxSweep) {
