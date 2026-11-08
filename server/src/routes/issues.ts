@@ -13260,9 +13260,11 @@ export function issueRoutes(
       // Do not auto-wake the onboarding first task. Nothing should run and no
       // token should be spent until the user types: the greeting is posted above
       // (deterministic, no LLM) and the user's first comment wakes the assignee
-      // through the normal comment path. Every other create path keeps its wake.
+      // through the normal comment path. A task created already done or
+      // cancelled is a record, not work: like restoring an assignee on closed
+      // work, it must not wake the assignee. Every other create keeps its wake.
 
-      if (!isOnboardingFirstTask) {
+      if (!isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
