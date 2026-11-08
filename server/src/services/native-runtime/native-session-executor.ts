@@ -1,4 +1,5 @@
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
+import { nativeLeaseHolder } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
@@ -3901,6 +3902,8 @@ async function inspectRetainedNativeSessionCleanup(
         .set({
           leaseOwner,
           leaseExpiresAt: new Date(Date.now() + 60_000),
+          // This process, bound to the token (shared ownership path).
+          leaseHolder: nativeLeaseHolder(leaseOwner),
           recoveryHistory: history,
           updatedAt: new Date(),
         })

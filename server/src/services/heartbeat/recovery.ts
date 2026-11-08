@@ -954,6 +954,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         payload: { restartKind: "hard", runnerDisposition: "awaiting_result_finalization", reason: released.reason },
       }).catch(error => logger.warn({ err: error, runId: released.runId }, "failed to record released native result lease"));
     }
+    // Finalizer and cleanup leases of a stopped holder, so the finalization
+    // and cleanup below run now. A failure is retried by the reconciler pass.
+    for (const kind of ["native_finalizer_lease", "native_cleanup_lease"]) {
+      await settleOwnableKind(db, kind, { now, runIds })
+        .catch(error => logger.warn({ err: error, kind }, "failed to settle native token leases at restart"));
+    }
     if (!runIds && !options?.skipDelegatedWork) {
       await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
       await reconcileNativeFinalizations(db, undefined, {

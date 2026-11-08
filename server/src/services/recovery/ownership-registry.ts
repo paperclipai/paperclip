@@ -32,6 +32,12 @@ import {
   settleNativeAcceptedResultLease,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
+import {
+  nativeLeaseHolderStamp,
+  readNativeLeaseHolder,
+  settleNativeTokenLease,
+  type NativeTokenLeaseKind,
+} from "../native-runtime/native-token-lease-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -185,6 +191,13 @@ function nrfFenceOwner(row: NrfRow, scope: string): RecordOwner {
     fence: { currentFenceToken: row.leaseOwner, currentGeneration: row.controllerGeneration ?? null,
       leaseExpiresAt: row.leaseExpiresAt },
   };
+}
+
+/** A finalizer or cleanup lease is owned by the process in `lease_holder`.
+ * Rows saved before that column keep the token fence (expiry plus takeover). */
+function nrfTokenLeaseOwner(row: NrfRow, scope: NativeTokenLeaseKind): RecordOwner {
+  const holder = readNativeLeaseHolder(row.leaseHolder, row.leaseOwner);
+  return holder ? { kind: "process", stamp: nativeLeaseHolderStamp(holder, scope) } : nrfFenceOwner(row, scope);
 }
 
 // ----------------------------------------------------------------------------
@@ -382,12 +395,27 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
-  nrfKind("native_finalizer_lease", "Finalizer lease", "accepted_result",
-    and(like(nativeRunFinalizations.leaseOwner, "native-finalizer:%"), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES)),
-    row => nrfFenceOwner(row, "native_finalizer_lease")),
-  nrfKind("native_cleanup_lease", "Cleanup lease", "workspace_preservation",
-    like(nativeRunFinalizations.leaseOwner, "native-cleanup:%"),
-    row => nrfFenceOwner(row, "native_cleanup_lease")),
+  // Shared path since Phase 2: the token-only finalizer and cleanup leases
+  // record their holder process (`lease_holder`, bound to the token); settle
+  // expires the exact lease of a holder proven gone, so finalization or
+  // cleanup runs now instead of after the TTL. Outstanding leases only: an
+  // expired one is free for the next claim. A holder on another host or PID
+  // space is unprovable and keeps its lease until expiry, when the next claim
+  // takes it over and the old holder's token compare-and-swap fails: that
+  // fence is the handoff, never a host difference.
+  {
+    ...nrfKind("native_finalizer_lease", "Finalizer lease", "accepted_result",
+      and(like(nativeRunFinalizations.leaseOwner, "native-finalizer:%"), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`),
+      row => nrfTokenLeaseOwner(row, "native_finalizer_lease")),
+    settle: (db, record, context) => settleNativeTokenLease("native_finalizer_lease", db, record, context),
+  },
+  {
+    ...nrfKind("native_cleanup_lease", "Cleanup lease", "workspace_preservation",
+      and(like(nativeRunFinalizations.leaseOwner, "native-cleanup:%"), sql`${nativeRunFinalizations.leaseExpiresAt} > now()`),
+      row => nrfTokenLeaseOwner(row, "native_cleanup_lease")),
+    settle: (db, record, context) => settleNativeTokenLease("native_cleanup_lease", db, record, context),
+  },
   runKind("native_ownership_unverified_hold", "Ownership-unverified hold", "ownership",
     and(eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"), or(
       and(eq(heartbeatRuns.errorCode, NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE), eq(heartbeatRuns.nativePhase, "terminal_failure")),
