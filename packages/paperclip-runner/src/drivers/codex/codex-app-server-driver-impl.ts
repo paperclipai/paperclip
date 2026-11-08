@@ -650,8 +650,15 @@ export class CodexAppServerDriver implements HarnessDriver {
         const turns = Array.isArray(existingThread.turns)
           ? existingThread.turns.map(record)
           : [];
-        const acceptedTurnId = transport.controllerAcceptedTurnId?.() ?? "";
         const active = turns.filter((turn) => text(turn.status) === "inProgress");
+        // A Codex turn that finished while no controller was attached is no longer live;
+        // adopt it only when history shows that exact turn completed (a turn the runner
+        // reports lost on restore keeps the restart continuation).
+        const completedTurnId = transport.controllerAcceptedCompletedTurnId?.() ?? "";
+        const acceptedTurnId = transport.controllerAcceptedTurnId?.()
+          || (completedTurnId.length > 0 && active.length === 0
+            && turns.some((turn) => text(turn.id) === completedTurnId && text(turn.status) === "completed")
+            ? completedTurnId : "");
         // The accepted turn may still run, or it may have finished while no
         // controller was attached. Either way it must be the only live turn.
         if (

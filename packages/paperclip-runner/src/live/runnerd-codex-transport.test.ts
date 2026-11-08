@@ -103,6 +103,36 @@ describe("controllerAcceptedTurnStartId", () => {
   ])("returns null for %s", (_label, commands) => {
     expect(controllerAcceptedTurnStartId(commands)).toBeNull();
   });
+
+  // Codex assigns its own provider turn id; only ACPX echoes the requested one.
+  it("accepts a Codex result whose provider turn id differs from the requested id while that turn is the runner's live turn", () => {
+    const codex = start({ result: { result: { providerTurnId: "019a-provider-turn", status: "accepted" } } });
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+    // A turn the restored runner reports lost (no live turn) is left to the restart continuation.
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: null })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "another" })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: true })).toBeNull();
+  });
+
+  // A restart landed right after turn.start: the runner journaled it, died, and
+  // settled it as execution_indeterminate; its restored session reconciled the
+  // ambiguous start to the provider's live replacement turn (t77).
+  const indeterminate = start({ status: "failed", result: { commandType: "turn.start", controllerSeq: 4, status: "failed",
+    result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } });
+
+  it("names the runner's reconciled active turn for an indeterminate turn.start", () => {
+    expect(controllerAcceptedTurnStartId([attach, indeterminate], {
+      requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+  });
+
+  it.each([
+    ["no reconciled active turn", [attach, indeterminate], null, false],
+    ["an ordinary failed turn.start", [attach, start({ status: "failed", result: { result: { code: "provider_turn_failed" } } })], "019a-provider-turn", false],
+    ["a later run attachment", [{ ...indeterminate, controllerSeq: 1 }, { ...attach, controllerSeq: 2 }], "019a-provider-turn", false],
+    ["an ACPX turn other than the requested one", [attach, indeterminate], "turn_lab_other", true],
+  ] as const)("fails closed on an indeterminate start with %s", (_label, commands, active, requireRequestedIdentity) => {
+    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, runnerActiveTurnId: active })).toBeNull();
+  });
 });
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
