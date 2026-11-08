@@ -68,21 +68,24 @@ export function permissionsImplyLowTrust(permissions: unknown): boolean {
 export type AgentPermissionsContext = "create" | "stored";
 
 export function defaultAgentPermissions(
-  options?: { lowTrust?: boolean; context?: AgentPermissionsContext },
+  options?: { lowTrust?: boolean; context?: AgentPermissionsContext; role?: string | null },
 ): NormalizedAgentPermissions {
   return {
-    canCreateAgents: options?.context === "create" && options?.lowTrust !== true,
+    // A CEO row that never saved an explicit value keeps its legacy hiring
+    // authority, so reads report what enforcement allows.
+    canCreateAgents: (options?.context === "create" || options?.role === "ceo") && options?.lowTrust !== true,
     canCreateSkills: true,
   };
 }
 
 export function normalizeAgentPermissions(
   permissions: unknown,
-  options?: { context?: AgentPermissionsContext },
+  options?: { context?: AgentPermissionsContext; role?: string | null },
 ): NormalizedAgentPermissions {
   const defaults = defaultAgentPermissions({
     lowTrust: permissionsImplyLowTrust(permissions),
     context: options?.context ?? "stored",
+    role: options?.role,
   });
   const record = asRecord(permissions);
   if (!record) {
