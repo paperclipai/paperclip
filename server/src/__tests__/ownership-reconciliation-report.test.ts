@@ -13,6 +13,7 @@ import {
   createDb,
   environmentLeases,
   heartbeatRuns,
+  issueComments,
   issues,
   nativeRunFinalizations,
   sandboxCreationOperations,
@@ -143,7 +144,8 @@ describe("report-only ownership reconciliation", () => {
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
       .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent",
-        "environment_run_lease_active", "environment_teardown_claim", "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease"]);
+        "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox",
+        "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -403,6 +405,35 @@ describe("report-only ownership reconciliation", () => {
       payload: { issueId, executionWait: { reason: "agent.not_invokable", trigger: "pause_lifted" } } });
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  // Reconciler rule (chaos s9401/t69): an undelivered user comment newer than
+  // the task's last run gets a wake. A carried, a too-young, or an
+  // already-read comment does not fire it.
+  it("finds a user comment newer than the task's last run that no wake carries", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Reopened", status: "todo", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", invocationSource: "manual",
+      runtimeMode: "native", contextSnapshot: { issueId }, startedAt: minutesAgo(5), createdAt: minutesAgo(5), finishedAt: minutesAgo(4) });
+    const [lost, carried, young] = await db.insert(issueComments).values([
+      { companyId, issueId, authorUserId: "user-1", body: "lost wake", createdAt: minutesAgo(2) },
+      { companyId, issueId, authorUserId: "user-1", body: "carried", createdAt: minutesAgo(2) },
+      { companyId, issueId, authorUserId: "user-1", body: "young", createdAt: new Date(Date.now() - 5_000) },
+    ]).returning();
+    // An agent's own comment written under its user (local CLI) is not user intent.
+    await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1", authorAgentId: agentId,
+      body: "self", createdAt: minutesAgo(2) });
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "queued",
+      payload: { issueId, commentId: carried.id } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId)).toEqual([lost.id]);
+    // The young comment may still get its normal wake: a deadline, not a report.
+    expect(report.nextDueAt?.getTime()).toBe(young.createdAt.getTime() + 30_000);
+    // A run that started after the comment read it.
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", invocationSource: "manual",
+      contextSnapshot: { issueId }, startedAt: minutesAgo(1), createdAt: minutesAgo(1), finishedAt: new Date() });
+    const later = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(later.violations.filter(row => row.reason === "user_comment_without_wake")).toEqual([]);
   });
 
   it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {

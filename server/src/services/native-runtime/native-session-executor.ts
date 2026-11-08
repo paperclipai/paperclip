@@ -302,8 +302,8 @@ import { noteNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
-import { readProcessStartedAt } from "../hot-restart.js";
-import { processExists, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { proveOwnerGone } from "../owner-proof.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
@@ -591,32 +591,33 @@ const nativeRuntimeRequestResolutions = new Map<
   NativeRuntimeRequestResolution
 >();
 
+/** The shared prover's verdict on a recovered local runner, recorded on this
+ * host by an earlier boot (no boot id, so this process is never assumed). */
+function proveRecoveryProcess(input: { pid: number; startedAt: string }) {
+  return proveOwnerGone({ kind: "local", scope: "native_recovery_runner", generation: null, host: null,
+    processSpace: currentProcessSpaceHash(), bootId: null, pid: input.pid, processStartedAt: input.startedAt,
+    processGroupId: null });
+}
+
 /**
- * True when the recorded runner still owns its PID. A start time within the
- * shared precision window is the same process: `ps -o lstart` on macOS has
- * whole-second precision, so an exact match would call a live runner gone.
+ * False only when the shared prover proves the recorded runner gone (its PID
+ * is dead or reused by a later process). The runner treats false as exit
+ * evidence, so an unreadable or inconsistent start time stays alive.
  */
-export async function verifiedRecoveryProcessIsAlive(input: {
+export async function recoveryProcessMayBeAlive(input: {
   pid: number;
   startedAt: string;
 }): Promise<boolean> {
-  if (!processExists(input.pid)) return false;
-  try {
-    const observed = await readProcessStartedAt(input.pid);
-    return (
-      observed !== null &&
-      !processStartsDefinitelyDiffer(input.startedAt, observed)
-    );
-  } catch {
-    return false;
-  }
+  return (await proveRecoveryProcess(input)).verdict !== "gone";
 }
 
 async function signalVerifiedRecoveryProcess(
   input: { pid: number; startedAt: string },
   signal: NodeJS.Signals,
 ): Promise<boolean> {
-  if (!(await verifiedRecoveryProcessIsAlive(input))) return false;
+  // Signal only the proven same process (start time within the shared
+  // precision window), never an ambiguous or reused PID.
+  if ((await proveRecoveryProcess(input)).verdict !== "alive") return false;
   try {
     return process.kill(input.pid, signal);
   } catch {
@@ -5467,7 +5468,7 @@ const RETIREMENT_REASON_NAMES = {
   recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
   controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
     "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity",
-    "controller_host_unprovable", "controller_host_unrecorded"]),
+    "controller_host_unprovable", "controller_host_unrecorded", "controller_pid_start_inconsistent"]),
   sandboxOutcome: new Set(["created", "resumed", "replacement"]),
 } as const;
 
@@ -14664,7 +14665,7 @@ async function createRunnerdBackendWithinSessionClaim(
           target, binding: input.execution.binding, trace: input.trace, onLog: input.onLog,
         }).controlPlaneRegistration,
         adoptExistingRunner: remoteDot?.adoptExistingRunner ?? (recoveredProcess ? { ...recoveredProcess,
-          isAlive: () => verifiedRecoveryProcessIsAlive(recoveredProcess),
+          isAlive: () => recoveryProcessMayBeAlive(recoveredProcess),
           signal: (signal: NodeJS.Signals = "SIGTERM") => signalVerifiedRecoveryProcess(recoveredProcess, signal) } : undefined),
     };
     const backendOptions = {
@@ -16012,7 +16013,7 @@ async function createRunnerdBackendWithinSessionClaim(
       : target.kind === "local" && localRecoveryProcess
         ? {
             ...localRecoveryProcess,
-            isAlive: () => verifiedRecoveryProcessIsAlive(localRecoveryProcess),
+            isAlive: () => recoveryProcessMayBeAlive(localRecoveryProcess),
             signal: (signal: NodeJS.Signals) =>
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }

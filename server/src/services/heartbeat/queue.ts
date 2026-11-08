@@ -1779,8 +1779,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         // which resumes through its own live authorization), and only pauses
         // this query can see lifted. A refusal by any other gate rewrites the
         // receipt's reason, so it never retries in a loop here.
-        sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' = 'pause_lifted'`,
-        sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable')`,
+        // A message the reconciler saved after its wake was lost waits on no
+        // hold, so the same explicit wake sends it.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' in ('pause_lifted', 'reconciler_backstop')`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable', 'wake_lost')`,
         eq(agentWakeupRequests.requestedByActorType, "user"),
         sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
         sql`exists (select 1 from agents pause_agent where pause_agent.id = ${agentWakeupRequests.agentId}
