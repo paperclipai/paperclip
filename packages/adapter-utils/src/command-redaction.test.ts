@@ -231,8 +231,9 @@ describe("diagnostic environment secret selection", () => {
   it("keeps short host values private as whole tokens", () => {
     const env = { CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", RUN_PHASE: "RUN", FEATURE_STATE: "off", LEVEL: "2",
       SESSION_PID: "67591", LONG_SECRET: "opaque-host-secret", AWS_ACCESS_KEY_ID: "1" };
-    // Substring-private values are not repeated; booleans and 1-3 digit numbers are never credentials.
-    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi"]);
+    // Substring-private values are not repeated; only flag values (booleans, 0, 1) are exempt.
+    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi", "2"]);
+    expect(collectHostEnvironmentTokenSecrets({ SHORT_PIN: "482", COUNT_FLAG: "1", OFF_FLAG: "0", MODE_FLAG: "yes" })).toEqual(["482"]);
     expect(collectHostEnvironmentTokenSecrets(null)).toEqual([]);
   });
 

@@ -222,10 +222,10 @@ const BOOLEAN_WORD = /^(?:true|false|on|off|yes|no)$/i;
 /**
  * Host process values under unknown names that are too short or too plain to
  * redact as substrings (see `plausibleUndeclaredCredential`). They are still
- * private: callers redact them where they appear as a whole token. Boolean
- * words and numbers of at most 3 digits are not: they cannot hold a credential
- * (a 3-digit value has 1000 possibilities), and as tokens they would erase
- * exit codes and counts from every report.
+ * private: callers redact them where they appear as a whole token, numbers
+ * included. Only flag values are exempt (boolean words, and `0` or `1`): they
+ * cannot hold a credential, and as tokens they would erase ordinary words
+ * ("on", "no") and exit codes from every report.
  */
 export function collectHostEnvironmentTokenSecrets(env: unknown): string[] {
   if (!env || typeof env !== "object") return [];
@@ -233,7 +233,7 @@ export function collectHostEnvironmentTokenSecrets(env: unknown): string[] {
   const values = new Set<string>();
   for (const [key, value] of Object.entries(env)) {
     if (typeof value !== "string" || !value.trim() || substringValues.has(value)) continue;
-    if (isOrdinaryDiagnosticEnvSetting(key, value) || BOOLEAN_WORD.test(value) || /^\d{1,3}$/.test(value)) continue;
+    if (isOrdinaryDiagnosticEnvSetting(key, value) || BOOLEAN_WORD.test(value) || /^[01]$/.test(value)) continue;
     values.add(value);
   }
   return [...values].sort((a, b) => b.length - a.length);

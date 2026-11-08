@@ -596,10 +596,11 @@ describe("run failure diagnostics", () => {
   });
 
   it("redacts short host values as whole tokens without corrupting words that contain them", () => {
-    const tokens = collectRunFailureHostTokenSecrets({ CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", LEVEL: "2" });
-    const result = redactRunFailureSecretValues({ category: "service", text: "editor vi used k9Q; k9Qx stays, exit 2",
+    const tokens = collectRunFailureHostTokenSecrets({ CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", SHORT_PIN: "482", LEVEL: "1" });
+    const result = redactRunFailureSecretValues({ category: "service", text: "editor vi used k9Q and 482; k9Qx and 4821 stay, exit 1",
       nested: ["(vi)", "vim"] }, [], tokens);
-    expect(result).toEqual({ category: "service", text: "editor ***REDACTED*** used ***REDACTED***; k9Qx stays, exit 2",
+    expect(result).toEqual({ category: "service",
+      text: "editor ***REDACTED*** used ***REDACTED*** and ***REDACTED***; k9Qx and 4821 stay, exit 1",
       nested: ["(***REDACTED***)", "vim"] });
   });
 
