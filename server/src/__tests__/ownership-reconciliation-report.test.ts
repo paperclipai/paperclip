@@ -78,6 +78,7 @@ describe("report-only ownership reconciliation", () => {
       liveRun: randomUUID(), deadRun: randomUUID(), debtRun: randomUUID(), boundedRun: randomUUID(),
       liveIssue: randomUUID(), stalledIssue: randomUUID(),
       orphanLease: randomUUID(), unownedCleanup: randomUUID(), foreignIntent: randomUUID(), wake: randomUUID(),
+      heldWake: randomUUID(),
     };
     await db.insert(issues).values([
       { id: ids.liveIssue, companyId, title: "Live", status: "in_progress", assigneeAgentId: agentId },
@@ -116,6 +117,11 @@ describe("report-only ownership reconciliation", () => {
     // A wake request ended terminally on a temporary refusal.
     await db.insert(agentWakeupRequests).values({ id: ids.wake, companyId, agentId, source: "assignment",
       status: "skipped", error: "Company budget hold: admission paused" });
+    // A work intent refused for another run's unfinished accounting (the gate
+    // Phase 3 removed). Saved, not dropped, so it is not an I4 violation.
+    await db.insert(agentWakeupRequests).values({ id: ids.heldWake, companyId, agentId, source: "automation",
+      status: "deferred_issue_execution", payload: { executionWait: { reason: "budget.blocked",
+        message: "Company cannot start work while completed runs await accounting." } } });
   }
 
   async function snapshot() {
@@ -160,9 +166,11 @@ describe("report-only ownership reconciliation", () => {
     expect(rules(first, "environment_pending_cleanup")).toEqual(["I1_owned"]);
     // I2 needs the owner proven gone on two consecutive passes.
     expect(rules(first, "environment_run_lease_active")).toEqual([]);
+    // Phase 3: pending accounting is exposure, not a gate. Only a refusal that
+    // names an accounting hold is an I3 violation.
     expect(first.violations.filter(violation => violation.rule === "I3_admission_independent")
-      .map(violation => violation.recordId)).toEqual([ids.debtRun]);
-    expect(rules(first, "wake_request")).toEqual(["I4_exactly_once_intent"]);
+      .map(violation => violation.recordId)).toEqual([ids.heldWake]);
+    expect(rules(first, "wake_request")).toEqual(["I3_admission_independent", "I4_exactly_once_intent"]);
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
     expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns",
@@ -228,10 +236,11 @@ describe("report-only ownership reconciliation", () => {
     expect(await db.select().from(activityLog)).toEqual([]);
   });
 
-  it("does not report admission holds without an active budget policy", async () => {
+  it("never reports pending accounting itself as an admission violation", async () => {
     await seed();
-    await db.update(budgetPolicies).set({ isActive: false });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, ids.heldWake));
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(kindReport(report, "run_accounting_debt")).toMatchObject({ inProgress: 2 });
     expect(report.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
   });
 
@@ -262,15 +271,31 @@ describe("report-only ownership reconciliation", () => {
       .where(eq(activityLog.action, OWNERSHIP_INVARIANT_VIOLATION_ACTION))).toEqual([{ entityId: "orphan-1" }]);
   });
 
-  it("counts admission holds only for policies whose scope includes the run", async () => {
-    await seed();
-    await db.update(budgetPolicies).set({ scopeType: "agent", scopeId: randomUUID() });
-    const other = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(other.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
-    await db.update(budgetPolicies).set({ scopeId: agentId });
-    const own = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(own.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
-      .toEqual([ids.debtRun]);
+  it("reports a run cancelled for an accounting hold", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "cancelled", invocationSource: "manual",
+      error: "New work must wait while a native run recovers its unfinished accounting." });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([
+      expect.objectContaining({ kind: "queued_run", recordId: runId, reason: "refused_for_accounting_hold" })]);
+  });
+
+  it("reads every accounting-hold refusal in a busy window across passes", async () => {
+    const state = createOwnershipReportState();
+    await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    const refused = Array.from({ length: 25 }, () => randomUUID());
+    await db.insert(agentWakeupRequests).values(refused.map(id => ({ id, companyId, agentId, source: "assignment",
+      status: "skipped", error: "Company cannot start work while completed runs await accounting." })));
+    const seen: string[] = [];
+    const first = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    // Ten pages of two: the rest waits for the next pass, which is kept due.
+    expect(first.retryNeeded).toBe(true);
+    seen.push(...first.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId));
+    const second = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    seen.push(...second.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId));
+    expect(seen.sort()).toEqual([...refused].sort());
+    const third = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(third.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
   });
 
   it("treats a saved monitor deadline as a next action", async () => {
@@ -313,15 +338,6 @@ describe("report-only ownership reconciliation", () => {
     const passes: boolean[] = [];
     for (let pass = 0; pass < 6; pass++) passes.push((await runOwnershipReconciliationPass(db, { state })).retryNeeded);
     expect(passes).toEqual([true, true, true, true, false, false]);
-  });
-
-  it("counts late-receipt debt as an admission hold, as the gate does", async () => {
-    await seed();
-    await db.update(heartbeatRuns).set({ costAccountingPending: false, usageJson: { accountingLateReceiptPending: true } })
-      .where(eq(heartbeatRuns.id, ids.debtRun));
-    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
-    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
-      .toEqual([ids.debtRun]);
   });
 
   it("reads a kind larger than one page in a single pass, so second proofs compare the same records", async () => {
