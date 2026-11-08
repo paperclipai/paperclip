@@ -148,6 +148,7 @@ export function signalRunningProcess(
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+export const MAX_CAPTURE_BYTES_ENV = "PAPERCLIP_ADAPTER_MAX_CAPTURE_BYTES";
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
@@ -440,10 +441,21 @@ export function parseJson(value: string): Record<string, unknown> | null {
   }
 }
 
+export function resolveMaxCaptureBytes(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[MAX_CAPTURE_BYTES_ENV]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return MAX_CAPTURE_BYTES;
+  const bytes = Number(raw);
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : MAX_CAPTURE_BYTES;
+}
+
+const DEFAULT_CAPTURE_CAP = resolveMaxCaptureBytes();
+
 export function appendWithCap(
   prev: string,
   chunk: string,
-  cap = MAX_CAPTURE_BYTES,
+  cap = DEFAULT_CAPTURE_CAP,
 ) {
   const combined = prev + chunk;
   return combined.length > cap
