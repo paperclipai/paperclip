@@ -92,7 +92,7 @@ import {
   type MissingRuntimeBinding,
 } from "../secrets.js";
 import { createToolGatewayService } from "../tool-gateway.js";
-import { getRegisteredToolGateway } from "../tool-gateway-registry.js";
+import { getRegisteredToolGateway, listRegisteredPluginToolNames } from "../tool-gateway-registry.js";
 import { toolAccessService } from "../tool-access.js";
 import {
   buildDocumentReviewContext,
@@ -907,10 +907,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveToolAssignmentsForAgent(
-    input.agent.companyId,
-    input.agent.id,
-  );
+  const [effective, pluginToolNames] = await Promise.all([
+    access.getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id),
+    listRegisteredPluginToolNames(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId }),
+  ]);
   const [runIdentity] = await input.db
     .select({
       issueId: boundRunIssueIdSql(),
@@ -999,13 +999,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const assignedTools = effective.allowedTools.filter((tool) =>
     assignedConnectionIds.has(tool.connectionId),
   );
-  const gatewayService = getRegisteredToolGateway(input.db);
-  const service = gatewayService ?? createToolGatewayService(input.db);
-  const pluginToolNames = (await gatewayService?.listPluginToolsForAgent({
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    runId: input.runId,
-  }) ?? []).map((tool) => tool.name).sort();
+  const service = getRegisteredToolGateway(input.db) ?? createToolGatewayService(input.db);
   if (assignedConnections.length === 0 && pluginToolNames.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
       companyId: input.agent.companyId,

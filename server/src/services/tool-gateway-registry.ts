@@ -10,3 +10,11 @@ export function registerToolGateway(db: Db, gateway: ToolGatewayService): void {
 export function getRegisteredToolGateway(db: Db): ToolGatewayService | undefined {
   return gateways.get(db);
 }
+
+export async function listRegisteredPluginToolNames(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string },
+): Promise<string[]> {
+  const tools = await gateways.get(db)?.listPluginToolsForAgent(input) ?? [];
+  return tools.map((tool) => tool.name).sort();
+}

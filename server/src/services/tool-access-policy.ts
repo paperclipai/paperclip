@@ -67,7 +67,7 @@ type ToolAccessContext = {
   agentId: string | null;
   heartbeatRunId: string | null;
   issueId: string | null;
-  issueWorkMode: string | null;
+  issueWorkMode?: string | null;
   projectId: string | null;
   routineId: string | null;
   gatewayId: string | null;
@@ -1518,7 +1518,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const loaded = await loadContext(input, cache);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
-    if (ctx.providerType === "paperclip_plugin" && ctx.issueWorkMode !== null && ctx.issueWorkMode !== "standard") {
+    if (ctx.providerType === "paperclip_plugin" && (ctx.issueWorkMode ?? "standard") !== "standard") {
       return decision("deny", "deny_policy_block", "Plugin tools require standard work mode.", [], [], { redactionPlan: redaction.redactionPlan });
     }
     // A final handoff rechecks current permissions for work already admitted by
@@ -1541,7 +1541,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
             .limit(1))
       : [];
     const isRuntimePlugin = typeof runtimeGateway?.metadata?.nativeRuntimeAssignmentDigest === "string";
-    if (runtimeGateway && isRuntimePlugin) {
+    if (isRuntimePlugin) {
       const entries = await cachedRead(cache, `runtime-plugin-entries:${ctx.companyId}:${runtimeGateway.profileId}`, async () =>
         db.select({ effect: toolProfileEntries.effect, toolName: toolProfileEntries.toolName })
           .from(toolProfileEntries)
@@ -1956,7 +1956,6 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         agentId: invocation.agentId,
         heartbeatRunId: invocation.runId,
         issueId: invocation.issueId,
-        issueWorkMode: null,
         projectId: invocation.issueId ? issueProjectById.get(invocation.issueId) ?? null : null,
         routineId: null,
         gatewayId: null,

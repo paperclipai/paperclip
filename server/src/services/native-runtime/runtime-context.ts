@@ -9,7 +9,7 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
-import { getRegisteredToolGateway } from "../tool-gateway-registry.js";
+import { listRegisteredPluginToolNames } from "../tool-gateway-registry.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -250,12 +250,10 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
-  const pluginToolNames = (await getRegisteredToolGateway(input.db)?.listPluginToolsForAgent({
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    runId: input.runId,
-  }) ?? []).map((tool) => tool.name).sort();
-  const effective = await toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id);
+  const [pluginToolNames, effective] = await Promise.all([
+    listRegisteredPluginToolNames(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId }),
+    toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id),
+  ]);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
   const hasGitHubConnection = effective.installedConnections.some((connection) => {
     const config = connection.config && typeof connection.config === "object"

@@ -15,11 +15,6 @@ const serviceMocks = vi.hoisted(() => ({
   getEffectiveToolAssignmentsForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
   spekoToolsForSession: vi.fn(),
-  listPluginToolsForAgent: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock("../tool-gateway-registry.js", () => ({
-  getRegisteredToolGateway: () => ({ listPluginToolsForAgent: serviceMocks.listPluginToolsForAgent }),
 }));
 
 vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
@@ -48,6 +43,8 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
+import { registerToolGateway } from "../tool-gateway-registry.js";
+import type { ToolGatewayService } from "../tool-gateway.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -68,7 +65,6 @@ async function makeTreeWritable(target: string): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  serviceMocks.listPluginToolsForAgent.mockResolvedValue([]);
   serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
   serviceMocks.spekoToolsForSession.mockResolvedValue([]);
@@ -113,17 +109,19 @@ afterEach(async () => {
 describe("buildNativeRuntimeContext", () => {
   it("pins plugin names in stable order alongside connection assignments", async () => {
     const input = { db: {} as Db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
+    const listPluginToolsForAgent = vi.fn().mockResolvedValue([]);
+    registerToolGateway(input.db, { listPluginToolsForAgent } as unknown as ToolGatewayService);
     const original = await resolveNativeRuntimeMcpSnapshot(input);
     expect(original.digest).toBe(createHash("sha256").update(JSON.stringify({
       version: 1, agentId: "agent-1", connections: ["connection-1"], tools: ["tool-1"],
     })).digest("hex"));
-    serviceMocks.listPluginToolsForAgent.mockResolvedValue([{ name: "fixture:second" }, { name: "fixture:first" }]);
+    listPluginToolsForAgent.mockResolvedValue([{ name: "fixture:second" }, { name: "fixture:first" }]);
     const first = await resolveNativeRuntimeMcpSnapshot(input);
-    serviceMocks.listPluginToolsForAgent.mockResolvedValue([{ name: "fixture:first" }, { name: "fixture:second" }]);
+    listPluginToolsForAgent.mockResolvedValue([{ name: "fixture:first" }, { name: "fixture:second" }]);
     expect(await resolveNativeRuntimeMcpSnapshot(input)).toEqual(first);
     expect(first.digest).not.toBe(original.digest);
     expect(first.bindingId).toBe("native-mcp:run-1");
-    expect(serviceMocks.listPluginToolsForAgent).toHaveBeenCalledWith({ companyId: "company-1", agentId: "agent-1", runId: "run-1" });
+    expect(listPluginToolsForAgent).toHaveBeenCalledWith({ companyId: "company-1", agentId: "agent-1", runId: "run-1" });
   });
 
   it("uses committed instructions when the disk projection is stale", async () => {

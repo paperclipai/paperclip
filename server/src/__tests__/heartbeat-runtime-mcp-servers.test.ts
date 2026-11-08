@@ -123,6 +123,10 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     return { company: company!, agent: agent!, issue: issue!, run: run!, name, gateway, calls: () => calls };
   }
 
+  function gatewayPublicId(server: { url: string }) {
+    return server.url.split("/").at(-1)!;
+  }
+
   async function approvePluginActions() {
     const actions = await db.select().from(toolActionRequests);
     for (const action of actions) {
@@ -138,7 +142,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     const f = await pluginRun();
     await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Allow plugin", policyType: "allow", selectors: { toolNames: [f.name] } });
     const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
-    const locator = { gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token };
+    const locator = { gatewayPublicId: gatewayPublicId(server!), bearerToken: server!.token };
     expect((await f.gateway.listToolsForNamedGateway(locator)).map(tool => tool.name)).toEqual([f.name]);
     await db.update(issues).set({ workMode }).where(eq(issues.id, f.issue.id));
     expect((await resolveNativeRuntimeMcpSnapshot({ db, agent: f.agent, runId: f.run.id })).bindingId).toBeNull();
@@ -163,7 +167,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       { companyId: f.company.id, name: "Review plugin", policyType: "require_approval", priority: 2, selectors: { toolNames: [f.name] } },
     ]);
     const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
-    const call = { gatewayPublicId: server!.url.split("/").at(-1)!, sessionToken: server!.token, tool: f.name };
+    const call = { gatewayPublicId: gatewayPublicId(server!), sessionToken: server!.token, tool: f.name };
     await expect(f.gateway.executeTool({ ...call, parameters: { reviewed: true } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [action] = await approvePluginActions();
     const counters = await db.select().from(toolRateLimitCounters);
@@ -181,7 +185,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       selectors: { toolNames: ["fixture:other"] }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] },
     }).returning() : [];
     const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
-    const call = { gatewayPublicId: server!.url.split("/").at(-1)!, sessionToken: server!.token, tool: f.name };
+    const call = { gatewayPublicId: gatewayPublicId(server!), sessionToken: server!.token, tool: f.name };
     for (const item of [1, 2]) {
       await expect(f.gateway.executeTool({ ...call, parameters: { item } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     }
@@ -232,7 +236,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(snapshot.bindingId).not.toBeNull();
     const first = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id, expectedAssignmentDigest: snapshot.digest });
     expect(first).toHaveLength(1);
-    const locator = { gatewayPublicId: first[0]!.url.split("/").at(-1)!, bearerToken: first[0]!.token };
+    const locator = { gatewayPublicId: gatewayPublicId(first[0]!), bearerToken: first[0]!.token };
     expect((await gateway.listToolsForNamedGateway(locator)).map((tool) => tool.name)).toEqual([names[0]]);
     await expect(gateway.executeTool({ gatewayPublicId: locator.gatewayPublicId, sessionToken: first[0]!.token, tool: names[0]!, parameters: {} })).resolves.toBeDefined();
     const [profile] = await db.select().from(toolProfiles);
@@ -266,16 +270,12 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.insert(toolProfileEntries).values({ companyId: company!.id, profileId: sourceProfile!.id, selectorType: "tool_name", effect: "include", toolName: names[0]! });
     await db.insert(toolProfileBindings).values({ companyId: company!.id, profileId: sourceProfile!.id, targetType: "agent", targetId: agent!.id });
     const [profileMcp] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
-    const profileLocator = { gatewayPublicId: profileMcp!.url.split("/").at(-1)!, bearerToken: profileMcp!.token };
+    const profileLocator = { gatewayPublicId: gatewayPublicId(profileMcp!), bearerToken: profileMcp!.token };
     expect((await gateway.listToolsForNamedGateway(profileLocator)).map((tool) => tool.name)).toEqual([names[0]]);
     await db.insert(toolPolicies).values({ companyId: company!.id, name: "Review plugin call", policyType: "require_approval", selectors: { toolNames: [names[0]!] } });
     await expect(gateway.executeTool({ gatewayPublicId: profileLocator.gatewayPublicId, sessionToken: profileMcp!.token, tool: names[0]!, parameters: { reviewed: true } }))
       .rejects.toMatchObject({ reasonCode: "approval_required" });
-    const [actionRequest] = await db.select().from(toolActionRequests);
-    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
-      .where(eq(issueThreadInteractions.id, actionRequest!.interactionId!));
-    await db.update(toolActionRequests).set({ status: "approved", resolvedByUserId: "board-user", decidedAt: new Date(), resolvedAt: new Date() })
-      .where(eq(toolActionRequests.id, actionRequest!.id));
+    const [actionRequest] = await approvePluginActions();
     await db.delete(toolPolicies);
     await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, sourceProfile!.id));
     expect(await gateway.listToolsForNamedGateway(profileLocator)).toEqual([]);
@@ -290,7 +290,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.update(toolProfileEntries).set({ toolName: names[1]! }).where(eq(toolProfileEntries.profileId, sourceProfile!.id));
     const [differentAssignment] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
     await db.update(toolProfileEntries).set({ toolName: names[0]! }).where(eq(toolProfileEntries.profileId, sourceProfile!.id));
-    await expect(gateway.executeTool({ gatewayPublicId: differentAssignment!.url.split("/").at(-1)!, sessionToken: differentAssignment!.token, tool: names[0]!, parameters: {}, approvedActionRequestId: actionRequest!.id }))
+    await expect(gateway.executeTool({ gatewayPublicId: gatewayPublicId(differentAssignment!), sessionToken: differentAssignment!.token, tool: names[0]!, parameters: {}, approvedActionRequestId: actionRequest!.id }))
       .rejects.toMatchObject({ reasonCode: "deny_default" });
     expect(dispatchCount).toBe(callsBeforeRetry);
     await db.insert(toolPolicies).values({ companyId: company!.id, name: "Review plugin retry", policyType: "require_approval", selectors: { toolNames: [names[0]!] } });
@@ -319,7 +319,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: grantedRun!.id });
     expect(snapshot.bindingId).not.toBeNull();
     const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: grantedRun!.id, expectedAssignmentDigest: snapshot.digest });
-    const locator = { gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token };
+    const locator = { gatewayPublicId: gatewayPublicId(server!), bearerToken: server!.token };
     expect((await gateway.listToolsForNamedGateway(locator)).map((tool) => tool.name)).toEqual([name]);
     await expect(gateway.executeTool({ gatewayPublicId: locator.gatewayPublicId, sessionToken: server!.token, tool: name, parameters: {} })).resolves.toBeDefined();
 
