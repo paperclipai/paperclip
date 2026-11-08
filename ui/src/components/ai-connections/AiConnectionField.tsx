@@ -58,6 +58,7 @@ export function AiConnectionField({
   readOnly = false,
   preferAdvanced = false,
   routerAdapterType,
+  explicitAccount = false,
 }: {
   companyId: string;
   agentId?: string;
@@ -71,6 +72,7 @@ export function AiConnectionField({
   readOnly?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
+  explicitAccount?: boolean;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -95,6 +97,9 @@ export function AiConnectionField({
   });
   const accountsView = useQueryView(accounts);
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const selectedAccount = value && value.mode !== "router" && value.mode !== "responsible_user"
+    ? accounts.data?.connections.find(account => account.id === value.connectionId && account.grantId === value.grantId)
+    : undefined;
   const pendingAccount = pendingAdoption?.mode === "responsible_user"
     ? personalDefault
     : pendingAdoption && pendingAdoption.mode !== "router"
@@ -177,7 +182,8 @@ export function AiConnectionField({
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
-        onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
+        explicitAccount={explicitAccount}
+        onReconnect={explicitAccount && selectedAccount && selectedAccount.status !== "connected" ? () => openConnection(selectedAccount) : !explicitAccount && (!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
         onRetry={accountsView.retry}
       />}
       <Dialog
@@ -225,14 +231,16 @@ export function AiConnectionField({
           <DialogHeader>
             <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
             <DialogDescription>
-              {advancedSetup ? "Choose a provider connection for this agent." : reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
+              {explicitAccount ? "Connect an account for this pool member. Choose which agents can use it during setup." : advancedSetup ? "Choose a provider connection for this agent." : reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
             </DialogDescription>
           </DialogHeader>
-          {advancedSetup ? <AiProviderSetup
+          {advancedSetup || explicitAccount ? <AiProviderSetup
             companyId={companyId} agentId={agentId} environmentId={environmentId}
+            initialProvider={explicitAccount && !advancedSetup ? provider : undefined}
+            reconnect={explicitAccount ? reconnecting : undefined}
             advancedOnly={preferAdvanced}
             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
-            onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
+            onCancel={() => preferAdvanced || explicitAccount ? setConnecting(false) : setAdvancedSetup(false)}
             onComplete={binding => {
               void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
               setConnecting(false);

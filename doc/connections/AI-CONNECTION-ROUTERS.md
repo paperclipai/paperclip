@@ -211,6 +211,15 @@ Smart, Mid and Cheap are editable starting names, not fixed model tiers. Add as
 many ordered members as needed (up to 100). Each member chooses its own saved
 account grant, concrete harness, model ID and optional effort. The same account
 can appear with different models. No credentials are copied into the pool.
+The member editor uses the same harness, account, model and thinking-effort
+controls as agent configuration. Choose an existing connected account or use
+**Connect an account…** in the Connection selector. Sign-in and API-key setup
+use the existing account setup flow, including access controls. A pool member
+always saves an explicit account grant; connecting it does not change your
+personal default. Changing harness or account clears the previous model and
+effort. Reconnecting the same account preserves them. Model choices come from
+the selected connection's routing catalog or the supported harness catalog,
+with the existing refresh and custom-model controls.
 Saving validates model IDs against the saved connection's routing catalog or
 the supported harness catalog. OpenRouter members use its public catalog.
 

@@ -42,7 +42,8 @@ export function AiConnectionSelect({
   onChange,
   adapterType,
   model,
-}: AiConnectionPickerProps & { adapterType: string; model?: string }) {
+  explicitAccount = false,
+}: AiConnectionPickerProps & { adapterType: string; model?: string; explicitAccount?: boolean }) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
   const selected =
@@ -89,7 +90,7 @@ export function AiConnectionSelect({
     selected && !compatible.some((c) => c.id === selected.id);
   const change = (id: string) => {
     if (id === "connect") return onConnect();
-    if (id === "responsible_user")
+    if (id === "responsible_user" && !explicitAccount)
       return onChange({
         provider: requirement.provider,
         method: personal?.method ?? "api_key",
@@ -147,7 +148,7 @@ export function AiConnectionSelect({
               <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>
           ))}
-          {(canUseDefault || value?.mode === "responsible_user") && (
+          {!explicitAccount && (canUseDefault || value?.mode === "responsible_user") && (
             <SelectItem value="responsible_user" disabled={!canUseDefault}>
               <span className="flex size-5 shrink-0 items-center justify-center"><UserRound className="size-4" /></span>
               Responsible user’s default
