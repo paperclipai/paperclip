@@ -1,0 +1,123 @@
+{
+  "schema": "paperclip.copilot-live-detached-proof/v1",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "qualificationStatus": "pending",
+  "scenario": "detached-shell",
+  "probeSourceRevision": "47eed960b380e8c8054eb19985aaefeabc6336c3",
+  "providerSourceRevision": "8aa867b64d5fc2fd62cff110bd000addf5dc54de",
+  "providerPackDigest": "sha256:627992ea80e8be7154d07cbc9925b781519199e25690b02d4a044f44342e6bd8",
+  "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+  "privateEvidenceSha256": "sha256:9943538f40e35b36438266f3ddaa977f9a74c12b9df928888bf24d70bb2d6b18",
+  "promptRequestsSent": 1,
+  "upstreamModelRequestCount": null,
+  "activeTurnDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 180,
+  "automaticRetries": 0,
+  "reservationUsd": 2,
+  "stopReason": "end_turn",
+  "terminalElapsedMs": 10675,
+  "permissions": [
+    {
+      "elapsedMs": 6938,
+      "requestId": 0,
+      "offeredOptions": [
+        {
+          "optionId": "allow_once",
+          "kind": "allow_once",
+          "name": "Allow once"
+        },
+        {
+          "optionId": "allow_always",
+          "kind": "allow_always",
+          "name": "Always allow"
+        },
+        {
+          "optionId": "reject_once",
+          "kind": "reject_once",
+          "name": "Deny"
+        }
+      ],
+      "outcome": {
+        "outcome": "selected",
+        "optionId": "allow_once"
+      },
+      "kind": "allow_once",
+      "exactSession": true,
+      "exactCommand": true,
+      "writeAttempt": true
+    }
+  ],
+  "nativeToolCall": {
+    "elapsedMs": 6884,
+    "title": "Run the requested background marker command",
+    "kind": "execute",
+    "rawInput": {
+      "command": "sleep 3; printf 'ACP_BACKGROUND_DONE' > qualification-marker.txt",
+      "description": "Run the requested background marker command",
+      "mode": "async",
+      "detach": true,
+      "initial_wait": 30
+    }
+  },
+  "nativeCompletion": {
+    "elapsedMs": 10083,
+    "rawOutput": {
+      "content": "<detached command with shellId: 0 completed with exit code 0>",
+      "detailedContent": "<detached command with shellId: 0 completed with exit code 0>"
+    }
+  },
+  "detachedToolObserved": true,
+  "backgroundCompletionObservedBeforeTerminal": true,
+  "markerOracle": {
+    "sampleCount": 118,
+    "firstObserved": {
+      "elapsedMs": 10098,
+      "phase": "during_turn",
+      "exists": true,
+      "matches": true
+    },
+    "terminal": {
+      "elapsedMs": 10675,
+      "phase": "terminal",
+      "exists": true,
+      "matches": true
+    },
+    "afterCleanup": {
+      "elapsedMs": 16147,
+      "phase": "after_process_cleanup",
+      "exists": true,
+      "matches": true
+    }
+  },
+  "providerExit": {
+    "code": 0,
+    "signal": null
+  },
+  "cleanupComplete": true,
+  "result": {
+    "passed": true,
+    "failures": []
+  },
+  "nativeUsage": {
+    "inputTokens": 33273,
+    "outputTokens": 126,
+    "totalTokens": 33399,
+    "thoughtTokens": 38,
+    "cachedReadTokens": 22096,
+    "cachedWriteTokens": 11168
+  },
+  "providerReportedCostUsd": null,
+  "externalBilling": {
+    "baselineDisplayedIncludedAiCreditsUsed": 3,
+    "displayedIncludedAiCreditsTotal": 1500,
+    "postProbeReconciliation": "parent refreshed GitHub billing dashboard",
+    "exactCreditConsumption": null,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "postProbeDisplayedIncludedAiCreditsUsed": 3,
+    "additionalCashChargesUsd": 0,
+    "note": "Unchanged display may reflect credit granularity or delay; exact credit consumption remains unknown."
+  },
+  "scope": "One real GitHub inference turn waited for this finite detached command. This does not prove every background lifecycle or Product/Daytona qualification."
+}

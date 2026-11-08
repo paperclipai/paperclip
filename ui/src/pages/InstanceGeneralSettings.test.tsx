@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
@@ -57,7 +58,6 @@ describe("InstanceGeneralSettings sign-out", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "not_allowed",
       backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });
@@ -131,10 +131,10 @@ describe("InstanceGeneralSettings sign-out", () => {
     mockAuthApi.signOut.mockRejectedValue(new Error("Sign-out request failed"));
     await renderPage(SELF_HOSTED_HEALTH);
 
-    const keyboardToggle = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Toggle keyboard shortcuts"]',
+    const censorToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle username log censoring"]',
     );
-    flushSync(() => keyboardToggle?.click());
+    flushSync(() => censorToggle?.click());
     await vi.waitFor(() => expect(container.textContent).toContain("Settings update failed"));
 
     flushSync(() => signOutButton()?.click());
@@ -150,10 +150,10 @@ describe("InstanceGeneralSettings sign-out", () => {
     flushSync(() => signOutButton()?.click());
     await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
 
-    const keyboardToggle = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Toggle keyboard shortcuts"]',
+    const censorToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle username log censoring"]',
     );
-    flushSync(() => keyboardToggle?.click());
+    flushSync(() => censorToggle?.click());
 
     await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(container.textContent).not.toContain("Sign-out request failed"));
@@ -168,18 +168,18 @@ describe("InstanceGeneralSettings sign-out", () => {
     );
     await renderPage(SELF_HOSTED_HEALTH);
 
-    const keyboardToggle = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Toggle keyboard shortcuts"]',
+    const censorToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle username log censoring"]',
     );
     flushSync(() => signOutButton()?.click());
     await vi.waitFor(() => expect(mockAuthApi.signOut).toHaveBeenCalledOnce());
 
-    expect(keyboardToggle?.disabled).toBe(true);
-    flushSync(() => keyboardToggle?.click());
+    expect(censorToggle?.disabled).toBe(true);
+    flushSync(() => censorToggle?.click());
     expect(mockInstanceSettingsApi.updateGeneral).not.toHaveBeenCalled();
 
     resolveSignOut?.({ success: true });
-    await vi.waitFor(() => expect(keyboardToggle?.disabled).toBe(false));
+    await vi.waitFor(() => expect(censorToggle?.disabled).toBe(false));
   });
 
   it("disables sign-out while a settings update is pending", async () => {
@@ -191,10 +191,10 @@ describe("InstanceGeneralSettings sign-out", () => {
     );
     await renderPage(SELF_HOSTED_HEALTH);
 
-    const keyboardToggle = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Toggle keyboard shortcuts"]',
+    const censorToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle username log censoring"]',
     );
-    flushSync(() => keyboardToggle?.click());
+    flushSync(() => censorToggle?.click());
     await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
 
     expect(signOutButton()?.disabled).toBe(true);
@@ -203,5 +203,142 @@ describe("InstanceGeneralSettings sign-out", () => {
 
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
+  });
+});
+
+describe("InstanceGeneralSettings operator-hidden sections", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(health: Record<string, unknown>) {
+    mockHealthApi.get.mockResolvedValue(health);
+    queryClient.setQueryData(queryKeys.health, health);
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceGeneralSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+  }
+
+  it("hides an operator-hidden field-backed section and a UI-only section", async () => {
+    await renderPage({
+      ...SELF_HOSTED_HEALTH,
+      hiddenSettings: [
+        "instance.general.censorUsernameInLogs",
+        "instance.general.deploymentStatus",
+      ],
+    });
+
+    expect(container.textContent).not.toContain("Censor username in logs");
+    expect(container.textContent).not.toContain("Deployment and auth");
+    expect(container.textContent).toContain("Backup retention");
+    expect(container.textContent).toContain("AI feedback sharing");
+    expect(container.textContent).toContain("Sign out");
+  });
+
+  it("shows every section when nothing is hidden", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    expect(container.textContent).toContain("Deployment and auth");
+    expect(container.textContent).toContain("Censor username in logs");
+    expect(container.textContent).toContain("Backup retention");
+  });
+});
+
+describe("InstanceGeneralSettings read resilience", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  function renderPage() {
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceGeneralSettings />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("keeps loaded settings on screen when a refetch fails transiently", async () => {
+    renderPage();
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+
+    mockInstanceSettingsApi.getGeneral.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryState(queryKeys.instance.generalSettings)?.status).toBe("error"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mockInstanceSettingsApi.getGeneral).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Backup retention");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when settings fail to load", async () => {
+    mockInstanceSettingsApi.getGeneral.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    renderPage();
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load general settings"));
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Backup retention");
+
+    const retryButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Retry");
+    expect(retryButton).toBeDefined();
+    flushSync(() => retryButton?.click());
+
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

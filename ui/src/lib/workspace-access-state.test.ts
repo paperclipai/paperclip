@@ -253,7 +253,7 @@ describe("resolveWorkspaceAccessState", () => {
     });
 
     expect(access).toMatchObject({
-      state: "provisioning",
+      state: "stopped",
       action: { kind: "start", label: "Start workspace" },
     });
   });
@@ -298,7 +298,7 @@ describe("resolveWorkspaceAccessState", () => {
       },
     });
     expect(access).toMatchObject({ state: "validating", action: { kind: "wait" } });
-    expect(access.description).toContain("restored no company or issue rows");
+    expect(access.description).toContain("restored no organization or issue rows");
   });
 
   it("degrades a verified clone whose database regressed and offers one repair", () => {
@@ -344,8 +344,11 @@ describe("resolveWorkspaceAccessState", () => {
 
   it("offers start when nothing is running", () => {
     expect(
-      resolveWorkspaceAccessState({ runtimeServices: [], operations: [] }),
-    ).toMatchObject({ state: "provisioning", action: { kind: "start", label: "Start workspace" } });
+      resolveWorkspaceAccessState({
+        runtimeServices: [runtimeService({ status: "stopped", healthStatus: "unknown", url: null })],
+        operations: [],
+      }),
+    ).toMatchObject({ state: "stopped", action: { kind: "start", label: "Start workspace" } });
 
     expect(
       resolveWorkspaceAccessState({
@@ -353,7 +356,20 @@ describe("resolveWorkspaceAccessState", () => {
         operations: [],
         handoffFailure: { reason: "runtime_not_running" },
       }),
-    ).toMatchObject({ state: "provisioning", action: { kind: "start" } });
+    ).toMatchObject({ state: "stopped", action: { kind: "start" } });
+  });
+
+  it("shows provisioning only while a runtime service is actually starting", () => {
+    expect(
+      resolveWorkspaceAccessState({
+        runtimeServices: [runtimeService({ status: "starting", healthStatus: "unknown", url: null })],
+        operations: [],
+        handoffFailure: { reason: "runtime_not_running" },
+      }),
+    ).toMatchObject({
+      state: "provisioning",
+      action: { kind: "wait", label: "Starting workspace" },
+    });
   });
 
   it("refuses to call an unhealthy running runtime ready", () => {
@@ -374,7 +390,7 @@ describe("resolveWorkspaceAccessState", () => {
 
   it("handles missing operations and services without throwing", () => {
     expect(resolveWorkspaceAccessState({ runtimeServices: null, operations: undefined }).state)
-      .toBe("provisioning");
+      .toBe("stopped");
   });
 });
 
@@ -398,7 +414,7 @@ describe("describeWorkspaceReadinessCause", () => {
           failurePhase: "cloned_membership_missing",
         },
       }),
-    ).toBe("No cloned user has an active company membership.");
+    ).toBe("No cloned user has an active organization membership.");
   });
 
   it("falls back to the reason and finally to null", () => {

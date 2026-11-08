@@ -36,6 +36,13 @@ const mockAccessService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   releaseLease: vi.fn(),
+  // The tenant-binding guard reads the environment's bound company ids before it
+  // reveals the driver or the status. An empty list marks an instance-global
+  // environment, so the guard lets the same-company Test through.
+  listBoundCompanyIds: vi.fn(async () => []),
+  // The managed-sandbox-only redirect looks up the managed sandbox for a local
+  // environment Test. These tests keep the policy off, so no managed row exists.
+  findManagedSandboxEnvironment: vi.fn(async () => null),
 }));
 
 const mockEnvironmentRuntime = vi.hoisted(() => ({
@@ -46,9 +53,11 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn(async () => null));
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
-const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async (_input: { config: { env: Record<string, string> } }) => ({ ok: true })));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -407,3 +416,9 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
 function beforeEachActor(actor: TestActor) {
   currentActor = actor;
 }
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
+});

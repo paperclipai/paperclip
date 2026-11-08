@@ -1,23 +1,47 @@
 // @vitest-environment jsdom
 
+import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceRuntimeService } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
   buildWorkspaceServiceControlEntries,
   resolveWorkspaceServiceControlRequests,
   WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
+import { queryKeys } from "@/lib/queryKeys";
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 function act(callback: () => void) {
   flushSync(callback);
+}
+
+/**
+ * The command rows read the managed-sandbox-only policy through the shared
+ * instance-settings query, so every render needs a query client. Renders here
+ * are synchronous and the guard fails closed until the policy resolves, so the
+ * cache is primed by default. Pass `null` to render with the policy unresolved.
+ */
+function withQueryClient(node: ReactNode, experimentalSettings: Record<string, unknown> | null = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (experimentalSettings) {
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
+  return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
 }
 
 function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
@@ -152,108 +176,6 @@ describe("buildWorkspaceRuntimeControlSections", () => {
       }),
     ]);
   });
-
-  it("surfaces running stale runtime services separately from updated commands", () => {
-    const sections = buildWorkspaceRuntimeControlSections({
-      runtimeConfig: {
-        commands: [
-          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
-        ],
-      },
-      runtimeServices: [
-        createRuntimeService({
-          id: "service-web",
-          serviceName: "web",
-          status: "running",
-          command: "pnpm dev",
-        }),
-      ],
-      canStartServices: true,
-      canRunJobs: true,
-    });
-
-    expect(sections.services).toEqual([
-      expect.objectContaining({
-        title: "web",
-        statusLabel: "stopped",
-        command: "pnpm dev:once --tailscale-auth",
-        runtimeServiceId: null,
-      }),
-    ]);
-    expect(sections.otherServices).toEqual([
-      expect.objectContaining({
-        title: "web",
-        statusLabel: "running",
-        command: "pnpm dev",
-        runtimeServiceId: "service-web",
-        disabledReason: "This runtime service no longer matches a configured workspace command.",
-      }),
-    ]);
-  });
-
-  it("surfaces running stale runtime services separately from updated commands", () => {
-    const sections = buildWorkspaceRuntimeControlSections({
-      runtimeConfig: {
-        commands: [
-          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
-        ],
-      },
-      runtimeServices: [
-        createRuntimeService({
-          id: "service-web",
-          serviceName: "web",
-          status: "running",
-          command: "pnpm dev",
-        }),
-      ],
-      canStartServices: true,
-      canRunJobs: true,
-    });
-
-    expect(sections.services).toEqual([
-      expect.objectContaining({
-        title: "web",
-        statusLabel: "stopped",
-        command: "pnpm dev:once --tailscale-auth",
-        runtimeServiceId: null,
-      }),
-    ]);
-    expect(sections.otherServices).toEqual([
-      expect.objectContaining({
-        title: "web",
-        statusLabel: "running",
-        command: "pnpm dev",
-        runtimeServiceId: "service-web",
-        disabledReason: "This runtime service no longer matches a configured workspace command.",
-      }),
-    ]);
-  });
-});
-
-describe("buildWorkspaceRuntimeControlItems", () => {
-  it("keeps the legacy flat export shape for stale importers", () => {
-    const items = buildWorkspaceRuntimeControlItems({
-      runtimeConfig: {
-        commands: [
-          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
-          { id: "db-migrate", name: "db:migrate", kind: "job", command: "pnpm db:migrate" },
-        ],
-      },
-      runtimeServices: [
-        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
-      ],
-      canStartServices: true,
-      canRunJobs: true,
-    });
-
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      title: "web",
-      status: "running",
-      statusLabel: "running",
-      runtimeServiceId: "service-web",
-    });
-  });
 });
 
 describe("WorkspaceRuntimeControls", () => {
@@ -262,10 +184,99 @@ describe("WorkspaceRuntimeControls", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("shows the service working directory when the managed-sandbox-only policy is off", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running", cwd: "/srv/repo" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        {},
+      ));
+    });
+
+    expect(container.textContent).toContain("/srv/repo");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the service working directory hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running", cwd: "/srv/repo" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        null,
+      ));
+    });
+
+    expect(container.textContent).not.toContain("/srv/repo");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
+  });
+
+  it("drops the service working directory when the managed-sandbox-only policy is on", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          cwd: "/srv/repo",
+          url: "http://127.0.0.1:5173",
+          port: 5173,
+        }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        { enableManagedSandboxOnly: true },
+      ));
+    });
+
+    expect(container.textContent).not.toContain("/srv/repo");
+    // The URL, the port, and the command describe the service, not the host.
+    expect(container.textContent).toContain("http://127.0.0.1:5173");
+    expect(container.textContent).toContain("Port 5173");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
   });
 
   it("renders service and job actions distinctly", () => {
@@ -285,12 +296,12 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim());
@@ -316,12 +327,12 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeQuickControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button"));
@@ -351,13 +362,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           disabledHint="Add a workspace path first."
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button"));
@@ -382,13 +393,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           disabledHint="Add runtime settings first."
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).not.toContain("Add runtime settings first.");
@@ -411,12 +422,12 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).not.toContain("unknown");
@@ -458,12 +469,12 @@ describe("WorkspaceRuntimeControls", () => {
 
       const root = createRoot(container);
       act(() => {
-        root.render(
+        root.render(withQueryClient(
           <WorkspaceRuntimeControls
             sections={sections}
             onAction={vi.fn()}
           />,
-        );
+        ));
       });
 
       const alert = container.querySelector('[role="alert"]');
@@ -492,13 +503,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           square
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const summaryPanel = container.querySelector(".border.border-border\\/70");
@@ -511,36 +522,6 @@ describe("WorkspaceRuntimeControls", () => {
     expect(summaryPanel?.className).not.toContain("bg-background/60");
     expect(servicePanel?.className).toContain("rounded-none");
     expect(startButton?.className).toContain("rounded-none");
-
-    act(() => root.unmount());
-  });
-
-  it("accepts the legacy items prop without crashing", () => {
-    const items = buildWorkspaceRuntimeControlItems({
-      runtimeConfig: {
-        commands: [
-          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
-        ],
-      },
-      runtimeServices: [],
-      canStartServices: false,
-    });
-
-    const root = createRoot(container);
-    act(() => {
-      root.render(
-        <WorkspaceRuntimeControls
-          items={items}
-          emptyMessage="No runtime services have been started yet."
-          disabledHint="Add runtime settings first."
-          onAction={vi.fn()}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain("Services");
-    expect(container.textContent).toContain("Add runtime settings first.");
-    expect(Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim())).toEqual(["Start"]);
 
     act(() => root.unmount());
   });

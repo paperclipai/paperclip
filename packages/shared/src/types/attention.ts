@@ -11,6 +11,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "issue_thread_interaction",
   "join_request",
   "recovery_action",
+  // Legacy persisted decision sources remain readable; no feed items are generated.
   "productivity_review",
   "blocker_attention",
   "review",
@@ -207,7 +208,9 @@ export interface AttentionResolverAudience {
   resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
   /** Agent the card is addressed to, when it names one. */
   addresseeAgentId: string | null;
-  /** Display name of {@link addresseeAgentId}, resolved server-side. */
+  /** User the card is addressed to, when it names one. */
+  addresseeUserId?: string | null;
+  /** Display name of the agent addressee, resolved server-side. */
   addresseeName: string | null;
   /** Agent that created the card, excluded when the policy is `not_creator`. */
   createdByAgentId: string | null;
@@ -271,4 +274,48 @@ export interface AttentionFeed {
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
+}
+
+/** Canonical attention counts without downloading the decision cards. */
+export type AttentionSummary = Omit<AttentionFeed, "items" | "nextCursor">;
+/** Complete accessible task membership for Tasks → Needs attention. */
+export interface AttentionTaskIndex extends AttentionSummary {
+  taskIds: string[];
+}
+/** Read-only projection of canonical task decisions; never a second write store. */
+export interface DecisionHistoryItem {
+  id: string;
+  sourceKind: "issue_thread_interaction" | "decision";
+  sourceId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  agentId: string | null;
+  agentName: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  title: string;
+  outcome: string;
+  label: string;
+  resolvedAt: string;
+  resolvedByUserId: string | null;
+  resolvedByAgentId: string | null;
+  href: string;
+  target: { kind: "issue_document"; issueId?: string; key: string; revisionId: string } | { kind: "issue_attachment"; attachmentId: string } | null;
+}
+
+export interface DecisionHistoryQuery {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+  outcome?: string;
+  agentId?: string;
+  projectId?: string;
+  sort?: "newest" | "oldest";
+  since?: string;
+}
+
+export interface DecisionHistoryPage {
+  items: DecisionHistoryItem[];
+  nextCursor: string | null;
 }

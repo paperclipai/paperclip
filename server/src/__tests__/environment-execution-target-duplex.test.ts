@@ -20,7 +20,7 @@ vi.mock("../services/plugin-environment-driver.js", async (importActual) => ({
   resolvePluginSandboxProviderDriverById: mockResolvePluginSandboxProviderDriverById,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -39,17 +39,19 @@ import type {
 
 // A snapshot that grants the opt-in duplex capability, plus the rest true so the
 // gate reads only the duplex flag.
-const DUPLEX_GRANT: EffectiveSandboxCapabilities = {
+const DUPLEX_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
   persistentProcessSessions: true,
   independentControlCommands: true,
   incrementalSessionOutput: true,
+  concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
-const DUPLEX_ABSENT: EffectiveSandboxCapabilities = {
+const DUPLEX_ABSENT: EffectiveExecutionCapabilities = {
   ...DUPLEX_GRANT,
   duplexCommandStream: false,
 };
@@ -129,7 +131,7 @@ describe("sandbox driver duplex channel wiring", () => {
     const channel = await service.openDuplexChannel({
       environment: SANDBOX_ENVIRONMENT,
       lease: PLUGIN_LEASE,
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
 
     // The driver resolves the worker by the pinned plugin id and passes the same
@@ -140,12 +142,13 @@ describe("sandbox driver duplex channel wiring", () => {
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "provider-lease-1",
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
 
     // write / stop / close map to write / kill / close on the host session.
-    channel.write("input-bytes");
-    expect(hostSession.write).toHaveBeenCalledWith("input-bytes");
+    const inputBytes = new TextEncoder().encode("input-bytes");
+    channel.write(inputBytes);
+    expect(hostSession.write).toHaveBeenCalledWith(inputBytes);
     channel.stop();
     expect(hostSession.kill).toHaveBeenCalledTimes(1);
     await channel.close();
@@ -182,7 +185,7 @@ describe("sandbox driver duplex channel wiring", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: nonPluginLease,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -207,7 +210,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -225,7 +228,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -241,7 +244,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       driver: "sandbox",
       acquireRunLease: vi.fn(),
       releaseRunLease: vi.fn(),
-      effectiveSandboxCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
+      resolveCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
       openDuplexChannel,
     } as unknown as EnvironmentRuntimeDriver;
     const service = environmentRuntimeService({} as never, { drivers: [narrowedDriver] });
@@ -250,7 +253,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: { ...PLUGIN_LEASE, metadata: { ...PLUGIN_LEASE.metadata, driver: "sandbox" } },
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(openDuplexChannel).not.toHaveBeenCalled();
@@ -268,7 +271,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       service.openDuplexChannel({
         environment: SANDBOX_ENVIRONMENT,
         lease: PLUGIN_LEASE,
-        command: "bridge-callback",
+        command: ["bridge-callback"],
       }),
     ).rejects.toThrow(DUPLEX_DENIED);
     expect(worker.openDuplexChannel).not.toHaveBeenCalled();
@@ -297,7 +300,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
 // environment runtime whose openDuplexChannel is a spy. The helper returns the
 // runner and the spy so a test reads the capability-gated member.
 async function buildSandboxRunner(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
 }) {
   mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
     driver: "sandbox",
@@ -324,7 +327,7 @@ async function buildSandboxRunner(input: {
     syncIn: vi.fn(),
     syncOut: vi.fn(),
     openDuplexChannel,
-    effectiveSandboxCapabilities: vi.fn(async () =>
+    resolveCapabilities: vi.fn(async () =>
       input.snapshot ? Object.freeze({ ...input.snapshot }) : null,
     ),
   } as unknown as EnvironmentRuntimeService;
@@ -350,11 +353,11 @@ describe("inline sandbox runner duplex capability gate", () => {
     const { runner, openDuplexChannel } = await buildSandboxRunner({ snapshot: DUPLEX_GRANT });
     expect(runner?.openDuplexChannel).toBeDefined();
 
-    await runner!.openDuplexChannel!({ command: "bridge-callback" });
+    await runner!.openDuplexChannel!({ command: ["bridge-callback"] });
     expect(openDuplexChannel).toHaveBeenCalledWith({
       environment: expect.objectContaining({ id: "env-1" }),
       lease: expect.objectContaining({ id: "lease-1" }),
-      command: "bridge-callback",
+      command: ["bridge-callback"],
     });
   });
 

@@ -1,3 +1,7 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * `definePlugin` — the top-level helper for authoring a Paperclip plugin.
  *
@@ -49,12 +53,16 @@
  * ```
  */
 
-import type { PluginContext } from "./types.js";
+import type { PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
   PluginEnvironmentSyncResult,
@@ -73,6 +81,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -82,12 +91,12 @@ import type {
   PluginExternalObjectResolveResult,
   RefreshExternalObjectsParams,
   RefreshExternalObjectsResult,
-  PluginSetupTokenPtyOpenParams,
-  PluginSetupTokenPtyOpenResult,
-  PluginSetupTokenPtyInputParams,
-  PluginSetupTokenPtyStopParams,
-  PluginSetupTokenPtyCloseParams,
-  PluginSetupTokenPtyCloseResult,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyOpenResult,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginLoginPtyCloseResult,
   PluginDuplexChannelOpenParams,
   PluginDuplexChannelOpenResult,
   PluginDuplexChannelWriteParams,
@@ -173,6 +182,8 @@ export interface PluginApiRequestInput {
 }
 
 export interface PluginApiResponse {
+  /** Server-only upstream for a declared WebSocket route. Never returned as JSON. */
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -289,6 +300,17 @@ export interface PluginDefinition {
    */
   onShutdown?(): Promise<void>;
 
+  /** Prove plugin-owned background work is quiescent for idle sleep.
+   * The SDK first closes admission and checks accepted RPCs and notifications.
+   * Return `none` only when timers, sockets, detached operations and cleanup
+   * are settled and cannot start work until signal aborts. Do not cancel useful
+   * work to satisfy this check. Missing hooks, failures and uncertainty block
+   * sleep. The signal aborts on exact-owner release or bounded hold expiry.
+   * Plugins with autonomous work must keep returning `present` unless they
+   * can safely suspend and resume that work under this contract.
+   */
+  onIdleDrain?(signal: AbortSignal): Promise<"none" | "present" | "unknown">;
+
   /**
    * Called to validate the current plugin configuration.
    *
@@ -337,6 +359,25 @@ export interface PluginDefinition {
   ): Promise<DetectExternalObjectsResult>;
 
   /**
+   * Complete required work for the committed agent lifecycle phase.
+   * Requires manifest `agentLifecycle: true` and `agents.lifecycle.manage`.
+   * Echo operationId/version; return pending until the effect finishes.
+   * Calls can repeat. Fence older versions and make external effects idempotent.
+   */
+  onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
+
+  /**
+   * Reconcile a committed resource event. Requires manifest resourceLifecycle and events.subscribe.
+   * The host acknowledges successful results and replays interrupted/unfinished work.
+   * Calls are at least once, in order per resource. Re-read current state and use
+   * idempotent external operations; deletion events remain available after the row is gone.
+   */
+  onResourceLifecycle?(event: ResourceLifecycleEvent): Promise<ResourceLifecycleResult>;
+
+  /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
+  onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
+
+  /**
    * Called when Paperclip needs the current normalized status for one external
    * object owned by a manifest-declared provider.
    *
@@ -364,6 +405,12 @@ export interface PluginDefinition {
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult>;
 
+  /** Required with manifest.workspaceProvider, together with project resource lifecycle. */
+  onWorkspaceOperation?(params: PluginWorkspaceParams): Promise<PluginWorkspaceResult>;
+
+  /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
+  onEnvironmentTask?(params: PluginEnvironmentTaskParams): Promise<PluginEnvironmentTaskResult>;
+
   /** Called to test reachability or readiness of a plugin-hosted environment. */
   onEnvironmentProbe?(
     params: PluginEnvironmentProbeParams,
@@ -382,12 +429,24 @@ export interface PluginDefinition {
   /** Called when a run finishes and the provider lease can be released. */
   onEnvironmentReleaseLease?(
     params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void>;
+  ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Stop this exact allocation and retain all files, regardless of release
+   * policy. Throw if stop cannot be confirmed; never destroy as a fallback.
+   * Separate worker discovery lets the host safely defer older providers. */
+  onEnvironmentStopLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<PluginEnvironmentTerminationReceipt>;
 
   /** Called when the host needs to force-destroy provider state. */
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void>;
+  ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Read provider state only. This must not start or reconnect a sandbox. */
+  onEnvironmentInspectLease?(
+    params: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation>;
 
   /** Called to materialize the run workspace inside the provider lease. */
   onEnvironmentRealizeWorkspace?(
@@ -398,6 +457,11 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /** Return an authenticated private WebSocket ingress for runnerd. */
+  onEnvironmentRunnerIngressEndpoint?(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ): Promise<PluginEnvironmentRunnerIngressEndpoint>;
 
   /**
    * Optional, opt-in: called before execution to place host files/directories at
@@ -449,27 +513,27 @@ export interface PluginDefinition {
    * Called to open one live Claude `setup-token` login pseudo-terminal.
    * The worker registers the terminal under the host route identifier and returns a
    * worker session identifier for the output notification binding only. The worker
-   * streams output and the exit through `ctx.setupTokenPty`, never as a reply.
-   * Defining the four `onSetupTokenPty*` hooks advertises the four methods.
+   * streams output and the exit through `ctx.loginPty`, never as a reply.
+   * Defining the four `onLoginPty*` hooks advertises the four methods.
    */
-  onSetupTokenPtyOpen?(
-    params: PluginSetupTokenPtyOpenParams,
-  ): Promise<PluginSetupTokenPtyOpenResult>;
+  onLoginPtyOpen?(
+    params: PluginLoginPtyOpenParams,
+  ): Promise<PluginLoginPtyOpenResult>;
 
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
-  onSetupTokenPtyInput?(params: PluginSetupTokenPtyInputParams): Promise<void>;
+  onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
-  onSetupTokenPtyStop?(params: PluginSetupTokenPtyStopParams): Promise<void>;
+  onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;
 
   /**
    * Called to close an open login pseudo-terminal by the host route identifier. The
    * worker closes the exact terminal registered under that identifier and returns a
    * close acknowledgement that carries the same identifier.
    */
-  onSetupTokenPtyClose?(
-    params: PluginSetupTokenPtyCloseParams,
-  ): Promise<PluginSetupTokenPtyCloseResult>;
+  onLoginPtyClose?(
+    params: PluginLoginPtyCloseParams,
+  ): Promise<PluginLoginPtyCloseResult>;
 
   /**
    * Called to open one persistent duplex channel. The worker registers the
@@ -478,6 +542,8 @@ export interface PluginDefinition {
    * and the exit through worker→host notifications, never as a reply. Defining
    * the four `onDuplexChannel*` hooks advertises the four methods. The host reads
    * the open verb to gate the `duplexCommandStream` capability.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   onDuplexChannelOpen?(
     params: PluginDuplexChannelOpenParams,

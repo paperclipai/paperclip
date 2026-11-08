@@ -26,9 +26,38 @@ vi.mock("./ssh.js", () => ({
 }));
 
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
+import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 
 describe("remote managed runtime", () => {
   const cleanupDirs: string[] = [];
+
+  it("stages all files over SSH without Git or cache exclusions and restores the same baseline", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-plain-"));
+    cleanupDirs.push(root);
+    await mkdir(path.join(root, "node_modules"));
+    await writeFile(path.join(root, ".gitignore"), "node_modules/\n");
+    await writeFile(path.join(root, "node_modules", "personal.bin"), Buffer.from([0, 255, 1]));
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "plain", adapterKey: "test", workspaceLocalDir: root,
+      workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
+    });
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: root, remoteDir: prepared.workspaceRemoteDir, workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
+    }));
+    await prepared.restoreWorkspace();
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      restoreGitHistory: false, baselineSnapshot: expect.objectContaining({
+        exclude: [".paperclip-runtime", "explicitly-excluded"],
+        entries: expect.any(Map),
+      }),
+    }));
+    const args = vi.mocked(restoreWorkspaceFromSshExecution).mock.calls[0] as unknown as [{ baselineSnapshot: { entries: Map<string, unknown> } }];
+    expect(args[0].baselineSnapshot.entries.has("node_modules/personal.bin")).toBe(true);
+  });
+
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -125,9 +154,9 @@ describe("remote managed runtime", () => {
       workspaceRemoteDir: "/app",
       syncWorkspace: false,
       additionalSources: [
-        { localPath: firstDir, projectId: "first" },
-        { localPath: brokenDir, projectId: "broken" },
-        { localPath: secondDir, projectId: "second" },
+        { localPath: firstDir, projectId: "first", ignoreResolution: { kind: "other" } },
+        { localPath: brokenDir, projectId: "broken", ignoreResolution: { kind: "other" } },
+        { localPath: secondDir, projectId: "second", ignoreResolution: { kind: "other" } },
       ],
     });
 
@@ -171,8 +200,8 @@ describe("remote managed runtime", () => {
       workspaceRemoteDir: "/app",
       syncWorkspace: false,
       additionalSources: [
-        { localPath: "relative/referenced", projectId: "relative" },
-        { localPath: healthyDir, projectId: "healthy" },
+        { localPath: "relative/referenced", projectId: "relative", ignoreResolution: { kind: "other" } },
+        { localPath: healthyDir, projectId: "healthy", ignoreResolution: { kind: "other" } },
       ],
     });
 
@@ -182,5 +211,142 @@ describe("remote managed runtime", () => {
     expect(syncDirectoryToSsh).not.toHaveBeenCalledWith(expect.objectContaining({
       localDir: "relative/referenced",
     }));
+  });
+
+  it("passes a project's resolved Git-ignored paths to the SSH exclude list, escaped", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-ignore-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const projectDir = path.join(rootDir, "referenced-project");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-ignore",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      additionalSources: [
+        {
+          localPath: projectDir,
+          projectId: "proj",
+          ignoreResolution: { kind: "git", ignoredPaths: ["secret.env", "build", "weird[1].txt"] },
+        },
+      ],
+    });
+
+    const call = syncDirectoryToSsh.mock.calls.find((entry) => entry[0].localDir === projectDir);
+    expect(call).toBeDefined();
+    const exclude = (call![0] as { exclude?: string[] }).exclude ?? [];
+    // The resolved ignored paths ride the exclude list, glob-escaped, on top of
+    // the fixed heavy-directory excludes the SSH lane already applies.
+    expect(exclude).toContain("secret.env");
+    expect(exclude).toContain("build");
+    expect(exclude).toContain("weird\\[1].txt");
+    expect(exclude).toContain("node_modules");
+  });
+
+  it("skips a project whose ignore resolution failed without ever calling syncDirectoryToSsh for it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-failed-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const healthyDir = path.join(rootDir, "referenced-healthy");
+    const failedDir = path.join(rootDir, "referenced-failed");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-failed",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      additionalSources: [
+        { localPath: healthyDir, projectId: "healthy", ignoreResolution: { kind: "other" } },
+        { localPath: failedDir, projectId: "failed", ignoreResolution: { kind: "failed", reason: "git status timed out" } },
+      ],
+    });
+
+    // Fail closed: the failed project never reaches the transfer at all — no
+    // bytes are sent for it — while the healthy project still stages.
+    expect(Object.keys(prepared.additionalSourceDirs)).toEqual(["healthy"]);
+    expect(syncDirectoryToSsh).not.toHaveBeenCalledWith(expect.objectContaining({ localDir: failedDir }));
+  });
+
+  it("never leaks a raw absolute path into the remote per-project staging warning", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-redact-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const failedDir = path.join(rootDir, "referenced-failed");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(failedDir, { recursive: true });
+
+    // A raw toplevel string that makes `failedDir` a non-descendant, carrying
+    // a sensitive absolute path — exactly the shape a caught Git diagnostic
+    // could embed. `resolveReferencedSourceIgnore` is the single choke point
+    // that must reduce it to the fixed category before anything downstream
+    // (here, the remote lane's warning) ever sees it.
+    const sensitivePath = "/srv/alice/project";
+    let ignoreResolution;
+    try {
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.toplevel") {
+          return { stdout: `${sensitivePath}\n`, stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      });
+      ignoreResolution = await resolveReferencedSourceIgnore(failedDir);
+    } finally {
+      setExpensiveWorkspaceGitExecutor(null);
+    }
+    expect(ignoreResolution.kind).toBe("failed");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await prepareRemoteManagedRuntime({
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/app",
+          remoteCwd: "/app",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "KNOWN HOSTS",
+          strictHostKeyChecking: true,
+        },
+        runId: "run-redact",
+        adapterKey: "codex",
+        workspaceLocalDir: workspaceDir,
+        workspaceRemoteDir: "/app",
+        syncWorkspace: false,
+        additionalSources: [{ localPath: failedDir, projectId: "failed", ignoreResolution }],
+      });
+
+      const warnedText = warnSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(warnedText).toContain("failed");
+      expect(warnedText).not.toContain(sensitivePath);
+      expect(warnedText).not.toContain(failedDir);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

@@ -1,0 +1,23 @@
+{
+  "source": "https://docs.fireflies.ai/graphql-api/webhooks-v2#example-payloads",
+  "verifiedAt": "2026-09-23",
+  "provenance": "Field names, types, and values are copied from the three official V2 example payloads. Bodies use two-space indentation, UTF-8, LF, and a final newline. These are published contract examples, not captured account deliveries. Signatures are fixed test vectors generated independently with Python hmac/sha256 over these exact bytes and the non-secret test key below.",
+  "signingSecret": "fireflies-v2-documentation-test-secret",
+  "cases": [
+    {
+      "example": "Meeting Summarized",
+      "rawBody": "{\n  \"event\": \"meeting.summarized\",\n  \"timestamp\": 1710876789456,\n  \"meeting_id\": \"ASxwZxCstx\"\n}\n",
+      "signature": "sha256=95e08724029165e67eb67678f26ee83e7ebb0cd3faf0f04767b1a5eab49a3049"
+    },
+    {
+      "example": "Meeting Transcribed",
+      "rawBody": "{\n  \"event\": \"meeting.transcribed\",\n  \"timestamp\": 1710876543210,\n  \"meeting_id\": \"ASxwZxCstx\",\n  \"client_reference_id\": \"be582c46-4ac9-4565-9ba6-6ab4264496a8\"\n}\n",
+      "signature": "sha256=259489359b0afe746758526dd09b8af83427a8dc168ddbd993ef78a1ad67d606"
+    },
+    {
+      "example": "Meeting Bot Joined",
+      "rawBody": "{\n  \"event\": \"meeting.bot_joined\",\n  \"timestamp\": 1781258655914,\n  \"meeting_id\": \"01KTXMH9V8RPY1B4DTYKB27WYR\"\n}\n",
+      "signature": "sha256=fd4565d2f42ff81e9c7f8ac7ce9c409a8b0ad842208ec9e2a3d51526aa78a921"
+    }
+  ]
+}

@@ -2,8 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { execute as executeCodex } from "./execute.js";
+import { buildProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
+import { randomUUID } from "node:crypto";
 import {
   CODEX_SYNC_ALLOWLIST,
+  buildCodexHomeRefreshProvision,
   codexHomeHasUsableAuth,
   ensureSymlink,
   evaluateCodexCredentialReadiness,
@@ -403,11 +409,17 @@ describe("seedManagedCodexHome", () => {
 
   // A device-login promotion writes the company credential as a regular-file
   // subscription auth.json. Re-seeding must keep it, or the first Test probe or
-  // run after a successful login silently signs the company out. The four cases
-  // below pin the identity-anchored rule: keep a subscription identity the
-  // shared source does not hold; still heal the same-identity stale copy
-  // (#5028) and still remove apikey-mode residue.
-  const subscriptionAuth = (accountId: string, marker: string) =>
+  // run after a successful login silently signs the company out. The cases
+  // below pin the identity- and freshness-anchored rule: keep a subscription
+  // identity the shared source does not hold; keep a same-identity file the
+  // shared source is not strictly fresher than (ties and unparseable freshness
+  // included); still heal the same-identity stale copy once the shared source
+  // has moved past it (#5028) and still remove apikey-mode residue.
+  const subscriptionAuth = (
+    accountId: string,
+    marker: string,
+    lastRefresh: string | null = "2026-07-09T00:00:00Z",
+  ) =>
     JSON.stringify({
       tokens: {
         id_token: `synthetic-id-token-${marker}`,
@@ -415,7 +427,7 @@ describe("seedManagedCodexHome", () => {
         refresh_token: `synthetic-refresh-token-${marker}`,
         account_id: accountId,
       },
-      last_refresh: "2026-07-09T00:00:00Z",
+      ...(lastRefresh ? { last_refresh: lastRefresh } : {}),
     });
 
   it("keeps a promoted subscription auth.json when the shared source has no auth", async () => {
@@ -463,18 +475,20 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
-  it("still replaces a same-identity stale regular copy with the shared symlink (#5028)", async () => {
+  it("still replaces a same-identity stale regular copy with the shared symlink once the source is strictly fresher (#5028)", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-stale-"));
     try {
       const companyHome = path.join(root, "company-home");
       const sharedCodexHome = path.join(root, "shared-codex-home");
-      const fresh = subscriptionAuth("acct-same", "fresh");
+      // The live source has rotated since the stale copy was written, so its
+      // last_refresh is strictly greater — the real #5028 shape.
+      const fresh = subscriptionAuth("acct-same", "fresh", "2026-07-09T02:00:00Z");
       await fs.mkdir(sharedCodexHome, { recursive: true });
       await fs.writeFile(path.join(sharedCodexHome, "auth.json"), fresh, "utf8");
       await fs.mkdir(companyHome, { recursive: true });
       await fs.writeFile(
         path.join(companyHome, "auth.json"),
-        subscriptionAuth("acct-same", "stale"),
+        subscriptionAuth("acct-same", "stale", "2026-07-09T01:00:00Z"),
         "utf8",
       );
 
@@ -485,6 +499,73 @@ describe("seedManagedCodexHome", () => {
       expect(await fs.readFile(healed, "utf8")).toBe(fresh);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a same-identity promoted auth.json that is strictly newer than the shared source", async () => {
+    // The device-login promotion mints a credential whose last_refresh is newer
+    // than the host copy the user was failing with. Swapping it for the shared
+    // symlink here would sign the company back in with that failing credential
+    // right after the login that replaced it.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-newer-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const promoted = subscriptionAuth("acct-same", "promoted", "2026-07-09T02:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-same", "host", "2026-07-09T01:00:00Z"),
+        "utf8",
+      );
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(path.join(companyHome, "auth.json"), promoted, "utf8");
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(promoted);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a same-identity auth.json when freshness ties or cannot be compared", async () => {
+    // Ties and unparseable timestamps keep the file: deleting a promoted
+    // credential is irreversible, while a kept file self-corrects on the next
+    // seed once the shared source has provably moved past it.
+    const cases = [
+      // Tie: same last_refresh on both sides.
+      { source: "2026-07-09T01:00:00Z", target: "2026-07-09T01:00:00Z" },
+      // The shared source carries no parseable last_refresh.
+      { source: null, target: "2026-07-09T01:00:00Z" },
+      // The file carries no parseable last_refresh.
+      { source: "2026-07-09T02:00:00Z", target: null },
+    ];
+    for (const { source, target } of cases) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-tie-"));
+      try {
+        const companyHome = path.join(root, "company-home");
+        const sharedCodexHome = path.join(root, "shared-codex-home");
+        const file = subscriptionAuth("acct-same", "file", target);
+        await fs.mkdir(sharedCodexHome, { recursive: true });
+        await fs.writeFile(
+          path.join(sharedCodexHome, "auth.json"),
+          subscriptionAuth("acct-same", "host", source),
+          "utf8",
+        );
+        await fs.mkdir(companyHome, { recursive: true });
+        await fs.writeFile(path.join(companyHome, "auth.json"), file, "utf8");
+
+        await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+        const kept = path.join(companyHome, "auth.json");
+        expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+        expect(await fs.readFile(kept, "utf8")).toBe(file);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
     }
   });
 
@@ -507,6 +588,77 @@ describe("seedManagedCodexHome", () => {
       const kept = path.join(companyHome, "auth.json");
       expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
       expect(await fs.readFile(kept, "utf8")).toBe(target);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never symlinks or heals a credential-store entry's auth.json, even for a fresher same-identity source", async () => {
+    // An agent can bind CODEX_HOME to a per-identity store entry through the
+    // login's account-home secret, and this seeding pass runs before every
+    // probe and execute. The entry's auth.json is the durable login the
+    // promotion/vend/copy-back own — a strictly-fresher same-identity shared
+    // source must NOT trigger the #5028 heal here, or the bound account is
+    // silently swapped for the host login.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-same", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-same", "host", "2026-07-09T02:00:00Z"),
+        "utf8",
+      );
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+
+      await seedManagedCodexHome(entryHome, env, async () => {});
+
+      const kept = path.join(entryHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(stored);
+      // The static shared config still copies in, so a bound run gets the
+      // same config a per-agent home gets.
+      expect(await fs.readFile(path.join(entryHome, "config.toml"), "utf8")).toBe('model = "gpt-5"\n');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an API-key rewrite of a credential-store entry's auth.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-apikey-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-bound-id", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+      const logs: string[] = [];
+
+      await seedManagedCodexHome(entryHome, env, async (_stream, line) => {
+        logs.push(line);
+      }, { apiKey: "sk-configured" });
+
+      expect(await fs.readFile(path.join(entryHome, "auth.json"), "utf8")).toBe(stored);
+      expect(logs.join("\n")).toContain("Refusing to write an API-key auth.json into credential-store entry");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -877,7 +1029,8 @@ describe("evaluateCodexCredentialReadiness", () => {
       const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
-      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(alpha).toContain('http_headers = { Authorization = "Bearer alpha-token" }');
+      expect(alpha).not.toMatch(/^headers\s*=/m);
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
       expect(alphaHome).not.toBe(zeroHome);
@@ -908,6 +1061,26 @@ describe("evaluateCodexCredentialReadiness", () => {
 describe("stageCodexHomeForSync", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("stages only the invocation-owned private observability profile", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-otel-stage-"));
+    let staged: string | undefined;
+    try {
+      const home = path.join(root, "home"); await fs.mkdir(home);
+      const own = "paperclip-observability-run-1.config.toml";
+      const other = "paperclip-observability-run-2.config.toml";
+      await fs.writeFile(path.join(home, own), '[otel]\nexporter = "none"\n', { mode: 0o600 });
+      await fs.writeFile(path.join(home, other), "another-active-run", { mode: 0o600 });
+      staged = await stageCodexHomeForSync(home, { runId: "run-1", additionalFiles: [own] });
+      expect(await fs.readdir(staged)).toContain(own);
+      expect(await fs.readdir(staged)).not.toContain(other);
+      expect((await fs.stat(path.join(staged, own))).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(staged)).mode & 0o777).toBe(0o700);
+      await expect(stageCodexHomeForSync(home, { additionalFiles: ["../escape.config.toml"] })).rejects.toThrow();
+      await fs.chmod(path.join(home, own), 0o644);
+      await expect(stageCodexHomeForSync(home, { additionalFiles: [own] })).rejects.toThrow("private regular file");
+    } finally { if (staged) await fs.rm(staged, { recursive: true, force: true }); await fs.rm(root, { recursive: true, force: true }); }
   });
 
   // Builds a fake managed CODEX_HOME containing the full allowlist (with
@@ -948,12 +1121,134 @@ describe("stageCodexHomeForSync", () => {
     return { home, authBytes, skillBytes };
   }
 
+  it.each([
+    { extraArgs: ["--profile", "selected"], args: ["--profile", "ignored"], expectedModel: "selected-model" },
+    { extraArgs: ["--full-auto"], args: ["--profile", "ignored"], expectedModel: undefined },
+    { extraArgs: [], args: ["--profile", "legacy"], expectedModel: "legacy-model" },
+  ])("uses effective CLI arguments when materializing an export profile: %j", async ({ extraArgs, args, expectedModel }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-profile-policy-"));
+    const companyId = randomUUID();
+    const home = path.join(root, "instances", "default", "companies", companyId, "codex-home");
+    const captured = path.join(root, "captured-profile.json");
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", root); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("CODEX_HOME", path.join(root, "source-home"));
+      await fs.mkdir(home, { recursive: true });
+      for (const name of ["selected", "ignored", "legacy"]) {
+        await fs.writeFile(path.join(home, `${name}.config.toml`), `model = "${name}-model"\n`);
+      }
+      const command = path.join(root, "fake-codex");
+      await fs.writeFile(command, `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+if (process.argv.includes("--version")) { console.log("codex-cli 0.160.0"); process.exit(0); }
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const argv = process.argv.slice(2), index = argv.indexOf("--profile");
+  const profile = index < 0 ? null : fs.readFileSync(path.join(process.env.CODEX_HOME, argv[index + 1] + ".config.toml"), "utf8");
+  fs.writeFileSync(${JSON.stringify(captured)}, JSON.stringify({ argv, profile }));
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "fixture-session" }));
+  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }));
+});
+`, { mode: 0o700 });
+      const result = await executeCodex({
+        runId: randomUUID(), agent: { id: randomUUID(), companyId, adapterType: "codex_local", name: "Profile fixture", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null }, context: {}, config: { engine: "cli", command, cwd: root, extraArgs, args,
+          env: { CODEX_HOME: home, OPENAI_API_KEY: "fake-provider-key" }, paperclipSkillSync: { desiredSkills: [] } },
+        observability: buildProviderObservabilityLaunch({ kind: "codex", companyId, agentId: "fixture-agent", revision: "revision", compatibilityKey: "fixture",
+          enabled: true, capture: { userPrompts: true, assistantResponses: true, toolDetails: true, toolContent: true },
+          logsEndpoint: "https://collector.example/v1/logs", tracesEndpoint: "https://collector.example/v1/traces", headers: {} }),
+        onLog: async () => {}, onMeta: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(await fs.readFile(captured, "utf8"));
+      expect(output.argv.filter((arg: string) => arg === "--profile")).toHaveLength(1);
+      expect(output.profile.match(/^model = "([^"]+)"$/m)?.[1]).toBe(expectedModel);
+      expect(output.profile).toContain("log_user_prompt = true");
+      expect(output.profile).toContain("log_agent_responses = true");
+      expect(output.argv).not.toContain("ignored");
+    } finally { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])("preserves remote conversations through real exporter restaging (subscription=%s)", async (mergeAuth) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-restage-"));
+    const stagedHomes: string[] = [];
+    try {
+      const home = path.join(root, "host-home");
+      const workspace = path.join(root, "workspace");
+      const remoteCwd = path.join(root, "remote");
+      await Promise.all([home, workspace, remoteCwd].map(dir => fs.mkdir(dir, { recursive: true })));
+      const auth = (date: string, marker: string) => JSON.stringify({
+        tokens: { account_id: "fixture-account", access_token: marker, refresh_token: marker, id_token: marker }, last_refresh: date,
+      });
+      const hostAuth = mergeAuth ? auth("2026-01-01T00:00:00Z", "host-token") : '{"OPENAI_API_KEY":"fake-api-key"}';
+      const rotatedAuth = auth("2026-10-01T00:00:00Z", "rotated-remote-token");
+      await fs.writeFile(path.join(home, "auth.json"), hostAuth);
+      const target = {
+        kind: "remote", transport: "sandbox", providerKey: "fixture", remoteCwd,
+        runner: { execute: async (input: { command: string; args?: string[]; cwd?: string; env?: Record<string, string>; stdin?: string; timeoutMs?: number }) =>
+          runChildProcess("codex-restage-fixture", input.command, input.args ?? [], {
+            cwd: input.cwd ?? root, env: input.env ?? {}, stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)), graceSec: 1, onLog: async () => {},
+          }) },
+      } as const;
+      const stage = async (revision: string) => {
+        await fs.writeFile(path.join(home, "config.toml"), `[otel.exporter.otlp-http]\nendpoint = "https://${revision}.example.test/v1/logs"\nprotocol = "binary"\n`);
+        const staged = await stageCodexHomeForSync(home);
+        stagedHomes.push(staged);
+        expect(await fs.readdir(staged)).not.toContain("sessions");
+        return prepareAdapterExecutionTargetRuntime({
+          target, runId: revision, adapterKey: "codex-observability-fixture", workspaceLocalDir: workspace,
+          syncWorkspace: false, assets: [{ key: "home", localDir: staged, provision: buildCodexHomeRefreshProvision({ mergeAuth }) }],
+        });
+      };
+      const first = await stage("first");
+      const remoteHome = first.assetDirs.home!;
+      for (const dir of ["sessions", "archived_sessions"]) {
+        await fs.mkdir(path.join(remoteHome, dir), { recursive: true });
+        await fs.writeFile(path.join(remoteHome, dir, "conversation.jsonl"), `saved-${dir}`);
+      }
+      await fs.writeFile(path.join(remoteHome, "state_5.sqlite"), "native-session-index");
+      await fs.writeFile(path.join(remoteHome, "config.json"), "stale-managed-config");
+      if (mergeAuth) await fs.writeFile(path.join(remoteHome, "auth.json"), rotatedAuth);
+      const second = await stage("second");
+      expect(second.assetDirs.home).toBe(remoteHome);
+      for (const dir of ["sessions", "archived_sessions"]) {
+        expect(await fs.readFile(path.join(remoteHome, dir, "conversation.jsonl"), "utf8")).toBe(`saved-${dir}`);
+      }
+      expect(await fs.readFile(path.join(remoteHome, "state_5.sqlite"), "utf8")).toBe("native-session-index");
+      expect(await fs.readFile(path.join(remoteHome, "config.toml"), "utf8")).toContain('https://second.example.test/v1/logs');
+      expect(await fs.readFile(path.join(remoteHome, "auth.json"), "utf8")).toBe(mergeAuth ? rotatedAuth : hostAuth);
+      await expect(fs.access(path.join(remoteHome, "config.json"))).rejects.toThrow();
+      expect((await fs.stat(remoteHome)).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(remoteHome, "config.toml"))).mode & 0o777).toBe(0o600);
+      // A corrupt upload must leave the prior conversation and config intact.
+      const badTar = path.join(second.runtimeRootDir!, "bad-home-upload.tar");
+      await fs.writeFile(badTar, "invalid archive");
+      const command = buildCodexHomeRefreshProvision({ mergeAuth }).postUploadCommand!({
+        assetDir: remoteHome, assetTarPath: badTar, runtimeRootDir: second.runtimeRootDir!,
+      });
+      const failed = await target.runner.execute({ command: "sh", args: ["-c", command], cwd: remoteCwd });
+      expect(failed.exitCode).not.toBe(0);
+      expect(await fs.readFile(path.join(remoteHome, "sessions", "conversation.jsonl"), "utf8")).toBe("saved-sessions");
+      expect(await fs.readFile(path.join(remoteHome, "config.toml"), "utf8")).toContain("https://second.example.test/v1/logs");
+      expect((await fs.readdir(remoteHome)).some(name => name.startsWith(".paperclip-home-refresh."))).toBe(false);
+    } finally {
+      await Promise.all([...stagedHomes, root].map(dir => fs.rm(dir, { recursive: true, force: true })));
+    }
+  });
+
   it("stages exactly the allowlist, derefs auth.json to bytes, and excludes decoys", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-"));
     let staged: string | null = null;
     try {
       const { home, authBytes, skillBytes } = await buildFakeHome(root);
       staged = await stageCodexHomeForSync(home, { runId: "run-1" });
+
+      expect((await fs.stat(staged)).mode & 0o777).toBe(0o700);
+      for (const entry of ["auth.json", "config.toml", "config.json", "instructions.md"]) {
+        const mode = (await fs.stat(path.join(staged, entry))).mode & 0o777;
+        expect(mode, `${entry} should be staged 0600`).toBe(0o600);
+      }
 
       const entries = (await fs.readdir(staged)).sort();
       expect(entries).toEqual([...CODEX_SYNC_ALLOWLIST].sort());
@@ -981,21 +1276,6 @@ describe("stageCodexHomeForSync", () => {
     }
   });
 
-  // C1 — staged credential file must be mode 0600 (not the world-readable default).
-  it("writes the staged auth.json with mode 0600", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-mode-"));
-    let staged: string | null = null;
-    try {
-      const { home } = await buildFakeHome(root);
-      staged = await stageCodexHomeForSync(home, { runId: "run-mode" });
-      const mode = (await fs.stat(path.join(staged, "auth.json"))).mode & 0o777;
-      expect(mode).toBe(0o600);
-    } finally {
-      if (staged) await fs.rm(staged, { recursive: true, force: true });
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
   // config.toml carries the managed MCP `Authorization: Bearer …` header and is
   // secret-bearing; the staged copy must be 0600, not the world-readable default.
   it("writes the staged config.toml (managed MCP bearer header) with mode 0600", async () => {
@@ -1014,39 +1294,6 @@ describe("stageCodexHomeForSync", () => {
       staged = await stageCodexHomeForSync(home, { runId: "run-toml-mode" });
       const mode = (await fs.stat(path.join(staged, "config.toml"))).mode & 0o777;
       expect(mode).toBe(0o600);
-    } finally {
-      if (staged) await fs.rm(staged, { recursive: true, force: true });
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  // Least privilege: no staged regular file needs group/other read, so every
-  // one (config.json, instructions.md — not just credentials) is staged 0600.
-  it("writes every staged regular file with mode 0600", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-all-mode-"));
-    let staged: string | null = null;
-    try {
-      const { home } = await buildFakeHome(root);
-      staged = await stageCodexHomeForSync(home, { runId: "run-all-mode" });
-      for (const entry of ["auth.json", "config.toml", "config.json", "instructions.md"]) {
-        const mode = (await fs.stat(path.join(staged, entry))).mode & 0o777;
-        expect(mode, `${entry} should be staged 0600`).toBe(0o600);
-      }
-    } finally {
-      if (staged) await fs.rm(staged, { recursive: true, force: true });
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  // C2 — staged dir must be 0700 (mkdtemp guarantees this on POSIX).
-  it("creates the staged dir with mode 0700", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-dir-"));
-    let staged: string | null = null;
-    try {
-      const { home } = await buildFakeHome(root);
-      staged = await stageCodexHomeForSync(home, { runId: "run-dir" });
-      const mode = (await fs.stat(staged)).mode & 0o777;
-      expect(mode).toBe(0o700);
     } finally {
       if (staged) await fs.rm(staged, { recursive: true, force: true });
       await fs.rm(root, { recursive: true, force: true });
@@ -1143,23 +1390,22 @@ describe("stageCodexHomeForSync", () => {
     }
   });
 
-  // Mode normalization: nested skill files must be staged 0600 regardless of
-  // their source mode (0644 documents, 0755 scripts, etc.).
-  it("writes nested skill files with mode 0600 regardless of source mode", async () => {
+  // Skill staging retains executable permission with owner-only access.
+  it("retains skill executable bits without group or world permissions", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-skill-mode-"));
     let staged: string | null = null;
     try {
       const home = path.join(root, "codex-home");
       await fs.mkdir(path.join(home, "skills", "my-skill"), { recursive: true });
       // Typical source modes: readable doc (0644) and executable script (0755);
-      // both must land 0600 in the staged dir.
+      // documents land 0600, scripts 0700 in the staged dir.
       await fs.writeFile(path.join(home, "skills", "my-skill", "SKILL.md"), "# skill\n", { mode: 0o644 });
       await fs.writeFile(path.join(home, "skills", "my-skill", "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
 
       staged = await stageCodexHomeForSync(home, { runId: "run-skill-mode" });
       for (const rel of ["my-skill/SKILL.md", "my-skill/run.sh"]) {
         const mode = (await fs.stat(path.join(staged, "skills", rel))).mode & 0o777;
-        expect(mode, `skills/${rel} should be staged 0600`).toBe(0o600);
+        expect(mode, `skills/${rel} mode`).toBe(rel.endsWith(".sh") ? 0o700 : 0o600);
       }
     } finally {
       if (staged) await fs.rm(staged, { recursive: true, force: true });

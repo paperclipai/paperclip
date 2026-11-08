@@ -38,6 +38,38 @@ export function resolveArchivedCompanyBounce(params: {
   return selectedActive ?? companies.find((company) => company.status !== "archived") ?? null;
 }
 
+export type CompanyArchiveDeparture =
+  | { kind: "company"; company: BounceCandidateCompany }
+  | { kind: "cloud_portfolio"; url: string }
+  | { kind: "companies_list" };
+
+/**
+ * Decides where the app should take the user after they archive a company
+ * from its own settings page. Staying put is never right: the page they are
+ * on belongs to the company they just archived, and the only visible change
+ * would be the archive button going inert.
+ *
+ * Another active company wins — the user still has somewhere to work, so
+ * switch there (mirroring the cold-arrival bounce above). With no active
+ * company left on a Cloud instance, the whole organization is on its way to
+ * being archived by the control plane, so leave for the Cloud portfolio's
+ * manage view. Self-hosted with nothing active falls back to the companies
+ * list, which shows the archived state and owns the unarchive affordance.
+ */
+export function resolveCompanyArchiveDeparture(params: {
+  archivedCompanyId: string;
+  companies: BounceCandidateCompany[];
+  cloudPortfolioUrl: string | null;
+}): CompanyArchiveDeparture {
+  const { archivedCompanyId, companies, cloudPortfolioUrl } = params;
+  const nextCompany = companies.find(
+    (company) => company.id !== archivedCompanyId && company.status !== "archived",
+  );
+  if (nextCompany) return { kind: "company", company: nextCompany };
+  if (cloudPortfolioUrl) return { kind: "cloud_portfolio", url: cloudPortfolioUrl };
+  return { kind: "companies_list" };
+}
+
 export function shouldSyncCompanySelectionFromRoute(params: {
   selectionSource: CompanySelectionSource;
   selectedCompanyId: string | null;

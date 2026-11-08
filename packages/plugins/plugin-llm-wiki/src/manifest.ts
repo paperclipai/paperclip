@@ -167,13 +167,6 @@ const manifest: PaperclipPluginManifestV1 = {
           desiredSkills: WIKI_MANAGED_SKILL_CANONICAL_KEYS
         }
       },
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            purpose: "classification, lint planning, index maintenance"
-          }
-        }
-      },
       permissions: {
         pluginTools: [PLUGIN_ID]
       },

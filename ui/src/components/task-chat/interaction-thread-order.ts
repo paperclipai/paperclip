@@ -1,4 +1,20 @@
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
+import type { IssueDocument } from "@paperclipai/shared";
+
+export function isOutdatedPlanConfirmation(
+  interaction: IssueThreadInteraction,
+  plan: Pick<IssueDocument, "id" | "companyId" | "issueId" | "latestRevisionId" | "latestRevisionNumber" | "updatedAt"> | null | undefined,
+): boolean {
+  if (!plan || interaction.status !== "pending" || interaction.kind !== "request_confirmation") return false;
+  const target = interaction.payload.target;
+  if (target?.type !== "issue_document" || target.key !== "plan") return false;
+  if (interaction.companyId !== plan.companyId || (target.issueId ?? interaction.issueId) !== plan.issueId) return false;
+  if (target.revisionId && target.revisionId === plan.latestRevisionId) return false;
+  if ((!target.documentId || target.documentId === plan.id) && target.revisionNumber != null) {
+    return target.revisionNumber < plan.latestRevisionNumber;
+  }
+  return new Date(plan.updatedAt).getTime() > new Date(interaction.createdAt).getTime();
+}
 
 /**
  * Thread-ordering + visibility rules for issue-thread interaction cards
@@ -6,11 +22,11 @@ import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
  *
  * Two problems this fixes:
  *
- *  1. Cards were pinned to `createdAt`, but the user answers them later and the
- *     agent's follow-up lands later still — so a card you just resolved could
- *     sit ABOVE a message written before you answered, reading backwards. We
- *     settle a RESOLVED card at its resolution time (`resolvedAt`) so it never
- *     floats above an earlier message. Pending cards stay where they were asked.
+ *  1. Question receipts keep the request's original slot because a separate
+ *     answer-delivery bubble records when those answers entered a successor
+ *     run. A resolved confirmation is itself the user's decision receipt, so
+ *     it moves to `resolvedAt` and separates the work before and after that
+ *     decision.
  *
  *  2. Withdrawn / superseded confirmation cards lingered in the thread, stacking
  *     a dead card above the accepted one. We suppress those from the backbone
@@ -60,26 +76,30 @@ export function isSuppressedThreadInteraction(interaction: IssueThreadInteractio
   return outcome != null && SUPPRESSED_CONFIRMATION_OUTCOMES.has(outcome);
 }
 
-function toMs(value: Date | string | null | undefined): number {
-  if (!value) return 0;
-  const ms = new Date(value).getTime();
-  return Number.isNaN(ms) ? 0 : ms;
-}
-
 /**
  * The chronological slot for an interaction card.
  *
- * `fallbackMs` is the caller's existing anchor (the same-run handoff shift when
- * present, else `createdAt`). A resolved card re-anchors to its resolution time
- * so it lands next to the answer, never above an earlier message; we take the
- * later of the two so clock skew can't drag it back above its own request. A
- * still-pending card keeps the request-time slot.
+ * `fallbackMs` is the caller's existing request anchor (the same-run handoff
+ * shift when present, else `createdAt`). Pending confirmations and question
+ * receipts keep that slot. Terminal confirmation-family receipts move to the
+ * decision time, clamped so clock skew can never place them before the request.
  */
 export function interactionThreadAnchorMs(
   interaction: IssueThreadInteraction,
   fallbackMs: number,
 ): number {
-  if (interaction.status === "pending") return fallbackMs;
-  const resolvedMs = toMs(interaction.resolvedAt);
-  return resolvedMs > 0 ? Math.max(resolvedMs, fallbackMs) : fallbackMs;
+  if (
+    interaction.status === "pending" ||
+    !CONFIRMATION_KINDS.has(interaction.kind) ||
+    !interaction.resolvedAt
+  ) {
+    return fallbackMs;
+  }
+  const resolvedAtMs =
+    interaction.resolvedAt instanceof Date
+      ? interaction.resolvedAt.getTime()
+      : new Date(interaction.resolvedAt).getTime();
+  return Number.isFinite(resolvedAtMs)
+    ? Math.max(fallbackMs, resolvedAtMs)
+    : fallbackMs;
 }

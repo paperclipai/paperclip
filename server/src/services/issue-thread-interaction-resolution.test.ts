@@ -12,19 +12,14 @@ function interaction(overrides: Record<string, unknown> = {}) {
     createdByUserId: null,
     sourceRunId: "run-1",
     addresseeAgentId: null,
+    addresseeUserId: null,
     effectiveResolverPolicy: "anyone",
     ...overrides,
   };
 }
 
 describe("issue-thread interaction resolver audience", () => {
-  it.each([
-    "suggest_tasks",
-    "ask_user_questions",
-    "request_confirmation",
-    "request_checkbox_confirmation",
-    "request_item_verdicts",
-  ])("allows the creator and creating run under anyone for %s", () => {
+  it("allows the creator and creating run under anyone", () => {
     expect(evaluateIssueThreadInteractionResolverAudience({
       actor: agent,
       interaction: interaction(),
@@ -48,6 +43,18 @@ describe("issue-thread interaction resolver audience", () => {
       interaction: interaction({ addresseeAgentId: "agent-2" }),
     });
     expect(decision).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
+  });
+
+  it("allows only the addressed user to resolve a user-addressed interaction", () => {
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "alice" },
+      interaction: interaction({ addresseeUserId: "alice", effectiveResolverPolicy: "human_only" }),
+    })).toMatchObject({ allowed: true, reason: "allow_addressee" });
+
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "bob" },
+      interaction: interaction({ addresseeUserId: "alice", effectiveResolverPolicy: "human_only" }),
+    })).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
   });
 
   it("requires run attribution for agents", () => {
@@ -164,5 +171,39 @@ describe("issue-thread interaction resolver audience", () => {
       agentId: "agent-2",
       interaction: interaction({ effectiveResolverPolicy: "human_only" }),
     })).toBe(false);
+  });
+
+  describe("relayed human decision", () => {
+    const relay = { ...agent, relayedHumanUserId: "user-1" };
+    const humanOnly = (overrides: Record<string, unknown> = {}) =>
+      interaction({ effectiveResolverPolicy: "human_only", effectiveResolverPolicySource: "requested",
+        resolverPolicyProvenance: "explicit", ...overrides });
+
+    it("allows a verified reply on a card whose creator requested human_only", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly() }))
+        .toMatchObject({ allowed: true, effectiveResolverPolicy: "human_only", reason: "allow_relayed_human" });
+    });
+
+    it.each([
+      ["no relay", { actor: agent }],
+      ["a company cap", { interaction: humanOnly({ effectiveResolverPolicySource: "company_cap" }) }],
+      ["a governed-action source", { interaction: humanOnly({ effectiveResolverPolicySource: "governed_action" }) }],
+      ["an unknown legacy source", { interaction: humanOnly({ effectiveResolverPolicySource: null }) }],
+      ["a governed action", { governedAction: true }],
+      ["an issue-review restriction", { additionalRestriction: "human_only" as const }],
+      ["another addressed user", { interaction: humanOnly({ addresseeUserId: "user-2" }) }],
+      ["a human-created card", { interaction: humanOnly({ createdByAgentId: null, createdByUserId: "user-1" }) }],
+      ["another agent's card", { interaction: humanOnly({ createdByAgentId: "agent-2" }) }],
+      ["an inherited company default", { interaction: humanOnly({ resolverPolicyProvenance: "inherited" }) }],
+    ])("still denies %s", (_name, override) => {
+      const decision = evaluateIssueThreadInteractionResolverAudience({ actor: relay, interaction: humanOnly(), ...override });
+      expect(decision).toMatchObject({ allowed: false });
+    });
+
+    it("never widens a non-human-only card", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({ actor: relay,
+        interaction: interaction({ effectiveResolverPolicy: "not_creator" }) }))
+        .toMatchObject({ allowed: false, code: "interaction_creator_excluded" });
+    });
   });
 });

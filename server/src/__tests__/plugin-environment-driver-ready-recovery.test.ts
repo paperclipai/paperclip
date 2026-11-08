@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1, PluginRecord, PluginStatus } from "@paperclipai/shared";
 import { createManagedBundledPluginWorkerRecovery } from "../app.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
 import { pluginLoader, type PluginLoader } from "../services/plugin-loader.js";
@@ -43,12 +43,21 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
 };
 
-function createPlugin(status: string, options: { id?: string; pluginKey?: string } = {}) {
+function createPlugin(status: PluginStatus, options: { id?: string; pluginKey?: string } = {}): PluginRecord {
   return {
     id: options.id ?? PLUGIN_ID,
     pluginKey: options.pluginKey ?? PLUGIN_KEY,
+    packageName: manifest.id,
+    version: manifest.version,
+    apiVersion: manifest.apiVersion,
+    categories: manifest.categories,
     status,
     manifestJson: manifest,
+    installOrder: null,
+    packagePath: null,
+    lastError: null,
+    installedAt: new Date(0),
+    updatedAt: new Date(0),
   };
 }
 
@@ -70,7 +79,7 @@ function createWorkerManager(options: {
 }
 
 function createDeferred<T = void>() {
-  let resolve!: (value?: T | PromiseLike<T>) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
@@ -212,7 +221,11 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       loadStarted.resolve();
       await releaseLoad.promise;
       worker.markRunning();
-      return { success: true };
+      return {
+        plugin,
+        success: true,
+        registered: { worker: true, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
+      };
     });
     const startWorker = createManagedBundledPluginWorkerRecovery({
       managedBundledPluginKeys: [PLUGIN_KEY],
@@ -439,7 +452,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
         clearPlugin: vi.fn(),
         subscriptionCount: vi.fn(() => 0),
       };
-      const jobScheduler = { unregisterPlugin: vi.fn().mockResolvedValue(undefined) };
+      const jobScheduler = { registerPlugin: vi.fn().mockResolvedValue(undefined), unregisterPlugin: vi.fn().mockResolvedValue(undefined) };
       const toolDispatcher = { unregisterPluginTools: vi.fn(), registerPluginTools: vi.fn() };
 
       const loader = pluginLoader(
@@ -454,7 +467,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
           workerManager,
           eventBus,
           jobScheduler,
-          jobStore: {},
+          jobStore: { syncJobDeclarations: vi.fn().mockResolvedValue(undefined) },
           toolDispatcher,
           buildHostHandlers: vi.fn(() => ({})),
           instanceInfo: {

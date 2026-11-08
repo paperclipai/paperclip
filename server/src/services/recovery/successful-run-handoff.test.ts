@@ -109,8 +109,22 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("2. Move it to `in_review` with a real reviewer path");
     expect(decision.instruction).toContain("3. Mark it `blocked` with first-class blockers");
     expect(decision.instruction).toContain("4. Either delegate follow-up work");
-    expect(decision.instruction).toContain("Only mark `done` if you can point at concrete verification evidence");
-    expect(decision.instruction).toContain("you are on your normal model and allowed to work in this wake");
+    expect(decision.instruction).toContain("This is a disposition-only recovery for the persisted source run");
+    expect(decision.instruction).toContain("Do not redo implementation");
+  });
+
+  it("does not launch generic recovery when native semantic finalization owns disposition", () => {
+    expect(decide({
+      run: {
+        ...run,
+        runtimeMode: "native",
+        nativePhase: "arbitrating",
+        completionContractId: "contract-1",
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "native semantic finalization owns the issue disposition",
+    });
   });
 
   it.each([
@@ -406,6 +420,18 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue for routine execution issues left in_progress between fires", () => {
+    // A successful orphan-check routine run left its coalesced routine_execution
+    // issue in `in_progress`, and the handoff wrongly treated that steady state
+    // as a missing disposition -> blocked + recovery loop.
+    expect(decide({
+      issue: { ...issue, originKind: "routine_execution" } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "routine execution owns its own disposition",
+    });
+  });
+
   it("does not queue for successful comment-driven wakes", () => {
     expect(decide({
       run: {
@@ -421,6 +447,37 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "comment-driven wake already owns the next action",
     });
+  });
+
+  it("does not queue a corrective disposition run for a correlated chat wake", () => {
+    const chatRun = {
+      ...run,
+      contextSnapshot: {
+        issueId: "issue-1",
+        source: "chat:telegram",
+        wakeCommentId: "11111111-1111-4111-8111-111111111111",
+        wakeCommentIds: ["11111111-1111-4111-8111-111111111111"],
+      },
+    } as any;
+    expect(decide({
+      run: chatRun,
+      issue: { ...issue, originKind: "chat_channel" } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "chat conversation already owns the next action",
+    });
+
+    expect(decide({
+      run: chatRun,
+      issue: { ...issue, originKind: null } as any,
+    }).kind).toBe("enqueue");
+    expect(decide({
+      run: {
+        ...chatRun,
+        contextSnapshot: { issueId: "issue-1", source: "chat:telegram" },
+      } as any,
+      issue: { ...issue, originKind: "chat_channel" } as any,
+    }).kind).toBe("enqueue");
   });
 
   it("uses a stable one-attempt idempotency key", () => {
@@ -531,7 +588,7 @@ describe("successful run handoff decision", () => {
     expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        title: "Recovery owner",
+        title: "Recovery",
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),

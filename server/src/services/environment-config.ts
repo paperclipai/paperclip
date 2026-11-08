@@ -17,7 +17,7 @@ import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import {
-  resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema,
   validatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig,
 } from "./plugin-environment-driver.js";
@@ -33,16 +33,16 @@ import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environ
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
   remoteWorkspacePath: z
-    .string({ required_error: "SSH environments require a remote workspace path." })
+    .string({ error: "SSH environments require a remote workspace path." })
     .trim()
     .min(1, "SSH environments require a remote workspace path.")
     .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
@@ -77,6 +77,13 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(86_400_000)
+    .optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -93,16 +100,25 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(86_400_000)
+    .optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.number().int().positive().max(86_400_000).optional(),
   pluginKey: z.string().min(1),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   ),
-  driverConfig: z.record(z.unknown()).optional().default({}),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
 
 export type ParsedEnvironmentConfig =
@@ -163,14 +179,10 @@ async function getSandboxProviderConfigSchema(
   db: Db,
   provider: string,
 ): Promise<Record<string, unknown> | null> {
-  const resolved = await resolvePluginSandboxProviderDriverByKey({
+  return resolvePluginSandboxProviderConfigSchema({
     db,
     driverKey: provider,
   });
-  const schema = resolved?.driver.configSchema;
-  return schema && typeof schema === "object" && !Array.isArray(schema)
-    ? schema as Record<string, unknown>
-    : null;
 }
 
 export async function resolveSandboxProviderSecretRefPaths(
@@ -282,6 +294,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
+  readOnlyInspection?: boolean;
   context: {
     consumerId: string;
     issueId?: string | null;
@@ -301,7 +314,10 @@ async function resolveConfigSecretRefsForRuntime(input: {
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
+      input.readOnlyInspection ? await secrets.resolveSecretValueForReadOnlyEnvironmentInspection(input.companyId, trimmed, "latest", {
+        environmentId: input.context.consumerId, configPath: path,
+        issueId: input.context.issueId, heartbeatRunId: input.context.heartbeatRunId,
+      }) : await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
         consumerType: "environment",
         consumerId: input.context.consumerId,
         actorType: "system",
@@ -323,7 +339,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
@@ -386,26 +402,32 @@ export async function collectEnvironmentSecretRefs(input: {
 }
 
 export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
-  const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
+  const {
+    provider: _provider,
+    streamRunLogs: _streamRunLogs,
+    ...driverConfig
+  } = config as Record<string, unknown>;
   return driverConfig;
 }
 
-// The host owns this sandbox run-behavior flag, not the provider plugin. The
-// host reads it to select the run-log stream. The host passes the whole config
-// to the plugin, so a plugin that allowlists its own driver fields drops the
-// flag from its normalized config. Re-apply it from the parsed envelope after
-// the plugin normalizes, or a saved environment loses the operator opt-in and
-// the stream never starts.
-const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+// The host owns these sandbox run-behavior flags, not the provider plugin. The
+// host passes the whole config to the plugin, so a plugin that allowlists only
+// its provider fields may drop them from its normalized config. Re-apply them
+// from the parsed envelope after plugin normalization. Otherwise a saved
+// environment can silently fall back to per-turn runner behavior even though
+// the caller explicitly selected a warm lifecycle.
+const HOST_OWNED_SANDBOX_FLAGS = [
   "streamRunLogs",
+  "runnerLifecycleMode",
+  "runnerIdleTimeoutMs",
 ] as const;
 
-function applyHostOwnedSandboxStreamFlags(
+function applyHostOwnedSandboxFlags(
   normalizedConfig: Record<string, unknown>,
   envelope: Record<string, unknown>,
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...normalizedConfig };
-  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+  for (const key of HOST_OWNED_SANDBOX_FLAGS) {
     if (envelope[key] !== undefined) {
       merged[key] = envelope[key];
     }
@@ -462,7 +484,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
   pluginWorkerManager?: PluginWorkerManager;
@@ -500,7 +522,10 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+        config: applyHostOwnedSandboxFlags(
+          validated.normalizedConfig,
+          parsed.data,
+        ),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -592,7 +617,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+        ...applyHostOwnedSandboxFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
@@ -637,6 +662,9 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     // but must still resolve the active custom image as prepared runtime
     // configuration and tooling so the test reflects what real agent runs use.
     applyCustomImageTemplate?: boolean;
+    readOnlyCustomImageTemplate?: boolean;
+    readOnlyInspection?: boolean;
+    onResolvedCustomImageTemplate?: (identity: { id: string; capturedAt: string | null; templateKind: string; bindingField: string }) => void;
   },
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
@@ -681,6 +709,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
         companyId,
         config: parsed.config as Record<string, unknown>,
         schema,
+        readOnlyInspection: context?.readOnlyInspection,
         context: {
           consumerId: environmentId!,
           issueId: context?.issueId ?? null,
@@ -706,6 +735,8 @@ export async function resolveEnvironmentDriverConfigForRuntime(
             // are excluded when the template's source fingerprint is computed,
             // so they must be excluded when re-checking it here.
             secretRefExcludePaths: collectSecretRefPaths(schema),
+            readOnly: context?.readOnlyCustomImageTemplate,
+            onResolvedTemplate: context?.onResolvedCustomImageTemplate,
           })
         : runtimeConfig,
     };

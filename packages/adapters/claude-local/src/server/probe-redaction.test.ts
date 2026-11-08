@@ -87,11 +87,15 @@ describe("prepareSandboxClaudeProbeRuntime managed-config redaction", () => {
     const checkText = JSON.stringify(checks);
     expect(checkText).not.toContain(secret);
     expect(checkText).not.toContain("MANAGEDMARKER");
-    // The diagnostic still reaches the server log, but the secret is redacted.
+    // The diagnostic still reaches the server log, but it carries only the
+    // fixed context and the allowlisted classification, never the raw error
+    // text. The classification is `spawn_error`, because the materialization
+    // step threw before the probe ran.
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
     expect(loggedText).not.toContain(secret);
-    expect(loggedText).toContain("***REDACTED***");
+    expect(loggedText).not.toContain("MANAGEDMARKER");
+    expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({ classification: "spawn_error" });
     warnSpy.mockRestore();
   });
 });

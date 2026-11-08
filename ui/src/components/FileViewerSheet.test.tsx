@@ -77,6 +77,19 @@ describe("FileContentViewer", () => {
     expect(markup).toContain("break-words");
   });
 
+  it("highlights patch changes while retaining source line numbers and the selected line", () => {
+    const base = content();
+    const markup = renderToStaticMarkup(<FileContentViewer content={content({
+      resource: { ...base.resource, title: "fix.patch", displayPath: "fix.patch", contentType: "text/x-patch" },
+      content: { encoding: "utf8", data: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new" },
+    })} highlightedLine={5} />);
+    expect(markup).toContain('data-line-number="4" data-patch-line="remove"');
+    expect(markup).toContain('data-line-number="5" data-patch-line="add"');
+    expect(markup).toContain("bg-(--code-highlight-bg-resolved)");
+    expect(markup).toContain("-old");
+    expect(markup).toContain("+new");
+  });
+
   it("reserves code gutter space for at least four digit line numbers", () => {
     const markup = renderToStaticMarkup(
       <FileContentViewer
@@ -167,4 +180,52 @@ describe("FileViewerMetadataRow", () => {
     expect(markup).toContain("min-h-(--sz-18px)");
     expect(markup).toContain("Loading file details");
   });
+});
+
+
+describe("workspace CSV content", () => {
+  const csv: WorkspaceFileContent = {
+    resource: { kind: "file", provider: "git_worktree", title: "export.csv", displayPath: "export.csv", workspaceLabel: "Workspace", workspaceKind: "execution_workspace", workspaceId: "ws", contentType: "text/csv", byteSize: 20, previewKind: "text", capabilities: { preview: true, download: true, listChildren: false } },
+    content: { encoding: "utf8", data: 'Name,Amount\n"Lee, Sam",12' },
+  };
+  it("defaults to a table and supports toolbar-controlled raw mode", () => {
+    const rendered = renderToStaticMarkup(<FileContentViewer content={csv} highlightedLine={null} previewMode="rendered" />);
+    expect(rendered).toContain("<table");
+    expect(rendered).toContain("Lee, Sam");
+    expect(rendered).not.toContain("CSV preview mode");
+    const raw = renderToStaticMarkup(<FileContentViewer content={csv} highlightedLine={null} previewMode="raw" />);
+    expect(raw).toContain("export.csv source");
+    expect(raw).not.toContain("<table");
+  });
+});
+
+
+describe("CSV preview limits", () => {
+  it.each([[500, 2], [501, 2], [1, 100], [1, 101]])(
+    "bounds a file with %i rows and %i columns and preserves raw source",
+    (rowCount, columnCount) => {
+      const header = Array.from({ length: columnCount }, (_, i) => `Header${i}`).join(",");
+      const row = Array.from({ length: columnCount }, (_, i) => `Value${i}`).join(",");
+      const source = [header, ...Array.from({ length: rowCount }, () => row)].join("\n");
+      const content: WorkspaceFileContent = {
+        resource: { kind: "file", provider: "git_worktree", title: "limits.csv", displayPath: "limits.csv", workspaceLabel: "Workspace", workspaceKind: "execution_workspace", workspaceId: "ws", contentType: "text/csv", byteSize: source.length, previewKind: "text", capabilities: { preview: true, download: true, listChildren: false } },
+        content: { encoding: "utf8", data: source },
+      };
+      const rendered = renderToStaticMarkup(<FileContentViewer content={content} highlightedLine={null} previewMode="rendered" />);
+      expect((rendered.match(/<td /g) ?? []).length).toBe(Math.min(rowCount, 500) * Math.min(columnCount, 100));
+      expect((rendered.match(/scope="col"/g) ?? []).length).toBe(Math.min(columnCount, 100) + 1);
+      expect(rendered).toContain(`${rowCount} ${rowCount === 1 ? "row" : "rows"}`);
+      expect(rendered).toContain(`${columnCount} columns`);
+      if (rowCount > 500 || columnCount > 100) {
+        expect(rendered).toContain(`Showing the first ${Math.min(rowCount, 500)} rows and ${Math.min(columnCount, 100)} columns.`);
+      } else {
+        expect(rendered).not.toContain("Showing the first");
+      }
+      const raw = renderToStaticMarkup(<FileContentViewer content={content} highlightedLine={null} previewMode="raw" />);
+      expect(raw).not.toContain("<table");
+      expect((raw.match(/Value0/g) ?? []).length).toBe(rowCount);
+      expect(raw).toContain(row);
+      expect(raw).toContain(header);
+    },
+  );
 });

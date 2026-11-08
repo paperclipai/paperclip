@@ -6,74 +6,41 @@
  * fixture file (`duplex-frame-vectors.json`) proves the two copies stay wire
  * compatible: both copies decode the same bytes to the same frames.
  *
- * The codec has two sides:
- *   - encode: turn a frame object into one line of JSON with a trailing newline.
- *   - decode: turn a byte stream into frames. The streaming decoder keeps partial
- *     bytes between chunks, so a frame split across chunks and a multi-byte UTF-8
- *     sequence split across chunks both decode correctly.
+ * The decoder never throws on the read path. A malformed or version-mismatch
+ * frame becomes a protocol-error result, not an exception. This keeps one bad
+ * frame from crashing the read loop.
  *
- * The decoder never throws on the read path. A malformed, oversized, or
- * version-mismatch frame becomes a protocol-error result, not an exception. This
- * keeps one bad frame from crashing the read loop.
+ * The `http2_v1` host readiness gate imports {@link decodeDuplexLine} from this
+ * file to read the one READY line every gateway sends. That is the only frame
+ * this module's decode side still reads in production; the gateway itself
+ * never decodes, it only writes one READY line with {@link encodeDuplexFrame}.
  */
 
 /** The wire version this codec reads and writes. */
-export const DUPLEX_FRAME_VERSION = 1;
+export const DUPLEX_FRAME_VERSION = 2;
 
 /**
  * The default maximum size of one frame, in bytes. The decoder rejects a longer
  * frame with a `frame_too_large` protocol error. The value matches the per-chunk
- * character bound of the host duplex route.
+ * byte bound of the host duplex route, and the host body limit for one HTTP/2
+ * bridge stream ({@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES} in
+ * `sandbox-callback-bridge.ts`).
  */
-export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1_000_000;
-
-const NEWLINE_BYTE = 0x0a;
-const EMPTY = Buffer.alloc(0);
-
-/** The frame type strings. One value goes in the `type` field of every frame. */
-export const DUPLEX_FRAME_TYPES = {
-  request: "request",
-  response: "response",
-  ready: "ready",
-  heartbeat: "heartbeat",
-  close: "close",
-  error: "error",
-} as const;
-
-/** The outcome of a response frame. A loss response carries a non-completed outcome. */
-export type DuplexResponseOutcome = "completed" | "indeterminate" | "unavailable";
-
-/** A request frame. The gateway forwards it to the host API path. */
-export interface DuplexRequestFrame {
-  version: number;
-  type: "request";
-  id: string;
-  method: string;
-  path: string;
-  query: string;
-  headers: Record<string, string>;
-  body: string;
-}
-
-/** A response frame. The host returns it for one request id. */
-export interface DuplexResponseFrame {
-  version: number;
-  type: "response";
-  id: string;
-  status: number;
-  headers: Record<string, string>;
-  body: string;
-  outcome: DuplexResponseOutcome;
-}
+export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 262_144;
 
 /**
- * The READY control frame. The gateway sends it one time after it validates its
- * local listener address. The `address` field carries that validated address.
+ * The READY control frame. The gateway sends it one time after it binds the
+ * host-assigned listener port. READY is a liveness signal, not an address
+ * source. The frame carries exactly the frame version and the `nonce` string.
+ * The gateway echoes the nonce the host passed through the launch environment,
+ * so the host correlates the READY frame with this channel open. The frame
+ * carries no address data; the host builds the endpoint from its own stored
+ * port, never from the channel.
  */
 export interface DuplexReadyFrame {
   version: number;
   type: "ready";
-  address: string;
+  nonce: string;
 }
 
 /** The heartbeat control frame. Each side sends it on an interval to prove liveness. */
@@ -101,20 +68,15 @@ export interface DuplexErrorFrame {
 }
 
 /** Any frame the codec reads or writes. */
-export type DuplexFrame =
-  | DuplexRequestFrame
-  | DuplexResponseFrame
-  | DuplexReadyFrame
-  | DuplexHeartbeatFrame
-  | DuplexCloseFrame
-  | DuplexErrorFrame;
+export type DuplexFrame = DuplexReadyFrame | DuplexHeartbeatFrame | DuplexCloseFrame | DuplexErrorFrame;
 
 /** The reason the decoder rejected one line. */
 export type DuplexProtocolErrorCode =
   | "malformed_frame"
   | "unknown_type"
   | "version_mismatch"
-  | "frame_too_large";
+  | "frame_too_large"
+  | "id_too_large";
 
 /** A decode-time protocol error. The read path returns it; it never throws. */
 export interface DuplexProtocolError {
@@ -127,11 +89,14 @@ export type DuplexDecodeResult =
   | { ok: true; frame: DuplexFrame }
   | { ok: false; error: DuplexProtocolError };
 
-const RESPONSE_OUTCOMES: ReadonlySet<string> = new Set<DuplexResponseOutcome>([
-  "completed",
-  "indeterminate",
-  "unavailable",
-]);
+/**
+ * One size-checked encode result: one line, or a `frame_too_large` error. The
+ * shape mirrors {@link DuplexDecodeResult}, so the encode side reports the
+ * over-limit case as a typed outcome, not an exception.
+ */
+export type DuplexEncodeResult =
+  | { ok: true; line: string }
+  | { ok: false; error: { code: "frame_too_large"; message: string } };
 
 function ok(frame: DuplexFrame): DuplexDecodeResult {
   return { ok: true, frame };
@@ -145,14 +110,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-  if (!isPlainObject(value)) return false;
-  for (const entry of Object.values(value)) {
-    if (typeof entry !== "string") return false;
-  }
-  return true;
-}
-
 /**
  * Encode one frame to a single line of JSON with a trailing newline. `JSON.stringify`
  * escapes any newline inside a string value, so the returned line holds no
@@ -160,6 +117,30 @@ function isStringRecord(value: unknown): value is Record<string, string> {
  */
 export function encodeDuplexFrame(frame: DuplexFrame): string {
   return `${JSON.stringify(frame)}\n`;
+}
+
+/**
+ * Encode one frame to a single line and enforce the maximum frame size. The
+ * function measures the encoded JSON in bytes, without the trailing newline, so
+ * it matches the decoder bound exactly: a line the decoder accepts encodes, and a
+ * line the decoder rejects returns a `frame_too_large` result. The function never
+ * throws; it reports the over-limit case as a typed outcome.
+ *
+ * The size bound follows request and response bodies the host does not control,
+ * so an over-limit frame is an expected condition, not a programming error. Every
+ * write path that can carry a large body uses this function, so no path emits a
+ * frame the peer decoder rejects. The bound applies to every frame type; the
+ * guard is a no-op for a small control frame.
+ */
+export function encodeDuplexFrameChecked(
+  frame: DuplexFrame,
+  maxFrameBytes: number = DEFAULT_MAX_DUPLEX_FRAME_BYTES,
+): DuplexEncodeResult {
+  const json = JSON.stringify(frame);
+  if (Buffer.byteLength(json, "utf8") > maxFrameBytes) {
+    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
+  }
+  return { ok: true, line: `${json}\n` };
 }
 
 /**
@@ -192,10 +173,6 @@ export function decodeDuplexLine(line: string | Buffer): DuplexDecodeResult {
 
 function validateFrame(frame: Record<string, unknown>): DuplexDecodeResult {
   switch (frame.type) {
-    case "request":
-      return validateRequest(frame);
-    case "response":
-      return validateResponse(frame);
     case "ready":
       return validateReady(frame);
     case "heartbeat":
@@ -209,37 +186,18 @@ function validateFrame(frame: Record<string, unknown>): DuplexDecodeResult {
   }
 }
 
-function validateRequest(frame: Record<string, unknown>): DuplexDecodeResult {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.method !== "string" ||
-    typeof frame.path !== "string" ||
-    typeof frame.query !== "string" ||
-    typeof frame.body !== "string" ||
-    !isStringRecord(frame.headers)
-  ) {
-    return fail("malformed_frame", "request frame has a missing or wrong-typed field");
-  }
-  return ok(frame as unknown as DuplexRequestFrame);
-}
-
-function validateResponse(frame: Record<string, unknown>): DuplexDecodeResult {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.status !== "number" ||
-    typeof frame.body !== "string" ||
-    !isStringRecord(frame.headers) ||
-    typeof frame.outcome !== "string" ||
-    !RESPONSE_OUTCOMES.has(frame.outcome)
-  ) {
-    return fail("malformed_frame", "response frame has a missing or wrong-typed field");
-  }
-  return ok(frame as unknown as DuplexResponseFrame);
-}
-
 function validateReady(frame: Record<string, unknown>): DuplexDecodeResult {
-  if (typeof frame.address !== "string") {
-    return fail("malformed_frame", "ready frame has a missing or wrong-typed address");
+  // READY carries a liveness nonce, not an address. The schema is strict: a valid
+  // READY frame holds exactly `version`, `type`, and `nonce`. The decoder rejects
+  // an absent nonce, a wrong-typed nonce, or any extra field, so a READY frame
+  // that smuggles an `address`, a `port`, a `host`, or a URL never decodes.
+  if (typeof frame.nonce !== "string") {
+    return fail("malformed_frame", "ready frame has a missing or wrong-typed nonce");
+  }
+  for (const key of Object.keys(frame)) {
+    if (key !== "version" && key !== "type" && key !== "nonce") {
+      return fail("malformed_frame", "ready frame has an unexpected field");
+    }
   }
   return ok(frame as unknown as DuplexReadyFrame);
 }
@@ -260,79 +218,4 @@ function validateError(frame: Record<string, unknown>): DuplexDecodeResult {
     return fail("malformed_frame", "error frame has a wrong-typed message");
   }
   return ok(frame as unknown as DuplexErrorFrame);
-}
-
-/** Options for a {@link DuplexFrameDecoder}. */
-export interface DuplexFrameDecoderOptions {
-  /** The maximum size of one frame, in bytes. Defaults to {@link DEFAULT_MAX_DUPLEX_FRAME_BYTES}. */
-  maxFrameBytes?: number;
-}
-
-/**
- * A streaming decoder for a byte stream of newline-delimited JSON frames.
- *
- * Call `push` with each chunk. The decoder keeps the bytes of an incomplete
- * frame between calls, so a frame that spans two chunks decodes on the chunk
- * that completes it. The decoder buffers raw bytes and decodes UTF-8 only on a
- * complete line, so a multi-byte sequence split across chunks stays valid. The
- * newline byte `0x0A` never appears inside a multi-byte UTF-8 sequence, so a
- * split on that byte is always safe.
- *
- * The decoder enforces the maximum frame size. It rejects an oversized frame
- * with a `frame_too_large` protocol error, then discards bytes up to the next
- * newline to resynchronize. It never throws on the read path.
- */
-export class DuplexFrameDecoder {
-  private buffer: Buffer = EMPTY;
-  private discarding = false;
-  private readonly maxFrameBytes: number;
-
-  constructor(options: DuplexFrameDecoderOptions = {}) {
-    this.maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-  }
-
-  /** Feed one chunk. Return the frames and protocol errors that complete on it. */
-  push(chunk: Buffer | Uint8Array | string): DuplexDecodeResult[] {
-    const incoming =
-      typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    this.buffer =
-      this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
-
-    const results: DuplexDecodeResult[] = [];
-    for (;;) {
-      if (this.discarding) {
-        // Drop the tail of an oversized frame until the next newline.
-        const newlineIndex = this.buffer.indexOf(NEWLINE_BYTE);
-        if (newlineIndex === -1) {
-          this.buffer = EMPTY;
-          break;
-        }
-        this.buffer = this.buffer.subarray(newlineIndex + 1);
-        this.discarding = false;
-        continue;
-      }
-
-      const newlineIndex = this.buffer.indexOf(NEWLINE_BYTE);
-      if (newlineIndex === -1) {
-        // No complete line yet. Reject an incomplete frame that already passed
-        // the size bound, then resynchronize at the next newline.
-        if (this.buffer.length > this.maxFrameBytes) {
-          results.push(fail("frame_too_large", "frame exceeds the maximum size"));
-          this.discarding = true;
-          this.buffer = EMPTY;
-        }
-        break;
-      }
-
-      const line = this.buffer.subarray(0, newlineIndex);
-      this.buffer = this.buffer.subarray(newlineIndex + 1);
-      if (line.length === 0) continue; // Skip a blank line.
-      if (line.length > this.maxFrameBytes) {
-        results.push(fail("frame_too_large", "frame exceeds the maximum size"));
-        continue;
-      }
-      results.push(decodeDuplexLine(line));
-    }
-    return results;
-  }
 }

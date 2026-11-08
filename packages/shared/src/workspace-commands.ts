@@ -3,7 +3,7 @@ import { forceLoopbackBindInCommand } from "./runtime-exposure/loopback-bind.js"
 
 type WorkspaceRuntimeServiceMatchCandidate =
   & Pick<WorkspaceRuntimeService, "configIndex" | "serviceName" | "command" | "cwd">
-  & Pick<Partial<WorkspaceRuntimeService>, "exposure">;
+  & Pick<Partial<WorkspaceRuntimeService>, "exposure" | "port">;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13,6 +13,17 @@ function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function readConfiguredPort(value: unknown): number | null {
+  if (isRecord(value) && value.type === "auto") return null;
+  const candidate = isRecord(value) ? value.value : value;
+  return typeof candidate === "number"
+    && Number.isInteger(candidate)
+    && candidate > 0
+    && candidate <= 65_535
+    ? candidate
+    : null;
 }
 
 function slugify(value: string | null | undefined) {
@@ -64,6 +75,7 @@ function buildWorkspaceCommandDefinition(input: {
     kind: input.kind,
     command: readNonEmptyString(input.entry.command),
     cwd: readNonEmptyString(input.entry.cwd),
+    port: readConfiguredPort(input.entry.port),
     lifecycle:
       input.kind === "service"
         ? input.entry.lifecycle === "ephemeral"
@@ -168,7 +180,7 @@ export function findWorkspaceCommandDefinition(
 }
 
 export function scoreWorkspaceRuntimeServiceMatch(
-  command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd">,
+  command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd" | "port">,
   runtimeService: WorkspaceRuntimeServiceMatchCandidate,
 ) {
   const exposedCommandMatches = Boolean(
@@ -186,11 +198,17 @@ export function scoreWorkspaceRuntimeServiceMatch(
     return -1;
   }
 
+  if (command.port !== null && runtimeService.port != null && runtimeService.port !== command.port) {
+    return -1;
+  }
+
   if (command.serviceIndex !== null && runtimeService.configIndex !== null && runtimeService.configIndex !== undefined) {
-    return runtimeService.configIndex === command.serviceIndex ? 100 : -1;
+    if (runtimeService.configIndex !== command.serviceIndex) return -1;
+    return 100 + (command.port !== null && runtimeService.port === command.port ? 8 : 0);
   }
 
   let score = 0;
+  if (command.port !== null && runtimeService.port === command.port) score += 8;
   if (runtimeService.serviceName === command.name) score += 4;
   if ((runtimeService.command ?? null) === (command.command ?? null)) score += 4;
   if (
@@ -206,7 +224,7 @@ export function scoreWorkspaceRuntimeServiceMatch(
 export function matchWorkspaceRuntimeServiceToCommand<
   T extends WorkspaceRuntimeServiceMatchCandidate,
 >(
-  command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd">,
+  command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd" | "port">,
   runtimeServices: T[] | null | undefined,
 ) {
   let bestMatch: T | null = null;

@@ -43,9 +43,11 @@
             "pages": [
               "guides/board-operator/dashboard",
               "guides/board-operator/creating-a-company",
+              "guides/board-operator/editing-first-task-texts",
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/sentry-run-failure-repairs",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",

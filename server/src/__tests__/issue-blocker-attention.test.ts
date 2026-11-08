@@ -8,6 +8,7 @@ import {
   approvals,
   companies,
   createDb,
+  applyPendingMigrations,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
@@ -18,10 +19,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { Issue } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BLOCKER_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -30,14 +35,22 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The inferred list() return type drops the attention fields that its rows carry at runtime.
+type IssueServiceWithListProjection = Omit<ReturnType<typeof issueService>, "list"> & {
+  list(
+    ...args: Parameters<ReturnType<typeof issueService>["list"]>
+  ): Promise<Array<Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & Pick<Issue, "blockedBy" | "blockerAttention" | "blockedInboxAttention">>>;
+};
+
 describeEmbeddedPostgres("issue blocker attention", () => {
   let db!: ReturnType<typeof createDb>;
-  let svc!: ReturnType<typeof issueService>;
+  let svc!: IssueServiceWithListProjection;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
     svc = issueService(db);
   }, 20_000);
 
@@ -55,6 +68,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -131,7 +145,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   }
 
-  async function activeRun(input: { companyId: string; agentId: string; issueId: string; status?: string; current?: boolean }) {
+  async function activeRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status?: string;
+    current?: boolean;
+    scheduledRetryAt?: Date;
+  }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -139,6 +160,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId: input.agentId,
       status: input.status ?? "running",
       contextSnapshot: { issueId: input.issueId },
+      scheduledRetryAt: input.scheduledRetryAt,
     });
     if (input.current !== false) {
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, input.issueId));
@@ -602,7 +624,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("does not treat a scheduled retry as actively covered work", async () => {
+  it("does not treat an expired scheduled retry as actively covered work", async () => {
+    const pinnedNow = new Date("2026-08-20T12:00:00.000Z");
+    const expiredRetryAt = new Date(pinnedNow.getTime() - 60_000);
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
     const blockerId = await insertIssue({
@@ -613,7 +637,13 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
-    await activeRun({ companyId, agentId, issueId: blockerId, status: "scheduled_retry" });
+    await activeRun({
+      companyId,
+      agentId,
+      issueId: blockerId,
+      status: "scheduled_retry",
+      scheduledRetryAt: expiredRetryAt,
+    });
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 

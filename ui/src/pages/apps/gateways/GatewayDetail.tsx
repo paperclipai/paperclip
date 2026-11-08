@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Send } from "lucide-react";
+import { Pencil, Send } from "lucide-react";
 import type { ToolMcpGatewayTokenCreated } from "@paperclipai/shared";
 import { Link, Navigate, useNavigate, useParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -10,29 +10,33 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { projectsApi } from "@/api/projects";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { ErrorState } from "@/pages/tools/shared";
 import { GATEWAY_TABS, gatewayTabHref, isGatewayTabKey, type GatewayTabKey } from "./gateway-tabs";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
 import { ConnectClientDialog } from "./ConnectClientDialog";
+import { EditGatewayDialog } from "./EditGatewayDialog";
 import { deriveGatewayApps, isGatewayOn } from "./gateway-helpers";
 import { OverviewPanel } from "./panels/OverviewPanel";
 import { AppsToolsPanel } from "./panels/AppsToolsPanel";
 import { TokensPanel } from "./panels/TokensPanel";
 import { GatewayActivityPanel } from "./panels/GatewayActivityPanel";
 import { GatewayAdvancedPanel } from "./panels/GatewayAdvancedPanel";
+import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
+import { describeError } from "@/api/errors";
 
 export function GatewayDetail() {
   const { gatewayId = "", tab } = useParams<{ gatewayId: string; tab?: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [snippetOpen, setSnippetOpen] = useState(false);
-  const [createdToken, setCreatedToken] = useState<ToolMcpGatewayTokenCreated | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [createdTokens, setCreatedTokens] = useState<ToolMcpGatewayTokenCreated[]>([]);
 
   const activeTab: GatewayTabKey | null = isGatewayTabKey(tab) ? tab : null;
 
@@ -66,6 +70,7 @@ export function GatewayDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
+  const gatewaysView = useQueryView(gatewaysQuery);
 
   const gateway = useMemo(
     () => (gatewaysQuery.data?.gateways ?? []).find((g) => g.id === gatewayId),
@@ -93,16 +98,19 @@ export function GatewayDetail() {
     [projectsQuery.data],
   );
 
+  function rememberCreatedToken(token: ToolMcpGatewayTokenCreated) {
+    setCreatedTokens((current) => [token, ...current.filter((item) => item.id !== token.id)]);
+  }
+
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: "Gateways", href: "/apps/gateways" },
       { label: gateway.name },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, gateway]);
+  }, [setBreadcrumbs, gateway]);
 
   const toggleMutation = useMutation({
     mutationFn: () =>
@@ -123,18 +131,18 @@ export function GatewayDetail() {
     onError: (error) =>
       pushToast({
         title: "Couldn't update the gateway",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
   }
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;
   }
-  if (gatewaysQuery.isLoading) {
+  if (gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting") {
     return (
       <div className="max-w-4xl space-y-4">
         <Skeleton className="h-10 w-64" />
@@ -143,8 +151,16 @@ export function GatewayDetail() {
       </div>
     );
   }
-  if (gatewaysQuery.isError) {
-    return <ErrorState error={gatewaysQuery.error} onRetry={() => gatewaysQuery.refetch()} />;
+  if (gatewaysView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={gatewaysQuery.error}
+        action="load the gateway"
+        onRetry={gatewaysView.retry}
+        retrying={gatewaysView.isFetching}
+      />
+    );
   }
   if (!gateway) {
     return (
@@ -157,14 +173,6 @@ export function GatewayDetail() {
     );
   }
 
-  const endpointHost = (() => {
-    try {
-      return `${new URL(window.location.origin).host}${gateway.endpointPath}`;
-    } catch {
-      return gateway.endpointPath;
-    }
-  })();
-
   return (
     <div className="max-w-4xl space-y-5 pb-12">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -175,12 +183,18 @@ export function GatewayDetail() {
             </Link>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">{gateway.name}</h1>
-          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{endpointHost}</p>
+          <CopyableGatewayUrl endpointPath={gateway.endpointPath} className="mt-1 max-w-xl" />
         </div>
-        <Button onClick={() => setSnippetOpen(true)}>
-          <Send className="mr-1.5 h-4 w-4" />
-          Show snippet
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setEditing(true)}>
+            <Pencil className="mr-1.5 h-4 w-4" />
+            Edit
+          </Button>
+          <Button onClick={() => setSnippetOpen(true)}>
+            <Send className="mr-1.5 h-4 w-4" />
+            Client snippets
+          </Button>
+        </div>
       </div>
 
       <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label="Gateway tabs">
@@ -220,7 +234,7 @@ export function GatewayDetail() {
         <TokensPanel
           companyId={selectedCompanyId}
           gateway={gateway}
-          onTokenCreated={(token) => setCreatedToken(token)}
+          onTokenCreated={rememberCreatedToken}
         />
       )}
       {activeTab === "activity" && (
@@ -234,7 +248,15 @@ export function GatewayDetail() {
         gateway={gateway}
         open={snippetOpen}
         onOpenChange={setSnippetOpen}
-        createdToken={createdToken}
+        createdTokens={createdTokens}
+        onTokenCreated={rememberCreatedToken}
+      />
+      <EditGatewayDialog
+        companyId={selectedCompanyId}
+        gateway={gateway}
+        profiles={profilesQuery.data?.profiles ?? []}
+        open={editing}
+        onOpenChange={setEditing}
       />
     </div>
   );
