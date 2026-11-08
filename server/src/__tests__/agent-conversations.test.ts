@@ -1046,6 +1046,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Start each link target with exactly one slash");
   });
 
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
