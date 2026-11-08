@@ -152,7 +152,16 @@ function stopOnlyAttempt(lease: Lease, attemptId: string) {
     sql`${environmentLeases.metadata}->>'pluginId' is not distinct from ${readStopOnlyCleanup(lease)?.pluginId ?? null}`);
 }
 
-async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released", recovery: Record<string, unknown> = {}) {
+/** A warm sandbox kept running for reuse whose task moved to another workspace:
+ * stop it through the stop-only contract so the provider confirms the stop
+ * before anything destroys it. The ownership settle verifies the move. */
+export async function prepareSupersededWarmSandboxStop(db: Db, lease: Lease, recovery: Record<string, unknown>) {
+  if (lease.status !== "retained" || lease.leasePolicy !== "reuse_by_environment" || !lease.heartbeatRunId
+    || !lease.providerLeaseId || lease.metadata?.pendingCleanupInFlight === true) return null;
+  return prepareStopAndRetain(db, lease, "retained", recovery);
+}
+
+async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released" | "retained", recovery: Record<string, unknown> = {}) {
   const requestId = randomUUID(), now = new Date();
   const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId,
     companyId: lease.companyId, runId: lease.heartbeatRunId, leaseId: lease.id,
