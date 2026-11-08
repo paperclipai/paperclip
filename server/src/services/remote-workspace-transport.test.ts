@@ -90,6 +90,33 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     for (const kept of [directory, outside].filter(Boolean)) await fs.chmod(path.join(kept, "files", "locked"), 0o755).catch(() => undefined);
   });
 
+  it("finishes a removal that was interrupted after its proof was deleted", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    // An earlier removal renamed the verified attachment, then stopped after
+    // deleting its proof and part of its files.
+    const retiring = path.join(parent, `.retiring-${operationId}`);
+    await fs.mkdir(path.join(retiring, "files", "locked"), { recursive: true });
+    await fs.writeFile(path.join(retiring, "files", "locked", "left.txt"), "left behind\n");
+    await fs.chmod(path.join(retiring, "files", "locked"), 0o555);
+    const probe = { target: target().remote, remoteCwd: workspace, operationId, provenance };
+    await expect(hasRemoteRecoveryAttachment(probe)).resolves.toBe(false);
+    await expect(removeRemoteRecoveryAttachment(probe)).resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
+    await expect(removeRemoteRecoveryAttachment(probe)).resolves.toBe(false);
+  });
+
+  it("finishes an interrupted removal before removing a present attachment", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    await fs.mkdir(path.join(parent, `.retiring-${operationId}`, "files"), { recursive: true });
+    await fs.mkdir(path.join(parent, operationId), { recursive: true });
+    await fs.writeFile(path.join(parent, operationId, "provenance.json"), provenance);
+    await expect(removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance }))
+      .resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
+  });
+
   it("removes the empty recovery folder with its last attachment", async () => {
     const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
     const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
