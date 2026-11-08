@@ -994,6 +994,13 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
   });
 
+  it("tells chat to link the agent profile page that holds a control, including the unlisted API keys page", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+  });
+
   it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN.");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Never build a prefix from the company name");
