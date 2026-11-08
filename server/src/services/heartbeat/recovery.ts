@@ -2688,6 +2688,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
+      // The scan snapshot can predate a child the old controller saved just
+      // before it died. The child checks above used that snapshot, so a proven
+      // gone controller is never enough here: when revocation reports a child
+      // the snapshot did not, re-check on the next pass from the fresh row.
+      if (legacyControllerGone && ((revokedState.processPid ?? null) !== (run.processPid ?? null)
+        || (revokedState.processGroupId ?? null) !== (run.processGroupId ?? null))) {
+        scope.onDeferredDeadline?.(Date.now() + 1_000);
+        continue;
+      }
       // The earlier snapshot may predate a final renewal that admitted the
       // adapter. Revocation leaves a fresh foreign lease, so a later pass
       // applies the age guard to that dispatched run.

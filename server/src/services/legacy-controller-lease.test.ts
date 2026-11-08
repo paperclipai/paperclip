@@ -12,6 +12,18 @@ import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_
   revokeExpiredLegacyControllerWithState, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
+import * as legacyControllerLease from "./legacy-controller-lease.js";
+
+/** Runs just before recovery's revocation, to model a controller that saved
+ * its child's PID after recovery's scan and then died. Null in other cases. */
+const beforeRevocation: { hook: null | ((runId: string) => Promise<void>) } = { hook: null };
+vi.mock("./legacy-controller-lease.js", async importOriginal => {
+  const actual = await importOriginal<typeof legacyControllerLease>();
+  return { ...actual, revokeExpiredLegacyControllerWithState: async (...args: Parameters<typeof actual.revokeExpiredLegacyControllerWithState>) => {
+    if (beforeRevocation.hook) await beforeRevocation.hook(args[1].id);
+    return actual.revokeExpiredLegacyControllerWithState(...args);
+  } };
+});
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "./recovery/ownership-registry.js";
 
@@ -291,6 +303,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const id = await dispatchedBy(deadController());
     await reapOnly(id);
     expect(await saved(id)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it("never fails a run whose dead controller saved a live child after recovery's scan", async () => {
+    // Race: the scan read the run before the old controller saved its child's
+    // PID and died. The controller is proven gone, but its child still runs.
+    const id = await dispatchedBy(deadController());
+    beforeRevocation.hook = async runId => {
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+        processStartedAt: new Date((await currentProcessStartedAtMs()) ?? Date.now()) }).where(eq(heartbeatRuns.id, runId));
+    };
+    try {
+      await reapOnly(id);
+    } finally { beforeRevocation.hook = null; }
+    expect((await saved(id)).status).not.toBe("failed");
   });
 
   it("settles a dead controller's expired lease without waiting out the age guard", async () => {
