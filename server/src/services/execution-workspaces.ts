@@ -39,7 +39,11 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import {
+  clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
+  TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
+} from "./terminal-workspace-retry.js";
 import {
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
@@ -1516,7 +1520,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!row) throw notFound("Workspace is unavailable");
     let state;
     try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row, recoveryPullRequest); }
-    catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."], git: null }; }
+    catch (error) {
+      const failure = terminalWorkspaceFailure(error);
+      return { statusInspectionSucceeded: false, warnings: [`Workspace storage inspection is unavailable; data was retained. ${failure.message}`], git: null, failure };
+    }
     return { statusInspectionSucceeded: true, warnings: [], git: {
       repoRoot: `/workspaces/${workspace.id}`, workspacePath: `/workspaces/${workspace.id}`,
       branchName: state.branchName, baseRef: workspace.baseRef,
@@ -1902,6 +1909,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
   const terminalWorkspaceDeadlines = new Map<string, number>();
+  let terminalRetryResetAt = 0;
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
   const ISOLATED_REHOME_RETRY_MS = 60 * 60 * 1000;
@@ -3614,7 +3622,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compacted: 0,
         compactionFailed: 0,
       };
-      const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectGitCloseReadiness>>();
+      const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
+      const backOffTerminalWorkspace = async (target: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
+        const retry = await recordTerminalWorkspaceFailure(db, target, readExecutionWorkspaceLifecycleGeneration(target.metadata), failure, now());
+        terminalWorkspaceDeadlines.set(target.id, Date.parse(retry.retryAt));
+        logger.warn({ event: "execution_workspace.terminal_cleanup_retry", executionWorkspaceId: target.id, sourceIssueId: target.sourceIssueId,
+          failures: retry.failures, retryAt: retry.retryAt, failure: retry.failure }, "terminal workspace cleanup failed; a later sweep retries");
+      };
+      const settleTerminalWorkspaceRetry = async (target: ExecutionWorkspaceRow) => {
+        if (target.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) await clearTerminalWorkspaceRetry(db, target.id);
+      };
       let taskDirectoryBudget = opts.taskDirectoryRetention?.perSweep ?? 8;
       const expireTaskDirectory = async (workspace: ExecutionWorkspaceRow, notBefore: Date) => {
         const settings = opts.taskDirectoryRetention!;
@@ -3845,6 +3862,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedCooldown += 1;
           continue;
         }
+        const terminalRetry = readTerminalWorkspaceRetry(workspace.metadata, readExecutionWorkspaceLifecycleGeneration(workspace.metadata));
+        if (terminalRetry && Date.parse(terminalRetry.failedAt) > terminalRetryResetAt && Date.parse(terminalRetry.retryAt) > now().getTime()) {
+          terminalWorkspaceDeadlines.set(workspace.id, Date.parse(terminalRetry.retryAt));
+          result.skippedBackoff += 1;
+          continue;
+        }
         if (await workspaceHasActiveRun(workspace)) {
           if (reopenPending) result.skippedReopened += 1;
           else result.skippedActiveRun += 1;
@@ -3856,10 +3879,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const cleanup = await cleanupTerminalWorkspace(workspace, null, generation);
             if (cleanup.skippedReopened) result.skippedReopened += 1;
             else if (!cleanup.cleaned) result.cleanupFailed += 1;
-            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); await settleTerminalWorkspaceRetry(workspace); }
           } catch (error) {
             result.cleanupFailed += 1;
-            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await backOffTerminalWorkspace(workspace, terminalWorkspaceFailure(error));
             await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
               cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
           }
@@ -3966,11 +3989,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
         }
-        const { git, statusInspectionSucceeded } = await inspection;
+        const inspected = await inspection;
+        const { git, statusInspectionSucceeded } = inspected;
         if (!statusInspectionSucceeded) {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
+          if ("failure" in inspected) await backOffTerminalWorkspace(workspace, inspected.failure);
           result.skippedUndelivered += 1;
           continue;
+        }
+        if (workspace.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) {
+          await settleTerminalWorkspaceRetry(workspace);
+          const metadata = { ...workspace.metadata };
+          delete metadata[TERMINAL_WORKSPACE_RETRY_KEY];
+          workspace = { ...workspace, metadata };
         }
         if (deliveryCandidate && (git?.headSha !== deliveryCandidate.headSha || git.branchName !== workspace.branchName
           || (await workspaceDeliveryCandidate(workspace))?.operationId !== deliveryCandidate.operationId)) {
@@ -4089,10 +4120,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation, recoveryPullRequest, verifyDeliveryBeforeRemove);
             if (cleanup.skippedReopened) result.skippedReopened += 1;
             else if (!cleanup.cleaned) result.cleanupFailed += 1;
-            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); await settleTerminalWorkspaceRetry(workspace); }
           } catch (error) {
             result.cleanupFailed += 1;
-            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await backOffTerminalWorkspace(workspace, terminalWorkspaceFailure(error));
             await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
               cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
             logger.warn({ err: error, executionWorkspaceId: workspace.id }, "workspace storage cleanup remains pending");
@@ -4225,10 +4256,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration, recoveryPullRequest, verifyDeliveryBeforeRemove);
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
-          else result.archived += 1;
+          else { result.archived += 1; await settleTerminalWorkspaceRetry(archived); }
         } catch (error) {
           result.cleanupFailed += 1;
-          if (archived.providerType === "plugin" || remoteWorkspace) terminalWorkspaceDeadlines.set(archived.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+          if (archived.providerType === "plugin" || remoteWorkspace) await backOffTerminalWorkspace(archived, terminalWorkspaceFailure(error));
           const failure = error instanceof Error ? error.message : String(error);
           // Mark cleanup_failed only while the row is still closed at the
           // generation this sweep captured. A reopen that raced after the failure
@@ -4278,7 +4309,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
         }
       }
-      if (!hints) { terminalInspections.clear(); return; }
+      if (!hints) { terminalInspections.clear(); terminalRetryResetAt = now().getTime(); return; }
       for (const [id, inspection] of terminalInspections) {
         if (hints.has(`workspace:${id}`) || [...inspection.issueIds].some(issueId => hints.has(`issue:${issueId}`))) {
           terminalInspections.delete(id);
