@@ -59,6 +59,25 @@ suite("pending-cleanup obligation owned by the cleanup queue", () => {
       reason: "queue_overdue" })]);
   });
 
+  it("never reports a settled orphan's first attempt as overdue just because the worker's deadline is 'now'", async () => {
+    // The orphaned-run-lease settle keeps updatedAt and saves when it queued the item.
+    await item(new Date(Date.now() - 60 * 60_000), { pendingCleanupRetryAttempts: 0,
+      pendingCleanupRecoveredAtMs: Date.now() });
+    await db.update(environmentLeases).set({ failureReason: "orphaned_active_lease_recovered" });
+    const { kind, violations } = await pass();
+    expect(kind).toMatchObject({ verdicts: { alive: 1 }, reasons: { queue_scheduled: 1 } });
+    expect(violations).toEqual([]);
+  });
+
+  it("wakes the reconciler when a scheduled item would become overdue", async () => {
+    const updatedAt = new Date(Date.now() - 60_000);
+    await item(updatedAt);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    // Due at updatedAt + one retry interval; overdue after two more.
+    const expected = updatedAt.getTime() + 5 * 60_000 + 10 * 60_000;
+    expect(Math.abs((report.nextDueAt?.getTime() ?? 0) - expected)).toBeLessThan(5_000);
+  });
+
   it("does not list an item a claimant holds in flight (that is the teardown claim)", async () => {
     await item(new Date(Date.now() - 60 * 60_000), { pendingCleanupInFlight: true, pendingCleanupAttemptId: "claim" });
     const { kind } = await pass();

@@ -466,6 +466,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const kindReports: KindReport[] = [];
   const violations: InvariantViolation[] = [];
   const goneThisPass = new Set<string>();
+  let queueDueAt: Date | null = null;
   const settleRecords = options.settle ?? options.record !== false;
   let retryNeeded = false;
 
@@ -505,8 +506,15 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       if (kind.invariantChecks.includes(1) && record.owner.kind === "none") {
         violations.push({ ...base, rule: "I1_owned", reason: "no_owner_stamp" });
       }
-      if (kind.invariantChecks.includes(7) && record.owner.kind === "queue" && proof.reason === "queue_overdue") {
-        violations.push({ ...base, rule: "I7_visible_next_action", reason: "queue_overdue" });
+      if (kind.invariantChecks.includes(7) && record.owner.kind === "queue") {
+        if (proof.reason === "queue_overdue") {
+          violations.push({ ...base, rule: "I7_visible_next_action", reason: "queue_overdue" });
+        } else {
+          // Re-check when this item would become overdue, so a queue that stops
+          // acting without another write is still reported.
+          const overdueAt = new Date(record.owner.dueAt.getTime() + record.owner.graceMs + 1);
+          if (!queueDueAt || overdueAt < queueDueAt) queueDueAt = overdueAt;
+        }
       }
       if (settleRecords && kind.settle) {
         const outcome = await settleOrSurface(db, kind, record, proof, now);
@@ -524,7 +532,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     }
   }
 
-  let nextDueAt: Date | null = null;
+  let nextDueAt: Date | null = queueDueAt;
   for (const check of [
     () => checkAdmissionIndependence(db, state, now, limit),
     () => checkExactlyOnceIntents(db, state, now, limit),

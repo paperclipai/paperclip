@@ -117,6 +117,7 @@ suite("environment_run_lease_active on the shared ownership path", () => {
     expect(report.kinds.find(kind => kind.kind === "environment_run_lease_active")).toMatchObject({
       settled: 1, reasons: { pid_dead: 1 } });
     expect(await row(leaseId)).toMatchObject({ status: "pending_cleanup", failureReason: "orphaned_active_lease_recovered" });
+    expect(typeof (await row(leaseId)).metadata?.pendingCleanupRecoveredAtMs).toBe("number");
   });
 
   it("stops and keeps a dead holder's sandbox instead of destroying it", async () => {

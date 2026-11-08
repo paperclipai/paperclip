@@ -384,7 +384,13 @@ const PENDING_CLEANUP_OVERDUE_GRACE_MS = 2 * ENVIRONMENT_CLEANUP_RETRY_MS;
 function pendingCleanupKind(): OwnableKind {
   const where = and(eq(environmentLeases.status, "pending_cleanup"),
     sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`);
-  const dueMs = sql<string>`case when ${recoveredOrphanFirstAttemptSql()} then ${pendingCleanupDeadlineSql()}
+  // The first attempt of a settled orphan is due at once: the worker's "run
+  // now" deadline is 0, so its due time is when the settle queued it (saved
+  // by the settle; a row from before that is due since its last write).
+  const dueMs = sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
+      then coalesce(case when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRecoveredAtMs') = 'number'
+        then (${environmentLeases.metadata}->>'pendingCleanupRecoveredAtMs')::numeric end,
+        extract(epoch from ${environmentLeases.updatedAt}) * 1000)
     else greatest(extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${ENVIRONMENT_CLEANUP_RETRY_MS},
       ${pendingCleanupDeadlineSql()}) end`;
   return {
