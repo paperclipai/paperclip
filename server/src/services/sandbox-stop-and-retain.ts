@@ -74,9 +74,11 @@ export function readStopOnlyCleanup(lease: Lease) {
 }
 
 /** Persist before provider dispatch so an older worker or a restart cannot turn
- * an explicit stop into ordinary destructive release. Invalid pins stay pending. */
-export async function prepareSandboxStopAndRetain(db: Db, lease: Lease) {
-  return prepareStopAndRetain(db, lease, "active");
+ * an explicit stop into ordinary destructive release. Invalid pins stay pending.
+ * `recovery` marks an ownership settle on the intent; the pending-cleanup
+ * sweep dispatches such a stop's first attempt without its retry backoff. */
+export async function prepareSandboxStopAndRetain(db: Db, lease: Lease, recovery?: Record<string, unknown>) {
+  return prepareStopAndRetain(db, lease, "active", recovery);
 }
 
 /** Historical release rows can lack a stop receipt. Re-inspect the exact

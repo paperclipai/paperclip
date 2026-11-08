@@ -168,6 +168,73 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues).then((rows) => rows[0])).toMatchObject({ status: "cancelled" });
   });
 
+  it("creates nothing when the card link cannot be resolved", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    // The link lookup runs before the card is created, so its failure cannot strand a queued compile task.
+    const failingPrefixDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "select") {
+          return (fields?: Record<string, unknown>) => {
+            if (fields && "issuePrefix" in fields) throw new Error("company read unavailable");
+            return target.select(fields as never);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Db;
+    const response = await request(createApp(failingPrefixDb, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Recently updated launch tasks" });
+
+    expect(response.status).toBe(500);
+    expect(await db.select().from(statusCards)).toEqual([]);
+    expect(await db.select().from(issues)).toEqual([]);
+  });
+
+  it("keeps a card with a queued compile when its activity record fails", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    // Fail only the card's creation activity record, which is written after the compile is queued.
+    const failingActivityDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "insert") {
+          return (table: unknown) => {
+            const builder = target.insert(table as never);
+            if (table !== activityLog) return builder;
+            return new Proxy(builder, {
+              get(inner, key) {
+                if (key === "values") {
+                  return (values: { action?: string }) => {
+                    if (values?.action === "status_card.created") throw new Error("activity log unavailable");
+                    return inner.values(values as never);
+                  };
+                }
+                const value = Reflect.get(inner, key, inner);
+                return typeof value === "function" ? value.bind(inner) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Db;
+    const response = await request(createApp(failingActivityDb, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Recently updated launch tasks" });
+
+    expect(response.status).toBe(500);
+    const cards = await db.select().from(statusCards);
+    expect(cards).toHaveLength(1);
+    const generation = await db.select().from(issues).where(eq(issues.id, cards[0]!.generatingIssueId!)).then((rows) => rows[0]);
+    expect(generation).toBeDefined();
+    expect(generation!.status).not.toBe("cancelled");
+  });
+
   it("creates, patches, archives, restores, lists updates, and deletes a card", async () => {
     const company = await seedCompany();
     await enableStatusCards();
@@ -211,7 +278,9 @@ describeEmbeddedPostgres("status card routes", () => {
 
     const archived = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ archived: true });
     expect(archived.status).toBe(200);
-    expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null });
+    // The person's restore route travels with the archive receipt, so an agent can link it.
+    expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null, href: `/${company.issuePrefix}/status/${created.body.id}` });
+    expect((await request(app).get(`/api/status-cards/${created.body.id}`)).body.href).toBe(`/${company.issuePrefix}/status/${created.body.id}`);
     expect(await db.select().from(issues).where(eq(issues.id, created.body.generatingIssueId)).then((rows) => rows[0]?.status)).toBe("cancelled");
     expect((await request(app).get(`/api/companies/${company.id}/status-cards`)).body).toEqual([]);
     expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body).toHaveLength(1);

@@ -16,7 +16,7 @@ export interface BaselineRun {
   adapter: string;
   environment: string;
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
-  phase: "cold" | "warm" | "restart";
+  phase: "cold" | "warm" | "restart" | "midturn";
   events: BaselineEvent[];
 }
 
@@ -70,10 +70,16 @@ export interface RunMetrics {
   bootMs: number | null;
   /** Durations of every span that starts before the first turn submission. */
   preTurnSteps: Record<string, number>;
+  /** Input accepted to run created (`comment.to_run_created` or
+   * `question_response.to_run_created`): the wait behind a live turn. Part of
+   * the user-visible TTFT; reported as its own step, not judged by the budget. */
+  inputWaitMs: number | null;
+  /** TTFT from run creation: what the speed budget judges. */
+  ttftAfterRunCreatedMs: number | null;
 }
 
 /** Spans that wrap others (or the whole run); ranking them would double count. */
-const CUMULATIVE_SPANS = new Set(["task.time_to_first_token", "task.provider_session.measured", "task.prepare",
+const CUMULATIVE_SPANS = new Set(["task.time_to_first_token", "comment.to_run_created", "question_response.to_run_created", "task.provider_session.measured", "task.prepare",
   "native.session.execute", "runner.session.startup", "agent.turn", "environment.startup"]);
 
 const FIRST_SPAN = (spans: RunSpan[], name: string) => spans.find(span => span.name === name) ?? null;
@@ -95,7 +101,12 @@ export function runMetrics(run: BaselineRun): RunMetrics {
       if (span.startOffsetMs < turnStartAt && !(span.name in preTurnSteps)) preTurnSteps[span.name] = span.durationMs;
     }
   }
+  const ingress = FIRST_SPAN(spans, "comment.to_run_created") ?? FIRST_SPAN(spans, "question_response.to_run_created");
+  // Only an ingress that starts the TTFT span waited for its run to exist.
+  const inputWaitMs = ingress && ttft && ingress.startOffsetMs <= ttft.startOffsetMs ? ingress.durationMs : null;
   return {
+    inputWaitMs,
+    ttftAfterRunCreatedMs: ttft ? Math.max(0, ttft.durationMs - (inputWaitMs ?? 0)) : null,
     ttftMs: ttft ? ttft.durationMs : null,
     ttftAnchor: ttft && typeof ttft.attributes.anchor === "string" ? ttft.attributes.anchor : null,
     bootMs: claimedAt !== null && turnStartAt !== null ? Math.max(0, turnStartAt - claimedAt) : null,
@@ -128,7 +139,12 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
   return samples;
 }
 
-export interface BaselineRow { adapter: string; environment: string; warmth: "cold" | "warm"; ttft: Distribution; boot: Distribution; anchors: Record<string, number> }
+export interface BaselineRow { adapter: string; environment: string; warmth: "cold" | "warm"; ttft: Distribution; boot: Distribution;
+  /** The wait behind a live turn (input accepted to run created), its own measured step. */
+  inputWait: Distribution;
+  /** TTFT from run creation: the value the speed budget judges. */
+  ttftAfterRunCreated: Distribution;
+  anchors: Record<string, number> }
 
 export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
   const groups = new Map<string, { adapter: string; environment: string; warmth: "cold" | "warm"; metrics: RunMetrics[] }>();
@@ -145,7 +161,9 @@ export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
     for (const metric of group.metrics) if (metric.ttftAnchor) anchors[metric.ttftAnchor] = (anchors[metric.ttftAnchor] ?? 0) + 1;
     return { adapter: group.adapter, environment: group.environment, warmth: group.warmth, anchors,
       ttft: distribution(group.metrics.flatMap(metric => metric.ttftMs === null ? [] : [metric.ttftMs])),
-      boot: distribution(group.metrics.flatMap(metric => metric.bootMs === null ? [] : [metric.bootMs])) };
+      boot: distribution(group.metrics.flatMap(metric => metric.bootMs === null ? [] : [metric.bootMs])),
+      inputWait: distribution(group.metrics.flatMap(metric => metric.inputWaitMs === null ? [] : [metric.inputWaitMs])),
+      ttftAfterRunCreated: distribution(group.metrics.flatMap(metric => metric.ttftAfterRunCreatedMs === null ? [] : [metric.ttftAfterRunCreatedMs])) };
   });
 }
 

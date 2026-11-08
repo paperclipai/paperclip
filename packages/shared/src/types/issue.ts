@@ -214,6 +214,12 @@ export interface DocumentRevision {
   createdAt: Date;
 }
 
+export interface ExactDocumentRevision extends DocumentRevision {
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  isLatest: boolean;
+}
+
 export interface LegacyPlanDocument {
   key: "plan";
   body: string;

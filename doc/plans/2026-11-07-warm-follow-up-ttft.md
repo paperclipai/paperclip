@@ -5,7 +5,7 @@ Status: measured 2026-11-07. Follows [`2026-11-07-ttft-baseline.md`](2026-11-07-
 ## Summary
 
 - **Warm runners make Codex and OpenCode follow-ups 2.6–5× faster.** Follow-up TTFT p50 drops from 12.0 s to 4.7 s (Codex) and from 21.7 s to 4.2 s (OpenCode). A follow-up is now faster than a new task, which it was not before.
-- **Claude does not gain.** Its ACPX runner relaunches the Claude process and reloads the session on every follow-up turn by design, so warm keeps runnerd alive but the follow-up still takes about 10.7 s. Claude stays per-turn by default.
+- **Claude does not gain.** Its ACPX runner relaunches the Claude process and reloads the session on every follow-up turn by design, so warm keeps runnerd alive without shortening the follow-up. Claude stays per-turn by default. A quieter re-measurement (below) puts the Claude follow-up at 6.3 s per-turn against 7.1 s warm; the 10.5 s in the main table was host load.
 - **Restart recovery is not slower with warm.** K1 and K2 recovery latency is equal or lower, and every interrupted run recovered.
 - **The default is now warm for local Codex and OpenCode** agents that never chose a lifecycle, with the 5-minute idle window. Explicit choices and admitted sessions keep their policy.
 - **Two defects blocked warm and are fixed:** warm follow-ups kept the first run's completion contract (#19874; every OpenCode warm follow-up looped until timeout), and an idle warm runner whose controller crashed could live up to its 1-hour connection lease (now a 7-minute reconnect grace).
@@ -33,6 +33,18 @@ Status: measured 2026-11-07. Follows [`2026-11-07-ttft-baseline.md`](2026-11-07-
 | claude | **follow-up** | **10.54 / 28.57 s** | **10.72 / 25.55 s** | 4.67 / 18.18 s | 5.85 / 21.39 s |
 
 A new task is cold in both lifecycles (a new provider session), so its differences are host noise.
+
+### Corrected Claude baseline
+
+The Claude rows above ran at a 1-minute load average of 13–27. A Claude-only re-measurement on master `fc6e1b0346` at a load average of about 9 (n = 6 each, `--adapters claude --samples 6 --phases coldwarm`):
+
+| Claude | per_turn | warm |
+|---|---|---|
+| New task TTFT p50 / p95 | 11.37 / 12.84 s | 9.66 / 12.52 s |
+| Follow-up TTFT p50 / p95 | 6.30 / 7.28 s | 7.13 / 7.26 s |
+| Follow-up `turn.submitted` → `turn.started` p50 | 3.16 s | 2.67 s |
+
+A Claude follow-up is already faster than a new task with `per_turn`, and `per_turn` stays the default. The earlier 10.5 s follow-up figure was host noise. Warm is slower for Claude because its `run.attach` retires the old provider generation on the critical path (about 1.2 s), which a per-turn runner does at the end of the previous run.
 
 ### Where a per_turn follow-up spends its time (p50)
 
@@ -91,7 +103,7 @@ This check found that `normalizePaperclipRunnerAdapterConfig`, which runs on eve
 
 The cause is ours, not the provider's. The ACPX session reaps the sidecar and Claude process at the start of every turn after the first, then resumes the same persistent session in a fresh process generation (`acpx_provider_session.rs`, `restart_idle_provider`). The documented reason: the MCP endpoint is session-lifetime and cannot tell which provider turn sent a late HTTP callback. On a resumed session the sidecar also defers provider initialization to the first prompt (`acpx-runtime-sidecar.ts`, `await runtimeTurn.promptStarted`). Both land between `turn.submitted` and `turn.started`: 3.8 s p50 per_turn, 2.75 s warm.
 
-A warm runner does not avoid it. `run.attach` checkpoints the ACPX sidecar and the next `session.open` starts a new process generation and loads the session (about 5 s of the warm follow-up's attach), and that resumed generation still defers its provider initialization to the first prompt (2.75 s). The relaunch itself is required: the old generation must be reaped before its call-ID tombstones are released. What can change is when it happens. Preparing the next generation while the session is idle, after the previous turn settles, would take it off the follow-up's critical path. That is a runnerd change with its own late-callback proof and timing receipts. Until then Claude stays per-turn by default.
+A warm runner does not avoid it. Instrumented, a warm follow-up spends 1.2 s in `run.attach` checkpointing and shutting down the old provider generation, 0.7–1.0 s starting the new generation, and 2.5 s in the deferred initialization and session load at the first prompt. Retiring the old generation earlier would only bring warm level with per-turn. Removing the relaunch itself needs MCP authority that is scoped to a turn and run instead of to the provider process; see [`2026-11-07-turn-scoped-acpx-mcp-authority.md`](2026-11-07-turn-scoped-acpx-mcp-authority.md). Until then Claude stays per-turn by default.
 
 ## Gaps
 

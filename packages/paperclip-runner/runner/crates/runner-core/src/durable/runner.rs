@@ -525,6 +525,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         return Ok(());
     }
     if recovered {
+        // A restarted runner process emits a new event generation (section G).
+        state.begin_recovered_generation();
         executor.observe_recovery_state(&state)?;
     }
     if recovered && state.warm_transition.is_none() {
