@@ -50,6 +50,19 @@ describe("heartbeat queue module boundary", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
+  it.each(["startNextQueuedRunForAgent", "resumeQueuedRuns"] as const)("starts no run once shutdown closed run admission (%s)", async (operation) => {
+    // A graceful drain closes run admission before the HTTP listener: a wake promoted while the
+    // server shuts down stays queued for the next boot instead of starting with no callback origin.
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.isRunAdmissionClosed = () => true;
+    const queue = createHeartbeatQueue(database.db, deps);
+    await queue[operation]("agent");
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.getAgent).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("tracks pending wakes across instances and clears each rejected wake", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);

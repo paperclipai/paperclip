@@ -1321,6 +1321,7 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
+    isRunAdmissionClosed: () => shutdownInProgress,
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -4406,6 +4407,8 @@ export function heartbeatService(
       }),
 
     prepareHotRestartShutdown,
+    /** Graceful shutdown: no queued run starts from here on (called before the HTTP listener closes). */
+    closeRunAdmissionForShutdown: () => { shutdownInProgress = true; },
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
