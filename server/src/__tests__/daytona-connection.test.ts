@@ -66,7 +66,7 @@ const credential = "daytona-fixture-secret";
       return gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters, timeoutMs, idempotencyKey: randomUUID() });
     };
     return { company, service, connected, agent, request, call, gateway, session, organizationId, sandboxId,
-      foreignOrganization: () => { sandboxOrganization = randomUUID(); }, foreignProxy: () => { proxy = "https://attacker.example/toolbox"; } };
+      foreignOrganization: () => { sandboxOrganization = randomUUID(); }, foreignProxy: () => { proxy = "https://attacker.example/toolbox"; }, useProxy: (value: string) => { proxy = value; } };
   }
 
   it.each([false, true])("uses the selected vault identity for real gateway reads and writes (personal=%s)", async personal => {
@@ -108,6 +108,17 @@ const credential = "daytona-fixture-secret";
     const g = await fixture(); g.foreignProxy(); g.request.mockClear();
     await expect(g.call("daytona_toolbox_execute_command", { sandboxId: g.sandboxId, body: { command: "true" } })).rejects.toThrow("unrecognized toolbox");
     expect(g.request.mock.calls.every(([url]) => url.startsWith(DAYTONA_API_URL))).toBe(true);
+  });
+
+  it("forwards to a regional toolbox proxy and rejects look-alike hosts", async () => {
+    const f = await fixture(); f.useProxy("https://proxy.app-eu.daytona.io/toolbox"); f.request.mockClear();
+    expect(JSON.stringify(await f.call("daytona_toolbox_execute_command", { sandboxId: f.sandboxId, body: { command: "echo done" } }))).toContain("done");
+    expect(f.request.mock.calls.some(([url]) => url.startsWith("https://proxy.app-eu.daytona.io/toolbox/"))).toBe(true);
+    for (const proxy of ["https://proxy.app-eu.daytona.io.attacker.example/toolbox", "https://proxy.app-eu.attacker.io/toolbox", "https://proxy.app-.daytona.io/toolbox"]) {
+      const g = await fixture(); g.useProxy(proxy); g.request.mockClear();
+      await expect(g.call("daytona_toolbox_execute_command", { sandboxId: g.sandboxId, body: { command: "true" } })).rejects.toThrow("unrecognized toolbox");
+      expect(g.request.mock.calls.every(([url]) => url.startsWith(DAYTONA_API_URL))).toBe(true);
+    }
   });
 
   it("rejects foreign connection bindings, unknown arguments and path traversal", async () => {
