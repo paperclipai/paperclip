@@ -1,8 +1,10 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
-import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, hasExpectedCodexRuntimeAuthPayload, isEphemeralCodexRuntimeAuthFile, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { writeApiKeyAuthJson } from "../../packages/adapters/codex-local/src/server/codex-home.js";
+import { applyEvalGatewayEnvironment } from "./harness-env.js";
 
 const tokens = {
   account_id: "identity-canary-private-90123",
@@ -14,6 +16,126 @@ const sources = { CODEX_AUTH_JSON: JSON.stringify({ tokens }) };
 const secrets = normalizedSecrets(Object.values(sources));
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+
+const runtimeHash = "a".repeat(64);
+const companyCodexHome = "instances/test/companies/company/codex-home";
+const runtimeApiKey = "synthetic-codex-api-key-local-only-91234";
+
+async function legacyAuthFixture() {
+  const root = await mkdtemp(path.join(tmpdir(), "legacy-codex-auth-payload-")); directories.push(root);
+  const home = path.join(root, companyCodexHome, "skill-runtimes/agent", runtimeHash);
+  await writeApiKeyAuthJson(home, runtimeApiKey);
+  return { root, home, file: path.join(home, "auth.json") };
+}
+
+it("accepts only the configured API-key payload in production, compact and pretty formats", async () => {
+  const { root, file } = await legacyAuthFixture();
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(true);
+  for (const text of [JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }), ` \n${JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }, null, 2)}\t\r\n`]) {
+    await writeFile(file, text);
+    expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(true);
+  }
+});
+
+it.each([
+  JSON.stringify({ tokens }),
+  JSON.stringify({ OPENAI_API_KEY: "different-campaign-key" }),
+  JSON.stringify({ OPENAI_API_KEY: runtimeApiKey, extra: tokens.access_token }),
+  `{"OPENAI_API_KEY":"${tokens.access_token}","OPENAI_API_KEY":"${runtimeApiKey}"}`,
+  JSON.stringify({}),
+  JSON.stringify([runtimeApiKey]),
+  "not-json",
+  `${" ".repeat(4096)}${JSON.stringify({ OPENAI_API_KEY: runtimeApiKey })}`,
+])("rejects unexpected legacy auth payload %#", async text => {
+  const { root, file } = await legacyAuthFixture();
+  await writeFile(file, text);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
+
+it("requires a configured key and retains file safety at the new auth layout", async () => {
+  const { root, home, file } = await legacyAuthFixture();
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file)).toBe(false);
+  await chmod(file, 0o644);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+  await rm(file);
+  const outside = path.join(root, "outside-auth.json");
+  await writeFile(outside, JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }), { mode: 0o600 });
+  await symlink(outside, path.join(home, "auth.json"));
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
+
+it("leaves previously admitted auth payload policy unchanged", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-codex-auth-policy-")); directories.push(root);
+  const home = path.join(root, "instances/test/companies/company/agents/agent/codex-home");
+  await mkdir(home, { recursive: true });
+  const file = path.join(home, "auth.json");
+  await writeFile(file, JSON.stringify({ tokens }), { mode: 0o600 });
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file)).toBe(true);
+});
+
+it("checks the bound gateway credential instead of the upstream provider key", async () => {
+  const { root, home, file } = await legacyAuthFixture();
+  const childEnv = { OPENAI_API_KEY: runtimeApiKey };
+  const token = "synthetic-attempt-gateway-token-23456";
+  applyEvalGatewayEnvironment(childEnv, "OPENAI_API_KEY", { token, baseUrl: "http://127.0.0.1:12345", phasePath: "/private/phase" });
+  await writeApiKeyAuthJson(home, childEnv.OPENAI_API_KEY.trim());
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, childEnv.OPENAI_API_KEY.trim())).toBe(true);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
+
+it.each([
+  companyCodexHome,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}`,
+  `${companyCodexHome}/connector-runtimes/agent/${runtimeHash}`,
+  "instances/test/companies/company/agents/agent/codex-home",
+  "instances/test/runtime/paperclip-runner/durable-sessions/session/codex-home",
+  "instances/test/runtime/paperclip-runner/acpx/acpx/session/codex-home",
+])("recognizes required private Codex API auth in %s without exempting its bytes from scans", async relativeHome => {
+  const root = await mkdtemp(path.join(tmpdir(), "codex-runtime-auth-layout-")); directories.push(root);
+  const home = path.join(root, relativeHome);
+  const syntheticKey = "synthetic-codex-api-key-local-only-91234";
+  await writeApiKeyAuthJson(home, syntheticKey);
+  const file = path.join(home, "auth.json");
+  const metadata = await lstat(file);
+  expect(metadata.isFile()).toBe(true);
+  expect(metadata.mode & 0o777).toBe(0o600);
+  expect(isEphemeralCodexRuntimeAuthFile(root, file)).toBe(true);
+  expect(await findSecretLeakInDirectory(root, [syntheticKey], { includeShapes: false })).toEqual({ file, reason: "exact secret value" });
+});
+
+it.each([
+  "workspace/auth.json",
+  `${companyCodexHome}/config.toml`,
+  `${companyCodexHome}/skill-runtimes/agent/${"a".repeat(63)}/auth.json`,
+  `${companyCodexHome}/skill-runtimes/agent/${"A".repeat(64)}/auth.json`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/config.toml`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/auth.json.backup`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/nested/auth.json`,
+  `${companyCodexHome}/other-runtimes/agent/${runtimeHash}/auth.json`,
+  `${companyCodexHome}/connector-runtimes/${runtimeHash}/auth.json`,
+  `../outside/${companyCodexHome}/auth.json`,
+])("does not classify unrelated or malformed auth paths as private runtime credentials: %s", relativeFile => {
+  const root = path.resolve(tmpdir(), "codex-runtime-auth-path-boundary");
+  expect(isEphemeralCodexRuntimeAuthFile(root, path.resolve(root, relativeFile))).toBe(false);
+});
+
+it("keeps legacy runtime identity content subject to scanning beyond its required auth file", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "legacy-codex-identity-scan-")); directories.push(temporary);
+  const root = path.join(temporary, "paperclip-home");
+  const options = { sources, includeShapes: false, privateCodexRuntimeIdentityRoot: root };
+  for (const relativeHome of [companyCodexHome, `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}`]) {
+    const home = path.join(root, relativeHome);
+    for (const relativeFile of ["logs_2.sqlite", "sessions/2026/11/03/rollout-test.jsonl"]) {
+      const file = path.join(home, relativeFile);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, relativeFile.endsWith(".jsonl")
+        ? JSON.stringify({ type: "session_meta", payload: { creator_account_id: tokens.account_id } })
+        : tokens.account_id);
+      expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file, matchCategory: "CODEX_AUTH_JSON.tokens.account_id" });
+      await rm(file);
+    }
+  }
+});
 
 it.each(Object.keys(tokens) as Array<keyof typeof tokens>)("classifies %s without returning its value", key => {
   const match = findSecretLeakMatch(`provider state: ${tokens[key]}`, secrets, { sources });
