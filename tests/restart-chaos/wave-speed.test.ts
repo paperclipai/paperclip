@@ -90,14 +90,32 @@ describe("wave speed grade", () => {
   });
 
   it("reports first-time workspace provisioning on its own row and keeps it out of agent boot", () => {
-    const provisioned: BaselineRun = { runId: "p", adapter: "claude", environment: "local", phase: "cold",
+    const provisioned: BaselineRun = { runId: "p", adapter: "claude", environment: "local", phase: "cold", workspaceCreated: true,
       events: [span("heartbeat.queue", 0, 100), span("heartbeat.prepare.workspace_provision", 200, 22_000),
         span("runner.turn.submit", 22_500, 3_000), span("task.time_to_first_agent_activity", 0, 27_000)] };
     expect(bootWithoutProvisionMs(provisioned)).toBe(25_400 - 22_000);
+    expect(bootWithoutProvisionMs({ ...provisioned, workspaceCreated: false })).toBe(25_400);
     const speed = gradeWaveSpeed("local", [provisioned], [], 0);
     expect(speed.rows.find(row => row.metric === "agent_boot")).toMatchObject({ measured: { p50: 3_400 }, breaches: [] });
     expect(speed.rows.find(row => row.metric === "workspace_provision")).toMatchObject({ budget: null, measured: { n: 1, p50: 22_000 } });
     expect(gradeWaveSpeed("local", [run("q", "claude", 4_000)], [], 0).rows.some(row => row.metric === "workspace_provision")).toBe(false);
+  });
+
+  it("grades a retry successor as restart and reads provisioning creation from workspace operations", async () => {
+    const created = traced(3_000_000, [["heartbeat.queue", 0, 100], ["heartbeat.prepare.workspace_provision", 200, 20_000],
+      ["runner.turn.submit", 20_300, 2_000], ["task.time_to_first_agent_activity", 0, 23_000]]);
+    const successor = traced(4_000_000, [["heartbeat.queue", 0, 30_000], ["task.time_to_first_agent_activity", 0, 35_000]]);
+    const events: Record<string, object[]> = { created: created.events, successor: successor.events };
+    const api = { get: async (route: string) => route.endsWith("/workspace-operations")
+      ? (route.includes("/created/") ? [{ phase: "workspace_provision", metadata: { created: true } }] : [{ phase: "workspace_provision", metadata: { created: false } }])
+      : (route.includes("/created/") ? events.created : events.successor).map((event: object, seq: number) => ({ ...event, seq })) } as unknown as ChaosApi;
+    const runSample = (id: string, createdAt: number, retryOfRunId: string | null) => ({ runs: [{ id, status: "succeeded", retryOfRunId,
+      createdAt: new Date(createdAt).toISOString(), finishedAt: new Date(createdAt + 60_000).toISOString() }] }) as never;
+    const speed = await collectWaveSpeed(api, "local", [{ issueId: "i1", adapter: "claude", samples: [runSample("created", 3_000_000, null)] },
+      { issueId: "i2", adapter: "claude", samples: [runSample("successor", 4_000_000, "interrupted")] }], []);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity" && row.start === "cold")).toMatchObject({ measured: { n: 1, p50: 23_000 } });
+    expect(speed.rows.find(row => row.metric === "workspace_provision")).toMatchObject({ measured: { n: 1, p50: 20_000 } });
+    expect(speed.rows.find(row => row.metric === "agent_boot" && row.start === "cold")).toMatchObject({ measured: { p50: 2_200 } });
   });
 
   it("finds the trace start from when its spans were written, never later than it", () => {

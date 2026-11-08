@@ -116,7 +116,13 @@ export function firstActivityMs(run: BaselineRun): number | null {
 }
 
 export function provisionMs(run: BaselineRun): number | null {
+  if (!run.workspaceCreated) return null;
   return runSpans(run).find(span => span.name === "heartbeat.prepare.workspace_provision")?.durationMs ?? null;
+}
+
+async function workspaceCreated(api: ChaosApi, runId: string): Promise<boolean> {
+  const rows = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 15_000).catch(() => []);
+  return (rows ?? []).some(row => row.phase === "workspace_provision" && (row.metadata as Json | null)?.created === true);
 }
 
 export function bootWithoutProvisionMs(run: BaselineRun): number | null {
@@ -221,7 +227,8 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
     for (const [index, run] of ordered.entries()) {
       try {
         const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
-          events: await runEventsWithRetry(api, run.id) };
+          events: await runEventsWithRetry(api, run.id), workspaceCreated: await workspaceCreated(api, run.id) };
+        if (run.retryOfRunId) raw.phase = "restart";
         if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
         const trimmed = withoutOutage(raw, windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
