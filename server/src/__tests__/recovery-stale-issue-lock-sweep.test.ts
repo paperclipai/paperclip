@@ -9,6 +9,7 @@ import {
   costEvents,
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   completionContracts,
   createDb,
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(heartbeatRuns);
     await db.delete(completionContracts);
     await db.delete(issues);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -142,6 +144,23 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       id: runningRunId, status: "timed_out",
     }));
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.executionRunId).toBe(runningRunId);
+  });
+
+  // Section E: clearing a stale lock is a hold-release event. A message saved
+  // behind the lock is made due at once instead of waiting out its backoff.
+  it("promotes a message saved behind a stale lock when the sweep clears it", async () => {
+    const { companyId, agentId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Saved behind a stale lock", status: "in_progress",
+      priority: "high", assigneeAgentId: agentId, checkoutRunId: failedRunId, executionRunId: failedRunId });
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+      status: "deferred_issue_execution", requestedByActorType: "user", updatedAt: new Date(),
+      payload: { issueId, executionWait: { reason: "company.inactive", trigger: "pause_lifted" } } }).returning();
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId, issueId });
+    expect(result.issueIds).toEqual([issueId]);
+    const [after] = await db.select({ updatedAt: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, saved.id));
+    expect(after.updatedAt.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
   });
 
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {

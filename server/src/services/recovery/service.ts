@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -6535,6 +6536,9 @@ export function recoveryService(
         }
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
         await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
+        // Releasing the lock is a hold-release event: messages saved behind it
+        // are promoted through the one outbox path (section E).
+        await promoteDeferredWorkIntents(tx, { companyId: issue.companyId, trigger: "lock_released", issueId: issue.id });
         return tx
         .update(issues)
         .set({

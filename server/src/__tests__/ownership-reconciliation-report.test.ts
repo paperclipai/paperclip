@@ -145,7 +145,8 @@ describe("report-only ownership reconciliation", () => {
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
       .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent",
         "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox",
-        "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease"]);
+        "native_workspace_finalize_attempt", "wake_request_claimed", "legacy_controller_lease",
+        "issue_execution_lock", "issue_checkout_lock"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -290,6 +291,39 @@ describe("report-only ownership reconciliation", () => {
     const second = await runOwnershipReconciliationPass(db, { state });
     expect(second.violations.filter(violation => violation.kind === "wake_request_claimed").map(violation => violation.recordId).sort())
       .toEqual([wakes.pending.id, wakes.unprojected.id].sort());
+  });
+
+  // Non-wake recovery (Phase 3): a task lock is owned by the run it names. A
+  // restart between the run's terminal write and the lock release left the
+  // task locked to a dead run until the next periodic sweep. The reconciler
+  // now settles it on the proof (the run's terminal row), never by age.
+  it("settles a task lock whose run ended without releasing it, and keeps live or resuming ones", async () => {
+    const ids = { dead: randomUUID(), live: randomUUID(), resuming: randomUUID() };
+    const runs = { dead: randomUUID(), live: randomUUID(), resuming: randomUUID() };
+    await db.insert(heartbeatRuns).values([
+      { id: runs.dead, companyId, agentId, status: "failed", invocationSource: "manual", finishedAt: minutesAgo(1) },
+      { id: runs.live, companyId, agentId, status: "running", invocationSource: "manual" },
+      { id: runs.resuming, companyId, agentId, status: "failed", invocationSource: "manual", finishedAt: minutesAgo(1),
+        runtimeMode: "native", nativeIssueId: ids.resuming },
+    ]);
+    await db.insert(issues).values(Object.entries(ids).map(([name, id]) => ({ id, companyId, title: name, status: "in_progress",
+      assigneeAgentId: agentId, executionRunId: runs[name as keyof typeof runs], checkoutRunId: runs[name as keyof typeof runs],
+      executionLockedAt: minutesAgo(1) })));
+    // A same-run resume still needs the failed run's lock.
+    await db.insert(nativeRunFinalizations).values({ runId: runs.resuming, companyId, issueId: ids.resuming, phase: "retryable_failure" });
+    const locks = async () => Object.fromEntries((await db.select({ id: issues.id, executionRunId: issues.executionRunId,
+      checkoutRunId: issues.checkoutRunId }).from(issues)).map(row =>
+      [Object.keys(ids).find(name => ids[name as keyof typeof ids] === row.id), row.executionRunId === null && row.checkoutRunId === null]));
+    const allHeld = { dead: false, live: false, resuming: false };
+
+    // A read-only pass never settles.
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(await locks()).toEqual(allHeld);
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await locks()).toEqual({ dead: true, live: false, resuming: false });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.entityId, ids.dead)))
+      .toContainEqual({ action: "issue.stale_lock_cleared" });
   });
 
   it("settles a finalize attempt whose process died mid-copyback, and keeps live or independent ones", async () => {
