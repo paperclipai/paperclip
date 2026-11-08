@@ -35,6 +35,7 @@ import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
+import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -461,14 +462,16 @@ type RecoveryActionRow = Pick<typeof issueRecoveryActions.$inferSelect, "id" | "
 
 function recoveryActionKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
   owner: (row: RecoveryActionRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2, 7],
-  runIdOf: (row: RecoveryActionRow) => string | null = () => null): OwnableKind {
+  runIdOf: (row: RecoveryActionRow) => string | null = () => null,
+  options: { includeResolved?: boolean } = {}): OwnableKind { // resolved actions can still hold evidence state
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId,
         sourceIssueId: issueRecoveryActions.sourceIssueId, ownerType: issueRecoveryActions.ownerType,
         evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
-        .from(issueRecoveryActions).where(and(isNull(issueRecoveryActions.resolvedAt), where)).orderBy(asc(issueRecoveryActions.id)).limit(limit + 1).offset(offset);
+        .from(issueRecoveryActions).where(and(options.includeResolved ? undefined : isNull(issueRecoveryActions.resolvedAt), where))
+        .orderBy(asc(issueRecoveryActions.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: runIdOf(row), issueId: row.sourceIssueId,
@@ -880,16 +883,13 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         : { settled: false, reason: "copyback_recheck_not_waiting", watch: false };
     },
   },
-  recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
-    sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
-    row => {
-      const fence = json(json(row.evidence).observedWorkspacePreservation);
-      const token = str(fence.leaseOwner);
-      // The current holder is read in the report pass (`resolveFenceHolders`).
-      return token ? { kind: "fence", stamp: { kind: "remote", scope: "observed_workspace_preservation_fence",
-        generation: int(fence.controllerGeneration), fenceToken: token },
-        fence: { currentFenceToken: null, currentGeneration: null, leaseExpiresAt: null } } : { kind: "none" };
-    }, [1, 2, 7], row => str(json(json(row.evidence).observedWorkspacePreservation).runId)),
+  { // Shared path since Phase 2 (observed-workspace-fence.ts); the fence lives on a resolved action.
+    ...recoveryActionKind("observed_workspace_preservation_fence", "Observed-run workspace preservation fence", "workspace_preservation",
+      sql`${issueRecoveryActions.evidence}->'observedWorkspacePreservation'->>'state' = 'stop_pending'`,
+      row => observedWorkspaceFenceOwner(row.evidence), [1, 2, 7],
+      row => str(json(json(row.evidence).observedWorkspacePreservation).runId), { includeResolved: true }),
+    settle: settleObservedWorkspaceFence,
+  },
 
   // Accounting and budgets
   runKind("run_accounting_debt", "Run accounting debt", "accounting",
@@ -1018,4 +1018,5 @@ export async function resolveFenceHolders(db: Db, records: InProgressRecord[]): 
     record.owner.fence = { currentFenceToken: holder?.leaseOwner ?? null,
       currentGeneration: holder?.generation ?? null, leaseExpiresAt: holder?.leaseExpiresAt ?? null };
   }
+  await applyObservedFenceProviderProof(db, pending);
 }
