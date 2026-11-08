@@ -9,9 +9,6 @@ import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   if (!agentIds.length) return true;
-  // Pausing retries this check while a stop remains unproven. Reading the entire
-  // run history (including large context/result/profile JSON) on every retry
-  // makes a single blocked agent slow down unrelated requests.
   const runs = await db.select({
     id: heartbeatRuns.id,
     agentId: heartbeatRuns.agentId,
@@ -46,9 +43,6 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (!observed || !coordinator.controllerProcessStartedAt ||
         new Date(observed).getTime() === coordinator.controllerProcessStartedAt.getTime()) return false;
   }
-  // Only cancelled runs without a recorded process need the full historical
-  // execution payload for native-startup or conversation-adapter stop proof.
-  // Do not infer termination from absent fields or released SSH leases.
   const detailedIds = runs.filter(run => run.status === "cancelled" && run.startedAt &&
     !run.processPid && !run.processGroupId &&
     !leases.some(lease => lease.heartbeatRunId === run.id && lease.provider && lease.provider !== "local"))
@@ -77,7 +71,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (processAlive || groupAlive) return false;
     if (run.status !== "cancelled" || !run.startedAt || run.processPid || run.processGroupId) continue;
     const evidence = detailedById.get(run.id);
-    if (!evidence) return false; // Missing proof must never unblock a pause.
+    if (!evidence) return false;
     if (run.runtimeMode === "native" &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
         !await isCancelledNativeStartup(db, evidence, coordinators.find(row => row.runId === run.id))) return false;
