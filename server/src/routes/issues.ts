@@ -8561,24 +8561,33 @@ export function issueRoutes(
     options: { reportPagination?: boolean } = {},
   ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
-    const pageLimit = options.reportPagination && typeof listFilters.limit === "number" ? listFilters.limit : null;
+    const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
+    // Pagination describes the raw query page. An actor whose rows are filtered
+    // after the query (for example a low-trust agent) gets no pagination: the
+    // raw page's cursor and has-more state would reveal tasks it cannot read.
+    const pageLimit = options.reportPagination && canReadCompanyScope && typeof listFilters.limit === "number"
+      ? listFilters.limit
+      : null;
     // Probe one row past the page so a capped response can say more exist.
-    // Pagination is decided on the raw page, before per-actor read filtering,
-    // so offsets stay aligned with the underlying query.
     const probedResult = await svc.list(
       companyId,
       pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
     );
     const hasMore = pageLimit !== null && probedResult.length > pageLimit;
     const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
-    const cursorOrder = listFilters.sortField === "id" && listFilters.sortDir === "asc" && !listFilters.offset;
+    // An id cursor is valid only when the query is ordered by id alone.
+    // oneChildPerParent orders by parentId first, so it pages by offset.
+    const cursorOrder = listFilters.sortField === "id"
+      && listFilters.sortDir === "asc"
+      && !listFilters.offset
+      && !listFilters.oneChildPerParent;
     const pagination: IssueListPagination | undefined = pageLimit === null ? undefined : {
       limit: pageLimit,
       hasMore,
       nextOffset: hasMore && !listFilters.afterId ? (listFilters.offset ?? 0) + pageLimit : null,
       nextAfterId: hasMore && cursorOrder ? rawResult[rawResult.length - 1]?.id ?? null : null,
     };
-    const visibleRows = await actorCanReadCompanyScope(req, companyId)
+    const visibleRows = canReadCompanyScope
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
     const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);

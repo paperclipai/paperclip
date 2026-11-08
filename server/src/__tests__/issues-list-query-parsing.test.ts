@@ -114,6 +114,24 @@ describeEmbeddedPostgres("issue list status query parsing", () => {
     expect(exact.headers["x-paperclip-next-offset"]).toBeUndefined();
   });
 
+  it("pages one-child-per-parent lists by offset, not an id cursor", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Grouped pages");
+    const parentIds = ["00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022"];
+    await ctx.db.insert(issues).values(parentIds.map((id) => ({ id, companyId, title: "Parent", status: "todo", priority: "medium" })));
+    // The first parent's child has the larger id, so an id cursor would skip the second parent.
+    await ctx.db.insert(issues).values([
+      { id: "00000000-0000-4000-8000-000000000032", companyId, parentId: parentIds[0], title: "Child", status: "todo", priority: "medium" },
+      { id: "00000000-0000-4000-8000-000000000031", companyId, parentId: parentIds[1], title: "Child", status: "todo", priority: "medium" },
+    ]);
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?view=index&parentIds=${parentIds.join(",")}&oneChildPerParent=true&sortField=id&sortDir=asc&limit=1`)
+      .expect(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.headers["x-paperclip-has-more"]).toBe("true");
+    expect(res.headers["x-paperclip-next-offset"]).toBe("1");
+    expect(res.headers["x-paperclip-next-after-id"]).toBeUndefined();
+  });
+
   it("keeps the default response an array and marks a full-default page as capped", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Default cap");
     await ctx.db.insert(issues).values(Array.from({ length: 501 }, (_, index) => ({ companyId, title: `RUN-${index + 1}`, status: "todo", priority: "medium" })));
