@@ -67,6 +67,7 @@ type ToolAccessContext = {
   agentId: string | null;
   heartbeatRunId: string | null;
   issueId: string | null;
+  issueWorkMode: string | null;
   projectId: string | null;
   routineId: string | null;
   gatewayId: string | null;
@@ -997,6 +998,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     let agentId = input.actor.agentId ?? (input.actor.actorType === "agent" ? input.actor.actorId : null);
     let heartbeatRunId = input.runContext?.heartbeatRunId ?? null;
     let issueId = input.runContext?.issueId ?? null;
+    let issueWorkMode: string | null = null;
     let projectId = input.runContext?.projectId ?? null;
     let routineId = input.runContext?.routineId ?? null;
     const gatewayId = input.runContext?.gatewayId ?? null;
@@ -1048,7 +1050,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     if (issueId) {
       const contextIssueId = issueId;
       const [issue] = await cachedRead(cache, `issue:${contextIssueId}`, async () =>
-        db.select({ companyId: issues.companyId, projectId: issues.projectId }).from(issues).where(eq(issues.id, contextIssueId)));
+        db.select({ companyId: issues.companyId, projectId: issues.projectId, workMode: issues.workMode }).from(issues).where(eq(issues.id, contextIssueId)));
       if (!issue || issue.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Issue context is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -1056,6 +1058,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         return { ok: false, redaction, decision: decision("deny", "deny_run_context_mismatch", "Project context does not match the issue context.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
       projectId = projectId ?? issue.projectId;
+      issueWorkMode = issue.workMode;
     }
     if (projectId) {
       const contextProjectId = projectId;
@@ -1180,6 +1183,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         agentId,
         heartbeatRunId,
         issueId,
+        issueWorkMode,
         projectId,
         routineId,
         gatewayId,
@@ -1514,6 +1518,9 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const loaded = await loadContext(input, cache);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
+    if (ctx.providerType === "paperclip_plugin" && ctx.issueWorkMode !== null && ctx.issueWorkMode !== "standard") {
+      return decision("deny", "deny_policy_block", "Plugin tools require standard work mode.", [], [], { redactionPlan: redaction.redactionPlan });
+    }
     // A final handoff rechecks current permissions for work already admitted by
     // the gateway. Its own last consumed slot cannot reject that same work.
     // Only durable consumption of an unchanged rule retains that slot; new or
@@ -1949,6 +1956,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         agentId: invocation.agentId,
         heartbeatRunId: invocation.runId,
         issueId: invocation.issueId,
+        issueWorkMode: null,
         projectId: invocation.issueId ? issueProjectById.get(invocation.issueId) ?? null : null,
         routineId: null,
         gatewayId: null,

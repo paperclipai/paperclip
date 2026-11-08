@@ -10940,21 +10940,15 @@ export function createToolGatewayService(
             toolName: storedInvocation.toolName,
           });
         }
-        if (tool.providerType === "paperclip_plugin" && session.gatewayId) {
-          const [gateway] = await db.select({ metadata: toolMcpGateways.metadata })
-            .from(toolMcpGateways)
-            .where(and(eq(toolMcpGateways.companyId, session.companyId), eq(toolMcpGateways.id, session.gatewayId)))
-            .limit(1);
-          if (typeof gateway?.metadata?.nativeRuntimeAssignmentDigest === "string") {
-            const decisionInput = policyInputForTool({ session, tool, parameters: storedParameters });
-            const accessDecision = await policyService.decide(decisionInput, { admittedInvocationId: storedInvocation.id });
-            if (!accessDecision.allowed && accessDecision.decision !== "require_approval") {
-              await policyService.writeAudit(decisionInput, accessDecision);
-              throw new ToolGatewayHttpError(
-                policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode,
-                { invocationId: storedInvocation.id, actionRequestId: actionRequest.id, tool: tool.name },
-              );
-            }
+        if (tool.providerType === "paperclip_plugin") {
+          const decisionInput = policyInputForTool({ session, tool, parameters: storedParameters });
+          const accessDecision = await policyService.decide(decisionInput, { admittedInvocationId: storedInvocation.id });
+          if (!accessDecision.allowed && accessDecision.decision !== "require_approval") {
+            await policyService.writeAudit(decisionInput, accessDecision);
+            throw new ToolGatewayHttpError(
+              policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode,
+              { invocationId: storedInvocation.id, actionRequestId: actionRequest.id, tool: tool.name },
+            );
           }
         }
         const claimedAt = new Date();
@@ -10978,6 +10972,26 @@ export function createToolGatewayService(
             "Tool action request was already consumed",
             "action_already_consumed",
           );
+        }
+        if (tool.providerType === "paperclip_plugin") {
+          const claim: ToolApprovalClaim = {
+            actionRequestId: claimed.id, invocationId: storedInvocation.id, claimedAt: claimed.updatedAt,
+          };
+          try {
+            if (tool.risk !== "read") await bindVerifiedApprovalArguments(storedInvocation, claim, storedParameters);
+            const decisionInput = policyInputForTool({ session, tool, parameters: storedParameters });
+            const accessDecision = await policyService.admitInvocation(decisionInput, storedInvocation.id, claim);
+            if (!accessDecision.allowed && accessDecision.decision !== "require_approval") {
+              await policyService.writeAudit(decisionInput, accessDecision);
+              throw new ToolGatewayHttpError(
+                policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode,
+                { invocationId: storedInvocation.id, actionRequestId: actionRequest.id, tool: tool.name },
+              );
+            }
+          } catch (error) {
+            await releaseToolApproval(db, claim);
+            throw error;
+          }
         }
         await reflectToolActionInteractionLifecycle({
           actionRequestId: claimed.id,

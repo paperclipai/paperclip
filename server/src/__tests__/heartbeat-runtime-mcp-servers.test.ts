@@ -27,6 +27,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolRateLimitCounters,
   toolPolicies,
 } from "@paperclipai/db";
 import {
@@ -96,6 +97,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
+    await db.delete(toolRateLimitCounters);
     await db.delete(toolPolicies);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
@@ -106,6 +108,101 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  async function pluginRun() {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({ name: "Plugin authorization", issuePrefix: "AUTH" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Reader", role: "engineer", adapterType: "claude_local" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Read plugin status", status: "in_progress", workMode: "standard", assigneeAgentId: agent!.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: agent!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
+    const name = "fixture:read_status";
+    let calls = 0;
+    const gateway = createToolGatewayService(db, { pluginToolDispatcher: pluginDispatcher([name], () => { calls += 1; }), toolActionSigningSecret: "plugin-authorization-test" });
+    registerAssignedMcpGateway(db, gateway);
+    return { company: company!, agent: agent!, issue: issue!, run: run!, name, gateway, calls: () => calls };
+  }
+
+  async function approvePluginActions() {
+    const actions = await db.select().from(toolActionRequests);
+    for (const action of actions) {
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, action.interactionId!));
+      await db.update(toolActionRequests).set({ status: "approved", resolvedByUserId: "board-user", decidedAt: new Date(), resolvedAt: new Date() })
+        .where(eq(toolActionRequests.id, action.id));
+    }
+    return actions;
+  }
+
+  it.each(["planning", "ask", "skill_test"] as const)("withholds plugin tools and rejects HTTP calls when the task changes to %s", async workMode => {
+    const f = await pluginRun();
+    await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Allow plugin", policyType: "allow", selectors: { toolNames: [f.name] } });
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
+    const locator = { gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token };
+    expect((await f.gateway.listToolsForNamedGateway(locator)).map(tool => tool.name)).toEqual([f.name]);
+    await db.update(issues).set({ workMode }).where(eq(issues.id, f.issue.id));
+    expect((await resolveNativeRuntimeMcpSnapshot({ db, agent: f.agent, runId: f.run.id })).bindingId).toBeNull();
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id })).toEqual([]);
+    expect(await f.gateway.listToolsForNamedGateway(locator)).toEqual([]);
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(f.gateway));
+    const invoke = () => request(app).post(new URL(server!.url).pathname)
+      .set("Authorization", `Bearer ${server!.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: f.name, arguments: {} } });
+    const denied = await invoke().expect(403);
+    expect(denied.body.error.data.reasonCode).toBe("deny_policy_block");
+    expect(f.calls()).toBe(0);
+    await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, f.issue.id));
+    await invoke().expect(200);
+    expect(f.calls()).toBe(1);
+  });
+
+  it("reuses the plugin invocation's consumed rate slot after approval", async () => {
+    const f = await pluginRun();
+    await db.insert(toolPolicies).values([
+      { companyId: f.company.id, name: "One call", policyType: "rate_limit", priority: 1, selectors: { toolNames: [f.name] }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } },
+      { companyId: f.company.id, name: "Review plugin", policyType: "require_approval", priority: 2, selectors: { toolNames: [f.name] } },
+    ]);
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
+    const call = { gatewayPublicId: server!.url.split("/").at(-1)!, sessionToken: server!.token, tool: f.name };
+    await expect(f.gateway.executeTool({ ...call, parameters: { reviewed: true } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [action] = await approvePluginActions();
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(counters).toMatchObject([{ limit: 1, remaining: 0 }]);
+    await expect(f.gateway.executeTool({ ...call, approvedActionRequestId: action!.id })).resolves.toMatchObject({ status: "completed" });
+    expect(f.calls()).toBe(1);
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+  });
+
+  it.each(["added", "edited"] as const)("atomically charges a rate rule %s after concurrent plugin approvals", async change => {
+    const f = await pluginRun();
+    await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Review plugin", policyType: "require_approval", priority: 2, selectors: { toolNames: [f.name] } });
+    const [existingRate] = change === "edited" ? await db.insert(toolPolicies).values({
+      companyId: f.company.id, name: "Other tool rate", policyType: "rate_limit", priority: 1,
+      selectors: { toolNames: ["fixture:other"] }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] },
+    }).returning() : [];
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: f.agent, runId: f.run.id });
+    const call = { gatewayPublicId: server!.url.split("/").at(-1)!, sessionToken: server!.token, tool: f.name };
+    for (const item of [1, 2]) {
+      await expect(f.gateway.executeTool({ ...call, parameters: { item } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    }
+    const actions = await approvePluginActions();
+    expect(actions).toHaveLength(2);
+    if (existingRate) {
+      await db.update(toolPolicies).set({ selectors: { toolNames: [f.name] }, updatedAt: new Date() }).where(eq(toolPolicies.id, existingRate.id));
+    } else {
+      await db.insert(toolPolicies).values({ companyId: f.company.id, name: "New one-call rate", policyType: "rate_limit", priority: 1,
+        selectors: { toolNames: [f.name] }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    }
+    const results = await Promise.allSettled(actions.map(action => f.gateway.executeTool({ ...call, approvedActionRequestId: action.id })));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(result => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: { status: 429, reasonCode: "rate_limited" } });
+    expect(f.calls()).toBe(1);
+    expect(await db.select().from(toolRateLimitCounters)).toMatchObject([{ limit: 1, remaining: 0 }]);
+    const [waiting] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.status, "approved"));
+    expect(waiting).toBeDefined();
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, waiting!.invocationId));
+    expect(invocation).toMatchObject({ status: "awaiting_approval", startedAt: null });
   });
 
   it("delivers only governed plugin tools without a remote connection and fences assignment changes", async () => {
