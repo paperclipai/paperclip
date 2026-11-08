@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BaselineRun } from "./ttft-baseline-stats.js";
 import type { FaultReceipt } from "./types.js";
-import { breachesOf, budgetFor, faultRuns, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
+import { breachesOf, budgetFor, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
 import { runMetrics } from "./ttft-baseline-stats.js";
 
 const span = (name: string, startOffsetMs: number, durationMs: number) =>
@@ -16,13 +16,24 @@ describe("wave speed grade", () => {
   it("judges aggregate TTFT and boot against the local budgets and counts single-run breaches", () => {
     const fast = gradeWaveSpeed("local", [run("a", "codex", 4_000), run("b", "codex", 5_000)], [], 0);
     expect(fast.breaches).toBe(0);
-    expect(fast.rows.find(row => row.metric === "ttft")).toMatchObject({ adapter: "codex", start: "cold", breaches: [] });
+    expect(fast.rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ adapter: "codex", start: "cold", breaches: [] });
 
     const slow = gradeWaveSpeed("local", [run("a", "codex", 40_000), run("b", "codex", 40_000,
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
-    expect(slow.rows.find(row => row.metric === "ttft")?.breaches).toEqual(["p50", "p95"]);
+    expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
+    expect(slow.rows.find(row => row.metric === "ttft")).toMatchObject({ budget: null, breaches: [] });
     expect(slow.breaches).toBe(3);
-    expect(speedMarkdown(slow)).toContain("| codex | ttft | cold | 2 |");
+    expect(speedMarkdown(slow)).toContain("| codex | time_to_first_activity | cold | 2 |");
+  });
+
+  it("judges time to first agent activity when the run logs it, net of the wait behind a live turn", () => {
+    const withActivity = run("a", "codex", 40_000, [span("task.time_to_first_agent_activity", 0, 9_000),
+      span("comment.to_run_created", 0, 4_000)]);
+    expect(firstActivityMs(withActivity)).toBe(5_000);
+    expect(firstActivityMs(run("b", "codex", 7_000))).toBe(7_000);
+    const speed = gradeWaveSpeed("local", [withActivity], [], 0);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ breaches: [], measured: { p50: 5_000 } });
+    expect(speed.rows.find(row => row.metric === "ttft")).toMatchObject({ budget: null, measured: { p50: 36_000 } });
   });
 
   it("measures restart recovery from ready to the run's next provider event", () => {
@@ -58,7 +69,7 @@ describe("wave speed grade", () => {
     const trimmed = withoutOutage(traced(trace, [["task.time_to_first_token", 0, 300_000]]), windows);
     expect(trimmed).toMatchObject({ adjusted: 1, removedMs: 250_000, anchored: true });
     const speed = gradeWaveSpeed("local", [trimmed.run], [], 0, [], trimmed);
-    expect(speed.rows.find(row => row.metric === "ttft")?.measured.p50).toBe(50_000);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity")?.measured.p50).toBe(50_000);
     expect(speedMarkdown(speed)).toContain("Outage time removed from 1 spans: 250.0 s");
   });
 

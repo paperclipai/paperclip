@@ -1,7 +1,7 @@
 import { LOCAL_SPEED_BUDGETS, type SpeedBudget, type SpeedBudgetAdapter } from "../../server/src/services/native-runtime/native-speed-budgets.js";
 import type { ChaosApi } from "./api.js";
 import {
-  baselineRows, distribution, recoverySamples,
+  baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth,
   type BaselineEvent, type BaselineFault, type BaselineRun, type Distribution,
 } from "./ttft-baseline-stats.js";
 import type { AdapterId, EnvironmentKind, FaultReceipt, RunSample } from "./types.js";
@@ -11,7 +11,7 @@ type Json = Record<string, unknown>;
 export interface WaveSpeedTask { issueId: string | null; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }
 
 export interface SpeedRow {
-  adapter: string; metric: "ttft" | "agent_boot" | "restart_recovery"; start: "cold" | "warm" | "restart";
+  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "restart_recovery"; start: "cold" | "warm" | "restart";
   measured: Distribution; budget: SpeedBudget | null; breaches: Array<"p50" | "p95">;
 }
 
@@ -32,9 +32,12 @@ export function budgetFor(environment: EnvironmentKind, adapter: string, metric:
   start: SpeedRow["start"]): SpeedBudget | null {
   const key = BUDGET_ADAPTER[adapter as AdapterId];
   if (environment !== "local" || !key) return null;
-  const budgets = LOCAL_SPEED_BUDGETS[key];
-  if (metric === "restart_recovery") return budgets.restart_recovery;
-  return budgets[metric][start === "warm" ? "warm" : "cold"];
+  if (metric === "ttft") return null;
+  const budgets = LOCAL_SPEED_BUDGETS[key] as unknown as Record<string, Record<"cold" | "warm", SpeedBudget> | SpeedBudget>;
+  if (metric === "restart_recovery") return budgets.restart_recovery as SpeedBudget;
+  const byStart = (metric === "time_to_first_activity" ? budgets.time_to_first_activity ?? budgets.ttft : budgets[metric]) as
+    Record<"cold" | "warm", SpeedBudget>;
+  return byStart[start === "warm" ? "warm" : "cold"];
 }
 
 export function breachesOf(measured: Distribution, budget: SpeedBudget | null): Array<"p50" | "p95"> {
@@ -96,11 +99,33 @@ export function withoutOutage(run: BaselineRun, windows: readonly OutageWindow[]
   return { run: { ...run, events }, adjusted, removedMs, anchored: true };
 }
 
+export function firstActivityMs(run: BaselineRun): number | null {
+  const metrics = runMetrics(run);
+  const span = runSpans(run).find(candidate => candidate.name === "task.time_to_first_agent_activity");
+  if (!span) return metrics.ttftAfterRunCreatedMs;
+  return Math.max(0, span.durationMs - (metrics.inputWaitMs ?? 0));
+}
+
+function firstActivityByGroup(runs: readonly BaselineRun[]): Map<string, number[]> {
+  const groups = new Map<string, number[]>();
+  for (const run of runs) {
+    if (run.phase === "restart" || run.phase === "verify") continue;
+    const value = firstActivityMs(run);
+    if (value === null) continue;
+    const key = `${run.adapter}|${runWarmth(run)}`;
+    groups.set(key, [...(groups.get(key) ?? []), value]);
+  }
+  return groups;
+}
+
 export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly BaselineRun[], faults: readonly BaselineFault[],
   runBudgetExceeded: number, errors: string[] = [], outage: { adjusted: number; removedMs: number } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
   const rows: SpeedRow[] = [];
+  const activity = firstActivityByGroup(runs);
   for (const row of baselineRows(runs)) {
-    for (const [metric, measured] of [["ttft", row.ttftAfterRunCreated], ["agent_boot", row.boot]] as const) {
+    const firstActivity = activity.get(`${row.adapter}|${row.warmth}`) ?? [];
+    for (const [metric, measured] of [["time_to_first_activity", distribution(firstActivity)], ["ttft", row.ttftAfterRunCreated],
+      ["agent_boot", row.boot]] as const) {
       const budget = budgetFor(environment, row.adapter, metric, row.warmth);
       rows.push({ adapter: row.adapter, metric, start: row.warmth, measured, budget, breaches: breachesOf(measured, budget) });
     }
