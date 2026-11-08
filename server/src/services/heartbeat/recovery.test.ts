@@ -18,6 +18,9 @@ import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_R
 import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs } from "../controller-process-identity.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "../recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "../recovery/ownership-registry.js";
 import { logger } from "../../middleware/logger.js";
 import { listExpiredNativeRunnerAuthorities } from "../native-runtime/native-runner-checkpoint.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
@@ -846,6 +849,69 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
     adapterExecutionControls.delete(f.run.id);
   }
+
+  async function fenceFromPreviousServer(f: Awaited<ReturnType<typeof seedShutdownSource>>,
+    controller: Record<string, unknown> | null) {
+    const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const marker: Record<string, unknown> = { ...(row.metadata!.legacyShutdownWorkspaceSettlement as Record<string, unknown>),
+      controllerBootId: randomUUID() };
+    if (controller) marker.controller = { ...controller, bootId: marker.controllerBootId };
+    else delete marker.controller;
+    await db.update(environmentLeases).set({ metadata: { ...row.metadata, legacyShutdownWorkspaceSettlement: marker } })
+      .where(eq(environmentLeases.id, f.lease.id));
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+  const fenceState = async (leaseId: string) => ((await db.select().from(environmentLeases)
+    .where(eq(environmentLeases.id, leaseId)))[0].metadata!.legacyShutdownWorkspaceSettlement as { state: string });
+  const deadController = () => ({ pid: 4_194_303, hostHash: currentProcessSpaceHash(), processStartedAt: new Date(0).toISOString() });
+
+  it("stamps the shutdown fence with the committing server process", async () => {
+    await currentProcessStartedAtMs();
+    const f = await seedShutdownSource();
+    try {
+      const controller = currentControllerProcessStamp();
+      expect((await fenceState(f.lease.id) as unknown as { controller: unknown }).controller)
+        .toEqual({ bootId: controller.bootId, pid: process.pid, hostHash: controller.hostHash,
+          processStartedAt: controller.processStartedAt });
+    } finally { await deleteShutdownSource(f); }
+  });
+
+  it("settles the fence of a previous server proven gone without waiting out its deadline", async () => {
+    const f = await seedShutdownSource();
+    try {
+      await fenceFromPreviousServer(f, deadController());
+      await sweepLegacyShutdownWorkspaceSettlements(db);
+      expect(await fenceState(f.lease.id)).toMatchObject({ state: "expired" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].resultJson)
+        .toMatchObject({ workspaceRestoreFailure: "restore_failed" });
+    } finally { await deleteShutdownSource(f); }
+  });
+
+  it("settles a proven-gone fence owner from the shared reconciler, and only that one", async () => {
+    const dead = await seedShutdownSource();
+    const foreign = await seedShutdownSource();
+    const legacy = await seedShutdownSource();
+    const kind = OWNABLE_KINDS.find(entry => entry.id === "legacy_shutdown_settlement_fence")!;
+    try {
+      await fenceFromPreviousServer(dead, deadController());
+      await fenceFromPreviousServer(foreign, { ...deadController(), hostHash: "another-host-pid-space" });
+      await fenceFromPreviousServer(legacy, null);
+      const readOnly = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind], record: false });
+      expect(readOnly.kinds[0]).toMatchObject({ inProgress: 3, settled: 0 });
+      expect(await fenceState(dead.lease.id)).toMatchObject({ state: "pending" });
+
+      const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), kinds: [kind] });
+      expect(report.kinds[0]).toMatchObject({ inProgress: 3, settled: 1 });
+      expect(await fenceState(dead.lease.id)).toMatchObject({ state: "expired" });
+      await sweepLegacyShutdownWorkspaceSettlements(db);
+      expect(await fenceState(foreign.lease.id)).toMatchObject({ state: "pending" });
+      expect(await fenceState(legacy.lease.id)).toMatchObject({ state: "pending" });
+      await sweepLegacyShutdownWorkspaceSettlements(db, new Date(Date.now() + 60_000));
+      expect(await fenceState(foreign.lease.id)).toMatchObject({ state: "expired" });
+      expect(await fenceState(legacy.lease.id)).toMatchObject({ state: "expired" });
+    } finally { for (const f of [dead, foreign, legacy]) await deleteShutdownSource(f); }
+  });
 
   it("does not let an elapsed shutdown wait stop a sandbox whose exporter still owns settlement", async () => {
     const f = await seedShutdownSource();

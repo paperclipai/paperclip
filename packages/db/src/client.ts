@@ -613,7 +613,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0432_strong_mole_man.sql",
   "0435_premium_puff_adder.sql",
   "0436_legal_reavers.sql",
-  "0443_opposite_harrier.sql",
+  "0447_legacy_controller_process.sql",
+  "0448_opposite_harrier.sql",
 
 
   "0384_funny_adam_warlock.sql",

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -986,6 +987,35 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
+  });
+
+  it("tells chat to link the agent profile page that holds a control, including the unlisted API keys page", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+  });
+
+  it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The company prefix is the part of a task identifier before its final hyphen and number: for task RUN-1 the prefix is RUN.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never build a prefix from the company name");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("for task RUN-1 the prefix is RUN");
+  });
+
+  it("asks which record is meant before changing one of several matches", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("matches several records you can access and nothing in the conversation selects one, ask which one before changing any of them");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link each candidate");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not pick the first match, change every match");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("ask which one before changing any of them");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
@@ -993,6 +1023,58 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain('payload.target to { type: "issue_document", key: "plan", revisionId: latestRevisionId }');
     expect(AGENT_CHAT_DIRECTIVE).toContain("ordinary conversation replies and draft planning do not need confirmation");
     expect(AGENT_CHAT_DIRECTIVE).toContain("In Ask mode, discuss the plan without creating or revising documents or approval cards");
+  });
+
+  it("tells chat how to link execution runs to the registered run route and name their agents", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="agents\/:agentId\/runs\/:runId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId.");
+    // Issue run listings expose the run ID as runId, not id; the guidance must name the field each response returns.
+    const activity = readFileSync(new URL("../services/activity.ts", import.meta.url), "utf8");
+    const listing = activity.match(/runsForIssue:\s*async\b[\s\S]*?\.select\(\{([\s\S]*?)\n\s*\}\)/)?.[1] ?? "";
+    expect(listing).toMatch(/^\s*runId:\s*heartbeatRuns\.id\s*,/m);
+    expect(listing).not.toMatch(/^\s*id:/m);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("returned agentId and id");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("read the agent and name it rather than showing a raw ID");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
+  });
+
+  it("routes a person's own profile change to their profile settings instead of an agent write", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("only they can change them in their profile settings at /<prefix>/company/settings/instance/profile");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link that page instead of attempting the change");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/company/settings/instance/profile");
+  });
+
+  it("routes a task identifier from another company to a company switch instead of a search", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a lookup that is not found does not mean the task does not exist");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the person can switch to its company and open a chat there");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<its prefix>/issues/<identifier>");
+  });
+  it("treats a same-company task the agent cannot find as possibly private instead of searching for a way in", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("A private task is hidden from you unless you have access to it");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("it may be private rather than missing. Do not search for it further");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("share it with you from its sharing controls");
+  });
+  it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>#document-<key>");
+  });
+
+  it("gives chat replies a usable route for both task and approval sources", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Write every company link as a Markdown link");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a bare path or a path in inline code is not clickable");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Start each link target with exactly one slash");
   });
 
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {

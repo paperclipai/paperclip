@@ -1,3 +1,4 @@
+import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
@@ -110,6 +111,7 @@ import {
   type SandboxOrphanCleanupSpool,
 } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 // The constant error kind for the durable orphan-cleanup-write-failed log. The
 // log never reads the caught exception, because the exception can carry a
@@ -2286,6 +2288,7 @@ function createSandboxEnvironmentDriver(
       } catch {
         cleanupStatus = "failed";
       }
+      if (cleanupStatus === "success") crashPoint("environment.lease_release.after_provider_before_lease");
       const releaseStatus = input.lease.leasePolicy === "retain_on_failure" && input.status === "failed"
         ? "retained" as const
         : input.status;
@@ -3025,6 +3028,8 @@ function createSandboxEnvironmentDriver(
     } else {
       cleanupStatus = "failed";
     }
+    // Daytona and other plugin providers release here, not in the built-in path.
+    if (cleanupStatus === "success") crashPoint("environment.lease_release.after_provider_before_lease");
 
     // A failed release verification leaves the provider resource active. The
     // cleanup reaper retries only `pending_cleanup` leases, so route a failed
@@ -3112,6 +3117,8 @@ function createSandboxEnvironmentDriver(
     } catch {
       cleanupStatus = "failed";
     }
+    // Only a destroy the provider confirmed reaches this gap.
+    if (cleanupStatus === "success") crashPoint("environment.teardown.after_destroy_before_lease");
 
     return await environmentsSvc.releaseLease(
       input.lease.id,
@@ -3197,6 +3204,8 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "sandboxLeaseAcquisition",
   "nativeHarnessBackup",
   "nativeWorkspaceSync",
+  // The host process that holds the lease (ownership proof); never provider config.
+  ENVIRONMENT_LEASE_CONTROLLER_KEY,
 ]);
 
 // Drop the host-internal and per-lease runtime keys from a sandbox config
@@ -3688,6 +3697,26 @@ export function environmentRuntimeService(
     return driver;
   }
 
+  function renewCleanupClaim(leaseId: string, attemptId: string, failure: string): ReturnType<typeof setInterval> {
+    let renewalInFlight = false;
+    const renewal = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
+          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, leaseId), eq(environmentLeases.status, "pending_cleanup"),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+      )).then(() => {}).catch(() => {
+        logger.warn({ leaseId }, failure);
+      }).finally(() => { renewalInFlight = false; });
+    }, 30_000);
+    renewal.unref();
+    return renewal;
+  }
+
   async function destroyClaimedSandboxLease(input: {
     environment: Environment;
     leaseRow: typeof environmentLeases.$inferSelect;
@@ -3736,23 +3765,9 @@ export function environmentRuntimeService(
       )`,
     )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
+    crashPoint("environment.teardown.after_claim_before_destroy");
     const lease = toEnvironmentLeaseSnapshot(claimed);
-    let renewalInFlight = false;
-    const renewal = setInterval(() => {
-      if (renewalInFlight) return;
-      renewalInFlight = true;
-      void db.update(environmentLeases).set({
-        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
-          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
-        })}::jsonb`,
-      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "pending_cleanup"),
-        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
-      )).then(() => {}).catch(() => {
-        logger.warn({ leaseId: lease.id }, "scoped cleanup ownership renewal failed");
-      }).finally(() => { renewalInFlight = false; });
-    }, 30_000);
-    renewal.unref();
+    const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
@@ -3972,17 +3987,23 @@ export function environmentRuntimeService(
               sql`${environmentLeases.metadata}->${intentKey} = ${JSON.stringify(leaseSnapshot.metadata?.[intentKey])}::jsonb`,
             )).returning(), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
             if (!claimed) continue;
+            crashPoint("environment.stop_retain.after_claim_before_stop");
             const snapshot = toEnvironmentLeaseSnapshot(claimed);
+            const renewal = renewCleanupClaim(snapshot.id, attemptId, "stop-only cleanup ownership renewal failed");
             try {
               const driver = requireDriverKey(getLeaseDriverKey(snapshot, environment));
               if (!driver.retryPendingSandboxTeardown) throw new Error("Workspace export recovery requires stop-only cleanup.");
               const receipt = await driver.retryPendingSandboxTeardown({ environment, lease: snapshot });
+              clearInterval(renewal);
               const lease = await settleStopOnlyCleanup(db, snapshot, { attemptId, receipt });
               if (lease && environment) released.push({ environment, lease: toEnvironmentLeaseSnapshot(lease),
                 leaseContext: { executionWorkspaceId: lease.executionWorkspaceId, executionWorkspaceMode: null } });
             } catch (error) {
+              clearInterval(renewal);
               await settleStopOnlyCleanup(db, snapshot, { attemptId });
               throw error;
+            } finally {
+              clearInterval(renewal);
             }
             continue;
           }

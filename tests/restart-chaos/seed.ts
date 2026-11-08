@@ -92,6 +92,17 @@ async function qualifyNativeCodex(input: { api: ChaosApi; companyId: string; env
  * encrypted company secrets, as in tests/runner-e2e/live-fixtures.ts, and the
  * agent payloads come from the shared runner-e2e catalog profiles.
  */
+/**
+ * adapterConfig for a forced runner lifecycle. warm uses the product's default
+ * idle window. default removes the catalog's pinned lifecycle so the agent is
+ * created without one and the server resolves the product default.
+ */
+export function chaosLifecycleOverrides(lifecycle: "per_turn" | "warm" | "default" | undefined): Record<string, unknown> | undefined {
+  if (lifecycle === "warm") return { lifecycleMode: "warm", idleTimeoutMs: 300_000 };
+  if (lifecycle === "default") return { lifecycleMode: undefined, idleTimeoutMs: undefined };
+  return lifecycle === "per_turn" ? { lifecycleMode: "per_turn" } : undefined;
+}
+
 export async function seedChaosLab(input: {
   api: ChaosApi;
   env: EnvironmentKind;
@@ -104,6 +115,8 @@ export async function seedChaosLab(input: {
   fixtureRoot: string;
   waveId: string;
   timeline: Timeline;
+  /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
+  adapterConfigOverrides?: Record<string, unknown>;
   /** Called as soon as the wave owns external resources that need cleanup. */
   onEnvironment?: (lab: Pick<ChaosLab, "companyId" | "environmentId" | "environmentKind">) => void;
 }): Promise<ChaosLab> {
@@ -166,6 +179,8 @@ export async function seedChaosLab(input: {
     const runtimeConfig = (payload.runtimeConfig ?? {}) as Record<string, unknown>;
     const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, {
       ...payload,
+      ...(input.adapterConfigOverrides ? { adapterConfig: {
+        ...((payload.adapterConfig ?? {}) as Record<string, unknown>), ...input.adapterConfigOverrides } } : {}),
       name,
       title: "Restart chaos worker",
       runtimeConfig: { ...runtimeConfig, heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),

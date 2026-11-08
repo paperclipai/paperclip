@@ -3,6 +3,7 @@ import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
+import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
 import { projectCommittedRun, recoveredExecutionFailureMetadata, settleNativeTerminalWake } from "./native-run-projection.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
@@ -107,6 +108,7 @@ import {
 import {
   isNativeRunnerOwnershipHeld,
 } from "./native-runner-ownership.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -236,11 +238,16 @@ async function claimCoordinator(input: {
       throw new NativeFinalizationDeferredError("lease_busy");
     if (coordinator.decisionId) await notifyNativeFinalizationWork(tx, coordinator);
     else await notifyNativeResultCommit(tx, coordinator);
+    await notifyNativeTokenLeaseClaimed(tx, coordinator);
     const [updated] = await tx
       .update(nativeRunFinalizations)
       .set({
         leaseOwner,
         leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
+        // This process, bound to the token, so a hard kill mid-finalization is
+        // proven and settled on the shared ownership path. The controller_*
+        // columns stay the executor's.
+        leaseHolder: nativeLeaseHolder(leaseOwner),
         attempt:
           input.preserveProviderAttempt || coordinator.controllerBootId !== null
             ? coordinator.attempt
@@ -1697,6 +1704,7 @@ export async function finalizeNativeRun(input: {
             : undefined,
         failpoint: input.failpoint,
       });
+      crashPoint("native.finalize.after_decision_before_projection");
       const now = new Date();
       const finalizationFailed = decision.effects.some(
         (effect) => effect.kind === "record_finalization_error",
