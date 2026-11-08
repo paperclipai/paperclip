@@ -15,7 +15,7 @@ function fixture(options: { loadingForever?: boolean; extraRun?: boolean; extraC
   const comments = [{ id: "human", authorUserId: "person", body: "Make Morgan my go-to agent." },
     ...(options.noReply ? [] : [{ id: "reply", authorAgentId: "ceo", createdByRunId: "native", body: "Use the human primary control." }])];
   const primary = { companyId: "company", userId: options.wrongPerson ? "foreign" : "person", primaryAgentId: options.wrongPrimary ? "ceo" : "morgan" };
-  const locator = (kind: string) => ({ first() { return this; }, locator: () => locator("editor"),
+  const locator = (kind: string): any => ({ first() { return this; }, locator: () => locator("editor"), getByRole: () => locator("heading"),
     visible: async () => {
       calls.push(kind);
       if (kind === "composer") {
