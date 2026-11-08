@@ -634,6 +634,9 @@ export function environmentRoutes(
       return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
     }
     if (impact.reusableSandboxLeaseCount > 0) {
+      if (impact.reusableSandboxLeaseHolders.some(holder => holder.leasePolicy === "retain_on_failure")) {
+        return "Cannot delete this environment while it keeps a failed run's workspace copy (a stopped sandbox kept for file recovery). Deleting the environment with consent destroys that sandbox and the files only it holds.";
+      }
       return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
     }
     return null;
