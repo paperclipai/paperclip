@@ -609,22 +609,40 @@ function retargetRunAttachPayload(
 
 /**
  * The provider turn accepted by this run's latest durable `turn.start`
- * command. Only a completed command whose authenticated result accepted the
- * same controller-assigned turn id counts, and it must follow the latest run
- * attachment so a prior run's turn on a reused Runner is never claimed.
+ * command, which must follow the latest run attachment so a prior run's turn
+ * on a reused Runner is never claimed. Either:
+ * - the command completed and its authenticated result accepted a provider
+ *   turn (ACPX echoes the requested id, so it must match; Codex and OpenCode
+ *   assign their own), or
+ * - the runner crashed after journaling the command, so it settled as
+ *   `execution_indeterminate`, and its restored session reconciled that
+ *   ambiguous start to a distinct active provider turn
+ *   (`indeterminateActiveTurnId`, from the authenticated `session.snapshot`).
  */
-export function controllerAcceptedTurnStartId(commands: readonly unknown[]): string | null {
+export function controllerAcceptedTurnStartId(commands: readonly unknown[], options: {
+  requireRequestedIdentity?: boolean;
+  indeterminateActiveTurnId?: string | null;
+} = {}): string | null {
   const ordered = commands.map(record).filter(command => typeof command.controllerSeq === "number")
     .sort((left, right) => (left.controllerSeq as number) - (right.controllerSeq as number));
   const latestStart = ordered.findLast(command => command.type === "turn.start");
-  if (!latestStart || latestStart.status !== "completed") return null;
+  if (!latestStart) return null;
   const latestAttachment = ordered.findLast(command => command.type === "run.attach" || command.type === "run.prepare");
   if (latestAttachment && (latestAttachment.controllerSeq as number) > (latestStart.controllerSeq as number)) return null;
+  const requestedTurnId = record(latestStart.payload).turnId;
+  const requireRequested = options.requireRequestedIdentity ?? true;
+  const identityMatches = (providerTurnId: string) =>
+    !requireRequested || requestedTurnId === undefined || requestedTurnId === providerTurnId;
+  if (latestStart.status === "failed") {
+    const active = options.indeterminateActiveTurnId;
+    const indeterminate = record(record(latestStart.result).result).code === "execution_indeterminate";
+    return indeterminate && typeof active === "string" && active.length > 0 && identityMatches(active) ? active : null;
+  }
+  if (latestStart.status !== "completed") return null;
   const accepted = record(record(latestStart.result).result);
   const providerTurnId = accepted.providerTurnId;
   if (accepted.status !== "accepted" || typeof providerTurnId !== "string" || providerTurnId.length === 0) return null;
-  const requestedTurnId = record(latestStart.payload).turnId;
-  return requestedTurnId === undefined || requestedTurnId === providerTurnId ? providerTurnId : null;
+  return identityMatches(providerTurnId) ? providerTurnId : null;
 }
 
 function recoveredRunAttachment(state: {
@@ -3914,8 +3932,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   controllerAcceptedTurnId(): string | null {
-    return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? []);
+    return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? [], {
+      requireRequestedIdentity: this.options.provider === "acpx",
+      indeterminateActiveTurnId: this.#snapshotActiveProviderTurnId,
+    });
   }
+
+  /** The active provider turn in the runner's latest authenticated session.snapshot. */
+  #snapshotActiveProviderTurnId: string | null = null;
 
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
     if (this.options.provider !== "acpx") return null;
@@ -4315,6 +4339,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         snapshot.activeProviderTurnId.length > 0
           ? snapshot.activeProviderTurnId
           : null;
+      this.#snapshotActiveProviderTurnId = activeProviderTurnId;
       if (activeProviderTurnId !== null) this.#turnId = activeProviderTurnId;
       const recoveredTurns: Array<Record<string, unknown>> =
         activeProviderTurnId === null
