@@ -375,7 +375,6 @@ describe("SOCKS5 proxy guard", () => {
       expect(await response.json()).toEqual({ ok: true });
       expect(tunnel.connections[0]).toEqual({ atyp: 0x03, targetHost: "secure.remote.test", targetPort: port });
 
-      // The same certificate does not name this host, so the handshake fails.
       await expect(guardedRemoteHttpFetch(`https://other.remote.test:${port}/mcp`, {}, options))
         .rejects.toMatchObject({ code: "remote_http_connect_failed" });
     } finally {
