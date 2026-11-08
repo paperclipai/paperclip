@@ -21,6 +21,7 @@ import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./ev
 import { gradeTask } from "./grader.js";
 import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
+import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver } from "./observer.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
@@ -179,6 +180,7 @@ async function main(): Promise<number> {
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
+  let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -430,6 +432,18 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
+    // Speed is graded like reliability: a budget breach fails the wave.
+    const speed = await collectWaveSpeed(api, plan.options.env, launched.flatMap(observer => observer.record.issueId
+      ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), faults)
+      .catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); return null; });
+    if (speed) {
+      speedSection = speedMarkdown(speed);
+      await writeFile(path.join(waveDir, "speed.json"), `${JSON.stringify(speed, null, 2)}\n`, { mode: 0o600 });
+      timeline.add("wave_speed", { breaches: speed.breaches, runBudgetExceeded: speed.runBudgetExceeded,
+        rows: speed.rows.map(row => ({ adapter: row.adapter, metric: row.metric, start: row.start, n: row.measured.n,
+          p50: row.measured.p50, p95: row.measured.p95, breaches: row.breaches })) });
+      if (speed.breaches > 0) anyFailure = true;
+    }
     if (crashPoint) {
       if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
       const byTask = new Map(lines.map(line => [line.taskId, line]));
@@ -500,7 +514,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), summary, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
       console.info(`\n${summary}`);
     }
     if (keep || anyFailure || harnessError) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot });
