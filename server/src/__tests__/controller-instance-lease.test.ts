@@ -213,8 +213,10 @@ suite("controller instance lease: a replaced container's records are provable", 
     await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
     await tickControllerInstanceLease();
     expect((await proveControllerInstance(db, currentControllerBootId(), null))).toBe("live");
-    // Released: the next renewal lets the lease lapse and the worker goes quiet.
+    // Released, and the server's work settled (every stamped write committed): the next renewal
+    // lets the lease lapse and the worker goes quiet.
     await db.delete(environmentLeases);
+    beginIdleTrackedWork()();
     await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
     await tickControllerInstanceLease();
     expect((await proveControllerInstance(db, currentControllerBootId(), null))).toBe("expired");
@@ -288,6 +290,31 @@ suite("controller instance lease: a replaced container's records are provable", 
     vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
     try {
       await startHere();
+      vi.setSystemTime(Date.now() + 120_000);
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      beginIdleTrackedWork()();
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a pending stamped write held when a renewal sees another held record", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere();
+      const agentId = randomUUID(), runId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Legacy", adapterType: "codex_local", status: "running" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", invocationSource: "on_demand",
+        runtimeMode: "legacy", controllerBootId: currentControllerBootId() });
+      // A second stamp whose ownership write has not committed yet.
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      // The other record finishes; the pending write is still uncommitted past the stamp window.
+      await db.delete(heartbeatRuns);
+      await db.delete(agents);
       vi.setSystemTime(Date.now() + 120_000);
       await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
       await tickControllerInstanceLease();

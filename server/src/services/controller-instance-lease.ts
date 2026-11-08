@@ -201,9 +201,8 @@ export async function tickControllerInstanceLease(): Promise<void> {
     // Idle: the lease lapses with no further statements until the next stamp wakes it.
     // A stamp taken during this attempt was not seen by its snapshot: check again now.
     const stampedDuringAttempt = current.stampSeq !== stampSeqAtStart;
-    // Records seen: every stamp before this attempt has committed (or its write failed and
-    // left nothing to hold); only a stamp taken during the attempt is still unobserved.
-    if (result !== "holding_stamp") current.unobservedStampSince = stampedDuringAttempt ? current.lastStampWallAt : null;
+    // A held record does not show that every stamped write has committed: another stamp's
+    // write may still be pending. Only the work-settled signal (or the cap) clears it.
     current.active = result !== "idle" || stampedDuringAttempt;
     if (result === "idle" && stampedDuringAttempt) current.wake();
     setControllerLeaseQuiesce(false);
