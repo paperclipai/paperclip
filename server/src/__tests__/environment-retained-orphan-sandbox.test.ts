@@ -22,7 +22,7 @@ import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/
 import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-termination.js";
 import { taskChatRetryExecutionStopped } from "../services/chat-channels/task-retry-authority.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
-import { ORPHANED_SANDBOX_RECOVERY_KEY } from "../services/sandbox-stop-and-retain.js";
+import { ORPHANED_SANDBOX_RECOVERY_KEY, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
