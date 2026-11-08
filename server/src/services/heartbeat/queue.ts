@@ -1,4 +1,5 @@
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -1791,6 +1792,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const issueKey = `${wake.companyId}:${String(wake.payload?.issueId)}`;
       if (pauseLiftedIssues.has(issueKey)) continue;
       pauseLiftedIssues.add(issueKey);
+      // Consumption is per comment: a completed run that already received a
+      // saved comment consumed it, so the replay delivers only the rest.
+      const savedCommentIds = queuedCommentIdsFromWakePayload(wake.payload);
+      const delivered = await deliveredQueuedCommentIds(db, { companyId: wake.companyId,
+        issueId: String(wake.payload?.issueId), agentId: wake.agentId, commentIds: savedCommentIds.filter(isUuidLike) });
+      if (delivered.size > 0) {
+        const remaining = savedCommentIds.filter(commentId => !delivered.has(commentId));
+        const now = new Date();
+        await db.update(agentWakeupRequests).set(remaining.length === 0
+          ? { status: "cancelled", finishedAt: now, updatedAt: now, error: "Queued messages were already delivered to a completed run" }
+          : { payload: withQueuedCommentIdsInWakePayload(parseObject(wake.payload), remaining), updatedAt: now })
+          .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+        if (remaining.length === 0) continue;
+        wake.payload = withQueuedCommentIdsInWakePayload(parseObject(wake.payload), remaining);
+      }
       const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
       const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
       await enqueueWakeup(wake.agentId, {

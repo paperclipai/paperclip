@@ -307,6 +307,37 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(comment.id)).toHaveLength(1);
   }, 180_000);
 
+  // Consumption is per comment: a retry that already received the paused
+  // message as task history consumed it, so lifting the pause never sends it
+  // again (RC-53 shape through the pause-lift path).
+  it("does not replay a paused message that a completed retry already received", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.userId, body: "Posted during the pause.", createdAt: new Date(Date.now() - 5_000),
+      updatedAt: new Date(Date.now() - 5_000) }).returning();
+    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
+        source: "issue.comment", wakeReason: "issue_commented" },
+      requestedByActorType: "user", requestedByActorId: f.userId })).rejects.toMatchObject({ status: 409 });
+    // A retry of the source run read the whole thread, the comment included.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "succeeded", startedAt: new Date(), finishedAt: new Date(), retryOfRunId: f.sourceRunId,
+      contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry",
+        executionContinuation: { messages: [{ id: comment.id }] } } });
+    await db.update(companies).set({ status: "active", pauseReason: null, pausedAt: null }).where(eq(companies.id, f.companyId));
+    await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "pause_lifted", issueId: f.issueId }));
+    await settle(f); await settle(f);
+    expect(deliveries(comment.id)).toHaveLength(0);
+    const saved = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
+    expect(saved).toEqual([expect.objectContaining({ status: "cancelled",
+      error: "Queued messages were already delivered to a completed run" })]);
+  }, 180_000);
+
   // A task that never ran has no terminal run for the release drain to promote
   // a saved message behind. Its message stays in the task, and stranded-work
   // recovery starts the task once the pause lifts.
