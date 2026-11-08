@@ -177,6 +177,37 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
     }
 }
 
+#[test]
+fn codex_launch_accepts_long_environment_config_with_bounded_total_arguments() {
+    let directory = temporary_directory("long-config-argument");
+    let mut config = provider_config(&directory, &[]);
+    config.args = vec![
+        "-c".into(),
+        format!(
+            "shell_environment_policy.set={{PATH=\"{}\"}}",
+            "p".repeat(5000)
+        ),
+        "app-server".into(),
+    ];
+    config
+        .validate()
+        .expect("a normal Windows PATH may exceed 4096 bytes");
+    for args in [
+        vec!["p".repeat(16_385)],
+        vec!["p".repeat(16_000), "p".repeat(16_000), "p".repeat(1000)],
+        vec!["p".into(); 65],
+        vec!["bad\0argument".into()],
+    ] {
+        config.args = args;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("bounded launch contract"));
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     dormant_source_fixture_with_switches(directory, &[])
 }
