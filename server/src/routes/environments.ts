@@ -1343,6 +1343,18 @@ export function environmentRoutes(
     // own sandbox, already queued for teardown. Run one attempt now instead of
     // waiting out the retry cooldown. An attempt in flight elsewhere is not taken
     // over, and a failed attempt keeps the lease, so the re-check still rejects.
+    // Consent covers the environment's restore-source sandboxes too: release
+    // their restore protection first, so neither the pending-cleanup retry nor
+    // the teardown below refuses them (including ones an earlier attempt left
+    // claimed for cleanup).
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.deleteBlockedReasons.every((reason) =>
+        reason === "pending_sandbox_cleanup" || reason === "reusable_sandbox_lease")
+    ) {
+      await environmentRuntime.releaseRestoreSourcesForEnvironmentDelete({ environmentId: existing.id,
+        consentedBy: actor.actorId });
+    }
     if (
       req.query.destroyReusableSandboxLeases === "true"
       && impact.pendingCleanupLeaseCount > 0
@@ -1378,6 +1390,7 @@ export function environmentRoutes(
         await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
           environmentId: existing.id,
           failureReason: "environment_deleted",
+          consentedBy: actor.actorId,
         });
       destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
       impact = await svc.getDeleteBlastRadius(existing.id);
