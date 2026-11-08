@@ -604,6 +604,39 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
   });
 
+  it("does not fetch historical run payloads during stop checks", async () => {
+    const agent = await hire();
+    await db.insert(heartbeatRuns).values(["succeeded", "failed", "timed_out"].map(status => ({
+      companyId, agentId: agent.id, status, invocationSource: "on_demand",
+      runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { stdout: "x".repeat(65_536) },
+      contextSnapshot: { transcript: "y".repeat(65_536) },
+    })));
+    const selected: Array<Record<string, unknown> | undefined> = [];
+    const select = db.select.bind(db);
+    const spy = vi.spyOn(db, "select").mockImplementation(((fields?: Record<string, unknown>) => {
+      const builder = fields ? select(fields as never) : select();
+      const from = builder.from.bind(builder);
+      (builder as { from: unknown }).from = (table: unknown) => {
+        if (table === heartbeatRuns) selected.push(fields);
+        return from(table as never);
+      };
+      return builder;
+    }) as typeof db.select);
+    try {
+      const { heartbeatService } = await import("../../../services/heartbeat.js");
+      expect(await heartbeatService(db).stopInvocationsForAgents(
+        [agent.id], "Agent lifecycle stop requested",
+      )).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(selected.length).toBeGreaterThan(0);
+    expect(selected.filter(fields => !fields ||
+      Object.values(fields).some(value => value === heartbeatRuns.resultJson ||
+        value === heartbeatRuns.contextSnapshot))).toEqual([]);
+  });
+
   it("checks historical cancellation proofs without trusting unrelated settled runs", async () => {
     const agent = await hire();
     for (let i = 0; i < 12; i++) {
