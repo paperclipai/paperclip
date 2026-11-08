@@ -64,11 +64,11 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
         ?? createRequire(manifestPath).resolve(`${platformPackage}/package.json`);
       const packageRoot = realpathSync(dirname(platformManifest));
       const vendor = realpathSync(resolve(packageRoot, "vendor"));
-      if (vendor.startsWith(`${packageRoot}/`)) add(vendor);
+      if (codexPathInside(packageRoot, vendor)) add(vendor);
     } else {
       const packageRoot = realpathSync(dirname(manifestPath));
       const vendor = realpathSync(resolve(packageRoot, "vendor"));
-      if (vendor.startsWith(`${packageRoot}/`)) add(vendor);
+      if (codexPathInside(packageRoot, vendor)) add(vendor);
     }
   } catch { /* Standalone executable installations need no npm resources. */ }
   return [...roots];
@@ -169,7 +169,7 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   } catch { /* Older controllers do not project Git metadata roots. */ }
   if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
     for (const relative of [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ".ssh"]) {
-      read.push(join(source.PAPERCLIP_GITHUB_HOST_HOME, relative));
+      read.push(resolve(source.PAPERCLIP_GITHUB_HOST_HOME, relative));
     }
     for (const root of [source.GH_CONFIG_DIR, source.GIT_CONFIG_GLOBAL, source.GIT_CONFIG_SYSTEM, source.SSH_AUTH_SOCK]) {
       if (root && isAbsolute(root) && resolve(root) !== "/") read.push(resolve(root));
@@ -307,7 +307,7 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
-    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="write"`] : []),
+    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(resolve(source.HOME))}="write"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
@@ -323,7 +323,7 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
-    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
+    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(resolve(source.HOME))}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),

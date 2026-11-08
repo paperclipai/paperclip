@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,8 @@ import {
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
+
+const filesystemRule = (path: string, mode: string) => `${JSON.stringify(resolve(path))}=${JSON.stringify(mode)}`;
 
 describe("Codex security configuration", () => {
   it("enables the update_plan checklist tool before policy overrides and the app-server subcommand", () => {
@@ -35,7 +37,7 @@ describe("Codex security configuration", () => {
       encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
   });
 
-  it("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {
+  it.skipIf(process.platform === "win32")("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {
     // Vitest adds its dependency directories to global module lookup paths.
     // Use the existing Node/tsx boundary so an absent fixture dependency cannot
     // be supplied by the test runner's installed bridge instead.
@@ -261,10 +263,10 @@ describe("Codex security configuration", () => {
   it("uses the execution account's HOME without credential deny roots in preconfigured mode", () => {
     const source = { HOME: "/users/executor", CODEX_HOME: "/users/executor/.codex", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" };
     const args = createIsolatedCodexAppServerArgs(source).join("\n");
-    expect(args).not.toContain('"/users/executor"="none"');
-    expect(args).not.toContain('"/users/executor/.codex"="none"');
+    expect(args).not.toContain(filesystemRule("/users/executor", "none"));
+    expect(args).not.toContain(filesystemRule("/users/executor/.codex", "none"));
     expect(args).toContain('HOME="/users/executor"');
-    expect(args).toContain('"/users/executor"="write"');
+    expect(args).toContain(filesystemRule("/users/executor", "write"));
     expect(createSecuredCodexThreadParams("/workspace", "default", true, true, source).config).toEqual({
       "skills.include_instructions": true, include_collaboration_mode_instructions: true,
     });
@@ -272,19 +274,19 @@ describe("Codex security configuration", () => {
 
   it("allows only the registered private instruction directory while keeping shared context read-only", () => {
     const args = createIsolatedCodexAppServerArgs({ HOME: "/host/home" }, ["/runtime/immutable-context"], "/runtime/instruction-edits/run-1").join("\n");
-    expect(args).toContain('"/runtime/instruction-edits/run-1"="write"');
-    expect(args).toContain('"/runtime/immutable-context"="read"');
-    expect(args).not.toContain('"/runtime"="write"');
-    expect(args).toContain('"/host/home"="none"');
+    expect(args).toContain(filesystemRule("/runtime/instruction-edits/run-1", "write"));
+    expect(args).toContain(filesystemRule("/runtime/immutable-context", "read"));
+    expect(args).not.toContain(filesystemRule("/runtime", "write"));
+    expect(args).toContain(filesystemRule("/host/home", "none"));
     expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_INSTRUCTION_ROOT: "/host/home" }).join("\n"))
-      .not.toContain('"/host/home"="write"');
+      .not.toContain(filesystemRule("/host/home", "write"));
   });
 
   it("exposes AGENT_HOME only when it matches the controller-registered writable directory", () => {
     const root = "/agent-files/run-1";
     const registered = createIsolatedCodexAppServerArgs({ AGENT_HOME: root, HOME: "/provider" }, [], root).join("\n");
     expect(registered).toContain('AGENT_HOME="/agent-files/run-1"');
-    expect(registered).toContain('"/provider"="none"');
+    expect(registered).toContain(filesystemRule("/provider", "none"));
     expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: "/arbitrary" }, [], root).join("\n")).not.toContain("AGENT_HOME");
     expect(createIsolatedCodexAppServerArgs({ AGENT_HOME: root }).join("\n")).not.toContain("AGENT_HOME");
   });
@@ -294,20 +296,20 @@ describe("Codex security configuration", () => {
     const manifest = createRequire(command).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);
     const vendor = resolve(dirname(manifest), "vendor");
     const roots = codexExecutableReadOnlyRoots({ HOME: "/private-provider-home", PATH: "/usr/bin" }, command);
-    expect(roots).toContain(vendor);
+    expect(roots).toContain(process.platform === "win32" ? command : vendor);
     expect(roots).toContain(process.execPath);
     expect(roots).not.toContain(dirname(manifest));
     expect(roots).not.toContain("/private-provider-home");
     const args = createIsolatedCodexAppServerArgs({ HOME: "/private-provider-home" }, roots).join("\n");
-    expect(args).toContain(`${JSON.stringify(vendor)}="read"`);
-    expect(args).toContain('"/private-provider-home"="none"');
+    expect(args).toContain(filesystemRule(process.platform === "win32" ? command : vendor, "read"));
+    expect(args).toContain(filesystemRule("/private-provider-home", "none"));
   });
 
   it("preserves target DNS symlink resources without opening all of /run", () => {
     const source = { PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled", PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/run/systemd/resolve/stub-resolv.conf","/etc/ssl/certs"]' };
     const args = createIsolatedCodexAppServerArgs(source).join("\n");
-    expect(args).toContain('"/run/systemd/resolve/stub-resolv.conf"="read"');
-    expect(args).not.toContain('"/run"="read"');
+    expect(args).toContain(filesystemRule("/run/systemd/resolve/stub-resolv.conf", "read"));
+    expect(args).not.toContain(filesystemRule("/run", "read"));
     expect(codexNetworkReadOnlyRoots({ ...source, PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" })).toEqual([]);
   });
 
@@ -341,14 +343,14 @@ describe("Codex security configuration", () => {
     expect(args).not.toContain("DATABASE_URL");
     expect(args).not.toContain("PAPERCLIP_API_KEY");
     expect(args).toContain('HOME="/legacy"');
-    expect(args).toContain('"/legacy/.gitconfig"="read"');
-    expect(args).toContain('"/legacy/.ssh"="read"');
-    expect(args).toContain('"/agent/socket"="read"');
-    expect(args).toContain('"/repo/.git"="write"');
-    expect(args).toContain('"/repo/.git"="read"');
-    expect(args).toContain('"/provider"="none"');
-    expect(args).not.toContain('"/legacy"="read"');
-    expect(args.match(/"\/legacy\/.config\/gh"="read"/g)).toHaveLength(2);
+    expect(args).toContain(filesystemRule("/legacy/.gitconfig", "read"));
+    expect(args).toContain(filesystemRule("/legacy/.ssh", "read"));
+    expect(args).toContain(filesystemRule("/agent/socket", "read"));
+    expect(args).toContain(filesystemRule("/repo/.git", "write"));
+    expect(args).toContain(filesystemRule("/repo/.git", "read"));
+    expect(args).toContain(filesystemRule("/provider", "none"));
+    expect(args).not.toContain(filesystemRule("/legacy", "read"));
+    expect(args.split(filesystemRule("/legacy/.config/gh", "read"))).toHaveLength(3);
   });
 
   it("disables host extensions and makes collaboration instructions explicit", () => {
@@ -430,11 +432,11 @@ describe("Codex security configuration", () => {
     expect(serialized).toContain('":root"="none"');
     expect(serialized).toContain('":minimal"="read"');
     expect(serialized).toContain('":tmpdir"="none"');
-    expect(serialized).toContain('"/host/home"="none"');
-    expect(serialized).toContain('"/host/codex"="none"');
-    expect(serialized).toContain('"/isolated/codex-home/skills"="read"');
-    expect(serialized).not.toContain('"/isolated/codex-home"="read"');
-    expect(serialized).toContain('"/runner/context"="read"');
+    expect(serialized).toContain(filesystemRule("/host/home", "none"));
+    expect(serialized).toContain(filesystemRule("/host/codex", "none"));
+    expect(serialized).toContain(filesystemRule("/isolated/codex-home/skills", "read"));
+    expect(serialized).not.toContain(filesystemRule("/isolated/codex-home", "read"));
+    expect(serialized).toContain(filesystemRule("/runner/context", "read"));
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
     expect(serialized).toContain("network.enabled=true");
@@ -477,16 +479,16 @@ describe("Codex security configuration", () => {
   it("isolates managed launcher profiles and never serializes broker capabilities or host API credentials", () => {
     const serialized = createIsolatedCodexAppServerArgs({
       HOME: "/isolated/provider", CODEX_HOME: "/isolated/provider",
-      PATH: "/runtime/run-B:/safe/bin",
+      PATH: ["/runtime/run-B", "/safe/bin"].join(delimiter),
       PAPERCLIP_GITHUB_LAUNCHER_DIR: "/runtime/run-B",
       PAPERCLIP_GITHUB_BROKER_TOKEN: "private-run-capability",
       PAPERCLIP_GITHUB_BRIDGE_TOKEN: "private-bridge-capability",
       PAPERCLIP_API_KEY: "forbidden-agent-token",
       GH_CONFIG_DIR: "/runtime/run-B/gh-config",
     }).join("\n");
-    expect(serialized).toContain('"/isolated/provider"="none"');
-    expect(serialized).toContain('"/runtime/run-B"="read"');
-    expect(serialized).toContain('"/runtime/run-B/gh-config"="write"');
+    expect(serialized).toContain(filesystemRule("/isolated/provider", "none"));
+    expect(serialized).toContain(filesystemRule("/runtime/run-B", "read"));
+    expect(serialized).toContain(filesystemRule("/runtime/run-B/gh-config", "write"));
     expect(serialized).toContain('HOME="/runtime/run-B"');
     expect(serialized).toContain('ZDOTDIR="/runtime/run-B"');
     expect(serialized).toContain('BASH_ENV="/runtime/run-B/.bashrc"');
