@@ -600,7 +600,10 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         const identity = await quotaIdentity(authorized, input.companyId, db, true);
         if (!identity || identity !== memberIdentities.get(member.id)) continue;
         const cooldown = await accountCooldown(input.companyId, member.binding.connectionId, identity, row.pool.config.kind === "harness_pool" && (input.environmentId !== undefined || input.expectedSelection.runnerScope) ? { config: effective.config, scope: { environmentId: input.environmentId ?? input.expectedSelection.runnerScope?.environmentId ?? null } } : undefined);
-        if (cooldown) { cooling.push(cooldown); coolingMembers.push({ member, effective, retryAt: cooldown }); continue; }
+        if (cooldown) {
+          if (input.failureKind === "auth" && (!memberIdentities.get(pin.member.id) || identity === memberIdentities.get(pin.member.id))) continue;
+          cooling.push(cooldown); coolingMembers.push({ member, effective, retryAt: cooldown }); continue;
+        }
       } catch (error) {
         if (error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status)) continue;
         throw error;

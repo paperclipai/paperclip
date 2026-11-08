@@ -507,6 +507,7 @@ describe("durable, authorized connection routing", () => {
     { failureKind: "quota", reconnect: false, noBackup: false },
     { failureKind: "quota", reconnect: true, noBackup: false },
     { failureKind: "auth", reconnect: false, noBackup: false },
+    { failureKind: "auth", reconnect: true, noBackup: false },
     { failureKind: "auth", reconnect: false, noBackup: true },
   ] as const)("handles $failureKind through the public heartbeat lifecycle (reconnect=$reconnect, noBackup=$noBackup)", async ({ failureKind, reconnect, noBackup }) => {
     const companyId = randomUUID();
@@ -576,7 +577,7 @@ describe("durable, authorized connection routing", () => {
       await expect.poll(async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id))).length, { timeout: 20_000 }).toBe(1);
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id));
       if (failureKind === "auth") expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue!.id))).toHaveLength(0);
-      expect(successor?.contextSnapshot).toMatchObject({ previousRunId: source!.id, forceFreshSession: true, aiRouterSelection: { adapterType: reconnect ? "claude_local" : "codex_local", memberId: members[reconnect ? 1 : 0]!.id } });
+      expect(successor?.contextSnapshot).toMatchObject({ previousRunId: source!.id, forceFreshSession: true, aiRouterSelection: { adapterType: reconnect && failureKind === "quota" ? "claude_local" : "codex_local", memberId: members[reconnect && failureKind === "quota" ? 1 : 0]!.id } });
       if (reconnect) {
         expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
         await aiConnectionService(db).save(companyId, "alice", { connectionId: members[0]!.binding.connectionId,
