@@ -112,7 +112,7 @@ describePostgres("saved harness account preflight", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("verifies the saved native pool member instead of ambient credentials (revoked=%s)", async revoked => {
+  it.each(["active", "revoked", "restricted"])("verifies the saved native pool member instead of ambient credentials (%s)", async state => {
     vi.spyOn(modelCatalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Fixture model" }]);
     const pool = await harnessPoolService(db).save(agent.companyId, { config: {
       schemaVersion: 2, kind: "harness_pool", name: "Lifecycle Pool", enabled: true, mode: "failover", members: [{
@@ -120,13 +120,19 @@ describePostgres("saved harness account preflight", () => {
         model: "openrouter/anthropic/claude-sonnet-4.5",
       }],
     } }, userId);
-    [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+    [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: {
+      provider: "acpx", acpxAgent: "claude", command: "claude", engine: "acp",
+      ...(state === "restricted" ? { args: ["--claude-only"] } : {}),
+    },
       runtimeConfig: { harnessPool: { poolId: pool.id } }, lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
     }).where(eq(agents.id, agent.id)).returning();
     const nativeAdapter = adapters.requireServerAdapter("paperclip_runner");
     const ambient = vi.fn().mockResolvedValue({ ...passed, adapterType: "paperclip_runner", status: "fail", checks: [] });
     vi.spyOn(adapters, "requireServerAdapter").mockReturnValue({ ...nativeAdapter, testEnvironment: ambient });
-    if (revoked) {
+    if (state === "restricted") {
+      await expect(verify()).rejects.toMatchObject({ details: { code: "pool_execution_policy_incompatible" } });
+      expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+    } else if (state === "revoked") {
       await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
       await expect(verify()).rejects.toThrow("No pool account is permitted");
       expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
@@ -135,6 +141,7 @@ describePostgres("saved harness account preflight", () => {
       expect(probe).toHaveBeenCalledOnce();
       expect(probe.mock.calls[0][1].config).toMatchObject({ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.5" });
       expect(probe.mock.calls[0][1].config.env).toMatchObject({ OPENROUTER_API_KEY: "fixture-preflight-key" });
+      for (const key of ["command", "args", "engine", "acpxAgent"]) expect(probe.mock.calls[0][1].config).not.toHaveProperty(key);
       expect(release).toHaveBeenCalledExactlyOnceWith("released");
     }
     expect(ambient).not.toHaveBeenCalled();

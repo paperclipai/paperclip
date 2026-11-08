@@ -5,7 +5,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiRuntimeConnectionBindingSchema, effe
 import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
-import { aiConnectionRouterService } from "./ai-connection-router.js";
+import { aiConnectionRouterService, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredFailure } from "./plugin-runner-ai-connection.js";
@@ -70,9 +70,10 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     if (binding?.mode === "router") {
       const selected = await aiConnectionRouterService(db, manager).resolve({ companyId: agent.companyId,
         poolId: binding.connectionId, agentId: agent.id, userId: responsibleUserId,
-        adapterType: agent.adapterType, taskKey: `lifecycle:${agent.lifecycleOperation!.id}` });
+        adapterType: agent.adapterType, sourceAdapterConfig: config,
+        taskKey: `lifecycle:${agent.lifecycleOperation!.id}` });
       binding = selected.binding;
-      config = { ...config, ...selected.runtimeConfig };
+      config = applyAiConnectionRouterTaskSettings(config, selected, agent.adapterType);
     }
     if (binding) config = { ...config, env: stripAiAuthBindings(config.env) };
     config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType })).config;

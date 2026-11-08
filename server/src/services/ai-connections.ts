@@ -1,4 +1,4 @@
-import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
+import { reopenAiPoolWaits } from "./ai-pool-wake.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
@@ -677,7 +677,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
-      await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId, connectionId: id });
+      await reopenAiPoolWaits(tx as unknown as Db, { companyId, connectionId: id });
       await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
@@ -1114,7 +1114,7 @@ export function aiConnectionService(db: Db) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
       await db.transaction(async (tx) => {
-        await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: input.companyId, connectionId: input.attribution.connectionId });
+        await reopenAiPoolWaits(tx as unknown as Db, { companyId: input.companyId, connectionId: input.attribution.connectionId });
         const { attribution } = input;
         const [grant] = await tx.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, input.companyId),

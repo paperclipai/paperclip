@@ -239,3 +239,12 @@ continuation, and any selected SSH/sandbox qualification. Full upstream CI passe
 on `aefc630f4a`; follow-up commits require their own checks. Earlier failures retain
 their original evidence. Do not describe this plan as fully completed while the
 selected acceptance gates are open. Local develop integration remains authorized.
+
+Follow-up review fixes keep lifecycle verification on the same selected-member
+settings and execution-policy guard as task admission. Pool cooldown failures
+retain their actual retry deadline in the existing lifecycle operation, without
+spending verification failures. Account/pool producer transactions recheck affected
+verifications through the lifecycle module's existing transactional wake contract;
+rollback and an update arriving during defer cannot lose that wake. The existing
+scheduler reconstructs the saved deadline after restart. No new polling loop or
+parallel lifecycle store is introduced.

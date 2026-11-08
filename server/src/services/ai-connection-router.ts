@@ -2,7 +2,7 @@ import { inArray } from "drizzle-orm";
 import { poolRunnerCooldownIdentity, type PoolRunnerScope } from "./ai-connection-pool-cooldown.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
+import { reopenAiPoolWaits } from "./ai-pool-wake.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
@@ -273,7 +273,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const id = input.id ?? randomUUID();
     await managementContext?.reauthorize();
     await db.transaction(async (tx) => {
-      await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: input.companyId, poolId: id });
+      await reopenAiPoolWaits(tx as unknown as Db, { companyId: input.companyId, poolId: id });
       if (input.id) {
         const [row] = await tx.select().from(aiConnectionPools).where(and(eq(aiConnectionPools.id, id), eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.pluginKey, pluginKey))).for("update");
         if (!row) throw notFound("Connection pool not found");
@@ -301,7 +301,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     // Cleanup remains available when the experimental flag or plugin is off.
     await managementContext?.reauthorize();
     await db.transaction(async tx => {
-      await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId, poolId });
+      await reopenAiPoolWaits(tx as unknown as Db, { companyId, poolId });
       const [row] = await tx.select().from(aiConnectionPools).where(and(eq(aiConnectionPools.id, poolId), eq(aiConnectionPools.companyId, companyId))).for("update");
       if (!row) throw notFound("Connection pool not found");
       const [connection] = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, poolId), eq(toolConnections.companyId, companyId)));

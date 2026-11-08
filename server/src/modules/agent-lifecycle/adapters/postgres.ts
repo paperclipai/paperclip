@@ -234,14 +234,15 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       }
       const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && agent.lifecycleState === "verifying"
         ? { retryRequired: true }
-        : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+        : { retryAt: options?.retryAt ?? new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
         retry.verificationFailures = options.verificationFailures;
       }
       const rows = await db.update(agents).set({
         lifecycleError: error,
         lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired' - 'waitingForSignal' - 'recheckRequested')
-          || ${JSON.stringify(retry)}::jsonb`,
+          || case when ${Boolean(options?.retryAt)} and coalesce(${agents.lifecycleOperation}->>'recheckRequested', 'false') = 'true'
+            then '{}'::jsonb else ${JSON.stringify(retry)}::jsonb end`,
         updatedAt: now,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
         sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });

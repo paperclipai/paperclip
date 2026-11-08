@@ -11,6 +11,7 @@ import { createLifecycleWorker } from "../application/worker.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+import { reopenAiPoolWaits } from "../../../services/ai-pool-wake.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIFECYCLE_VERIFICATION_RETRY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -34,6 +35,66 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.companyId, companyId));
   });
   const current = async (id: string) => (await db.select().from(agents).where(eq(agents.id, id)))[0]!;
+  it("keeps a pool deadline across restart and only wakes after a matching producer commits", async () => {
+    const poolId = randomUUID();
+    const retryAt = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pool wait", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" }, runtimeConfig: { harnessPool: { poolId } },
+      status: "paused", lifecycleState: "verifying", lifecycleHolds: [], lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+    }).returning();
+    const runHost = vi.fn(async () => { throw Object.assign(new Error("private fixture"), { code: "ai_connection_pool_exhausted", retryAt }); });
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const };
+    const effects = createAgentLifecycleEffects();
+    const worker = createLifecycleWorker(createLifecycleStore(db, effects), driver, () => {}); workers.push(worker);
+    await worker.process(agent.id);
+    expect((await current(agent.id)).lifecycleOperation?.retryAt).toBe(retryAt);
+    await worker.stop();
+    const restarted = startAgentLifecycle(db, effects, driver, () => true); workers.push(restarted);
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBe(Date.parse(retryAt));
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(1);
+    await db.transaction(tx => reopenAiPoolWaits(tx as unknown as Db, { companyId, poolId: randomUUID() }));
+    await db.transaction(tx => reopenAiPoolWaits(tx as unknown as Db, { companyId: randomUUID(), poolId }));
+    expect((await current(agent.id)).lifecycleOperation?.retryAt).toBe(retryAt);
+    await expect(db.transaction(async tx => {
+      await reopenAiPoolWaits(tx as unknown as Db, { companyId, poolId });
+      throw new Error("producer rollback");
+    })).rejects.toThrow("producer rollback");
+    expect((await current(agent.id)).lifecycleOperation?.retryAt).toBe(retryAt);
+    await db.transaction(tx => reopenAiPoolWaits(tx as unknown as Db, { companyId, poolId }));
+    expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(await restarted.hasPending()).toBe(true);
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(2);
+    expect((await current(agent.id)).lifecycleOperation?.retryAt).toBe(retryAt);
+    await db.transaction(tx => reopenAiPoolWaits(tx as unknown as Db, { companyId, connectionId: randomUUID() }));
+    expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("retryAt");
+  });
+
+  it("retains an account change arriving while a pool verification is being deferred", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pool race", adapterType: "paperclip_runner",
+      runtimeConfig: { harnessPool: { poolId: randomUUID() } }, status: "paused", lifecycleState: "verifying", lifecycleHolds: [], lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+    }).returning();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const driver = { requiredPluginIds: async () => [], runPlugin: async () => "complete" as const,
+      runHost: async () => { entered(); await held; throw Object.assign(new Error("pool waiting"), {
+        code: "ai_connection_pool_exhausted", retryAt: new Date(Date.now() + 7_200_000).toISOString(),
+      }); } };
+    const worker = createLifecycleWorker(createLifecycleStore(db, createAgentLifecycleEffects()), driver, () => {}); workers.push(worker);
+    const processing = worker.process(agent.id);
+    try {
+      await started;
+      await db.transaction(tx => reopenAiPoolWaits(tx as unknown as Db, { companyId, connectionId: randomUUID() }));
+      expect((await current(agent.id)).lifecycleOperation?.recheckRequested).toBe(true);
+    } finally { release(); await processing; }
+    expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(await createLifecycleStore(db, createAgentLifecycleEffects()).pending(100, new Date())).toContain(agent.id);
+  });
   async function failed(code = "harness_test_failed") {
     const runHost = vi.fn(async (agent: LifecycleAgent) => {
       if (agent.lifecycleState === "verifying") throw Object.assign(new Error("private provider detail"), { code });
