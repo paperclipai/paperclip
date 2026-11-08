@@ -108,8 +108,9 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       const environment = await environments.getById(environmentId);
       if (environment && environment.driver !== "local") {
         const image = environment.driver === "sandbox" ? await sandboxBinding(db, environment, agent.companyId).catch(() => null) : null;
-        // Only an immutable image digest or a qualified snapshot ID names the image a test ran in.
-        const immutable = image && ("image" in image || ("qualifiedSnapshotId" in image && image.qualifiedSnapshotId));
+        // Only an immutable image digest names the image a test ran in; a snapshot
+        // name may be re-pointed without the allocation pinning it, so it never counts.
+        const immutable = image && "image" in image;
         runner = immutable ? { kind: "sandbox", environmentId, ...image } : null;
       } else if (environment && (await instanceSettingsService(db).getExperimental()).enableManagedSandboxOnly === true) {
         // The test runs in the managed sandbox instead, whose image is not named here.
@@ -137,16 +138,17 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     const connection = selected?.connection;
     const credentialRefs = [...(connection?.credentialSecretRefs ?? []), ...(selected?.grant?.credentialSecretRefs ?? [])];
     const credentialSecretIds = [...new Set(credentialRefs.map(ref => ref.secretId))];
-    const credentialVersions = credentialSecretIds.length ? await db.select({ id: companySecrets.id,
+    const readCredentialVersions = async () => credentialSecretIds.length ? await db.select({ id: companySecrets.id,
       latestVersion: companySecrets.latestVersion, aiSessionEpoch: companySecrets.aiSessionEpoch })
       .from(companySecrets).where(and(eq(companySecrets.companyId, agent.companyId), inArray(companySecrets.id, credentialSecretIds)))
       .then(rows => rows.sort((a, b) => a.id.localeCompare(b.id))) : [];
-    const account = selected ? { ...selected.attribution,
+    const accountWith = (credentialVersions: Awaited<ReturnType<typeof readCredentialVersions>>) => selected ? { ...selected.attribution,
       credentialSecretRefs: credentialRefs, externalCredential: connection?.externalCredential ?? null,
       credentialVersions } : null;
+    const credentialVersions = await readCredentialVersions();
     // A configuration that already passed in this runner image is verified:
     // a restart or a return to verifying never boots another test sandbox.
-    const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, account, environmentId, runner });
+    const digest = harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(credentialVersions), environmentId, runner });
     if (digest && agent.harnessVerifiedDigest === digest) return "complete";
     const target = providerApi
       ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }
@@ -161,9 +163,19 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         : await requireServerAdapter(agent.adapterType).testEnvironment(input);
       assertHarnessTestPassed(result);
       status = "released";
+      // A passing subscription probe can save the credential it refreshed, which
+      // advances the version but keeps the AI session epoch; a person's rotation
+      // bumps the epoch. Record the generation the probe left, unless any epoch
+      // moved: then the pass is not recorded and the next check tests again.
+      const verifiedVersions = await readCredentialVersions();
+      const sameEpochs = verifiedVersions.length === credentialVersions.length && verifiedVersions.every((row, index) =>
+        row.id === credentialVersions[index]!.id && row.aiSessionEpoch === credentialVersions[index]!.aiSessionEpoch);
+      const verifiedDigest = digest && sameEpochs
+        ? harnessVerificationDigest({ adapterType: agent.adapterType, config, account: accountWith(verifiedVersions), environmentId, runner })
+        : null;
       // Record the pass before the lifecycle step completes, so a restart in
       // between reuses it instead of testing again.
-      if (digest) await db.update(agents).set({ harnessVerifiedDigest: digest, harnessVerifiedAt: new Date() })
+      if (verifiedDigest) await db.update(agents).set({ harnessVerifiedDigest: verifiedDigest, harnessVerifiedAt: new Date() })
         .where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, snapshot.lifecycleVersion)));
       return "complete";
     } finally { await target.release(status); }

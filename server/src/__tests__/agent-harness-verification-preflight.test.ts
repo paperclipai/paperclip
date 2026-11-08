@@ -209,6 +209,28 @@ describePostgres("saved harness account preflight", () => {
     expect(allocate).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a pass whose probe refreshed its own credential, never one rotated by a person meanwhile", async () => {
+    const [grant] = await db.select({ refs: connectionGrants.credentialSecretRefs }).from(connectionGrants)
+      .where(eq(connectionGrants.id, account.grantId));
+    const secretId = grant!.refs[0]!.secretId;
+    // The subscription refresh write-back keeps the AI session epoch.
+    probe.mockImplementationOnce(async () => {
+      await secretService(db).rotate(secretId, { value: "fixture-refreshed-key", preserveAiSessionEpoch: true }, { userId });
+      return passed;
+    });
+    await expect(verify()).resolves.toBe("complete");
+    await expect(verify()).resolves.toBe("complete");
+    expect(allocate).toHaveBeenCalledOnce();
+    // A person's rotation during the probe bumps the epoch: nothing is recorded.
+    await db.update(agents).set({ harnessVerifiedDigest: null }).where(eq(agents.id, agent.id));
+    probe.mockImplementationOnce(async () => {
+      await secretService(db).rotate(secretId, { value: "fixture-person-rotated-key" }, { userId });
+      return passed;
+    });
+    await expect(verify()).resolves.toBe("complete");
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.harnessVerifiedDigest).toBeNull();
+  });
+
   it("does not record a failed verification", async () => {
     probe.mockResolvedValueOnce({ ...passed, status: "fail", checks: [{ code: "opencode_hello_probe_timed_out", level: "error", message: "timed out" }] });
     await expect(verify()).rejects.toMatchObject({ code: "harness_probe_timed_out" });

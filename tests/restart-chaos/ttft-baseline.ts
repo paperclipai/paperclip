@@ -24,6 +24,7 @@ import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
 import { chaosLifecycleOverrides, seedChaosLab, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
+import { createDb } from "../../packages/db/src/index.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
@@ -350,11 +351,22 @@ async function main() {
           let state = "unknown";
           while (Date.now() < deadline && (state = String((await api.get<Json>(`/api/agents/${agentId}`).catch(() => null))?.lifecycleState)) !== "verifying"
             && state !== "ready") await delay(200);
-          // The worker claims verification in the step that enters the state; this
-          // margin makes sure the fault interrupts a held verification lease.
-          if (state === "verifying") await delay(1_000);
-          timeline.add("baseline_verify_fault_point", { adapter, agentId, state });
-          if (state === "verifying") {
+          // Fault only while a verifier holds the lifecycle lease, read from the
+          // instance database; otherwise the sample is skipped, not faulted.
+          const config = JSON.parse(await readFile(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+          const db = createDb(config.database!.connectionString!);
+          let held = false;
+          try {
+            while (state === "verifying" && Date.now() < deadline && !held) {
+              const rows = await db.$client`select 1 from agents where id = ${agentId}
+                and lifecycle_state = 'verifying' and lifecycle_operation ? 'leaseOwner'`;
+              held = rows.length > 0;
+              if (!held) await delay(100);
+            }
+          } finally { await db.$client.end({ timeout: 5 }).catch(() => undefined); }
+          timeline.add("baseline_verify_fault_point", { adapter, agentId, state, leaseHeld: held });
+          if (!held) timeline.add("baseline_verify_sample_skipped", { adapter, agentId, reason: "no_held_verification_lease" });
+          if (held) {
             fault = await supervisor.fault(verifyFault, 0, `verify-${index}`);
           }
         }
