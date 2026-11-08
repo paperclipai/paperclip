@@ -516,6 +516,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
 
     await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
       .where(eq(heartbeatRuns.id, writer.id));
+    // A silent writer whose controller still renews its lease is live by
+    // fence: the next run keeps waiting instead of failing.
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      constructor: WorkspaceBusyDeferral, code: "workspace_busy", holder: { runId: writer.id } });
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
     // An ended writer whose save has not settled still holds the workspace:
     // the next run waits from the writer's end, within the same holder cutoff.

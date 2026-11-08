@@ -1,3 +1,4 @@
+import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -1439,8 +1440,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           eq(heartbeatRuns.status, "running"),
           ne(heartbeatRuns.id, input.excludeRunId),
           // Last observed activity: output beats start beats creation. A run
-          // that started recently but has not written output yet is live.
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+          // that started recently but has not written output yet is live. A
+          // run whose controller still renews its lease is live by fence,
+          // however long its output is silent: silence is not proof it stopped.
+          or(sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+            runOwnerFenceHeldSql()),
           eq(issues.projectWorkspaceId, input.projectWorkspaceId),
           ne(sql`${issues.id}::text`, input.excludeIssueId),
           ...(input.honorIsolatedWorkspaceModes
@@ -1480,7 +1484,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (input.now ?? new Date()).getTime() -
         WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
     );
-    const lastActivityBefore = sql<boolean>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`;
+    // Stale only when silent past the cutoff and its controller no longer
+    // renews its lease (a held lease is a live owner by fence).
+    const lastActivityBefore = sql<boolean>`(coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz and not ${runOwnerFenceHeldSql()})`;
     return await db
       .select({
         runId: heartbeatRuns.id,

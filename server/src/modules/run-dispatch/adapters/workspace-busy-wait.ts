@@ -3,7 +3,7 @@ import { executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipa
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { notifyScheduledRetryDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
-import { readRemoteWorkspaceWriterHold } from "../../../services/remote-workspace-writer-hold.js";
+import { readRemoteWorkspaceWriterHold, runOwnerFenceHeldSql } from "../../../services/remote-workspace-writer-hold.js";
 import {
   WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
   WORKSPACE_BUSY_PARKED_RECHECK_MS,
@@ -42,6 +42,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     .select({
       status: heartbeatRuns.status,
       lastActivityAt: sql<Date>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`,
+      ownerFenceHeld: runOwnerFenceHeldSql(),
     })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, wait.holderRunId)));
@@ -49,8 +50,12 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   // sandbox release settle (a run stopped by reassignment, for example).
   // Reservation defers on that hold, so the wait stays parked through it too.
   const settlingSince = holder && holder.status !== "running" ? await settlingWriterActivityAt(tx, run, wait) : null;
+  // A running holder whose controller still renews its lease is live by
+  // fence, however long its output is silent: re-check at the parked cadence.
+  // Once the fence lapses, the silence cutoff applies as before.
   const holderStaleAt = holder?.status === "running"
-    ? new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS
+    ? Math.max(new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+      holder.ownerFenceHeld === true ? now.getTime() + WORKSPACE_BUSY_PARKED_RECHECK_MS : 0)
     : settlingSince ? settlingSince.getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS : null;
   const holderLive = holderStaleAt !== null && holderStaleAt > now.getTime();
 
