@@ -124,7 +124,10 @@ export async function applyAgentBudgetHoldInTransaction(tx: Db, companyId: strin
   const has = updated?.lifecycleHolds?.includes("budget") ?? had;
   if (updated && had !== has) {
     const { publication } = await persistActivity(tx, { companyId, actorType: "system", actorId: "budget",
-      agentId, action: has ? "agent.paused" : "agent.resumed", entityType: "agent", entityId: agentId,
+      // Releasing the budget hold resumes the agent only when no other hold
+      // (a manual or company pause) still keeps it paused.
+      agentId, action: has ? "agent.paused" : updated.lifecycleHolds.length === 0 ? "agent.resumed" : "agent.budget_hold_released",
+      entityType: "agent", entityId: agentId,
       details: { reason: "budget", lifecycleState: updated.lifecycleState, holds: updated.lifecycleHolds } });
     if (publication) publications?.push(publication);
   }

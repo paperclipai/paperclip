@@ -41,4 +41,15 @@ describe.skipIf(!support.supported)("agent budget hold activity", () => {
     await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, company.id, agent.id, false));
     expect((await entries()).map(entry => entry.action)).toEqual(["agent.paused", "agent.resumed"]);
   });
+
+  it("records a budget hold release, not a resume, while another hold keeps the agent paused", async () => {
+    const [company] = await db.insert(companies).values({ name: "Held", issuePrefix: "HLE" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker" }).returning();
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, company.id, agent.id, true));
+    await db.update(agents).set({ lifecycleHolds: ["budget", "manual"] }).where(eq(agents.id, agent.id));
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, company.id, agent.id, false));
+    const actions = (await db.select({ action: activityLog.action }).from(activityLog)
+      .where(and(eq(activityLog.companyId, company.id), eq(activityLog.entityId, agent.id)))).map(row => row.action);
+    expect(actions).toEqual(["agent.paused", "agent.budget_hold_released"]);
+  });
 });
