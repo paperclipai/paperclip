@@ -342,9 +342,10 @@ describe("Codex app-server transport limits", () => {
   });
 
   it.runIf(process.platform === "win32").each(["stdin", "stdout"] as const)("closes after a Windows %s pipe disconnect", async channel => {
-    const originalSpawn = ChildProcess.prototype.spawn;
+    const childProcessPrototype = ChildProcess.prototype as ChildProcess & { spawn(...args: unknown[]): unknown };
+    const originalSpawn = childProcessPrototype.spawn;
     let child: ChildProcess | undefined;
-    const spawnSpy = vi.spyOn(ChildProcess.prototype, "spawn").mockImplementation(function (this: ChildProcess, ...args) {
+    const spawnSpy = vi.spyOn(childProcessPrototype, "spawn").mockImplementation(function (this: ChildProcess, ...args) {
       child = this;
       return originalSpawn.apply(this, args);
     });
