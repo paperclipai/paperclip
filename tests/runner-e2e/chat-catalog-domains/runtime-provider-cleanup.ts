@@ -69,6 +69,9 @@ async function soleProviderDescendant(ctx: ChatCatalogContext, runnerPid: number
   await ctx.input.evidence("runtime-cleanup-provider-search.json", { kind, descendants: seen, qualifying: providers.length });
   return providers.length === 1 ? providers[0] : undefined;
 }
+/** Upper bound on the hold, only so an aborted attempt never leaves a stopped process behind. The
+ * case releases the hold itself, deterministically, once the follow-up message is durably accepted. */
+const MAXIMUM_SUSPENSION_MS = 120_000;
 /** This does not signal any group or control ACK timing. Actual public Stop must immediately follow. */
 export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, binding: { runId: string; issueId: string; agentId: string }) {
   if (ctx.scenario.id !== "recovery.post-stop-message" || suspended.has(ctx)) throw new Error("Bounded provider cleanup suspension is exclusive to the selected post-stop scenario");
@@ -98,9 +101,9 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   const first = await providerIdentity(pid), second = await providerIdentity(pid);
   if (!matchesOwnedProvider({ identity: first, expected }) || !matchesOwnedProvider({ identity: second, expected }) || JSON.stringify(first) !== JSON.stringify(second)) throw new Error("Provider cleanup suspension rejected changed or unowned process identity");
   process.kill(pid, "SIGSTOP"); retainedProvider.set(ctx, second);
-  const timer = setTimeout(() => { void releaseOwnedCleanupProvider(ctx).catch(() => undefined); }, 8_000); timer.unref(); suspended.set(ctx, { identity: second, runId: run.id, timer });
+  const timer = setTimeout(() => { void releaseOwnedCleanupProvider(ctx).catch(() => undefined); }, MAXIMUM_SUSPENSION_MS); timer.unref(); suspended.set(ctx, { identity: second, runId: run.id, timer });
   await ctx.input.evidence("runtime-cleanup-owned-provider.json", { runId: run.id, companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, providerPid: pid, providerStartedAt: started,
-    providerKind: kind, cleanupBoundary: kind === "opencode" ? viaProxy ? "owned-protocol-proxy-retirement" : "owned-opencode-serve-retirement" : "owned-app-server-retirement", sdkServerExitRequired: false, sameUid: true, directOwnedRunnerParent: true, proxyScriptSha256: proxyDigest, executableSha256: second.digest, durableSessionReceipt: true, identityReadTwice: true, signal: "SIGSTOP", groupSignalled: false, maximumSuspensionMs: 8_000 });
+    providerKind: kind, cleanupBoundary: kind === "opencode" ? viaProxy ? "owned-protocol-proxy-retirement" : "owned-opencode-serve-retirement" : "owned-app-server-retirement", sdkServerExitRequired: false, sameUid: true, directOwnedRunnerParent: true, proxyScriptSha256: proxyDigest, executableSha256: second.digest, durableSessionReceipt: true, identityReadTwice: true, signal: "SIGSTOP", groupSignalled: false, maximumSuspensionMs: MAXIMUM_SUSPENSION_MS, releasedBy: "follow-up-message-accepted" });
   return { providerPid: pid, providerStartedAt: started, runId: run.id };
 }
 export async function releaseOwnedCleanupProvider(ctx: ChatCatalogContext) {
@@ -112,6 +115,16 @@ export async function releaseOwnedCleanupProvider(ctx: ChatCatalogContext) {
   process.kill(fresh.pid, "SIGCONT"); suspended.delete(ctx);
 }
 
+/** True only while this fixture still holds the exact owned provider stopped: same PID, start
+ * identity, executable digest, and a kernel state of stopped (T). The old provider's cleanup cannot
+ * finish while this holds, so anything observed under it happened during that cleanup. */
+export async function ownedCleanupProviderIsHeld(ctx: ChatCatalogContext) {
+  const owned = suspended.get(ctx); if (!owned) return false;
+  try { process.kill(owned.identity.pid, 0); } catch { return false; }
+  const state = await promisify(execFile)("/bin/ps", ["-p", String(owned.identity.pid), "-o", "stat="], { timeout: 5_000, maxBuffer: 4_096 }).then(out => out.stdout.trim(), () => "");
+  const fresh = await providerIdentity(owned.identity.pid).catch(() => undefined);
+  return state.startsWith("T") && !!fresh && fresh.startedAt === owned.identity.startedAt && fresh.uid === owned.identity.uid && fresh.executable === owned.identity.executable && fresh.digest === owned.identity.digest;
+}
 export async function ownedCleanupProviderHasExited(ctx: ChatCatalogContext) {
   const identity = retainedProvider.get(ctx); if (!identity) throw new Error("No retained exact provider identity for cleanup verification");
   try { process.kill(identity.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; return false; }
