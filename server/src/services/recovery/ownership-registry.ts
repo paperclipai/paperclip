@@ -41,6 +41,11 @@ import {
 } from "../native-runtime/native-token-lease-settlement.js";
 import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
+import {
+  ENVIRONMENT_CLEANUP_RETRY_MS,
+  pendingCleanupDeadlineSql,
+  recoveredOrphanFirstAttemptSql,
+} from "../environment-cleanup-state.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
 import { settleEnvironmentTeardownClaim } from "../environment-teardown-claim-settlement.js";
 
@@ -70,6 +75,10 @@ export type RecordOwner =
   | { kind: "run"; runId: string }
   /** A person or agent assignment, such as an operator-owned recovery action. */
   | { kind: "operator"; ownerType: string | null }
+  /** A durable work queue that acts on the record by its saved deadline. The
+   * queue owns the record while that deadline is current; a deadline long past
+   * is a gap (the queue is not acting), never a release. */
+  | { kind: "queue"; queue: string; dueAt: Date; graceMs: number }
   /** Nothing on the record names an owner (invariant 1). */
   | { kind: "none" };
 
@@ -361,6 +370,42 @@ function teardownClaimOwner(row: LeaseRow): RecordOwner {
   };
 }
 
+/** A cleanup worker pass that misses a due item by more than this is a gap. */
+const PENDING_CLEANUP_OVERDUE_GRACE_MS = 2 * ENVIRONMENT_CLEANUP_RETRY_MS;
+
+/**
+ * Pending-cleanup obligation (not in flight). An unclaimed queue item names no
+ * process by design: the environment cleanup queue owns it, and its next
+ * action is the queue's next attempt, due at the saved retry deadline (the
+ * same deadline the cleanup worker sleeps until). While that deadline is
+ * current the queue owns the item; once it is long past, the item is reported
+ * as a gap (I7), never released. Invariant 1 then measures only real gaps.
+ */
+function pendingCleanupKind(): OwnableKind {
+  const where = and(eq(environmentLeases.status, "pending_cleanup"),
+    sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`);
+  const dueMs = sql<string>`case when ${recoveredOrphanFirstAttemptSql()} then ${pendingCleanupDeadlineSql()}
+    else greatest(extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${ENVIRONMENT_CLEANUP_RETRY_MS},
+      ${pendingCleanupDeadlineSql()}) end`;
+  return {
+    id: "environment_pending_cleanup", title: "Pending-cleanup obligation (not in flight)", obligation: "ownership",
+    storage: "database", settle: null, invariantChecks: [1, 2, 7],
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+        heartbeatRunId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
+        updatedAt: environmentLeases.updatedAt, dueMs })
+        .from(environmentLeases).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
+      const result = page(rows, limit);
+      return { truncated: result.truncated, records: result.rows.map(row => ({
+        recordId: row.id, companyId: row.companyId, runId: row.heartbeatRunId, issueId: row.issueId,
+        owner: { kind: "queue", queue: "environment_cleanup", dueAt: new Date(Number(row.dueMs)),
+          graceMs: PENDING_CLEANUP_OVERDUE_GRACE_MS },
+        updatedAt: row.updatedAt,
+      })) };
+    },
+  };
+}
+
 /** `ControllerProcess` metadata ({bootId, pid, hostHash, processStartedAt}). */
 function controllerStamp(value: unknown, scope: string): RecordOwner {
   const controller = readControllerProcess(value);
@@ -603,10 +648,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       teardownClaimOwner),
     settle: settleEnvironmentTeardownClaim,
   },
-  leaseKind("environment_pending_cleanup", "Pending-cleanup obligation (not in flight)", "ownership",
-    and(eq(environmentLeases.status, "pending_cleanup"),
-      sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'true'`),
-    () => ({ kind: "none" }), [1, 2, 7]),
+  pendingCleanupKind(),
   leaseKind("environment_stop_and_retain_intent", "Stop-and-retain intent", "workspace_preservation",
     and(eq(environmentLeases.status, "pending_cleanup"), sql`${environmentLeases.metadata} ? 'sandboxStopAndRetain'`),
     row => runOwner(row.heartbeatRunId)),

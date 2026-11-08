@@ -165,6 +165,10 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
     case "fence": return proveOwnerGone(owner.stamp, owner.fence, now);
     case "run": return runProofs.get(owner.runId) ?? { verdict: "unprovable", reason: "owner_run_unread" };
     case "operator": return { verdict: "alive", reason: "operator_owned" };
+    // A queue is not a process: it is never proven gone. A deadline long past
+    // means the queue is not acting, which is a gap to report, not a release.
+    case "queue": return now.getTime() - owner.dueAt.getTime() > owner.graceMs
+      ? { verdict: "unprovable", reason: "queue_overdue" } : { verdict: "alive", reason: "queue_scheduled" };
     case "none": return { verdict: "unprovable", reason: "no_owner_stamp" };
   }
 }
@@ -500,6 +504,9 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         runId: record.runId, issueId: record.issueId };
       if (kind.invariantChecks.includes(1) && record.owner.kind === "none") {
         violations.push({ ...base, rule: "I1_owned", reason: "no_owner_stamp" });
+      }
+      if (kind.invariantChecks.includes(7) && record.owner.kind === "queue" && proof.reason === "queue_overdue") {
+        violations.push({ ...base, rule: "I7_visible_next_action", reason: "queue_overdue" });
       }
       if (settleRecords && kind.settle) {
         const outcome = await settleOrSurface(db, kind, record, proof, now);

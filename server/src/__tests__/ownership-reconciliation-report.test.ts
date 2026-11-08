@@ -157,15 +157,16 @@ describe("report-only ownership reconciliation", () => {
       verdicts: { alive: 1, gone: 0, unprovable: 0 }, reasons: { current_process: 1 } });
     expect(kindReport(first, "environment_run_lease_active")).toMatchObject({ inProgress: 1,
       verdicts: { gone: 1 }, reasons: { owner_run_terminal: 1 } });
+    // The cleanup queue owns an unclaimed item while its retry deadline is current.
     expect(kindReport(first, "environment_pending_cleanup")).toMatchObject({ inProgress: 1,
-      verdicts: { unprovable: 1 }, reasons: { no_owner_stamp: 1 } });
+      verdicts: { alive: 1 }, reasons: { queue_scheduled: 1 } });
     // A different PID space is never proof.
     expect(currentProcessSpaceHash()).not.toBe("another-pid-space");
     expect(kindReport(first, "sandbox_creation_intent")).toMatchObject({ inProgress: 1,
       verdicts: { unprovable: 1 }, reasons: { different_process_space: 1 } });
     expect(kindReport(first, "run_accounting_debt")).toMatchObject({ inProgress: 2 });
 
-    expect(rules(first, "environment_pending_cleanup")).toEqual(["I1_owned"]);
+    expect(rules(first, "environment_pending_cleanup")).toEqual([]);
     // I2 needs the owner proven gone on two consecutive passes.
     expect(rules(first, "environment_run_lease_active")).toEqual([]);
     // Phase 3: pending accounting is exposure, not a gate. Only a refusal that
