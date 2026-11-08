@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
@@ -43,5 +43,18 @@ it.runIf(process.platform === "win32")("refuses a missing installed Windows bina
   try {
     rmSync(f.binary);
     expect(() => resolveCodexCommand(f.issuer, { PATH: dirname(process.execPath) })).toThrow("Windows executable is missing");
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+it.runIf(process.platform === "win32").each(["vendor", "binary"])("refuses a Windows %s directory junction outside its package", kind => {
+  const f = fixture();
+  try {
+    const redirect = kind === "vendor" ? join(f.platform, "vendor") : dirname(f.binary);
+    const outside = join(f.root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "codex.exe"), "foreign executable");
+    rmSync(redirect, { recursive: true });
+    symlinkSync(outside, redirect, "junction");
+    expect(() => resolveCodexCommand(f.issuer, { PATH: "" })).toThrow("escapes its package");
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });

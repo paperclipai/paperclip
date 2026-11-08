@@ -55,6 +55,7 @@ export function resolveCodexCommand(
         : process.arch === "arm64" ? "aarch64-pc-windows-msvc" : undefined;
       if (!triple) throw new Error("Installed Codex does not support this Windows architecture");
       let vendorRoot = resolve(root, "vendor");
+      let vendorPackageRoot = root;
       try {
         const platformManifestPath = realpathSync(createRequire(manifestPath).resolve(`@openai/codex-win32-${process.arch}/package.json`));
         const platformManifest = JSON.parse(readFileSync(platformManifestPath, "utf8"));
@@ -65,10 +66,15 @@ export function resolveCodexCommand(
           throw new Error("Installed Codex Windows dependency has an unexpected package identity");
         }
         vendorRoot = resolve(dirname(platformManifestPath), "vendor");
+        vendorPackageRoot = dirname(platformManifestPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
       }
       const ownedRoot = realpathSync(vendorRoot);
+      const vendorRelation = relative(vendorPackageRoot, ownedRoot);
+      if (!vendorRelation || vendorRelation === ".." || vendorRelation.startsWith(`..${sep}`) || isAbsolute(vendorRelation)) {
+        throw new Error("Installed Codex Windows vendor directory escapes its package");
+      }
       for (const layout of ["bin", "codex"]) {
         try {
           const binary = realpathSync(resolve(ownedRoot, triple, layout, "codex.exe"));
