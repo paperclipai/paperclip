@@ -5423,12 +5423,12 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime-discard.v3",
     "coverageGaps": [],
     "expectedRunCount": 5,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
-    "attemptTimeoutMs": 1020000,
+    "attemptTimeoutMs": 1800000,
     "authentication": "human-session",
     "setupPolicy": {
       "readiness": "preserve-scenario",

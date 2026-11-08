@@ -9,8 +9,10 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { Entity } from "./internal-support.js";
 export interface RuntimeBriefGate { gate: string; ready: string; scriptPath: string; command: string; taskBound: boolean;
   gateName?: string; script?: string; boundTaskId?: string; boundWorkspaceId?: string }
+/** OpenCode's bash tool rejects timeouts above 600 s, so a single wait must end before that ceiling. */
+export const MAX_RUNTIME_BRIEF_WAIT_MS = 590_000;
 export function taskBoundRuntimeGate(nonce: string, timeoutMs = 300_000): RuntimeBriefGate {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error("Task brief wait must remain bounded");
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_RUNTIME_BRIEF_WAIT_MS) throw new Error("Task brief wait must remain bounded");
   const gateName = `runtime-brief-${createHash("sha256").update(nonce).digest("hex").slice(0, 24)}.txt`;
   const script = `const fs=require("node:fs");const gate=${JSON.stringify(gateName)};fs.writeFileSync(gate+".waiting","waiting",{flag:"wx"});const end=Date.now()+${timeoutMs};const timer=setInterval(()=>{if(fs.existsSync(gate)){console.log(fs.readFileSync(gate,"utf8"));clearInterval(timer)}else if(Date.now()>end){clearInterval(timer);process.exitCode=1}},100);`;
   const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
@@ -43,14 +45,14 @@ export async function readRuntimeTaskGate(ctx: ChatCatalogContext, gate: Runtime
     throw error;
   }
 }
-export async function prepareRuntimeWorkerGate(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; taskBound?: boolean } = {}) {
+export async function prepareRuntimeWorkerGate(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; taskBound?: boolean; briefWaitMs?: number } = {}) {
   if (ctx.input.execution.environment.id !== "local") throw new Error("Owned file-gate fixture requires a real local environment");
   const root = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT; if (!root) throw new Error("Busy fixture requires its isolated attempt root");
   const worker = options.worker ?? await runtimeWorker(ctx);
   const isolated = await realpath(root);
   const previousRuns = await ctx.allRuns();
   let gate: RuntimeBriefGate;
-  if (options.taskBound) gate = taskBoundRuntimeGate(`${ctx.input.nonce}-${previousRuns.length}`);
+  if (options.taskBound) gate = taskBoundRuntimeGate(`${ctx.input.nonce}-${previousRuns.length}`, options.briefWaitMs);
   else {
     const candidate = path.resolve(resolveDefaultAgentWorkspaceDir(worker.id));
     if (!candidate.startsWith(`${isolated}${path.sep}`)) throw new Error("Busy fixture escaped its isolated company home");
@@ -66,7 +68,7 @@ export async function prepareRuntimeWorkerGate(ctx: ChatCatalogContext, options:
     await ctx.input.api.post(`${company}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
   return { worker, gate, previousRuns, company };
 }
-export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; observationDeadlineAt?: number } = {}) {
+export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; observationDeadlineAt?: number; briefWaitMs?: number } = {}) {
   const { worker, gate, previousRuns, company } = await prepareRuntimeWorkerGate(ctx, { ...options, taskBound: true });
   const task = await ctx.input.api.post<Entity>(`${company}/issues`, { title: "Website task", status: "todo", assigneeAgentId: worker.id,
     description: `The website brief is being supplied by the human. Run ${gate.command} once and wait for its real output. Do not invent a brief, replace the script, or mark work complete before it returns. Once the brief arrives, save it as a task document and finish normally.` });

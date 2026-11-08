@@ -18,8 +18,8 @@ type State = Record<string, unknown>;
 function endpoint(state: State) { return `/api/issues/${(state.task as Entity).id}/queued-comments`; }
 async function queue(ctx: ChatCatalogContext, state: State) { return ctx.input.api.get<IssueQueuedCommentQueue>(endpoint(state)); }
 function taskUrl(ctx: ChatCatalogContext, state: State) { const task = state.task as Entity; return `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`; }
-export async function humanQueuedRuntime(ctx: ChatCatalogContext, targetText = redText): Promise<State> {
-  const state: State = await busyRuntimeWorker(ctx); const source = ctx.input.page.url();
+export async function humanQueuedRuntime(ctx: ChatCatalogContext, targetText = redText, options: { briefWaitMs?: number } = {}): Promise<State> {
+  const state: State = await busyRuntimeWorker(ctx, options); const source = ctx.input.page.url();
   await ctx.input.page.goto(taskUrl(ctx, state), { waitUntil: "domcontentloaded" });
   await submitTaskReply(ctx.input.page, otherText); await submitTaskReply(ctx.input.page, targetText);
   const before = await pollUntil({ label: "Two real user-owned messages saved behind Morgan's active turn", deadlineAt: Date.now() + 30_000,
