@@ -28,17 +28,27 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&
 /** Where a task is presented: a rendered chat link, or a task link/identifier inside a linked run deliverable. */
 function presentations(o: InventoryObservation, row: Entity) {
   const found: Array<{ doc: number; at: number; text: string }> = [];
-  const href = o.links.find(link => hasLink({ ...o, links: [link] }, "issues", row));
-  if (href && o.reply.includes(href)) found.push({ doc: 0, at: o.reply.indexOf(href), text: o.reply });
-  (o.deliverables ?? []).forEach((file, index) => {
-    const tokens = [row.id, row.identifier].filter((value): value is string => !!value);
+  const tokens = [row.id, row.identifier].filter((value): value is string => !!value);
+  const tokenAt = (text: string) => {
     for (const token of tokens) {
-      const match = new RegExp(`(?<![A-Za-z0-9-])${escapeRegExp(token)}(?![A-Za-z0-9])`).exec(file.body);
-      if (match) { found.push({ doc: index + 1, at: match.index, text: file.body }); break; }
+      const match = new RegExp(`(?<![A-Za-z0-9-])${escapeRegExp(token)}(?![A-Za-z0-9])`).exec(text);
+      if (match) return match.index;
     }
+    return -1;
+  };
+  // In chat a task counts only when the conversation rendered a working link to it: an explicit
+  // Markdown link (its href is in the reply) or a bare identifier the product auto-linked.
+  const href = o.links.find(link => hasLink({ ...o, links: [link] }, "issues", row));
+  const chatAt = href ? (o.reply.includes(href) ? o.reply.indexOf(href) : tokenAt(o.reply)) : -1;
+  if (chatAt >= 0) found.push({ doc: 0, at: chatAt, text: o.reply });
+  (o.deliverables ?? []).forEach((file, index) => {
+    const at = tokenAt(file.body);
+    if (at >= 0) found.push({ doc: index + 1, at, text: file.body });
   });
   return found;
 }
+/** A stated count, not digits inside a task identifier such as RUN-491. */
+const statesCount = (text: string, count: number) => new RegExp(`(?<![\\w-])${count}(?![\\w-])`).test(text);
 function groupContext(text: string, at: number) {
   const lineStart = text.lastIndexOf("\n", at) + 1; const lineEnd = text.indexOf("\n", at);
   const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
@@ -59,7 +69,7 @@ export function gradeOpenInventory(value: unknown) {
     && originals.every(row => sameTask(row, o.tasks.find(now => now.id === row.id))),
     "More than the production default 500 settled open rows exist, mixing blocked and other work, and the read-only answer preserves every saved task.");
   c.add("full-or-explicitly-bounded", linkedDeliverables && (shown.length === open.length || shown.length > 0
-    && new RegExp(`\\b${shown.length}\\b`).test(o.reply) && new RegExp(`\\b${open.length}\\b`).test(o.reply)),
+    && statesCount(o.reply, shown.length) && statesCount(o.reply, open.length)),
     "Every open task is presented (in chat or a deliverable linked from the reply), or the reply states its actual shown count and the full open count.");
   c.add("terminal-and-other-project-excluded", excluded.every(row => !presentations(o, row).length), "Completed, cancelled and other-project work is excluded.");
   const owners = o.state.ownerLabels as Record<string, string>;
@@ -160,7 +170,7 @@ function openInventory(): ChatCatalogCase {
     if ((await ctx.allRuns()).length) throw new Error("Seeding the paused-owner inventory unexpectedly admitted work");
     return { project: p, originalTasks, workerIds: [worker.id, secondWorker.id], ownerPauseReceipts, ownerLabels: { [worker.id]: "Morgan", [secondWorker.id]: "Riley", unassigned: "Unassigned" } };
   }, gradeOpenInventory);
-  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v2",
+  return { ...base, observe: observeOpenInventory, oracleVersion: "paperclip.chat-catalog.internal.organize-open-work.v3",
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-inventory.ts"], attemptTimeoutMs: 600_000,
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["inventory-owners-paused", "lead-ready", "inventory-settled"] },
     async verifySetup(ctx, state) {

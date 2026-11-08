@@ -616,6 +616,23 @@ describe("multi-page open inventory calibration", () => {
     o.activity.push({ id: "b", action: "issue.updated", agentId: o.leadId, ...{ entityType: "issue", entityId: "task-3" } });
     expect(gradeInternal(o).passed).toBe(false);
   });
+  it("accepts bare task identifiers that the conversation rendered as task links", () => {
+    const o = valid("tasks.organize-open-work");
+    o.tasks.forEach((row, index) => { row.identifier = `ACORN-${index + 1}`; });
+    o.state.originalTasks = structuredClone(o.tasks);
+    o.links = o.tasks.map(row => `/ACORN/issues/${row.identifier}`);
+    o.reply = "### Unassigned\n" + o.tasks.map(row => row.identifier).join(", ");
+    expect(gradeInternal(o).passed).toBe(true);
+  });
+  it("does not read digits inside a task identifier as the stated shown count", () => {
+    const o = valid("tasks.organize-open-work");
+    o.tasks.forEach((row, index) => { row.identifier = `ACORN-${index + 1}`; });
+    o.state.originalTasks = structuredClone(o.tasks);
+    const kept = o.tasks.slice(0, 491);
+    o.links = kept.map(row => `/ACORN/issues/${row.identifier}`);
+    o.reply = "All 501 open tasks:\n### Unassigned\n" + kept.map(row => row.identifier).join(", ");
+    expect(gradeInternal(o).passed).toBe(false);
+  });
   it("rejects a blocked item placed after an ordinary item for the same owner", () => {
     const o = valid("tasks.organize-open-work");
     o.reply = "## Unassigned\n" + [...o.tasks.slice(2), ...o.tasks.slice(0, 2)].map(row => `- [${row.title}](/ACORN/issues/${row.id})`).join("\n");
