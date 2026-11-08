@@ -5181,7 +5181,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/skills.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.integrator.skill-import.v2",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
