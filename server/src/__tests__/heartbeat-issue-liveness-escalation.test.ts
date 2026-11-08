@@ -1207,6 +1207,30 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.selfBlockedSkipped).toBe(1);
   });
 
+  it("keeps the self-block decision when the assignee agent later changes only the unblock request", async () => {
+    const { companyId, agentId, blockedIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+    await db.update(issues).set({
+      blockedTransitionAt, blockedOwnerNotifiedAt: new Date("2026-08-01T12:00:01.000Z"),
+      unblockDescriptor: { owner: { agentId }, action: "Restore registry access" },
+    }).where(eq(issues.id, blockedIssueId));
+    await db.insert(activityLog).values({
+      companyId, actorType: "agent", actorId: agentId, agentId, action: "issue.updated",
+      entityType: "issue", entityId: blockedIssueId, details: { status: "blocked" }, createdAt: blockedTransitionAt,
+    });
+
+    await issueService(db).update(blockedIssueId, {
+      unblockDescriptor: { owner: { agentId }, action: "Rotate the rejected registry credential" },
+    });
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, blockedIssueId));
+    expect(updated).toMatchObject({ blockedTransitionAt, blockedOwnerNotifiedAt: null });
+    expect(result.healed).toBe(0);
+    expect(result.selfBlockedSkipped).toBe(1);
+  });
+
   it("heals a self-blocked issue after a later board edit in the same blocked cycle", async () => {
     const { companyId, agentId, blockedIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });

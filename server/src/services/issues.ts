@@ -11605,9 +11605,10 @@ export function issueService(db: Db) {
           nextDescriptor.owner.agentId === receiptExisting.assigneeAgentId &&
           (issueData.assigneeAgentId === undefined || issueData.assigneeAgentId === receiptExisting.assigneeAgentId) &&
           !descriptorChanged;
-        if (nextStatus === "blocked" &&
-            ((receiptExisting.status !== "blocked" && !resumesSelfOwnedBlock) || descriptorChanged)) {
+        if (nextStatus === "blocked" && receiptExisting.status !== "blocked" && !resumesSelfOwnedBlock) {
           patch.blockedTransitionAt = patch.updatedAt;
+          patch.blockedOwnerNotifiedAt = null;
+        } else if (nextStatus === "blocked" && descriptorChanged) {
           patch.blockedOwnerNotifiedAt = null;
         } else if (nextStatus !== "blocked" && nextStatus !== receiptExisting.status &&
             (receiptExisting.status === "blocked" || receiptExisting.blockedTransitionAt)) {

@@ -1045,7 +1045,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect(queued[0]).toMatchObject({
         agentId, status: "queued", reason: "issue_unblock_requested", payload: { issueId: issue!.id, action },
       });
-      if (action !== "Restore registry access") expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+      if (action !== "Restore registry access" && checkout) expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+      if (action !== "Restore registry access" && !checkout) expect(updated!.blockedTransitionAt).toEqual(transitionAt);
     }
   });
 
