@@ -147,7 +147,49 @@ export function isRunPhaseActive(phase: ExecutionPhase): boolean {
   return endpointEnabled() && owned?.phase === phase && !owned.ended;
 }
 
+/**
+ * Named preparation phases per run for the run log, so a slow step before
+ * dispatch is visible without an OTLP endpoint. Bounded: phases under 50 ms are
+ * left out, at most 200 per run, and at most 256 runs are held until drained.
+ */
+export type RecordedPreparationPhase = { name: string; startedAtMs: number; endedAtMs: number; outcome: "ok" | "failed" };
+const recordedPreparationPhases = new Map<string, RecordedPreparationPhase[]>();
+const MIN_RECORDED_PHASE_MS = 50;
+const MAX_RECORDED_PHASES_PER_RUN = 200;
+const MAX_RECORDED_RUNS = 256;
+
+function recordPreparationPhase(runId: string, phase: RecordedPreparationPhase) {
+  if (phase.endedAtMs - phase.startedAtMs < MIN_RECORDED_PHASE_MS) return;
+  let phases = recordedPreparationPhases.get(runId);
+  if (!phases) {
+    if (recordedPreparationPhases.size >= MAX_RECORDED_RUNS) {
+      const oldest = recordedPreparationPhases.keys().next().value;
+      if (oldest !== undefined) recordedPreparationPhases.delete(oldest);
+    }
+    phases = [];
+    recordedPreparationPhases.set(runId, phases);
+  }
+  if (phases.length < MAX_RECORDED_PHASES_PER_RUN) phases.push(phase);
+}
+
+/** Returns and forgets the recorded preparation phases of a run. */
+export function drainRunPreparationPhases(runId: string): RecordedPreparationPhase[] {
+  const phases = recordedPreparationPhases.get(runId) ?? [];
+  recordedPreparationPhases.delete(runId);
+  return phases;
+}
+
 function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
+  const startedAtMs = Date.now();
+  const operation = measureTraced(runId, name, work, independent, counts, activeParent);
+  operation.then(
+    () => recordPreparationPhase(runId, { name, startedAtMs, endedAtMs: Date.now(), outcome: "ok" }),
+    () => recordPreparationPhase(runId, { name, startedAtMs, endedAtMs: Date.now(), outcome: "failed" }),
+  );
+  return operation;
+}
+
+function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
