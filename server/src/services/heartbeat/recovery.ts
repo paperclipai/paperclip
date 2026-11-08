@@ -2555,7 +2555,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // no age guard. An unprovable one (another PID space, a sandbox, or an
       // ephemeral server's pre-#19871 row) is never released here; Stop is its
       // operator action.
-      const legacyProcessProof = !nativeRun && checksPersistedChildLiveness
+      // Any recorded child is proven, whatever the adapter: a run handed over
+      // by the orphan sweep (for example the `process` adapter) must never be
+      // released while its child may still work.
+      const legacyProcessProof = !nativeRun && (checksPersistedChildLiveness || run.processPid != null || run.processGroupId != null)
         ? await proveRunProcessGone(run, "legacy_run_process") : null;
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0 && !priorBootSetupExpired && !legacyControllerGone && legacyProcessProof?.verdict !== "gone") {

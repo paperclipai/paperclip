@@ -1125,6 +1125,20 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(run).toEqual({ status: "failed", errorCode: "process_lost" });
   });
 
+  // Greptile on #20004: the reaper proved children only for session adapters,
+  // so a handed-over `process` run with a live child fell through to
+  // process_lost once the age guard passed.
+  it("never releases a process-adapter run whose recorded child is still alive", async () => {
+    const { agentId, runningRunId } = await seed();
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date(Date.now() - 10 * 60_000) }).where(eq(heartbeatRuns.id, runningRunId));
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 5 * 60_000 });
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "running", errorCode: "process_detached" });
+  });
+
   it("never releases a legacy run whose child is unprovable, and names Stop as the way out", async () => {
     const { runningRunId } = await seed();
     await db.update(heartbeatRuns).set({ processPid: 2_000_000_000, processHostHash: "another-host-pid-space",
