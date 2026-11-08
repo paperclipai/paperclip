@@ -13,6 +13,7 @@ import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.
 import { instanceSettingsService } from "./instance-settings.js";
 import { currentProcessSpaceHash, processExists, sameProcessSpace } from "./controller-process-identity.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -585,7 +586,10 @@ export function workspaceOperationService(db: Db) {
             throw insertError;
           }
           createdIds.push(id);
-          if (recordInput.phase === "workspace_finalize") hasFinalization = true;
+          if (recordInput.phase === "workspace_finalize") {
+            hasFinalization = true;
+            crashPoint("workspace.finalize.after_start_before_copyback");
+          }
 
           let heartbeatTimer: NodeJS.Timeout | null = null;
           let timeoutTimer: NodeJS.Timeout | null = null;
@@ -667,6 +671,7 @@ export function workspaceOperationService(db: Db) {
 
           try {
             const result = await settle();
+            if (recordInput.phase === "workspace_finalize") crashPoint("workspace.finalize.after_copyback_before_done");
             await append("system", result.system ?? null);
             await append("stdout", result.stdout ?? null);
             await append("stderr", result.stderr ?? null);

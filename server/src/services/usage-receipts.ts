@@ -22,6 +22,7 @@ import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -694,7 +695,12 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
     const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
-    try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
+    crashPoint("accounting.usage_receipt.after_spool_before_db");
+    try {
+      await persistUsageReceipt(db, envelope);
+      crashPoint("accounting.usage_receipt.after_db_before_unlink");
+      await fs.rm(file, { force: true });
+    }
     catch (error) {
       // The fsynced receipt is durable even when the DB transaction failed.
       // Wake the owned spool recovery path; never certify that failed write as free.
