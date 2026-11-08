@@ -1,15 +1,46 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "../chat-catalog-contract.js";
 import { expect } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { inflateRawSync } from "node:zlib";
 import { pollUntil } from "../api.js";
 import { checks, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
-import type { IssueQueuedCommentQueue } from "../../../packages/shared/src/types/issue.js";
-/** Native continuations embed new comments as JSON, so a body with quotes or newlines appears JSON-escaped. */
+import type { IssueAttachment, IssueQueuedCommentQueue } from "../../../packages/shared/src/types/issue.js";
+import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-product.js";
+const MAX_DELIVERABLE_BYTES = 262_144;
+/** Text of each stored or deflated entry in a zip deliverable, read from its central directory; [] when it is not a readable zip. */
+export function zipEntryTexts(bytes: Buffer): string[] {
+  try {
+    const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])); if (eocd < 0 || eocd + 22 > bytes.length) return [];
+    const texts: string[] = []; let at = bytes.readUInt32LE(eocd + 16);
+    for (let index = 0, count = bytes.readUInt16LE(eocd + 10); index < count && at + 46 <= bytes.length && bytes.readUInt32LE(at) === 0x02014b50; index++) {
+      const method = bytes.readUInt16LE(at + 10), size = bytes.readUInt32LE(at + 20), local = bytes.readUInt32LE(at + 42);
+      const start = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28), data = bytes.subarray(start, start + size);
+      if (method === 0) texts.push(data.toString("utf8"));
+      else if (method === 8) texts.push(inflateRawSync(data, { maxOutputLength: 4 * MAX_DELIVERABLE_BYTES }).toString("utf8"));
+      at += 46 + bytes.readUInt16LE(at + 28) + bytes.readUInt16LE(at + 30) + bytes.readUInt16LE(at + 32);
+    }
+    return texts;
+  } catch { return []; }
+}
+/** Find a message object with the exact comment id and body, descending into JSON nested as string values. */
+function jsonCarriesComment(value: unknown, comment: { id: string; body: string }, depth = 0): boolean {
+  if (depth > 6) return false;
+  if (typeof value === "string") {
+    const text = value.trim(); if (!/^[[{]/.test(text)) return false;
+    try { return jsonCarriesComment(JSON.parse(text), comment, depth + 1); } catch { return false; }
+  }
+  if (Array.isArray(value)) return value.some(item => jsonCarriesComment(item, comment, depth + 1));
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return (row.id === comment.id && row.body === comment.body) || Object.values(row).some(item => jsonCarriesComment(item, comment, depth + 1));
+}
+/** Native continuations embed new comments as JSON (an envelope may nest it again as a string), so a body with quotes or newlines appears escaped. */
 export function promptCarriesComment(prompt: string | undefined, comment: { id: string; body: string }) {
   return typeof prompt === "string" && prompt.includes(comment.id)
-    && (prompt.includes(comment.body) || prompt.includes(JSON.stringify(comment.body).slice(1, -1)));
+    && (prompt.includes(comment.body) || prompt.includes(JSON.stringify(comment.body).slice(1, -1)) || jsonCarriesComment(prompt, comment));
 }
 /** A task is named by its setup-assigned identifier (which chat links) or by a link to its page. */
 export function replyNamesTask(reply: string, task: Entity) {
@@ -37,9 +68,9 @@ export function gradeQueuedFollowup(value: unknown) {
     && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded")
     && o.runs.filter(run => run.agentId === (o.state.worker as Entity).id).length === 2,
   "The same saved requirement is consumed by one ordinary successor native turn after the real prior owner settles.");
-  c.add("earlier-work-and-contact-result-retained", o.state.initialBriefRevisionRetained === true && o.state.contactResultRevision === true
+  c.add("earlier-work-and-contact-result-retained", o.state.initialBriefRevisionRetained === true && (o.state.contactResultRevision === true || o.state.contactResultDeliverable === true)
     && o.tasks.length === 1 && o.tasks[0]?.id === task.id && o.tasks[0]?.assigneeAgentId === (o.state.worker as Entity).id && o.tasks[0]?.status === "done",
-  "The original worker's saved brief revision remains inspectable and the successor saves an actual contact-section result on the same task.");
+  "The original worker's saved brief revision remains inspectable and the successor saves an actual contact-section result on the same task, as a document revision or a registered deliverable.");
   return c.result();
 }
 export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", busyRuntimeWorker, gradeQueuedFollowup, {
@@ -91,6 +122,18 @@ export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", 
     const successorIds = o.runs.filter(run => run.agentId === (state.worker as Entity).id && run.id !== state.workerRunId).map(run => run.id);
     state.contactResultRevision = o.revisions.some(revision => successorIds.includes(revision.createdByRunId ?? "") && /contact/i.test(revision.body ?? "")
       && revision.createdByAgentId === (state.worker as Entity).id && o.documents.some(doc => doc.id === revision.documentId && doc.latestRevisionId === revision.id));
+    // A website build may be delivered as a registered file (often a zip) rather than a document; its file name is the model's, so read every successor deliverable's verified bytes.
+    const taskId = (state.task as Entity).id;
+    const [products, attachments] = await Promise.all([ctx.input.api.get<IssueWorkProduct[]>(`/api/issues/${taskId}/work-products`), ctx.input.api.get<IssueAttachment[]>(`/api/issues/${taskId}/attachments`)]);
+    const delivered = attachments.filter(attachment => attachment.issueId === taskId && successorIds.includes(attachment.originatingRunId ?? "") && attachment.byteSize <= MAX_DELIVERABLE_BYTES
+      && products.some(product => product.type === "artifact" && product.createdByRunId === attachment.originatingRunId && product.metadata?.attachmentId === attachment.id));
+    const texts: string[] = [];
+    for (const attachment of delivered) {
+      const bytes = await ctx.input.api.getAttachmentContent(attachment.id);
+      if (bytes.length !== attachment.byteSize || createHash("sha256").update(bytes).digest("hex") !== attachment.sha256) continue;
+      const entries = zipEntryTexts(bytes); texts.push(...(entries.length > 0 ? entries : [bytes.toString("utf8")]));
+    }
+    state.contactResultDeliverable = texts.some(text => /contact/i.test(text));
     return o;
   },
   async verifyResult(ctx, state) {
