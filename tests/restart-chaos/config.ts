@@ -119,7 +119,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const lifecycle = values.lifecycle;
   const crashPoint = values["crash-point"]?.trim();
   if (crashPoint !== undefined) {
-    if (!/^[a-z0-9_.]+(?::[1-9][0-9]*)?$/.test(crashPoint)) throw new Error("--crash-point expects <name>[:<nth>]");
+    if (!/^[a-z0-9_.]+(?::[1-9][0-9]*)?(?:,[a-z0-9_.]+(?::[1-9][0-9]*)?)*$/.test(crashPoint)) {
+      throw new Error("--crash-point expects <name>[:<nth>][,<name>[:<nth>]...]");
+    }
     for (const key of ["faults", "triggers", "storm-minutes"] as const) {
       if (values[key] !== undefined) throw new Error(`--crash-point replaces scheduled faults; do not combine it with --${key}`);
     }

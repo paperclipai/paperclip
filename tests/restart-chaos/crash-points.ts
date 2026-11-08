@@ -5,11 +5,13 @@
  *   pnpm crash-points --points 'runner.*' --adapters codex
  *   pnpm crash-points --kinds sandbox_creation_intent --env daytona --daytona-image <image@sha256:…>
  *
- * For each selected crash point it runs one restart-chaos wave (main.ts
- * `--crash-point`): a fresh isolated control plane armed to SIGKILL itself at
- * that point once every task launched, one task per selected adapter ×
- * workload, a K1-style restart, R1–R6 grading of every task, then plan
- * invariants I1–I8 from the Phase 1 report-only reconciler (invariants.ts).
+ * It runs one restart-chaos wave (main.ts `--crash-point a,b,...`): one
+ * isolated control plane boots once, then each selected point in turn gets a
+ * batch of tasks (one per adapter × workload), is armed at runtime, SIGKILLs
+ * the server at its nth hit, and the server restarts like K1. When the batch
+ * rests, plan invariants I1–I8 from the Phase 1 report-only reconciler
+ * (invariants.ts) are checked as violations new since the point was armed.
+ * Every task is graded R1–R6 at the end.
  * Results: tests/restart-chaos/results/crash-points/<run>/SUMMARY.md.
  *
  * Exit: 0 every reached point passed, 1 a point failed, 2 a harness error,
@@ -100,57 +102,59 @@ export function parseSuiteArgs(argv: readonly string[]): SuiteOptions {
   return { points: csv(values.points), kinds: csv(values.kinds), adapters, workloads, env, nth, seed, list: values.list === true, passthrough };
 }
 
-type CrashPointFile = {
+/** One point's entry in crash-point.json (schema v2). */
+export type CrashPointEntry = {
+  point: string;
   reached: { name: string; hit: number; pid: number } | null;
+  armedAt: number;
+  restedAt: number | null;
   tasks: Array<{ taskId: string; adapter: string; workload: string; pass: boolean; signature: string | null; rules: Record<string, string> }>;
   invariants: { violations: Array<{ rule: string; kind: string; reason: string; recordId: string }>; byInvariant: Record<string, number>; errors: string[] } | null;
 };
 
-/** Classifies one wave from its exit code and crash-point.json. */
-export function classifyWave(point: CrashPointName, exitCode: number | null, file: CrashPointFile | null): Omit<PointResult, "waveDir" | "durationMs"> {
-  const base = { point, exitCode, reached: file?.reached ?? null, failedInvariants: file?.invariants?.byInvariant ?? {},
-    failedTasks: (file?.tasks ?? []).filter(task => !task.pass).map(({ pass: _pass, ...task }) => task),
-    violations: (file?.invariants?.violations ?? []).map(({ rule, kind, reason, recordId }) => ({ rule, kind, reason, recordId })) };
-  if (!file || exitCode === 2 || exitCode === null) return { ...base, outcome: "harness_error", error: file ? `wave exited ${exitCode}` : "no crash-point.json" };
-  const failed = base.failedTasks.length > 0 || base.violations.length > 0;
-  if (failed) return { ...base, outcome: "fail" };
-  // Exit 1 with clean grades: a wave-level failure written after crash-point.json
-  // (for example a Daytona sandbox left after cleanup). See the wave timeline.
-  if (exitCode !== 0) return { ...base, outcome: "fail", error: `wave exited ${exitCode} after grading (wave-level failure; see its timeline)` };
-  if (!file.reached) return { ...base, outcome: "not_reached" };
+/** Classifies one point from its entry; a point the wave never reached has none. */
+export function classifyPoint(point: CrashPointName, exitCode: number | null, entry: CrashPointEntry | null): Omit<PointResult, "waveDir"> {
+  const base = { point, exitCode, reached: entry?.reached ?? null, failedInvariants: entry?.invariants?.byInvariant ?? {},
+    failedTasks: (entry?.tasks ?? []).filter(task => !task.pass).map(({ pass: _pass, ...task }) => task),
+    violations: (entry?.invariants?.violations ?? []).map(({ rule, kind, reason, recordId }) => ({ rule, kind, reason, recordId })),
+    durationMs: entry?.restedAt ? entry.restedAt - entry.armedAt : 0 };
+  if (!entry) return { ...base, outcome: "harness_error", error: `not run (wave exited ${exitCode})` };
+  if (base.failedTasks.length > 0 || base.violations.length > 0) return { ...base, outcome: "fail" };
+  if (entry.invariants?.errors.length) return { ...base, outcome: "harness_error", error: entry.invariants.errors.join("; ") };
+  if (!entry.invariants) return { ...base, outcome: "harness_error", error: "no invariant check" };
+  if (!entry.reached) return { ...base, outcome: "not_reached" };
   return { ...base, outcome: "pass" };
 }
 
-async function runWave(point: CrashPointName, options: SuiteOptions, runDir: string): Promise<PointResult> {
-  const startedAt = Date.now();
-  const pointRoot = path.join(runDir, point);
-  await mkdir(pointRoot, { recursive: true, mode: 0o700 });
-  const tasks = options.adapters.length * options.workloads.length;
+/** One wave for every selected point: one boot, one point at a time. */
+async function runSuite(points: readonly CrashPointName[], options: SuiteOptions, runDir: string): Promise<{ results: PointResult[]; exitCode: number | null; waveDir: string | null }> {
+  const cells = options.adapters.length * options.workloads.length;
   const args = [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(import.meta.dirname, "main.ts"),
     "--env", options.env, "--adapters", options.adapters.join(","), "--workloads", options.workloads.join(","),
-    "--tasks", String(tasks), "--concurrency", String(tasks), "--seed", String(options.seed),
-    "--crash-point", `${point}:${options.nth}`, ...options.passthrough];
-  console.info(`\n[crash-points] ${point}: ${tasks} task(s), results ${pointRoot}`);
+    "--tasks", String(cells * points.length), "--concurrency", String(cells), "--seed", String(options.seed),
+    "--crash-point", points.map(point => `${point}:${options.nth}`).join(","), ...options.passthrough];
+  console.info(`\n[crash-points] ${points.length} point(s) × ${cells} task(s), results ${runDir}`);
   const exitCode = await new Promise<number | null>(resolve => {
     const child = spawn(process.execPath, args, { cwd: repositoryRoot, stdio: "inherit",
-      env: { ...process.env, RESTART_CHAOS_RESULTS_DIR: pointRoot,
-        // Every wave boots a fresh instance (all migrations); allow a loaded host.
+      env: { ...process.env, RESTART_CHAOS_RESULTS_DIR: runDir,
+        // The wave boots a fresh instance (all migrations); allow a loaded host.
         RESTART_CHAOS_HEALTH_TIMEOUT_MS: process.env.RESTART_CHAOS_HEALTH_TIMEOUT_MS ?? "600000" } });
     child.once("exit", code => resolve(code));
     child.once("error", () => resolve(null));
   });
-  const waves = (await readdir(pointRoot, { withFileTypes: true }).catch(() => []))
+  const waves = (await readdir(runDir, { withFileTypes: true }).catch(() => []))
     .filter(entry => entry.isDirectory() && entry.name.startsWith("w-")).map(entry => entry.name).sort();
-  const waveDir = waves.length ? path.join(pointRoot, waves[waves.length - 1]!) : null;
+  const waveDir = waves.length ? path.join(runDir, waves[waves.length - 1]!) : null;
   const filePath = waveDir ? path.join(waveDir, "crash-point.json") : null;
-  const file = filePath && existsSync(filePath) ? JSON.parse(await readFile(filePath, "utf8")) as CrashPointFile : null;
-  return { ...classifyWave(point, exitCode, file), waveDir, durationMs: Date.now() - startedAt };
+  const file = filePath && existsSync(filePath) ? JSON.parse(await readFile(filePath, "utf8")) as { points?: CrashPointEntry[] } : null;
+  const entries = new Map((file?.points ?? []).map(entry => [entry.point.replace(/:\d+$/, ""), entry]));
+  return { results: points.map(point => ({ ...classifyPoint(point, exitCode, entries.get(point) ?? null), waveDir })), exitCode, waveDir };
 }
 
 export function renderSummary(runId: string, options: SuiteOptions, results: readonly PointResult[]): string {
   const lines = [`# Crash-point suite ${runId}`, "",
     `env ${options.env}, adapters ${options.adapters.join(",")}, workloads ${options.workloads.join(",")}, nth ${options.nth}, seed ${options.seed}`, "",
-    "| Point | Outcome | Invariants violated | Failed tasks (rules) | Minutes |", "|---|---|---|---|---|"];
+    "| Point | Outcome | Invariants violated | Failed tasks (rules) | Minutes (armed → rest) |", "|---|---|---|---|---|"];
   for (const result of results) {
     const invariants = Object.entries(result.failedInvariants).map(([id, count]) => `${id}×${count}`).join(", ") || "—";
     const tasks = result.failedTasks.map(task => `${task.taskId} ${task.adapter}/${task.workload} `
@@ -179,16 +183,17 @@ async function main(): Promise<number> {
   const runId = `cp-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "")}`;
   const runDir = path.join(resultsRoot, "crash-points", runId);
   await mkdir(runDir, { recursive: true, mode: 0o700 });
-  const results: PointResult[] = [];
-  for (const point of selected) {
-    results.push(await runWave(point, options, runDir));
-    const summary = renderSummary(runId, options, results);
-    await writeFile(path.join(runDir, "SUMMARY.md"), summary, { mode: 0o600 });
-    await writeFile(path.join(runDir, "summary.json"), `${JSON.stringify({ runId, options, results }, null, 2)}\n`, { mode: 0o600 });
-  }
-  console.info(`\n${renderSummary(runId, options, results)}\nResults: ${runDir}`);
+  const startedAt = Date.now();
+  const { results, exitCode } = await runSuite(selected, options, runDir);
+  const summary = renderSummary(runId, options, results)
+    + `\nWave exit ${exitCode}; ${((Date.now() - startedAt) / 60_000).toFixed(1)} min in all (one boot, then one point at a time).\n`;
+  await writeFile(path.join(runDir, "SUMMARY.md"), summary, { mode: 0o600 });
+  await writeFile(path.join(runDir, "summary.json"), `${JSON.stringify({ runId, options, exitCode, results }, null, 2)}\n`, { mode: 0o600 });
+  console.info(`\n${summary}\nResults: ${runDir}`);
+  // Exit 1 with every point clean is a wave-level failure (for example a Daytona leak); see the wave timeline.
+  if (exitCode === 2 || exitCode === null) return 2;
   if (results.some(result => result.outcome === "harness_error")) return 2;
-  if (results.some(result => result.outcome === "fail")) return 1;
+  if (results.some(result => result.outcome === "fail") || exitCode === 1) return 1;
   if (results.some(result => result.outcome === "not_reached")) return 3;
   return 0;
 }

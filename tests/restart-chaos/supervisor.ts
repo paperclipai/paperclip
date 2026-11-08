@@ -56,18 +56,24 @@ export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number],
 
 export interface SupervisorPaths { temporaryRoot: string; home: string; configPath: string; serverLogPath: string }
 
-/** Crash-point suite arming: the next server spawn gets these, and only that one. */
-export interface CrashPointArming { spec: string; receiptPath: string; gatePath: string }
+/**
+ * Crash-point suite: every server spawn reads its armed point from the control
+ * file at each hit (PAPERCLIP_CRASH_POINT_CONTROL), so one booted server serves
+ * many points. The supervisor writes "<token> <name>[:<nth>]" to arm a point
+ * and empties the file to disarm, including before a crash's replacement starts.
+ */
+export interface CrashPointControl { controlPath: string; receiptPath: string }
 
 /** The receipt line the crash-point helper appended for this pid, if any. */
-export function readCrashPointReceipt(receiptPath: string, pid: number | undefined): { name: string; hit: number; pid: number } | null {
+export function readCrashPointReceipt(receiptPath: string, pid: number | undefined): { name: string; hit: number; pid: number; token?: string } | null {
   let text: string;
   try { text = readFileSync(receiptPath, "utf8"); } catch { return null; }
   for (const line of text.split("\n").reverse()) {
     try {
       const parsed = JSON.parse(line) as { point?: unknown; hit?: unknown; pid?: unknown };
       if (pid !== undefined && parsed.pid === pid && typeof parsed.point === "string" && typeof parsed.hit === "number") {
-        return { name: parsed.point, hit: parsed.hit, pid };
+        const token = (parsed as { token?: unknown }).token;
+        return { name: parsed.point, hit: parsed.hit, pid, ...(typeof token === "string" ? { token } : {}) };
       }
     } catch { /* partial or blank line */ }
   }
@@ -106,8 +112,7 @@ export class ChaosSupervisor {
   serverReady = false;
   faultInProgress = false;
   unexpectedExits = 0;
-  private crashPointArming: CrashPointArming | null = null;
-  private crashPointChild: ChildProcess | null = null;
+  private crashPointControl: CrashPointControl | null = null;
   /** Called with the receipt of a crash-point self-kill once the replacement is ready (or failed). */
   onCrashPoint: ((receipt: FaultReceipt) => void) | null = null;
 
@@ -184,23 +189,20 @@ export class ChaosSupervisor {
   private async spawnServer(): Promise<ChildProcess> {
     if (this.shuttingDown) throw new Error("Refusing to start Paperclip during harness shutdown");
     const entry = path.join(this.repositoryRoot, "tests/runner-e2e/server-entry.ts");
-    // A crash point is armed for one server only: the replacement must not crash again.
-    const arming = this.crashPointArming;
-    this.crashPointArming = null;
-    const env = arming ? { ...this.environment, PAPERCLIP_CRASH_POINT: arming.spec,
-      PAPERCLIP_CRASH_POINT_RECEIPT: arming.receiptPath, PAPERCLIP_CRASH_POINT_GATE: arming.gatePath } : this.environment;
+    const control = this.crashPointControl;
+    const env = control ? { ...this.environment, PAPERCLIP_CRASH_POINT_CONTROL: control.controlPath,
+      PAPERCLIP_CRASH_POINT_RECEIPT: control.receiptPath } : this.environment;
     const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(this.repositoryRoot, entry, ["onboard", "--yes", "--run"]),
       { cwd: this.repositoryRoot, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     this.child = child;
-    if (arming) { this.crashPointChild = child; this.timeline.add("crash_point_armed", { spec: arming.spec, pid: child.pid }); }
+
     child.stdout?.on("data", chunk => this.log.write(chunk));
     child.stderr?.on("data", chunk => this.log.write(chunk));
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
       this.log.write(`\n[restart-chaos] server pid=${child.pid} exited code=${code} signal=${signal}\n`);
-      if (arming && this.crashPointChild === child && !this.expectedStops.has(child) && !this.shuttingDown) {
-        this.crashPointChild = null;
-        const hit = signal === "SIGKILL" ? readCrashPointReceipt(arming.receiptPath, child.pid) : null;
+      if (control && signal === "SIGKILL" && !this.expectedStops.has(child) && !this.shuttingDown) {
+        const hit = readCrashPointReceipt(control.receiptPath, child.pid);
         if (hit) { this.restartAfterCrashPoint(child, hit); return; }
       }
       if (!this.expectedStops.has(child) && !this.shuttingDown) {
@@ -270,29 +272,31 @@ export class ChaosSupervisor {
     throw new Error(`Paperclip did not report ready within ${READY_TIMEOUT_MS}ms`);
   }
 
-  /**
-   * Crash-point suite: arm the next server spawn (normally the first, from
-   * `start`) with its gate closed, so seeding and probes cannot fire the
-   * point. Call `openCrashPointGate` once the tasks are launched.
-   */
-  armCrashPoint(arming: CrashPointArming): void {
-    this.crashPointArming = arming;
+  /** Crash-point suite: run every spawn (from `start` on) with runtime arming. */
+  useCrashPointControl(control: CrashPointControl): void {
+    writeFileSync(control.controlPath, "", { mode: 0o600 });
+    this.crashPointControl = control;
   }
 
-  openCrashPointGate(gatePath: string): void {
-    writeFileSync(gatePath, `${Date.now()}\n`, { mode: 0o600 });
-    this.timeline.add("crash_point_gate_opened", {});
+  /** Arms `spec` ("<name>[:<nth>]") with a fresh hit count under `token`. */
+  armCrashPoint(token: string, spec: string): void {
+    if (!this.crashPointControl) throw new Error("Crash-point control is not enabled");
+    writeFileSync(this.crashPointControl.controlPath, `${token} ${spec}\n`, { mode: 0o600 });
+    this.timeline.add("crash_point_armed", { token, spec });
   }
 
-  /** True while the armed server has not yet killed itself. */
-  get crashPointPending(): boolean { return this.crashPointChild !== null; }
+  disarmCrashPoint(): void {
+    if (this.crashPointControl) writeFileSync(this.crashPointControl.controlPath, "", { mode: 0o600 });
+  }
 
   /**
    * The armed server killed itself at its crash point. Treat it like K1: kill
    * what is left of its owned process tree (local runners), start a
    * replacement without the point armed, and wait for ready.
    */
-  private restartAfterCrashPoint(previous: ChildProcess, hit: { name: string; hit: number; pid: number }): void {
+  private restartAfterCrashPoint(previous: ChildProcess, hit: { name: string; hit: number; pid: number; token?: string }): void {
+    // The replacement reads the same control file: disarm before it starts.
+    this.disarmCrashPoint();
     this.faultInProgress = true;
     this.serverReady = false;
     this.faultCount += 1;

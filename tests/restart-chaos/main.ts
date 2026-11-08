@@ -19,7 +19,7 @@ import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
-import { checkPlanInvariants, type InvariantCheck } from "./invariants.js";
+import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
@@ -136,21 +136,32 @@ async function main(): Promise<number> {
     tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`),
     ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
   preflight(plan);
-  const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  const serverEnvironment: Record<string, string> = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  // The suite drives the API only; the Vite dev UI only slows every boot and restart.
+  if (plan.options.crashPoint && !plan.replayOf) serverEnvironment.SERVE_UI = "false";
   // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
   startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
-  // Crash-point suite: the server kills itself at the named point once every task launched.
+  // Crash-point suite: one booted server, one point at a time. Each point gets
+  // its own batch of tasks; the point is armed once the batch launched and the
+  // server kills itself at its nth hit (restarted like K1). Invariants are
+  // checked when the batch rests, as violations new since the point was armed.
   // A replay fires the recorded faults (the crash point's K1 restart included)
   // at their offsets; re-arming the point could miss its nth hit with fewer tasks.
   const crashPoint = plan.replayOf ? null : plan.options.crashPoint ?? null;
-  const crashPointGate = path.join(supervisor.paths.temporaryRoot, "crash-point.gate");
-  let crashPointGateOpen = false;
-  let crashPointReceipt: FaultReceipt | null = null;
-  let invariantCheck: InvariantCheck | null = null;
+  const crashPoints = crashPoint ? crashPoint.split(",") : [];
+  const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
+  type PointResult = { point: string; token: string; taskIds: string[]; armedAt: number; restedAt: number | null;
+    fault: FaultReceipt | null; invariants: InvariantCheck | null };
+  const pointResults: Array<PointResult & { baseline?: Set<string> }> = [];
+  let currentPoint: (PointResult & { baseline: Set<string> }) | null = null;
+  let databaseUrl: string | null = null;
+  const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   if (crashPoint) {
-    supervisor.armCrashPoint({ spec: crashPoint, receiptPath: path.join(waveDir, "crash-point-receipts.jsonl"), gatePath: crashPointGate });
+    if (plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
+    supervisor.useCrashPointControl({ controlPath: path.join(supervisor.paths.temporaryRoot, "crash-point.control"),
+      receiptPath: path.join(waveDir, "crash-point-receipts.jsonl") });
   }
   let sweeper: DaytonaWaveSweeper | null = null;
   let sandboxSweep: DaytonaSweepResult | null = null;
@@ -244,7 +255,8 @@ async function main(): Promise<number> {
     };
 
     supervisor.onCrashPoint = receipt => {
-      crashPointReceipt = receipt;
+      const owner = pointResults.find(result => result.token === receipt.crashPoint?.token);
+      if (owner) owner.fault = receipt;
       faults.push(receipt);
       if (receipt.error) { faultFailures += 1; timeline.add("fault_error", { taskId: "crash-point", error: receipt.error }); }
       for (const candidate of active.filter(observer => !observer.done)) {
@@ -254,6 +266,42 @@ async function main(): Promise<number> {
       }
       checkWorktree(receipt.faultId);
       void persistFaultLog();
+    };
+
+    const invariantsNow = async () => {
+      if (!databaseUrl) {
+        const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+        databaseUrl = config.database?.connectionString ?? null;
+        if (!databaseUrl) throw new Error("Crash-point wave: the instance config has no database connection string");
+      }
+      return checkPlanInvariants({ connectionString: databaseUrl, companyId: lab.companyId,
+        paperclipHome: supervisor.paths.home, instanceId: "default" });
+    };
+    const startCrashPoint = async (batch: TaskObserver[]) => {
+      const index = pointResults.length;
+      const spec = crashPoints[index]!;
+      // Violations already present belong to earlier points, not this one.
+      const before = await invariantsNow();
+      const baseline = new Set(before.violations.map(violationKey));
+      for (const observer of batch) {
+        launched.push(observer);
+        await observer.launch();
+        if (!observer.done) active.push(observer);
+      }
+      const result = { point: spec, token: `p${String(index + 1).padStart(2, "0")}`, taskIds: batch.map(observer => observer.plan.taskId),
+        armedAt: Date.now(), restedAt: null, fault: null, invariants: null, baseline };
+      pointResults.push(result);
+      supervisor.armCrashPoint(result.token, spec);
+      return result;
+    };
+    const finishCrashPoint = async (point: PointResult & { baseline: Set<string> }) => {
+      supervisor.disarmCrashPoint();
+      point.restedAt = Date.now();
+      const check = await invariantsNow();
+      const fresh = check.violations.filter(violation => !point.baseline.has(violationKey(violation)));
+      point.invariants = { ...check, violations: fresh, byInvariant: summarizeViolations(fresh) };
+      timeline.add("crash_point_settled", { point: point.point, token: point.token, reached: point.fault?.crashPoint ?? null,
+        seconds: Math.round((point.restedAt - point.armedAt) / 1000), byInvariant: point.invariants.byInvariant, errors: check.errors });
     };
 
     while (!interrupted && (pending.length || active.length)) {
@@ -266,17 +314,20 @@ async function main(): Promise<number> {
       // A failed fault or an unexpected exit leaves the server not ready.
       // Recover within a bound, or fail the wave instead of waiting forever.
       if (!supervisor.serverReady && !supervisor.faultInProgress) await supervisor.ensureServing();
+      if (crashPoint) {
+        // One point at a time: settle the previous batch, then launch and arm the next.
+        if (!active.length && supervisor.serverReady && !supervisor.faultInProgress) {
+          if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
+          if (pending.length) currentPoint = await startCrashPoint(pending.splice(0, batchSize));
+        }
+      }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
         && (!storm || storm.mayLaunch(Date.now()))) {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
         if (!next.done) active.push(next);
-      }
-      if (crashPoint && !crashPointGateOpen && !pending.length && supervisor.serverReady) {
-        supervisor.openCrashPointGate(crashPointGate);
-        crashPointGateOpen = true;
       }
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
         lastPoll.set(observer, now);
@@ -372,25 +423,22 @@ async function main(): Promise<number> {
     }
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     if (crashPoint) {
-      // I1–I8 against the wave's own database, after every task rested (invariants.ts).
-      const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
-      const connectionString = config.database?.connectionString;
-      if (!connectionString) throw new Error("Crash-point wave: the instance config has no database connection string");
-      invariantCheck = await checkPlanInvariants({ connectionString, companyId: lab.companyId,
-        paperclipHome: supervisor.paths.home, instanceId: "default" });
-      timeline.add("plan_invariants", { byInvariant: invariantCheck.byInvariant, errors: invariantCheck.errors });
-      if (invariantCheck.violations.length) anyFailure = true;
-      if (invariantCheck.errors.length) harnessError ??= new Error(`Invariant check incomplete: ${invariantCheck.errors.join("; ")}`);
-      const receipt = crashPointReceipt as FaultReceipt | null;
+      if (currentPoint) { await finishCrashPoint(currentPoint); currentPoint = null; }
+      const byTask = new Map(lines.map(line => [line.taskId, line]));
+      for (const point of pointResults) {
+        if (point.invariants?.violations.length) anyFailure = true;
+        if (point.invariants?.errors.length) harnessError ??= new Error(`Invariant check incomplete at ${point.point}: ${point.invariants.errors.join("; ")}`);
+      }
       await writeFile(path.join(waveDir, "crash-point.json"), `${JSON.stringify({
-        schema: "paperclip.restart-chaos.crash-point/v1", point: crashPoint, gitSha, gitDirty,
-        reached: receipt?.crashPoint ?? null, fault: receipt, gateOpened: crashPointGateOpen,
+        schema: "paperclip.restart-chaos.crash-point/v2", gitSha, gitDirty,
         // The server kills itself without warning, so no pre-fault workspace
         // snapshot exists: R2 checks workspace failures, not lost files.
         notMeasured: { R2_lost_files: "no pre-fault workspace snapshot: the crash point fires inside the server" },
-        tasks: lines.map(line => ({ taskId: line.taskId, adapter: line.adapter, workload: line.workload, pass: line.pass,
-          signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T })),
-        invariants: invariantCheck,
+        points: pointResults.map(({ baseline: _baseline, ...point }) => ({
+          ...(point as PointResult), reached: point.fault?.crashPoint ?? null,
+          tasks: point.taskIds.flatMap(id => { const line = byTask.get(id); return line ? [{ taskId: id, adapter: line.adapter,
+            workload: line.workload, pass: line.pass, signature: line.signature, rules: line.rules, ruleDetails: line.ruleDetails, T: line.T }] : []; }),
+        })),
       }, null, 2)}\n`, { mode: 0o600 });
     }
     // R6 at wave level: a leak no task's runs account for (e.g. the setup probe) still fails the wave.

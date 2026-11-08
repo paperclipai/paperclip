@@ -14,6 +14,12 @@
  *   PAPERCLIP_CRASH_POINT_GATE=<file>           optional; hits before this file exists are not counted,
  *                                               so setup work (seeding, probes) cannot fire the point
  *
+ * Runtime arming (one booted server, many points), instead of PAPERCLIP_CRASH_POINT:
+ *
+ *   PAPERCLIP_CRASH_POINT_CONTROL=<file>        each hit reads "<token> <name>[:<nth>]" from the file;
+ *                                               no file or an empty one means disarmed. Hits count per
+ *                                               token, so writing a new token re-arms with a fresh count.
+ *
  * The variable is read once, when this module is first imported. It is ignored
  * when `NODE_ENV=production`, and an unknown name throws at import so a typo
  * cannot silently arm nothing. Disarmed, `crashPoint` is a single comparison
@@ -27,7 +33,7 @@
  * This is test instrumentation, not Telemetry or Observability (AGENTS.md §5.7):
  * nothing is recorded or sent anywhere unless a test arms a point.
  */
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { CRASH_POINTS, isCrashPointName, type CrashPointName } from "./crash-point-registry.js";
 
 export { CRASH_POINTS, CRASH_POINT_NAME_PATTERN, isCrashPointName } from "./crash-point-registry.js";
@@ -36,6 +42,7 @@ export type { CrashPointDefinition, CrashPointInvariant, CrashPointName } from "
 export const CRASH_POINT_ENV = "PAPERCLIP_CRASH_POINT";
 export const CRASH_POINT_RECEIPT_ENV = "PAPERCLIP_CRASH_POINT_RECEIPT";
 export const CRASH_POINT_GATE_ENV = "PAPERCLIP_CRASH_POINT_GATE";
+export const CRASH_POINT_CONTROL_ENV = "PAPERCLIP_CRASH_POINT_CONTROL";
 /** Printed to stderr just before the kill; the suite greps server logs for it. */
 export const CRASH_POINT_LOG_PREFIX = "[crash-point]";
 
@@ -46,6 +53,8 @@ export type CrashPointReceipt = {
   hit: number;
   pid: number;
   at: string;
+  /** Runtime arming only: the control file token the hit counted under. */
+  token?: string;
 };
 
 /** Thrown by a point armed with `armCrashPointForTest`. */
@@ -79,11 +88,33 @@ type Armed = {
   receiptPath: string | null;
   /** Hits count only once this file exists; null when ungated. */
   gatePath: string | null;
+  /** Runtime arming: the control file read at each hit; null for a fixed spec. */
+  controlPath?: string | null;
+  token?: string | null;
 };
+
+/** Parses a control file line, "<token> <name>[:<nth>]"; null when empty or malformed. */
+export function parseCrashPointControl(text: string): { token: string; spec: CrashPointSpec } | null {
+  const [token, raw, ...rest] = text.trim().split(/\s+/);
+  if (!token || !raw || rest.length > 0) return null;
+  try {
+    const spec = parseCrashPointSpec(raw);
+    return spec ? { token, spec } : null;
+  } catch {
+    return null;
+  }
+}
 
 function armFromEnvironment(): Armed | null {
   const env = typeof process === "undefined" ? undefined : process.env;
   if (!env || env.NODE_ENV === "production") return null;
+  const controlPath = env[CRASH_POINT_CONTROL_ENV]?.trim();
+  if (controlPath) {
+    process.stderr.write(`${CRASH_POINT_LOG_PREFIX} runtime arming from ${controlPath} pid=${process.pid}\n`);
+    // The spec is a placeholder; each hit reads the real one from the control file.
+    return { spec: { name: "" as CrashPointName, nth: 1 }, hits: 0, mode: "kill",
+      receiptPath: env[CRASH_POINT_RECEIPT_ENV]?.trim() || null, gatePath: null, controlPath, token: null };
+  }
   const spec = parseCrashPointSpec(env[CRASH_POINT_ENV]);
   if (!spec) return null;
   process.stderr.write(`${CRASH_POINT_LOG_PREFIX} armed ${spec.name}:${spec.nth} pid=${process.pid}\n`);
@@ -103,8 +134,25 @@ let armed: Armed | null = armFromEnvironment();
  */
 export function crashPoint(name: CrashPointName): void {
   if (armed === null) return;
+  if (armed.controlPath) {
+    if (!readControl(armed)) return;
+  }
   if (armed.spec.name !== name) return;
   reach(armed);
+}
+
+/** Runtime arming: loads the control file's spec; a new token resets the count. */
+function readControl(current: Armed): boolean {
+  let text: string;
+  try { text = readFileSync(current.controlPath!, "utf8"); } catch { return false; }
+  const control = parseCrashPointControl(text);
+  if (!control) return false;
+  if (control.token !== current.token) {
+    current.token = control.token;
+    current.spec = control.spec;
+    current.hits = 0;
+  }
+  return true;
 }
 
 function reach(current: Armed): void {
@@ -117,6 +165,7 @@ function reach(current: Armed): void {
   if (current.mode === "throw") throw new CrashPointReached(current.spec.name, current.hits);
   const receipt: CrashPointReceipt = {
     point: current.spec.name, hit: current.hits, pid: process.pid, at: new Date().toISOString(),
+    ...(current.token ? { token: current.token } : {}),
   };
   if (current.receiptPath) {
     try { appendFileSync(current.receiptPath, `${JSON.stringify(receipt)}\n`); } catch { /* the log line below still records it */ }
@@ -142,5 +191,5 @@ export function armCrashPointForTest(spec: string | CrashPointSpec): () => void 
 
 /** The armed point and its hit count so far, or null. For tests and diagnostics. */
 export function armedCrashPoint(): { name: CrashPointName; nth: number; hits: number } | null {
-  return armed ? { name: armed.spec.name, nth: armed.spec.nth, hits: armed.hits } : null;
+  return armed && armed.spec.name ? { name: armed.spec.name, nth: armed.spec.nth, hits: armed.hits } : null;
 }
