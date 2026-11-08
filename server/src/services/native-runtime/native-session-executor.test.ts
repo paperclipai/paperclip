@@ -393,6 +393,7 @@ import {
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
   claimWarmNativeInstructionCopy,
+  warmSessionReleaseWait,
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
   closeIdleWarmNativeSessionsForRestart,
@@ -10424,6 +10425,137 @@ describe("native warm session supervision", () => {
       if (cleanupFailures.length) throw new AggregateError([...(bodyFailure ? [bodyFailure] : []), ...cleanupFailures], "Warm DB test body/cleanup failure");
     }
   }, 90_000);
+
+  it.each([["finishes", true], ["outlasts the wait", false]] as const)(
+    "a follow-up admitted while the previous turn's warm release is still running waits for it when the release %s",
+    async (_label, releaseFinishes) => {
+    const identity = `warm-release-wait-${releaseFinishes}`;
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const session = { close: vi.fn(async () => undefined) };
+    let armPostTurnHold = false, holdPostTurnCheck = false;
+    state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSession?.(session);
+      // Only checks after the provider turn are held: that is the release window.
+      if (armPostTurnHold) holdPostTurnCheck = true;
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    let releaseGate!: () => void, settling!: () => void;
+    const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+    const reachedSettle = new Promise<void>(resolve => { settling = resolve; });
+    const copy = (runId: string, slow = false) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same",
+      // The previous turn's post-turn check runs while it still holds the session.
+      hasChanges: async () => { if (slow && holdPostTurnCheck) { settling(); await gate; } return false; },
+      collectStopped: async () => undefined });
+    const original = { ...warmSessionReleaseWait };
+    warmSessionReleaseWait.timeoutMs = releaseFinishes ? 5_000 : 200;
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+        instructionWorkingCopy: copy(identity) });
+      const second = { ...warmExecution, binding: { ...warmExecution.binding, runId: `${identity}-second` } };
+      const secondCopy = copy(second.binding.runId, true);
+      expect(await claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+        companyId: second.binding.companyId, agentId: second.binding.agentId,
+        executionWorkspaceId: second.binding.executionWorkspaceId, workspace: second.workspace,
+        environmentId: identity, runId: second.binding.runId, preparationKey: "same", adopt: async () => secondCopy })).toBeTypeOf("function");
+      armPostTurnHold = true;
+      const previous = executePaperclipNativeSession({ db: leaseDb(second), execution: second, runnerInstanceId: identity,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` },
+        instructionWorkingCopy: secondCopy });
+      await reachedSettle;
+      // A follow-up wakes 43 ms after the turn settled, while its release runs.
+      const followUpRunId = `${identity}-follow-up`;
+      const followUp = claimWarmNativeInstructionCopy({ priorExecution: second,
+        companyId: second.binding.companyId, agentId: second.binding.agentId,
+        executionWorkspaceId: second.binding.executionWorkspaceId, workspace: second.workspace,
+        environmentId: identity, runId: followUpRunId, preparationKey: "same", adopt: async () => copy(followUpRunId) });
+      if (releaseFinishes) {
+        setTimeout(releaseGate, 100);
+        const release = await followUp;
+        expect(release).toBeTypeOf("function");
+        // The follow-up's own execution is admitted at once: the previous owner
+        // handed every scope back before the claim returned.
+        const followUpExecution = { ...second, binding: { ...second.binding, runId: followUpRunId } };
+        await expect(executePaperclipNativeSession({ db: leaseDb(followUpExecution), execution: followUpExecution,
+          runnerInstanceId: identity, runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity,
+            remoteCwd: `/tmp/${identity}` }, instructionWorkingCopy: copy(followUpRunId) })).resolves.toBeDefined();
+        await previous;
+        await release!();
+      } else {
+        await expect(followUp).rejects.toThrow("native_session_supervisor_busy");
+        releaseGate();
+      }
+      await previous;
+    } finally {
+      Object.assign(warmSessionReleaseWait, original);
+      releaseGate();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
+  it("admits the follow-up's execution only after the previous owner's final cleanup hands its scopes back", async () => {
+    const identity = "warm-release-scope-handback";
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const session = { close: vi.fn(async () => undefined) };
+    let turnDone = false;
+    state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSession?.(session);
+      turnDone = true;
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false,
+      collectStopped: async () => undefined });
+    const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: identity, remoteCwd: `/tmp/${identity}` };
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: target, instructionWorkingCopy: copy(identity) });
+      const second = { ...warmExecution, binding: { ...warmExecution.binding, runId: `${identity}-second` } };
+      const secondCopy = copy(second.binding.runId);
+      expect(await claimWarmNativeInstructionCopy({ priorExecution: warmExecution,
+        companyId: second.binding.companyId, agentId: second.binding.agentId,
+        executionWorkspaceId: second.binding.executionWorkspaceId, workspace: second.workspace,
+        environmentId: identity, runId: second.binding.runId, preparationKey: "same", adopt: async () => secondCopy })).toBeTypeOf("function");
+      // Hold the previous run's post-turn coordinator release: the warm session
+      // is already handed back, but the run still holds its execution scopes.
+      let openGate!: () => void, held!: () => void;
+      const gate = new Promise<void>(resolve => { openGate = resolve; });
+      const reachedHold = new Promise<void>(resolve => { held = resolve; });
+      turnDone = false;
+      const secondDb = leaseDb(second);
+      const transaction = secondDb.transaction.bind(secondDb);
+      (secondDb as unknown as { transaction: typeof transaction }).transaction = (async (...args: Parameters<typeof transaction>) => {
+        if (turnDone) { held(); await gate; }
+        return transaction(...args);
+      }) as typeof transaction;
+      const previous = executePaperclipNativeSession({ db: secondDb, execution: second, runnerInstanceId: identity,
+        runnerExecutionTarget: target, instructionWorkingCopy: secondCopy });
+      await reachedHold;
+      const followUpRunId = `${identity}-follow-up`;
+      const followUpCopy = copy(followUpRunId);
+      const claim = claimWarmNativeInstructionCopy({ priorExecution: second,
+        companyId: second.binding.companyId, agentId: second.binding.agentId,
+        executionWorkspaceId: second.binding.executionWorkspaceId, workspace: second.workspace,
+        environmentId: identity, runId: followUpRunId, preparationKey: "same", adopt: async () => followUpCopy });
+      setTimeout(openGate, 100);
+      const release = await claim;
+      const followUp = { ...second, binding: { ...second.binding, runId: followUpRunId } };
+      // Admitted at once: no native_session_supervisor_busy from the old owner's scopes.
+      await expect(executePaperclipNativeSession({ db: leaseDb(followUp), execution: followUp, runnerInstanceId: identity,
+        runnerExecutionTarget: target, ...(release ? { instructionWorkingCopy: followUpCopy } : {}) })).resolves.toBeDefined();
+      await previous;
+      await release?.();
+    } finally {
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
 
   it.each(["idle", "edit", "add", "remove", "projectless"])("retains the actual agent_files copy across warm turns, then retires for %s", async ending => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "warm-agent-files-")));
