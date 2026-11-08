@@ -169,6 +169,34 @@ describe("H1: budget hard stop across a restart", () => {
       body: { action: "raise_budget_and_resume", amount: 56 + BUDGET_RESUME_HEADROOM_CENTS } });
   });
 
+  it("catches, at grading, a run that started after the last poll but before the resume returned", async () => {
+    let paused = true;
+    let runs: unknown[] = [];
+    const { api } = fakeApi({
+      "/budgets/overview": () => ({ policies: [{ scopeType: "company", observedAmount: 0 }],
+        activeIncidents: [{ id: "inc1", scopeType: "company", amountObserved: 1 }] }),
+      "/api/companies/c1": () => paused ? { id: "c1", status: "paused", pauseReason: "budget" } : { id: "c1", status: "active" },
+      "/runs": () => runs,
+      "/documents/": () => null,
+      "/comments": () => [],
+    });
+    const observer = new TaskObserver(h1Plan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    observer.faultDue(start + 1_001);
+    observer.noteFault("f01", start + 1_001);
+    await observer.poll(start + 5_000);
+    await observer.poll(start + 5_000 + BUDGET_PAUSE_HOLD_MS + 1);
+    expect(observer.record.governance?.runsStartedWhilePaused).toEqual([]);
+    const resumeDone = observer.record.governance!.resume!.doneAt!;
+    paused = false;
+    // Dispatched while still paused, but only visible after the resume.
+    runs = [{ runId: "sneaky", status: "succeeded", startedAt: new Date(resumeDone - 1).toISOString(), createdAt: null, finishedAt: null }];
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.governance?.runsStartedWhilePaused).toEqual(["sneaky"]);
+  });
+
   it("records a pause that clears before the board resumes it, and does not resume", async () => {
     let paused = true;
     const { api, writes } = fakeApi({

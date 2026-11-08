@@ -243,7 +243,9 @@ export interface GovernanceRecord {
   /** H1: runs of the task that started while the company was paused (must be none). */
   runsStartedWhilePaused?: string[];
   /** H1: the board's raise-and-resume, made once the task's faults fired and the pause held. */
-  resume?: { at: number; amount: number | null; incidentId: string | null; httpStatus: number | null; error: string | null; afterFault: boolean };
+  resume?: { at: number; amount: number | null; incidentId: string | null; httpStatus: number | null; error: string | null; afterFault: boolean;
+    /** When the resume request returned: the pause window ends here. */
+    doneAt?: number };
   /** H1: the company was active again at rest. */
   companyActiveAtRest?: boolean;
   /** H1: the pause cleared on its own (before the board resumed it). */

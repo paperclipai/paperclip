@@ -124,12 +124,12 @@ export function approvalTitleMatches(approval: Json, nonce: string): boolean {
   return typeof title !== "string" || title.includes(nonce);
 }
 
-/** H1: runs that started at or after `since` (epoch ms), across every sample. */
-export function runsStartedAfter(samples: readonly TaskSample[], since: number): string[] {
+/** H1: runs that started at or after `since` and before `until` (epoch ms), across every sample. */
+export function runsStartedAfter(samples: readonly TaskSample[], since: number, until = Number.POSITIVE_INFINITY): string[] {
   const started = new Set<string>();
   for (const sample of samples) for (const run of sample.runs ?? []) {
     const at = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
-    if (Number.isFinite(at) && at >= since) started.add(run.id);
+    if (Number.isFinite(at) && at >= since && at < until) started.add(run.id);
   }
   return [...started];
 }
@@ -671,6 +671,8 @@ export class TaskObserver {
       resume.httpStatus = error instanceof ChaosApiError ? error.status : null;
       resume.error = error instanceof Error ? error.message : String(error);
     }
+    // Never before the poll that decided to resume (the pause window cannot end before it starts).
+    resume.doneAt = Math.max(Date.now(), now);
     governance.resume = resume;
     this.restCandidateSince = null;
     this.timeline.add("governance_budget_resumed", { taskId: this.plan.taskId, ...resume,
@@ -749,8 +751,23 @@ export class TaskObserver {
       ...(this.plan.workload === "B5" ? { benchProgressObserved: this.record.benchProgressSeen?.length ?? 0 } : {}),
       ...(definition.collect.childDocuments ? { children: await this.collectChildren(issueId) } : {}),
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
+      ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
     };
+  }
+
+  /**
+   * H1: the pause window ends when the resume request returned, after the last poll before it. Read
+   * the task's whole run history again, so a run that started in that gap is still caught.
+   */
+  private async finalPauseCheck(issueId: string): Promise<Record<string, never>> {
+    const governance = this.record.governance;
+    if (!governance?.budgetPausedAt) return {};
+    const runs = await this.api.get<Json[]>(`/api/issues/${issueId}/runs`).then(rows => (rows ?? []).map(toRunSample)).catch(() => []);
+    const history: TaskSample[] = [...this.record.samples, { at: Date.now(), reachable: true, serverReady: true, runs }];
+    governance.runsStartedWhilePaused = runsStartedAfter(history, governance.budgetPausedAt,
+      governance.resume?.doneAt ?? Number.POSITIVE_INFINITY);
+    return {};
   }
 
   /** G1: every approval linked to the task, whatever its status. */
