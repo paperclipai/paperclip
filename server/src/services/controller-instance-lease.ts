@@ -14,8 +14,8 @@ export const CONTROLLER_LEASE_RENEW_MS = 30_000;
 export const CONTROLLER_LEASE_SELF_FENCE_MS = 60_000;
 /** A prover fences a boot only this long after the boot's last sign of life. */
 export const CONTROLLER_LEASE_FENCE_GRACE_MS = 30_000;
-/** A stamp counts as held work for this long, so its record's write can commit before the first check. */
-const STAMP_COMMIT_GRACE_MS = 10_000;
+/** A stamp counts as held work for a full lease, so a slow ownership write commits before the lease can lapse. */
+const STAMP_COMMIT_GRACE_MS = CONTROLLER_LEASE_TTL_MS;
 /** A settle of other work re-checks holdings at most this often. */
 const SETTLE_RECHECK_MIN_MS = 5_000;
 /** A renewal that has not answered within this bound counts as failed. */
@@ -39,7 +39,6 @@ type LeaseState = {
   /** Wall-clock time of the last stamp (the stamp window follows the server's clock). */
   lastStampWallAt: number;
   lastTickAt: number;
-  ignoreNextSettle: boolean;
   /** Counts stamps, so a stamp taken while a renewal is in flight is never lost. */
   stampSeq: number;
   unsubscribe: () => void;
@@ -69,7 +68,12 @@ function holdsStampedWorkSql(bootId: string) {
         and metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
-    or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId}))`;
+    or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId})
+    or exists (select 1 from native_run_finalizations where lease_owner is not null
+      and lease_holder->>'token' = lease_owner and lease_holder->>'bootId' = ${bootId})
+    or exists (select 1 from native_run_finalizations where controller_boot_id = ${bootId}
+      and phase not in ('committed', 'terminal_failure', 'applied'))
+    or exists (select 1 from heartbeat_runs where status = 'running' and controller_boot_id::text = ${bootId}))`;
 }
 
 /**
@@ -119,7 +123,7 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
     onLost: options.onLost ?? exitOnLostLease, now: options.now ?? (() => performance.now()),
     renew: options.renew ?? renewInDatabase(db), lastStampAt: Number.NEGATIVE_INFINITY, failingSince: null,
     active: false, epoch: null, stopped: false, unsubscribe: () => {}, wake: () => {},
-    lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, ignoreNextSettle: false, stampSeq: 0,
+    lastStampWallAt: Number.NEGATIVE_INFINITY, lastTickAt: Number.NEGATIVE_INFINITY, stampSeq: 0,
   };
   state = current;
   const worker = coordinator.register(DELIVERY_QUEUES.controllerInstanceLease, {
@@ -141,8 +145,8 @@ export function registerControllerInstanceLeaseWork(db: Db, coordinator: ReturnT
   });
   // When the server's work settles, check holdings now rather than one renewal later,
   // so an idle server issues no statement after its last work.
+  // The rate limit also absorbs the settle of this worker's own run.
   const unsubscribeSettle = subscribeIdleWorkSettled(() => {
-    if (current.ignoreNextSettle) { current.ignoreNextSettle = false; return; }
     if (current.active && !current.stopped && Date.now() - current.lastTickAt >= SETTLE_RECHECK_MIN_MS) worker.wake();
   });
   current.unsubscribe = () => { unsubscribeStamp(); unsubscribeSettle(); };
@@ -168,8 +172,6 @@ export async function tickControllerInstanceLease(): Promise<void> {
   const attemptStartedAt = current.now();
   const stampSeqAtStart = current.stampSeq;
   current.lastTickAt = Date.now();
-  // The coordinator's own work token settles right after this run; that is not other work.
-  current.ignoreNextSettle = true;
   const stampedRecently = Date.now() - current.lastStampWallAt < STAMP_COMMIT_GRACE_MS;
   let result: RenewResult | "failed";
   try { result = await withTimeout(current.renew(stampedRecently), RENEW_TIMEOUT_MS); } catch (error) {
@@ -214,8 +216,8 @@ export async function stopControllerInstanceLease(db: Db | null = registeredDb):
  * treated as alive so the record stays watched; past it, the boot is fenced (only by a newer
  * epoch) and its records are gone. A boot that held work exits before this point.
  */
-export async function proveControllerInstance(db: Db, bootId: string, touchedAt: Date | null):
-  Promise<ControllerInstanceState | null> {
+export async function proveControllerInstance(db: Db, bootId: string, touchedAt: Date | null,
+  options: { readOnly?: boolean } = {}): Promise<ControllerInstanceState | null> {
   const [row] = await db.select({
     fenced: sql<boolean>`${controllerInstances.fencedAt} is not null`,
     stopped: sql<boolean>`${controllerInstances.stoppedAt} is not null`,
@@ -230,6 +232,8 @@ export async function proveControllerInstance(db: Db, bootId: string, touchedAt:
   if (row.live) return "live";
   if (!touchedAt) return "expired";
   if (!row.pastGrace) return "grace";
+  // A read-only pass reports; only a mutating pass fences (or creates this boot's row).
+  if (options.readOnly) return "expired";
   // Only a boot that holds a lease row of its own may fence, and only an older epoch.
   const epoch = await ownEpoch();
   if (epoch === null) return "expired";

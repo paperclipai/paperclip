@@ -10,7 +10,7 @@ import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 import { persistActivity } from "../activity-log.js";
-import { proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
+import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import {
   OWNABLE_KINDS,
   resolveFenceHolders,
@@ -589,6 +589,8 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const goneThisPass = new Set<string>();
   let queueDueAt: Date | null = null;
   const settleRecords = options.settle ?? options.record !== false;
+  // A pass that settles nothing must not fence another boot's lease either.
+  const passProbe = settleRecords ? options.probe : { ...(options.probe ?? currentProcessProbe()), readOnly: true };
   let retryNeeded = false;
 
   for (const kind of kinds) {
@@ -619,7 +621,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     report.inProgress = unique.length;
     const runProofs = await classifyRunOwners(db, unique);
     for (const record of unique) {
-      const proof = await classify(record.owner, runProofs, options.probe, now, record.updatedAt);
+      const proof = await classify(record.owner, runProofs, passProbe, now, record.updatedAt);
       report.verdicts[proof.verdict] += 1;
       report.reasons[proof.reason] = (report.reasons[proof.reason] ?? 0) + 1;
       const base = { kind: kind.id, recordId: record.recordId, companyId: record.companyId,

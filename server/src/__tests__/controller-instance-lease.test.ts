@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, controllerInstances, createDb, environmentLeases } from "@paperclipai/db";
+import { agents, companies, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
   controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
@@ -127,6 +127,41 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(fenced?.fencedByEpoch).toBe(own?.epoch);
   });
 
+  it("never fences on a read-only pass", async () => {
+    const replaced = await otherBoot({ expiredMsAgo: 600_000 });
+    await startHere();
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: null, status: "active",
+      leasePolicy: "ephemeral", provider: "fake", providerLeaseId: `sandbox://fake/${leaseId}`, updatedAt: new Date(minutesAgo(15)),
+      metadata: { [ENVIRONMENT_LEASE_CONTROLLER_KEY]: { bootId: replaced, pid: 7, hostHash: "old-container", processStartedAt: null } } });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.kinds.find(kind => kind.kind === "environment_login_probe_lease")).toMatchObject({ settled: 0 });
+    expect(await proveControllerInstance(db, replaced, null)).toBe("expired");
+  });
+
+  it("keeps renewing while this boot holds a native finalizer lease", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere();
+      vi.setSystemTime(Date.now() + 120_000);
+      const holder = { token: "token-1", bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null };
+      const agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Finalizer", adapterType: "codex_local", status: "idle" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Native task" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "on_demand", runtimeMode: "native", nativeIssueId: issueId, issueId });
+      await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed",
+        leaseOwner: "token-1", leaseHolder: holder, leaseExpiresAt: new Date(Date.now() + 300_000) });
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      await db.delete(nativeRunFinalizations);
+      await db.delete(heartbeatRuns);
+      await db.delete(issues);
+      await db.delete(agents);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("proves a cleanly stopped boot gone at once", async () => {
     const stopped = await otherBoot({ liveForMs: 60_000 });
     await db.update(controllerInstances).set({ stoppedAt: sql`now()` }).where(eq(controllerInstances.bootId, stopped));
@@ -216,11 +251,11 @@ suite("controller instance lease: a replaced container's records are provable", 
       await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: null, status: "pending_cleanup", leasePolicy: "ephemeral",
         metadata: { pendingCleanupController: claim, pendingCleanupInFlight: false } });
       await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
-      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 60_000);
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
       await tickControllerInstanceLease();
       expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
       await db.update(environmentLeases).set({ metadata: { pendingCleanupController: claim, pendingCleanupInFlight: true } });
-      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 60_000);
+      currentControllerProcessStamp(); vi.setSystemTime(Date.now() + 120_000);
       await tickControllerInstanceLease();
       expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
     } finally { vi.useRealTimers(); }

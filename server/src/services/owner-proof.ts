@@ -145,6 +145,8 @@ export type ProcessProbe = {
   deployment?: { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId?: string | null } | null;
   /** The lease state of another server boot (controller_instances), when this server can read it. */
   controllerInstance?: (bootId: string, touchedAt: Date | null) => Promise<ControllerInstanceState | null>;
+  /** Report without changing any lease row (a read-only reconciliation pass). */
+  readOnly?: boolean;
 };
 
 function processGroupExists(processGroupId: number): boolean {
@@ -173,9 +175,9 @@ export function currentProcessProbe(): ProcessProbe {
     processSpace: currentProcessSpaceHash(),
     pidExists: processExists,
     processGroupExists,
-    controllerInstance: async (bootId, touchedAt) => {
+    controllerInstance: async function (this: ProcessProbe, bootId, touchedAt) {
       const db = registeredControllerInstanceDb();
-      return db ? proveControllerInstance(db, bootId, touchedAt) : null;
+      return db ? proveControllerInstance(db, bootId, touchedAt, { readOnly: this?.readOnly === true }) : null;
     },
     readStartedAt: async pid => {
       const startedAt = await observedProcessStartedAt(pid);
