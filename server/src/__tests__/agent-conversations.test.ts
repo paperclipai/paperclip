@@ -1050,6 +1050,11 @@ describe("chat prompt policy", () => {
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("/<its prefix>/issues/<identifier>");
   });
+  it("tells chat agents to keep every listed task linked, and where a long list goes", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("write each task identifier in full");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a range such as RUN-12–14 links only its first task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>#document-<key>");
+  });
 
   it("gives chat replies a usable route for both task and approval sources", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
