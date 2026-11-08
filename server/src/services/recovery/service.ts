@@ -1,3 +1,4 @@
+import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
@@ -3635,7 +3636,9 @@ export function recoveryService(
       // longer schedules another agent-owned wake for them.
       result.skipped += 1;
     }
-    return result;
+    // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
+    const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
+    return { ...result, blockerStallWakes: stalls.woken };
   }
 
   async function escalateDispositionRepair(input: {
@@ -6076,6 +6079,13 @@ export function recoveryService(
       );
     }
 
+    // A stalled child or blocker: tell whoever waits on it, once per stall
+    // (blocker-stall-wakeups.ts). This sweep visits each blocked issue, which
+    // covers a board action already resolved as "blocked".
+    if (!opts?.runId && !opts?.blockerIssueId) {
+      await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup,
+        { companyId: opts?.companyId ?? null, issueId: opts?.issueId ?? null });
+    }
     return result;
   }
 

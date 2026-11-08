@@ -172,7 +172,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsIssueInteractionWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { allowsDependencyBlockedWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -1023,7 +1023,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
+        !allowsDependencyBlockedWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
         )
@@ -3905,10 +3905,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // Blocked descendants should stay idle until the final blocker resolves.
           // Human comment/mention wakes are the exception: they may run in a
           // bounded interaction mode so the assignee can answer or triage.
+          // A stalled child or blocker (issue_blocker_stalled, once per stall)
+          // is the other exception: the assignee must be able to re-delegate,
+          // escalate or block with a reason while that dependency is stuck.
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
+            allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
             );

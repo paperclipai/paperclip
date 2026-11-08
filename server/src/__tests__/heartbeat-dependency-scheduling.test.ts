@@ -815,6 +815,46 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("admits an issue_blocker_stalled wake while a blocker is unresolved", async () => {
+    // The waiter's blocker stalled on a board-owned recovery action. Parking
+    // this wake until the blocker resolves would hide the stall again.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "CodexCoder", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Stalled blocker", status: "blocked", priority: "high", responsibleUserId: "responsible-user" },
+      { id: dependentId, companyId, title: "Waiting dependent", status: "blocked", priority: "medium", assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: dependentId, type: "blocks" });
+
+    const stalledWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blocker_stalled",
+      payload: { issueId: dependentId, stalledIssueId: blockerId },
+      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:action-1`,
+      contextSnapshot: { issueId: dependentId, wakeReason: "issue_blocker_stalled",
+        blockerStall: { stalledIssueId: blockerId, relation: "blocker" } },
+    });
+    expect(stalledWake).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledWake!.id));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] });
+  });
+
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
