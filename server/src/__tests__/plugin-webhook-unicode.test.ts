@@ -9,9 +9,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-// PostgreSQL refuses a jsonb value that holds U+0000 or an unpaired UTF-16 surrogate (22P05). The webhook route
-// stores a jsonb-safe copy of the body and headers on the delivery row, and passes the request to the worker as sent.
-
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 
 describe("pluginWebhookJsonbValue", () => {
