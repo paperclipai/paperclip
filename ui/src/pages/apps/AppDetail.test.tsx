@@ -181,6 +181,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
+  useOptionalToastActions: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

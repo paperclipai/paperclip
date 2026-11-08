@@ -174,6 +174,7 @@ export async function pinFailedObservedWorkspace(db: Db, companyId: string, runI
       && lease.metadata?.workspaceRecoveryCleanup == null;
     if (!active) return false;
     await notifyNativeEnvironmentSettlement(tx, { companyId, runId, issueId: task.id });
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.ownershipInvariantReport, JSON.stringify({ companyId, runId }));
     const retained = await recordRequiredWorkspaceRestoreFailure(tx, run, { workspaceRestoreFailure: "restore_failed" }, lease);
     if (!retained || !hasRequiredWorkspaceRecovery(retained.resultJson)) throw new Error("observed_workspace_retention_missing");
     const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),

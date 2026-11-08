@@ -58,6 +58,9 @@ export interface CodexAppServerTransport {
    * controller checkpoints the turn; recovery uses this to adopt that turn.
    */
   controllerAcceptedTurnId?(): string | null;
+  /** The provider turn the latest completed turn.start accepted, live or not; the
+   * driver adopts it only when provider history shows that exact turn completed. */
+  controllerAcceptedCompletedTurnId?(): string | null;
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
@@ -82,6 +85,8 @@ export interface CodexAppServerTransport {
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    /** The attaching run's own completion contract. */
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void>;
   /** Records post-rehydration driver mapping without affecting run authority. */
   recordTraceInterpretation?(input: CodexTraceInterpretation): void;

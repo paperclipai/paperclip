@@ -139,6 +139,9 @@ vi.mock("../usage-receipts.js", async (importOriginal) => ({
   createRunUsageRecorder: usageRecorder.create,
 }));
 
+const wakeAnchor = vi.hoisted(() => ({ read: vi.fn(async (_db: unknown, _runId: string): Promise<number | null> => null) }));
+vi.mock("./native-run-wake-anchor.js", () => ({ readNativeRunWakeRequestedAtMs: wakeAnchor.read }));
+
 vi.mock("./native-usage-delivery.js", () => ({
   createNativeUsageDelivery: vi.fn(async () => ({ capture: async () => undefined })),
 }));
@@ -8360,7 +8363,10 @@ describe("native terminal-turn accounting", () => {
           const nextRun = randomUUID();
           await db.insert(tables.heartbeatRuns).values({ id: nextRun, companyId, agentId, status: "queued", runtimeMode: "native" });
           await expect(reserveRunBudget(db, companyId, nextRun, null)).resolves.toMatchObject({ reused: false });
-        } else expect(block, scenario).not.toBeNull();
+        // Only a settled unpriced charge under a blocking policy refuses work.
+        // Pending accounting is exposure, never a gate (invariant 3).
+        } else if (ready) expect(block, scenario).not.toBeNull();
+        else expect(block, scenario).toBeNull();
       }
     } finally { await db.$client.end(); await database.cleanup(); await rm(directory, { recursive: true, force: true }); }
   }, 90_000);
@@ -8826,13 +8832,50 @@ describe("native resumed preparation timing", () => {
       const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
       expect(ttft).toHaveLength(1);
       expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", startOffsetMs: 0,
-        durationMs: ingress === "native_dispatch" ? 500 : 4_500, eventKind: "agentMessage", outcome: "ok" });
+        durationMs: ingress === "native_dispatch" ? 500 : 4_500, eventKind: "agentMessage", outcome: "ok",
+        anchor: ingress === "comment.to_run_created" ? "comment"
+          : ingress === "question_response.to_run_created" ? "question_response" : "run_created" });
       expect(events.find((event) => event.payload?.span === "provider.time_to_first_agent_event")?.payload)
         .toMatchObject({ parentSpan: "agent.turn", eventKind: "agentMessage" });
       expect(JSON.stringify(ttft)).not.toContain("first text");
       expect(JSON.stringify(ttft)).not.toContain("later text");
     },
   );
+
+  it("anchors first-token timing at an earlier durable wake request without blocking later events", async () => {
+    const startedAtMs = Date.now() - 5_000;
+    const events: AdapterRuntimeEvent[] = [];
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 4_000);
+    let answerRead!: (value: number) => void;
+    wakeAnchor.read.mockImplementationOnce(() => new Promise<number>((resolve) => { answerRead = resolve; }));
+    const event = (eventType: string, payload: Record<string, unknown>) => ({
+      eventType, payload, itemId: "message", emittedAt: new Date(startedAtMs + 2_000).toISOString(),
+    }) as PrpEvent;
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      for (const candidate of [event("turn.submitted", {}), event("turn.started", {})]) await accountingEvents.committed!(candidate);
+      clock.mockReturnValue(startedAtMs + 4_500);
+      await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "first text" }));
+      // The anchor read is still pending; later events are not held behind it.
+      await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "later text" }));
+      expect(events.some((candidate) => candidate.payload?.span === "task.time_to_first_token")).toBe(false);
+      answerRead(startedAtMs - 2_000);
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(), execution, runnerInstanceId: "runner",
+        preparationSpans: [{ name: "heartbeat.queue", startedAtMs, endedAtMs: startedAtMs + 100 }],
+        onEvent: async (event) => { events.push(event); },
+      });
+    } finally { clock.mockRestore(); }
+    expect(wakeAnchor.read).toHaveBeenCalledWith(expect.anything(), execution.binding.runId);
+    const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
+    expect(ttft).toHaveLength(1);
+    expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", startOffsetMs: -2_000,
+      durationMs: 6_500, anchor: "wake_request", eventKind: "agentMessage" });
+  });
 
   it.each([
     ["item.delta", { kind: "reasoning", text: "thinking" }, "reasoning"],
@@ -12278,6 +12321,8 @@ describe("native warm session supervision", () => {
       terminalTurns: [],
       pendingRuntimeRequests: [],
       codexUsageBaseline: { baseline: {}, latest, ...(accounted ? { accounted } : {}) },
+      dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-first-run-restart-continuation",
     };
     const result = {
       result: { summary: "completed" },
@@ -12293,6 +12338,7 @@ describe("native warm session supervision", () => {
     };
     const firstClose = vi.fn(async () => undefined);
     let resumedBaseline: unknown;
+    let resumedMarker: unknown;
     state.execute
       .mockReset()
       .mockImplementationOnce(async (options) => {
@@ -12302,6 +12348,8 @@ describe("native warm session supervision", () => {
       })
       .mockImplementationOnce(async (options) => {
         resumedBaseline = options.persistedSession?.codexUsageBaseline;
+        resumedMarker = { consumed: options.persistedSession?.dispositionOnlyRecoveryConsumed,
+          turnId: options.persistedSession?.dispositionOnlyRecoveryTurnId };
         return result;
       });
 
@@ -12322,6 +12370,7 @@ describe("native warm session supervision", () => {
         latest,
         ...(accounted ? { accounted } : {}),
       });
+      expect(resumedMarker).toEqual({ consumed: false, turnId: null });
     } finally {
       if (previousPaperclipHome === undefined) {
         delete process.env.PAPERCLIP_HOME;
@@ -12892,6 +12941,98 @@ describe("native warm session supervision", () => {
         }
         await rm(stateBase, { recursive: true, force: true });
       }
+    },
+  );
+
+  it.each([
+    { name: "unchanged configuration", reuse: true },
+    { name: "unchanged provider key", firstEnvironment: { OPENAI_API_KEY: "fixture-key" }, secondEnvironment: { OPENAI_API_KEY: "fixture-key" }, reuse: true },
+    { name: "rotated provider key", firstEnvironment: { OPENAI_API_KEY: "fixture-key" }, secondEnvironment: { OPENAI_API_KEY: "fixture-rotated-key" }, reuse: false },
+    { name: "rotated Claude token", firstEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" }, secondEnvironment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-rotated-token" }, reuse: false },
+    { name: "tool refresh", refreshTools: true, reuse: false },
+    { name: "network access change", firstEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" }, secondEnvironment: { PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }, reuse: false },
+    { name: "run-scoped environment broker", firstEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" }, secondEnvironment: { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" }, reuse: false },
+    { name: "Core-hosted GitHub access", managedGitHub: true, reuse: true, adoptionReuse: false },
+  ] as Array<{ name: string; firstEnvironment?: Record<string, string>; secondEnvironment?: Record<string, string>;
+    refreshTools?: boolean; managedGitHub?: boolean; reuse: boolean; adoptionReuse?: boolean }>)(
+    "decides warm and adopted process reuse from one key: $name",
+    async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, managedGitHub = false, reuse, adoptionReuse = reuse }) => {
+      const decisions: Record<string, boolean> = {};
+      for (const path of ["warm", "adoption"] as const) {
+        githubAccess.create.mockReset().mockImplementation(async () => ({ env: {}, ready: true, duplexRequested: false,
+          activate: githubAccess.activate.mockReset().mockImplementation(() => vi.fn()), stop: githubAccess.stop.mockReset().mockResolvedValue(undefined) }));
+        const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runnerd-reuse-key-"));
+        const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+        process.env.PAPERCLIP_HOME = stateBase;
+        const scope = `${path}-${name.replaceAll(" ", "-")}`;
+        const first = {
+          ...execution,
+          binding: { ...execution.binding, runId: `run-reuse-key-first-${scope}`, executionWorkspaceId: "workspace-reuse-key" },
+          workspace: { cwd: "/tmp/runnerd-reuse-key", repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: `session-reuse-key-${scope}`, driverKind: "codex_app_server" as const,
+            protocolVersion: 1 as const, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+        } as NativeExecutionInputV1;
+        const second = { ...first, binding: { ...first.binding, runId: `run-reuse-key-second-${scope}` } } as NativeExecutionInputV1;
+        const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "environment-reuse-key",
+          remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } } as never;
+        const firstSession = { close: vi.fn(async () => undefined) };
+        const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+          normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "provider-reuse-key", driverKind: "test",
+          driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+        state.execute.mockReset()
+          .mockImplementationOnce(async (options) => {
+            await options.onCheckpoint?.({
+              identity: { runId: first.binding.runId, sessionId: first.session.normalizedSessionId,
+                companyId: first.binding.companyId, issueId: first.binding.issueId, agentId: first.binding.agentId },
+              providerSessionId: "provider-reuse-key", activeTurnId: "provider-turn-reuse-key",
+              semanticResult: { summary: "first" }, terminal: { runTerminalState: "succeeded" },
+            });
+            options.onSession?.(firstSession);
+            return result;
+          })
+          .mockImplementationOnce(async (options) => {
+            decisions[path] = options.existingSession === firstSession;
+            return result;
+          });
+        const inspected = vi.spyOn(remoteWarmRecoveryRuntime, "inspectRemoteWarmSessionRecovery").mockImplementation(async request => {
+          decisions[path] = request.canReuseProcess(first);
+          throw new Error("fixture adoption decision recorded");
+        });
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "runner-reuse-key",
+            useRunnerd: true, managedGitHub, runnerExecutionTarget: target,
+            runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...firstEnvironment } });
+          const durableRoot = (await readdir(stateBase, { withFileTypes: true }))
+            .filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)).map(entry => join(stateBase, entry.name))[0]!;
+          const durableIdentity = { runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId,
+            runnerInstanceId: "runner-reuse-key", environmentLeaseId: first.binding.executionWorkspaceId };
+          await mkdir(join(durableRoot, "control-plane"), { recursive: true });
+          await writeFile(join(durableRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
+          await mkdir(join(durableRoot, "runner"), { recursive: true });
+          await writeFile(join(durableRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(durableIdentity, "ready")));
+          if (path === "adoption") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+          const continuation = executePaperclipNativeSession({
+            db: { ...leaseDb(second), select: () => ({ from: () => ({ where: () => ({ limit: () =>
+              Promise.resolve([{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: first } }]) }) }) }) } as unknown as Db,
+            execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
+            runnerExecutionTarget: target, runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
+          if (path === "adoption") await expect(continuation).rejects.toThrow("fixture adoption decision recorded");
+          else await continuation;
+          expect(decisions[path]).toBe(path === "adoption" ? adoptionReuse : reuse);
+          if (path === "warm") expect(firstSession.close).toHaveBeenCalledTimes(reuse ? 0 : 1);
+        } finally {
+          inspected.mockRestore();
+          await closeIdleWarmNativeSessionsForRestart();
+          if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+          else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+          if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+          else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+          await rm(stateBase, { recursive: true, force: true });
+        }
+      }
+      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse });
     },
   );
 
@@ -16046,7 +16187,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -17533,6 +17674,8 @@ describe("runnerd provider runtime wiring", () => {
     "ambiguous turn start",
     "state symlink",
     "newer provider checkpoint",
+    "warm reconnect grace expired",
+    "other recoverable failure",
   ])(
     "automatically recovers only a proven settled local session: %s",
     async (scenario) => {
@@ -17688,6 +17831,13 @@ describe("runnerd provider runtime wiring", () => {
             join(root, "runner", "runner-state.json"),
             JSON.stringify({
               ...durableRunnerState(identity, "ready"),
+              // An idle warm runner whose controller died exits after its
+              // reconnect grace with this settled, preserved state.
+              ...(scenario === "warm reconnect grace expired"
+                ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_grace_exceeded" }
+                : scenario === "other recoverable failure"
+                  ? { lifecycle: "recoverable_failure", recoverableFailure: "transport_reconnect_deadline_exceeded" }
+                  : {}),
               outbox:
                 scenario === "unacknowledged events" ? [{ sourceSeq: 10 }] : [],
               pendingTerminalDelivery: null,
@@ -17799,6 +17949,7 @@ describe("runnerd provider runtime wiring", () => {
           "empty retry shell",
           "unsuspended current",
           "active goal",
+          "warm reconnect grace expired",
         ].includes(scenario);
         if (shouldRecover) {
           await createRunnerdBackend({
@@ -17851,7 +18002,7 @@ describe("runnerd provider runtime wiring", () => {
                 "utf8",
               ),
             ).lifecycle,
-          ).toBe("ready");
+          ).toBe(scenario === "other recoverable failure" ? "recoverable_failure" : "ready");
           expect(onLog).not.toHaveBeenCalled();
           expect(state.createBackend).not.toHaveBeenCalled();
         }

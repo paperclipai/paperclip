@@ -474,7 +474,7 @@ describe("automatic retained workspace recovery", () => {
     expect(exhausted.nextAction).toMatch(/stopped after 6 attempts/);
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker?.workspaceRecovery).toMatchObject({ status: "blocked", canRetry: true });
-    expect(blocker?.nextAction).toMatch(/Retry recovery/);
+    expect(blocker?.nextAction).toMatch(/Retry to try again/);
     expect(blocker?.nextAction).not.toMatch(/send a (new )?message/i);
     // Nothing physical or provider-facing ran after the budget was spent.
     expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
@@ -501,7 +501,7 @@ describe("automatic retained workspace recovery", () => {
     const handed = await action(f.actionId);
     expect(handed).toMatchObject({ status: "active", ownerType: "board" });
     expect(readSystemRecovery(handed.evidence)).toEqual(spent);
-    expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.nextAction).toMatch(/Retry recovery/);
+    expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.nextAction).toMatch(/Retry to try again/);
     expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
     // Repeat sweeps are idempotent and still grant no attempt.
     await recoverRetainedWorkspace(f.input);

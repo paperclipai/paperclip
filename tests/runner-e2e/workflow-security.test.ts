@@ -617,6 +617,9 @@ describe("public repository paid workflow security", () => {
       // private-trust-workflow-security.test.ts checks how these two hold the keys.
       "chat-catalog-testops.yml",
       "chat-catalog-testops-case.yml",
+      // On-demand crash-point suite (durable ownership plan, Phase 5): manual
+      // dispatch, default branch, allowlisted actors, runner-e2e-paid.
+      "crash-points.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),

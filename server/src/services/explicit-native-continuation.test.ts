@@ -1772,7 +1772,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
     expect(await hasNativeLocalProcessStop(db, randomUUID(), source.id)).toBe(false);
     expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
-    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
+    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString(), targetKind: "local" });
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
     expect(await admit(f, true)).toBeNull();
     expect(await db.transaction(tx => recordNativeLocalProcessStop(tx as unknown as typeof db, source))).toBe(true);

@@ -1,3 +1,4 @@
+import { RetainedSandboxAbsentError } from "../services/retained-sandbox-absent-error.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import * as remoteWorkspaces from "../services/remote-workspaces.js";
@@ -1015,6 +1016,13 @@ describe("live remote runner lease reattachment", () => {
       expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
     },
   );
+  it("names a provider-confirmed missing sandbox as a lease mismatch without acquiring a replacement", async () => {
+    const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw new RetainedSandboxAbsentError(); }) });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=environment_resume field=lease_expired"));
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
   it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
     const error = new Error("retained sandbox startup timed out");
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });

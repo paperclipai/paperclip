@@ -100,6 +100,25 @@ accepted durable prefix. The ACPX sidecar separately caps queued stdout at
 failure rather than allowing unbounded process memory while the Runner cannot
 read.
 
+## Event generations and stale events
+
+Every runner event payload carries `generation`: the runner process generation
+that emitted it. A runner process that recovers existing durable state starts
+the next generation. The counter is saved with the next state write, so
+recovery adds no write before the first turn. Events that are still in the
+outbox keep the generation that emitted them. State saved before this field
+existed loads as generation 0.
+
+Consumers apply one rule to provider events. An event that names a turn which
+is not the active turn, and which an earlier generation accepted or this
+generation already settled, is history. The consumer records it and it never
+fails the current turn. This covers late usage, items, workspace changes, and
+terminals for a turn lost on restore. An event for a turn the consumer never
+saw is not history and still fails closed. A terminal that contradicts a turn
+the same generation settled is still a conflict. The ACPX provider state and
+the Codex driver (which Runnerd also uses for OpenCode) apply this rule, and a
+pending `turn.start` ignores a held failure that names another turn.
+
 ## Recovering Codex between turns
 
 Suppose run A finishes a turn, its Runner exits, and run B wants to continue

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApiError, type ChaosApi } from "./api.js";
 import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
@@ -159,15 +160,50 @@ export class TaskObserver {
 
   get definition() { return workloadDefinitions[this.plan.workload]; }
 
-  async launch(): Promise<void> {
+  /**
+   * Crash-point suite: create the issue without an assignee, so no wake is
+   * queued yet. `release` assigns it once the batch's point is armed.
+   */
+  async stage(): Promise<void> { await this.launch({ assign: false }); }
+
+  /**
+   * Assigns a staged issue, which queues its wake. An earlier task of the same
+   * batch can crash the server meanwhile, so retry until the replacement
+   * answers; setting the same assignee again is idempotent.
+   */
+  async release(deadlineMs = 10 * 60_000): Promise<void> {
+    if (this.done || !this.record.issueId) return;
+    const until = Date.now() + deadlineMs;
+    for (;;) {
+      try {
+        await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.lab.agents[this.plan.adapter].id });
+        break;
+      } catch (error) {
+        const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
+        if (!transient || Date.now() > until) {
+          this.record.launchError = error instanceof Error ? error.message : String(error);
+          this.done = true;
+          this.timeline.add("task_launch_failed", { taskId: this.plan.taskId, error: this.record.launchError });
+          return;
+        }
+        await delay(1_000);
+      }
+    }
+    this.record.createdAt = Date.now();
+    this.record.deadlineAt = this.record.createdAt + this.definition.budgetMs;
+    this.timeline.add("task_released", { taskId: this.plan.taskId, issueId: this.record.issueId });
+  }
+
+  async launch(options: { assign?: boolean } = {}): Promise<void> {
     const definition = this.definition;
+    const assign = options.assign !== false;
     try {
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce),
         status: "todo",
         priority: "medium",
-        assigneeAgentId: this.lab.agents[this.plan.adapter].id,
+        ...(assign ? { assigneeAgentId: this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);

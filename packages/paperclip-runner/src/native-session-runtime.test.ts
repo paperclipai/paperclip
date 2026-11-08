@@ -6249,9 +6249,11 @@ describe("executeNativeSession recovery", () => {
         onSession,
       }),
     ).rejects.toBe(attachmentFailure);
+    // The attaching run's own contract travels with the attachment.
+    const completionContract = { revision: "1", criterionIds: ["objective"] };
     expect(attachRun).toHaveBeenCalledWith(provider === "copilot"
-      ? { identity, currentRunGrant: { runtimeContext: null, instructions: expect.any(String) } }
-      : { identity });
+      ? { identity, completionContract, currentRunGrant: { runtimeContext: null, instructions: expect.any(String) } }
+      : { identity, completionContract });
     expect(retainedIdentity).toEqual(identity);
     expect(onSession).toHaveBeenCalledOnce();
     expect(onSession).toHaveBeenCalledWith(null);
@@ -6334,7 +6336,7 @@ describe("executeNativeSession recovery", () => {
         onSession,
       }),
     ).rejects.toBe(admissionFailure);
-    expect(attachRun).toHaveBeenCalledWith({ identity });
+    expect(attachRun).toHaveBeenCalledWith({ identity, completionContract: { revision: "1", criterionIds: ["objective"] } });
     expect(openRun).toHaveBeenCalledOnce();
     expect(onSession).toHaveBeenCalledOnce();
     expect(onSession).toHaveBeenCalledWith(null);

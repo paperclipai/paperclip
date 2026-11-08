@@ -270,6 +270,7 @@ function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): N
     persistedPolicy: input.session.persistedNativeExecutionInput?.session.lifecyclePolicy,
     managedAiSelected: Boolean(input.config.managedAiRuntime), managedAiAttribution: input.config.managedAiRuntime?.attribution,
     taskOwned: Boolean(input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" && input.workspace.executionTarget.runnerTask),
+    localTarget: input.workspace.executionTarget?.kind !== "remote",
   });
 }
 
@@ -732,14 +733,14 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         ? await museRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig).museBindingId ?? "")) : undefined;
       const dotBinding = ["openai_dot_mcp", "grok_bot_mcp"].includes(nativeRuntimeResolution.profile.backend)
         ? await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig)[nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId"] ?? "")) : undefined;
-      const nativeRuntimeContext = await buildNativeRuntimeContext({
+      const nativeRuntimeContext = await measureRunPhase("runtime_selection.runtime_context", () => buildNativeRuntimeContext({
         db,
         agent,
         runId: run.id,
         runtimeConfig,
         runtimeSkillEntries,
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
-      });
+      }));
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
       const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
         || nativeRuntimeResolution.profile.backend === "codex_app_server"
@@ -760,12 +761,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,
       });
       const codexCliVersion = agent.adapterType === "paperclip_runner" && requestedNativeProvider.provider === "codex"
-        ? await readRemoteCodexModelCliVersion({
+        ? await measureRunPhase("runtime_selection.codex_cli_version", () => readRemoteCodexModelCliVersion({
             model: requestedNativeProvider.model,
             target: executionTarget,
             remoteCodexPath: runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH,
             remoteCodexNpmSpec: runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC,
-          }) : null;
+          })) : null;
       const nativeProvider = codexCliVersion
         ? resolvePaperclipRunnerNativeProviderInput({
             companyId: agent.companyId,

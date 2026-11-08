@@ -92,10 +92,18 @@ export const heartbeatRuns = pgTable(
     // Legacy controller lease. A PID alone is not an identity across containers.
     controllerBootId: uuid("controller_boot_id"),
     controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
+    // Server process that claimed the legacy controller lease ({bootId, pid,
+    // hostHash, processStartedAt}). It names the controller only while its
+    // bootId equals controller_boot_id; revocation swaps the boot id, so a
+    // revoked lease never keeps it. Null on rows saved before it existed.
+    controllerProcess: jsonb("controller_process").$type<Record<string, unknown>>(),
     executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // PID space of processPid (controller-process-identity hostHash), or
+    // "remote" for a sandbox PID. Null on rows saved before it existed.
+    processHostHash: text("process_host_hash"),
     legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
@@ -104,6 +112,9 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    // Legacy: no writer since process loss moved onto the durable failure
+    // retry budget (contextSnapshot.executionRetryAccounting). Kept so rows and
+    // readers from earlier releases stay valid; never gate retries on it.
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
@@ -145,6 +156,11 @@ export const heartbeatRuns = pgTable(
     treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
       .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
       .where(sql`${table.status} = 'cancelled' and ${table.resultJson} ? 'treeHoldSuppression'`),
+    // The `legacy_controller_lease` ownership kind (reconciler listing and
+    // settle watch): outstanding legacy controller leases of running runs.
+    legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
+      .on(table.controllerLeaseExpiresAt)
+      .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

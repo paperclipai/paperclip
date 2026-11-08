@@ -4484,13 +4484,36 @@ fn restart_continuation_ignores_late_usage_for_the_turn_lost_on_restore() {
     // lost to the restart after it accepted the continuation turn. The runner
     // must treat that usage as history of a settled turn, not as a foreign
     // event that fails the continuation with turn_binding_mismatch.
-    let directory = temporary_directory("restart-continuation-stale-usage");
+    restart_continuation_ignores_late_events_for_the_lost_turn(
+        "restart-continuation-stale-usage",
+        "--stale-usage-after-turn-start",
+        0,
+    );
+}
+
+#[test]
+fn restart_continuation_ignores_late_items_and_terminal_for_the_turn_lost_on_restore() {
+    // Section G: items and a terminal of the turn an earlier generation lost
+    // are history too. They must not fail the continuation.
+    restart_continuation_ignores_late_events_for_the_lost_turn(
+        "restart-continuation-stale-items",
+        "--stale-items-after-turn-start",
+        4,
+    );
+}
+
+fn restart_continuation_ignores_late_events_for_the_lost_turn(
+    label: &str,
+    stale_flag: &str,
+    expected_history_notices: usize,
+) {
+    let directory = temporary_directory(label);
     let config = provider_config(
         &directory,
         &[
             "--durable-turn-ids",
             "--linger-after-turn-start",
-            "--stale-usage-after-turn-start",
+            stale_flag,
         ],
     );
     let mut first = CodexCommandExecutor::new(&directory);
@@ -4565,6 +4588,19 @@ fn restart_continuation_ignores_late_usage_for_the_turn_lost_on_restore() {
         .any(|event| event.event_type == "run.terminal" || event.event_type == "turn.failed"));
     assert!(events.iter().any(|event| event.event_type == "turn.started"
         && event.payload["providerTurnId"] == "provider-turn-2"));
+    // Positive control: the lost turn's late events reached the runner and
+    // were recorded as history notices.
+    let history_notices = events
+        .iter()
+        .filter(|event| {
+            event.event_type == "provider.notice.recorded"
+                && event.payload["summary"] == "ignored a notification for a settled Codex turn"
+        })
+        .count();
+    assert!(
+        history_notices >= expected_history_notices,
+        "expected {expected_history_notices} history notices, got {history_notices}"
+    );
     assert_eq!(call_count(&directory, "turn/start"), 2);
     restored.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
@@ -5783,7 +5819,7 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
     assert_eq!(stopped.result["providerExitConfirmed"], true);
     for id in [provider_pid.to_string(), format!("-{provider_pid}")] {
         assert!(
-            !std::process::Command::new("/bin/kill")
+            !std::process::Command::new("kill")
                 .args(["-0", "--", &id])
                 .output()
                 .unwrap()
@@ -5915,7 +5951,7 @@ fn assert_durable_stop_prepares_resumed_provider(ended_before_resume: bool) {
         .expect("durably record renewed provider ownership");
     let resumed_pid = resumed_event["payload"]["processId"].as_u64().unwrap();
     let process_exists = |group: bool| {
-        std::process::Command::new("/bin/kill")
+        std::process::Command::new("kill")
             .arg("-0")
             .arg("--")
             .arg(if group {
@@ -7340,7 +7376,7 @@ fn structured_question_round_trips_through_the_normalized_backend() {
     #[cfg(unix)]
     impl Drop for PausedTestProvider {
         fn drop(&mut self) {
-            let _ = std::process::Command::new("/bin/kill")
+            let _ = std::process::Command::new("kill")
                 .args(["-CONT", "--", &self.0.to_string()])
                 .output();
         }
@@ -7350,7 +7386,7 @@ fn structured_question_round_trips_through_the_normalized_backend() {
     #[cfg(unix)]
     let paused_provider = {
         let pid = _opened.result["processId"].as_u64().unwrap();
-        assert!(std::process::Command::new("/bin/kill")
+        assert!(std::process::Command::new("kill")
             .args(["-STOP", "--", &pid.to_string()])
             .output()
             .unwrap()

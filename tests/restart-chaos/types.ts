@@ -34,6 +34,10 @@ export interface WaveOptions {
   daytonaImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
+  /** `--daytona-reuse-lease`: the chaos environment keeps its sandboxes between turns (a per-turn run stops and keeps its sandbox). */
+  daytonaReuseLease?: boolean;
+  /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
+  k4HoldMaxMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
    * company budget amount but disables its hard stop, so a stuck
@@ -46,6 +50,20 @@ export interface WaveOptions {
    * this many minutes, keeping `concurrency` tasks in flight, then drain.
    */
   stormMinutes?: number;
+  /**
+   * Runner lifecycle forced onto every seeded agent (`--lifecycle`). Absent
+   * keeps the catalog profile's own setting.
+   */
+  lifecycle?: "per_turn" | "warm" | "default";
+  /**
+   * Crash-point suite (`--crash-point <name>[:<nth>][,...]`): no external
+   * fault is scheduled. One server serves every listed point in turn: each
+   * point's batch of tasks launches, then the point is armed and the server
+   * SIGKILLs itself at its nth hit and is restarted like K1.
+   */
+  crashPoint?: string;
+  /** Crash-point suite: hold the control plane down this long after each self-kill (K4-style). */
+  crashPointHoldMs?: number;
 }
 
 export interface StormFault {
@@ -175,6 +193,8 @@ export interface FaultReceipt {
   triggerDelayMs?: number;
   loadAvg1m?: number;
   crashLoop?: Array<{ pid: number | null; target: string; phase: string; at: number }>;
+  /** Crash-point suite: the server killed itself at this named point (no external signal). */
+  crashPoint?: { name: string; hit: number; pid: number; token?: string };
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;

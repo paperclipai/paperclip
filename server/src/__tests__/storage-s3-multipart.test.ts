@@ -4,7 +4,10 @@ import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import { putS3Multipart } from "../storage/s3-multipart.js";
+import { FILE_PART_CONCURRENCY, putS3Multipart, putS3MultipartFile } from "../storage/s3-multipart.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { STORAGE_FAILURE_CLEANUP_MS } from "../storage/failure-cleanup.js";
@@ -416,6 +419,160 @@ describe("streamed S3 multipart uploads", () => {
       await vi.advanceTimersByTimeAsync(STORAGE_FAILURE_CLEANUP_MS + 1);
       await saving;
       send.mockRestore(); client.destroy(); vi.useRealTimers();
+    }
+  });
+});
+
+describe("file-backed S3 multipart uploads", () => {
+  const partBytes = 8 * 1024 * 1024;
+  async function sourceFile(parts: number, tail = 0) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pc-s3-file-part-"));
+    const file = path.join(dir, "source.bin");
+    const handle = await fs.open(file, "wx", 0o600);
+    try {
+      for (let index = 0; index < parts; index++) await handle.write(Buffer.alloc(partBytes, index + 1));
+      if (tail) await handle.write(Buffer.alloc(tail, 0xee));
+    } finally { await handle.close(); }
+    return { dir, file, size: parts * partBytes + tail };
+  }
+  const md5 = (bytes: Buffer) => createHash("md5").update(bytes).digest("base64");
+  async function drain(body: unknown) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as Readable) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+
+  it("uploads ranges in parallel and sends each part's Content-MD5", async () => {
+    const source = await sourceFile(10, 4096);
+    const client = new S3Client({ region: "us-east-1" });
+    let active = 0, peak = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const seen = new Map<number, { length: number; md5: string; declared: string | undefined }>();
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        active++; peak = Math.max(peak, active);
+        if (active === FILE_PART_CONCURRENCY) release();
+        await gate;
+        const bytes = await drain(command.input.Body);
+        expect(bytes.length).toBe(command.input.ContentLength);
+        seen.set(command.input.PartNumber!, { length: bytes.length, md5: md5(bytes), declared: command.input.ContentMD5 });
+        active--;
+        return { ETag: `part-${command.input.PartNumber}` };
+      }
+      expect(command).toBeInstanceOf(CompleteMultipartUploadCommand);
+      expect(command.input.MultipartUpload.Parts.map((part: { PartNumber: number }) => part.PartNumber)).toEqual([...Array(11).keys()].map(n => n + 1));
+      return {};
+    });
+    const body = Readable.from([Buffer.from("unused stream body")]);
+    try {
+      const receipt = await putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: source.size, body, sourceFile: source.file });
+      expect(receipt).toEqual({ integrity: "server_verified_md5" });
+      expect(peak).toBe(FILE_PART_CONCURRENCY);
+      expect(body.destroyed).toBe(true);
+      expect(seen.size).toBe(11);
+      for (const [number, part] of seen) {
+        expect(part.declared).toBe(part.md5);
+        expect(part.length).toBe(number === 11 ? 4096 : partBytes);
+      }
+      expect(seen.get(3)!.md5).toBe(md5(Buffer.alloc(partBytes, 3)));
+    } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+  });
+
+  it("resends a failed part from the file instead of failing the upload", async () => {
+    const source = await sourceFile(3);
+    const client = new S3Client({ region: "us-east-1" });
+    const attempts = new Map<number, number>();
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        const number = command.input.PartNumber!;
+        attempts.set(number, (attempts.get(number) ?? 0) + 1);
+        const bytes = await drain(command.input.Body);
+        if (number === 2 && attempts.get(number) === 1) throw new Error("An error was encountered in a non-retryable streaming request.");
+        expect(md5(bytes)).toBe(command.input.ContentMD5);
+        return { ETag: `part-${number}` };
+      }
+      if (command instanceof AbortMultipartUploadCommand) throw new Error("must not abort a recovered upload");
+      return {};
+    });
+    try {
+      await expect(putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: source.size, body: Buffer.alloc(0), sourceFile: source.file })).resolves.toEqual({ integrity: "server_verified_md5" });
+      expect(attempts.get(2)).toBe(2);
+      expect(send.mock.calls.some(([command]) => command instanceof CompleteMultipartUploadCommand)).toBe(true);
+    } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+  });
+
+  it("aborts the upload only after every in-flight part settles when a part keeps failing", async () => {
+    const source = await sourceFile(4);
+    const client = new S3Client({ region: "us-east-1" });
+    let inFlight = 0, abortedWhileInFlight = false;
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any, options?: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        inFlight++;
+        try {
+          if (command.input.PartNumber === 1) throw new Error("storage refused part");
+          await new Promise<void>((_resolve, reject) => options?.abortSignal?.addEventListener("abort", () => reject(options.abortSignal!.reason), { once: true }));
+          return { ETag: "never" };
+        } finally { inFlight--; }
+      }
+      if (command instanceof AbortMultipartUploadCommand) { abortedWhileInFlight = inFlight > 0; return {}; }
+      throw new Error("must not complete a failed upload");
+    });
+    try {
+      await expect(putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: source.size, body: Buffer.alloc(0), sourceFile: source.file })).rejects.toThrow("storage refused part");
+      const partOneAttempts = send.mock.calls.filter(([command]) => command instanceof UploadPartCommand && command.input.PartNumber === 1).length;
+      expect(partOneAttempts).toBe(3);
+      expect(send.mock.calls.filter(([command]) => command instanceof AbortMultipartUploadCommand)).toHaveLength(1);
+      expect(abortedWhileInFlight).toBe(false);
+    } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+  });
+
+  it("refuses a source file whose size differs from the declared length before starting an upload", async () => {
+    const source = await sourceFile(3);
+    const client = new S3Client({ region: "us-east-1" });
+    const send = vi.spyOn(client, "send");
+    try {
+      await expect(putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+        contentLength: source.size + 1, body: Buffer.alloc(0), sourceFile: source.file })).rejects.toThrow("does not match its declared size");
+      expect(send).not.toHaveBeenCalled();
+    } finally { send.mockRestore(); client.destroy(); await fs.rm(source.dir, { recursive: true, force: true }); }
+  });
+
+  it("sends a small file source as one PUT with Content-MD5 through the real S3 HTTP client", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pc-s3-small-file-"));
+    const file = path.join(dir, "small.bin"), bytes = Buffer.from("verified snapshot bytes\n".repeat(1000));
+    await fs.writeFile(file, bytes, { mode: 0o600 });
+    const requests: Array<{ method: string; md5: string | undefined; body: Buffer }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", chunk => chunks.push(chunk));
+      request.on("end", () => {
+        requests.push({ method: request.method!, md5: request.headers["content-md5"] as string | undefined, body: Buffer.concat(chunks) });
+        response.writeHead(200, { ETag: '"small"' }).end();
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "fixture"); vi.stubEnv("AWS_SECRET_ACCESS_KEY", "fixture");
+    const service = createStorageService(createS3StorageProvider({ bucket: "bucket", region: "us-east-1", forcePathStyle: true,
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }));
+    try {
+      const result = await service.putFile({ companyId: "company", objectKey: "company/workspace-snapshots/small.pcws", namespace: "workspace-snapshots",
+        originalFilename: null, contentType: "application/octet-stream", body: Readable.from([bytes]), byteSize: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"), sourceFile: file });
+      expect(result.integrity).toBe("server_verified_md5");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ method: "PUT", md5: md5(bytes) });
+      expect(requests[0]!.body.equals(bytes)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 });

@@ -1,4 +1,5 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
 import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
@@ -77,6 +78,8 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { controllerInstanceLeaseEnabled, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
+  stopControllerInstanceLease } from "./services/controller-instance-lease.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
@@ -1096,6 +1099,13 @@ async function startServerWithDatabaseTeardown(
     logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
   }
 
+  // Records this boot owns are stamped with its boot id; the lease lets a server on
+  // another host or container prove this boot gone after it is replaced.
+  registerControllerInstanceDb(db as any);
+  const controllerInstanceLeaseWork = controllerInstanceLeaseEnabled()
+    ? registerControllerInstanceLeaseWork(db as any, deliveryWork) : null;
+  if (controllerInstanceLeaseWork) server.on("close", () => { void controllerInstanceLeaseWork.stop(); });
+
   // These jobs need not delay readiness, but their writes must finish before
   // an idle report can authorize sleep. Count the whole detached promise.
   void trackIdleWork(reconcilePersistedRuntimeServicesOnStartup(db as any)
@@ -1731,6 +1741,12 @@ async function startServerWithDatabaseTeardown(
 
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerResidualRecoveryWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    // Report-only ownership reconciliation (durable ownership plan, Phase 1).
+    // Its first pass runs in the background so it never delays readiness.
+    if (config.heartbeatSchedulerEnabled) void registerOwnershipReconciliationWork(db as any, deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      { enabled: async () => !(await heartbeat.resolveSchedulingSuppression()).suppressed }).ready
+      .catch(err => logger.warn({ err }, "ownership reconciliation report pass failed"));
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) {
@@ -2160,7 +2176,9 @@ async function startServerWithDatabaseTeardown(
     // Keep the finalizer's defensive listener close for partial teardown paths.
     await finalizeServerShutdown({
       signal,
-      shutdownAppServices: appShutdown,
+      shutdownAppServices: async () => {
+        try { await appShutdown?.(); } finally { await stopControllerInstanceLease(); }
+      },
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       drainPendingRunFailureReports: waitForPendingRunFailureReports,

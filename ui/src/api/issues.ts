@@ -11,6 +11,7 @@ import type {
   InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
+  ExactDocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
   FeedbackVote,
@@ -419,6 +420,10 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
+  confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string }) =>
+    api.post<{ recordId: string; status: "queued" | "released" }>(`/issues/${id}/recovery-actions/confirm-owner-gone`, data),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
     api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
@@ -745,7 +750,7 @@ export const issuesApi = {
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
   getDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
+    api.get<ExactDocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

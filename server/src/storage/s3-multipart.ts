@@ -1,7 +1,11 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { PassThrough, Readable } from "node:stream";
-import type { PutObjectInput } from "./types.js";
+import { setTimeout as delay } from "node:timers/promises";
+import type { PutObjectInput, PutObjectReceipt } from "./types.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
 import { cleanupStorageFailure } from "./failure-cleanup.js";
 
@@ -120,5 +124,90 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
     input.signal?.removeEventListener("abort", onAbort);
     source.destroy();
     await cleanupStorageFailure(async () => iterator.return?.());
+  }
+}
+
+export const FILE_PART_CONCURRENCY = 8;
+const FILE_PART_ATTEMPTS = 3;
+const FILE_READ_BYTES = 1024 * 1024;
+
+/** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
+export async function fileRangeMd5(file: string, start: number, end: number, signal?: AbortSignal) {
+  const digest = createHash("md5");
+  for await (const chunk of createReadStream(file, { start, end, signal, highWaterMark: FILE_READ_BYTES })) digest.update(chunk);
+  return digest.digest("base64");
+}
+
+export async function assertSourceFileSize(file: string, contentLength: number) {
+  const stats = await stat(file);
+  if (!stats.isFile() || stats.size !== contentLength) throw new Error("S3 upload source file does not match its declared size");
+}
+
+/** A file source is read per part instead of through one stream. Parts upload
+ * in parallel without the shared memory window, each carries Content-MD5 so
+ * the backend rejects bytes it did not receive intact, and a failed part is
+ * resent from disk instead of failing the whole upload. */
+export async function putS3MultipartFile(
+  client: S3Client, bucket: string, key: string, input: PutObjectInput & { sourceFile: string },
+): Promise<PutObjectReceipt> {
+  const file = input.sourceFile;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(input.signal!.reason);
+  input.signal?.addEventListener("abort", onAbort, { once: true });
+  if (input.signal?.aborted) onAbort();
+  // This path never reads the stream body; release its file descriptor now.
+  if (input.body instanceof Readable) input.body.destroy();
+  let uploadId: string | undefined;
+  try {
+    await assertSourceFileSize(file, input.contentLength);
+    controller.signal.throwIfAborted();
+    const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
+    const count = Math.ceil(input.contentLength / partSize);
+    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
+    if (!uploadId) throw new Error("S3 did not return a multipart upload id");
+    const id = uploadId;
+    const parts: { ETag: string; PartNumber: number }[] = new Array(count);
+    const sendPart = async (index: number) => {
+      const start = index * partSize, length = Math.min(partSize, input.contentLength - start), end = start + length - 1;
+      const contentMd5 = await fileRangeMd5(file, start, end, controller.signal);
+      for (let attempt = 1; ; attempt++) {
+        controller.signal.throwIfAborted();
+        const body = createReadStream(file, { start, end, highWaterMark: 64 * 1024 });
+        try {
+          const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({
+            Bucket: bucket, Key: key, UploadId: id, PartNumber: index + 1, Body: body, ContentLength: length, ContentMD5: contentMd5,
+          }), { abortSignal: controller.signal }));
+          if (!result.ETag) throw new Error("S3 upload part is incomplete");
+          parts[index] = { ETag: result.ETag, PartNumber: index + 1 };
+          return;
+        } catch (error) {
+          // A part read from disk can be resent; the stream path cannot.
+          if (controller.signal.aborted || attempt >= FILE_PART_ATTEMPTS) throw error;
+          await delay(attempt * 500, undefined, { signal: controller.signal });
+        } finally { body.destroy(); }
+      }
+    };
+    let next = 0;
+    const worker = async () => {
+      while (next < count) {
+        const index = next++;
+        try { await sendPart(index); }
+        catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
+      }
+    };
+    // Wait for every sibling to settle before the multipart upload is aborted.
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, worker));
+    const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
+    if (rejected) throw controller.signal.aborted && controller.signal.reason !== undefined ? controller.signal.reason : rejected.reason;
+    controller.signal.throwIfAborted();
+    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: id, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));
+    uploadId = undefined;
+    return { integrity: "server_verified_md5" };
+  } catch (error) {
+    const failedUpload = uploadId;
+    if (failedUpload) await cleanupStorageFailure(signal => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: failedUpload }), { abortSignal: signal }));
+    throw error;
+  } finally {
+    input.signal?.removeEventListener("abort", onAbort);
   }
 }

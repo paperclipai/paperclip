@@ -350,8 +350,10 @@ describe("automatic retained workspace recovery", () => {
       const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         eq(heartbeatRuns.status, "scheduled_retry")));
       expect(successors).toHaveLength(1);
-      expect(successors[0]).toMatchObject({ retryOfRunId: withheld.id, scheduledRetryAttempt: 2,
-        scheduledRetryReason: "interrupted_preparation", contextSnapshot: { executionRetryAccounting: { failureRetries: 2 } } });
+      // Interrupted preparation spent no provider work: it keeps the withheld
+      // retry's failure count and starts its own lane (section F).
+      expect(successors[0]).toMatchObject({ retryOfRunId: withheld.id, scheduledRetryAttempt: 1,
+        scheduledRetryReason: "interrupted_preparation", contextSnapshot: { executionRetryAccounting: { failureRetries: 1 } } });
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
       expect((await run(f.runId)).status).toBe("failed");
       expect(await run(withheld.id)).toMatchObject({ status: "cancelled", startedAt: null });
@@ -461,7 +463,8 @@ describe("automatic retained workspace recovery", () => {
       }
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id));
       expect(successors).toHaveLength(1);
-      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 2 });
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1,
+        scheduledRetryReason: "interrupted_preparation" });
       expect((await action(f.actionId)).evidence).toMatchObject({ bootstrapPreparationContinuation: "delivered",
         bootstrapPreparationContinuationRunId: successors[0].id });
       expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
@@ -489,7 +492,7 @@ describe("automatic retained workspace recovery", () => {
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, passiveSweep) ?? []);
     expect(attempts).toBe(2);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id)))
-      .toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 2 })]);
+      .toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 1 })]);
     expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
   }, 30_000);
 

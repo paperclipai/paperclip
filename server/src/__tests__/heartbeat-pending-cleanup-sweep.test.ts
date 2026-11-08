@@ -21,12 +21,12 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
-// A test can hold every caller of the exited-process proof until N callers
+// A test can hold every caller of the shared owner proof until N callers
 // arrive, so overlapping sweeps all read a claim before any of them updates it.
 const exitProofBarrier = vi.hoisted(() => ({ parties: 0, waiting: [] as Array<() => void> }));
-vi.mock("../services/controller-process-identity.js", async importOriginal => {
-  const actual = await importOriginal<typeof import("../services/controller-process-identity.js")>();
-  return { ...actual, controllerProcessExited: async (...args: Parameters<typeof actual.controllerProcessExited>) => {
+vi.mock("../services/owner-proof.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/owner-proof.js")>();
+  const proveOwnerGone = async (...args: unknown[]) => {
     if (exitProofBarrier.parties > 1) {
       await new Promise<void>(resolve => {
         exitProofBarrier.waiting.push(resolve);
@@ -36,8 +36,9 @@ vi.mock("../services/controller-process-identity.js", async importOriginal => {
         }
       });
     }
-    return actual.controllerProcessExited(...args);
-  } };
+    return (actual.proveOwnerGone as (...values: unknown[]) => ReturnType<typeof actual.proveOwnerGone>)(...args);
+  };
+  return { ...actual, proveOwnerGone };
 });
 
 vi.mock("../middleware/logger.js", () => ({
@@ -423,6 +424,8 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
         heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases(),
         heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases(),
       ]);
+      // Both sweeps proved the claimant gone before either settled it.
+      expect(exitProofBarrier.parties).toBe(0);
       // One refund (3 -> 2) and one new failed attempt (2 -> 3); never a second refund.
       expect(teardown).toHaveBeenCalledOnce();
       expect(await readAttempts(leaseId)).toBe(3);
