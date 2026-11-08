@@ -36,6 +36,8 @@ import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-at
 import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
+import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
+import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } from "../legacy-shutdown-workspace-settlement.js";
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -838,13 +840,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       })) };
     },
   },
-  leaseKind("legacy_shutdown_settlement_fence", "Legacy graceful-shutdown workspace settlement fence", "workspace_preservation",
-    sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
-    row => {
-      const bootId = str(json(json(row.metadata).legacyShutdownWorkspaceSettlement).controllerBootId);
-      return bootId ? { kind: "process", stamp: { kind: "local", scope: "legacy_shutdown_settlement_fence",
-        generation: null, host: null, processSpace: null, bootId, pid: null, processStartedAt: null } } : { kind: "none" };
-    }, [2]),
+  {
+    ...leaseKind("legacy_shutdown_settlement_fence", "Legacy graceful-shutdown workspace settlement fence", "workspace_preservation",
+      sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
+      row => legacyShutdownSettlementOwner(row.metadata), [2]),
+    settle: settleLegacyShutdownSettlementFence,
+  },
   leaseKind("legacy_restore_recovery_hold", "Legacy restore-recovery preservation hold", "workspace_preservation",
     and(eq(environmentLeases.leasePolicy, "retain_on_failure"), sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
       notInArray(environmentLeases.status, ["released", "expired", "failed"])),
