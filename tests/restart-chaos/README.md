@@ -92,7 +92,9 @@ through Paperclip, by deleting the wave's own environment.
 top to bottom (honouring `.wh.` and `.wh..wh..opq` whiteouts), extracts only
 those two paths, checks the ELF header, the pack manifest and the image labels,
 records their digests in `receipt.json`, and deletes the layer blobs. The result
-is cached in `results/daytona-images/<digest>/`, so it runs once per image.
+is cached in `tests/restart-chaos/results/daytona-images/<digest>/` (or
+`$RESTART_CHAOS_IMAGE_CACHE`), shared by every wave and crash-point run, so it
+runs once per image. A copy that fails part-way retries from an empty directory.
 Run it alone with `node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/daytona-image.ts <image>`.
 
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
