@@ -270,6 +270,33 @@ describe("built-in agent routes", () => {
     }));
   });
 
+  it("reconciles a built-in agent on behalf of the requesting user", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/reconcile`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockBuiltInAgentService.ensure).toHaveBeenCalledWith(
+      companyId,
+      "reflection-coach",
+      {},
+      { createdByUserId: "board-user" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorType: "user",
+      actorId: "board-user",
+      action: "built_in_agent.reconcile",
+    }));
+  });
+
   it("disables a built-in routine schedule", async () => {
     const app = await createApp({
       type: "board",

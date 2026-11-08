@@ -166,7 +166,10 @@ export function builtInAgentRoutes(db: Db) {
     const key = req.params.key as string;
     await assertBuiltInAgentsEnabled();
     await assertCanProvisionBuiltInAgents(req, companyId);
-    const state = await svc.ensure(companyId, key);
+    const actor = getActorInfo(req);
+    const state = await svc.ensure(companyId, key, {}, {
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
     await logBuiltInAgentMutation(req, {
       companyId,
       action: "built_in_agent.reconcile",
