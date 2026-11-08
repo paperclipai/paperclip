@@ -700,4 +700,89 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(instanceList[0]?.title).toBe("Global Config");
     expect(instanceList[0]?.companyId).toBeNull();
   });
+
+  it("0448 backfill migration merges conflicting legacy entities without unique key errors while preserving links", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const olderTime = new Date("2026-01-01T00:00:00Z");
+    const newerTime = new Date("2026-02-01T00:00:00Z");
+
+    // 1. Conflicting pair: legacy row (company_id = NULL) and company row (company_id = companyA)
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-conflict",
+      title: "Legacy Request Title",
+      status: "open",
+      data: { paperclipIssueId: "issue-123", legacyNote: "keep me" },
+      createdAt: olderTime,
+      updatedAt: olderTime,
+    });
+
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: companyA,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-conflict",
+      title: "Newer Request Title",
+      status: "in_progress",
+      data: { operatorComment: "newer note" },
+      createdAt: newerTime,
+      updatedAt: newerTime,
+    });
+
+    // 2. Non-conflicting legacy row
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-non-conflict",
+      title: "Non-conflict Request",
+      status: "open",
+      data: { clientExternalId: "client-456" },
+      createdAt: olderTime,
+      updatedAt: olderTime,
+    });
+
+    // Execute the migration statements from 0448
+    const migrationSql = await (await import("node:fs/promises")).readFile(
+      new URL("../../../packages/db/src/migrations/0448_backfill_plugin_entities_company_id.sql", import.meta.url),
+      "utf8",
+    );
+    const statements = migrationSql.split(/-->\s*statement-breakpoint/g).map(s => s.trim()).filter(Boolean);
+    for (const stmt of statements) {
+      await (db as any).execute(stmt);
+    }
+
+    // Verify no NULL company_id remains for company scope
+    const allRows = await db.select().from(pluginEntities).where(eq(pluginEntities.pluginId, pluginId));
+    expect(allRows).toHaveLength(2);
+    expect(allRows.every(r => r.companyId === companyA)).toBe(true);
+
+    // Verify conflicting entity merged properly: preserved links and newer edits
+    const merged = allRows.find(r => r.externalId === "req-conflict");
+    expect(merged).toBeDefined();
+    expect(merged?.title).toBe("Newer Request Title");
+    expect(merged?.status).toBe("in_progress");
+    expect(merged?.data).toMatchObject({
+      paperclipIssueId: "issue-123",
+      legacyNote: "keep me",
+      operatorComment: "newer note",
+    });
+
+    // Verify non-conflicting entity was backfilled
+    const nonConflict = allRows.find(r => r.externalId === "req-non-conflict");
+    expect(nonConflict).toBeDefined();
+    expect(nonConflict?.companyId).toBe(companyA);
+    expect(nonConflict?.data).toMatchObject({
+      clientExternalId: "client-456",
+    });
+  });
 });
