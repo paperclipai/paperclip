@@ -47,6 +47,7 @@ const apiMocks = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
   experimentalSettings: vi.fn(),
   projectsList: vi.fn(),
+  attentionTaskIndex: vi.fn(),
 }));
 
 vi.mock("../api/approvals", () => ({
@@ -108,6 +109,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: { list: apiMocks.projectsList },
+}));
+
+vi.mock("../api/attention", () => ({
+  attentionApi: { taskIndex: apiMocks.attentionTaskIndex },
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -408,6 +413,7 @@ function resetInboxApiMocks() {
     enableStreamlinedUi: true,
   });
   apiMocks.projectsList.mockResolvedValue([]);
+  apiMocks.attentionTaskIndex.mockResolvedValue({ taskIds: [] });
 }
 
 describe("Inbox toolbar", () => {
@@ -1054,6 +1060,88 @@ describe("Inbox toolbar", () => {
       expect(container.textContent).toContain("Cached readable task");
       expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
       expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  function setInReviewRows() {
+    setIssueRows([
+      createIssue({ id: "asked-review", identifier: "PAP-1", title: "Review that needs you", status: "in_review" }),
+      createIssue({ id: "waiting-review", identifier: "PAP-2", title: "Review for someone else", status: "in_review" }),
+      createIssue({ id: "open-task", identifier: "PAP-3", title: "Open todo task", status: "todo" }),
+    ]);
+  }
+
+  it("keeps in-review rows only when they need the viewer", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    setInReviewRows();
+    apiMocks.attentionTaskIndex.mockResolvedValue({ taskIds: ["asked-review"] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => {
+        expect(apiMocks.attentionTaskIndex).toHaveBeenCalledWith("company-1");
+        expect(container.textContent).toContain("Review that needs you");
+        expect(container.textContent).not.toContain("Review for someone else");
+      });
+      expect(container.textContent).toContain("Open todo task");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("hides no in-review rows while the attention index loads", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    setInReviewRows();
+    apiMocks.attentionTaskIndex.mockReturnValue(new Promise(() => {}));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Review for someone else"));
+      expect(container.textContent).toContain("Review that needs you");
+      expect(container.textContent).toContain("Open todo task");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("shows every in-review row and the retry notice when an attention refresh fails", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    setInReviewRows();
+    apiMocks.attentionTaskIndex.mockResolvedValue({ taskIds: [] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Open todo task");
+        expect(container.textContent).not.toContain("Review for someone else");
+      });
+      apiMocks.attentionTaskIndex.mockRejectedValue(new Error("Attention unavailable"));
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company-1") }); });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Review for someone else");
+        expect(document.body.textContent).toContain("Some inbox items couldn’t load.");
+      });
+      expect(container.textContent).toContain("Review that needs you");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("shows every in-review row when the In review status filter is on", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+      allCategoryFilter: "everything",
+      allApprovalFilter: "all",
+      issueFilters: { statuses: ["in_review"] },
+    }));
+    setInReviewRows();
+    apiMocks.attentionTaskIndex.mockResolvedValue({ taskIds: [] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => {
+        expect(apiMocks.attentionTaskIndex).toHaveBeenCalled();
+        expect(container.textContent).toContain("Review for someone else");
+      });
+      expect(container.textContent).toContain("Review that needs you");
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 

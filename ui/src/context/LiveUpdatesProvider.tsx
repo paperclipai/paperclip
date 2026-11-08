@@ -1528,7 +1528,8 @@ function invalidateActivityQueries(
   }
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
-  const decisionProjectionChanged = entityType === "decision" ||
+  const decisionProjectionChanged = entityType === "decision" || entityType === "approval" ||
+    action === "issue.approval_linked" || action === "issue.approval_unlinked" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||

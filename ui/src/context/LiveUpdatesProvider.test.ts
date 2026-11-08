@@ -30,11 +30,12 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
     client.clear();
   });
-  it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
+  it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored", "issue.approval_linked", "issue.approval_unlinked", "approval.created", "approval.approved", "approval.rejected"])("refreshes canonical attention, history and source-chat projections after %s", action => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
+    const entityType = action.startsWith("decision.") ? "decision" : action.startsWith("approval.") ? "approval" : "issue";
     __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
-      entityType: action.startsWith("decision.") ? "decision" : "issue", entityId: "task-1", action,
+      entityType, entityId: "task-1", action,
     }, { userId: "user-1", agentId: null });
     for (const queryKey of [queryKeys.attention("company-1"), ["decisions", "company-1"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
