@@ -1,0 +1,1573 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f4ee" />
+    <meta
+      name="description"
+      content="A free, read-only journey through the history of mobile phones, from the first handheld call to the phones of tomorrow."
+    />
+    <title>Pocket-sized planet — a history of mobile phones</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #f6f4ee;
+        --paper-deep: #ebe8de;
+        --ink: #20211d;
+        --muted: #65665f;
+        --line: #d7d4ca;
+        --orange: #e85c36;
+        --blue: #c8dfe0;
+        --green: #d6e0c3;
+        --lavender: #d9d3e7;
+        --yellow: #f0dda0;
+        --white: #fffefa;
+        --line-soft: rgba(215, 212, 202, 0.75);
+        --paper-soft: rgba(246, 244, 238, 0.92);
+        --orange-ring: rgba(232, 92, 54, 0.2);
+        --orange-halo: rgba(232, 92, 54, 0.04);
+        --orange-halo-wide: rgba(232, 92, 54, 0.03);
+        --orange-glow: rgba(232, 92, 54, 0.7);
+        --orange-focus: rgba(232, 92, 54, 0.16);
+        --ink-shadow: rgba(32, 33, 29, 0.18);
+        --ink-shadow-light: rgba(32, 33, 29, 0.08);
+        --ink-edge: rgba(32, 33, 29, 0.4);
+        --ink-dot: rgba(32, 33, 29, 0.11);
+        --ink-border: rgba(32, 33, 29, 0.08);
+        --ink-border-light: rgba(32, 33, 29, 0.1);
+        --ink-text-soft: rgba(32, 33, 29, 0.7);
+        --white-edge: rgba(255, 254, 250, 0.34);
+        --white-ring: rgba(255, 254, 250, 0.22);
+        --white-halo: rgba(255, 254, 250, 0.05);
+        --white-halo-wide: rgba(255, 254, 250, 0.04);
+        --white-text-soft: rgba(255, 254, 250, 0.68);
+        --white-text: rgba(255, 254, 250, 0.72);
+        --page-width: 76rem;
+        font-family:
+          "Avenir Next", Avenir, "Segoe UI", "Helvetica Neue", sans-serif;
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        scroll-behavior: smooth;
+        scroll-padding-top: 6rem;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 20rem;
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+      }
+
+      a {
+        color: inherit;
+      }
+
+      a:focus-visible {
+        border-radius: 0.25rem;
+        outline: 0.1875rem solid var(--orange);
+        outline-offset: 0.25rem;
+      }
+
+      .skip-link {
+        position: absolute;
+        z-index: 20;
+        top: 0.75rem;
+        left: 0.75rem;
+        transform: translateY(-180%);
+        border-radius: 999px;
+        background: var(--ink);
+        color: var(--white);
+        padding: 0.75rem 1rem;
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .reading-progress {
+        position: fixed;
+        z-index: 12;
+        inset: 0 0 auto;
+        height: 0.2rem;
+        background: transparent;
+        pointer-events: none;
+      }
+
+      .reading-progress > span {
+        display: block;
+        width: 100%;
+        height: 100%;
+        transform: scaleX(0);
+        transform-origin: left;
+        background: var(--orange);
+      }
+
+      .site-header {
+        position: sticky;
+        z-index: 10;
+        top: 0;
+        border-bottom: 1px solid var(--line-soft);
+        background: var(--paper-soft);
+        backdrop-filter: blur(1rem);
+      }
+
+      .header-inner,
+      .hero-inner,
+      .story-layout,
+      .closing-inner,
+      .footer-inner {
+        width: min(var(--page-width), calc(100% - 3rem));
+        margin-inline: auto;
+      }
+
+      .header-inner {
+        display: flex;
+        min-height: 4.5rem;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+      }
+
+      .wordmark {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        text-decoration: none;
+        font-size: 0.875rem;
+        font-weight: 750;
+        letter-spacing: -0.035em;
+      }
+
+      .wordmark-mark {
+        display: grid;
+        width: 1.8rem;
+        aspect-ratio: 1;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--orange);
+        color: var(--white);
+        font-size: 0.7rem;
+        letter-spacing: 0;
+      }
+
+      .header-nav {
+        display: flex;
+        align-items: center;
+        gap: clamp(0.75rem, 2.4vw, 2rem);
+      }
+
+      .header-nav a {
+        text-decoration: none;
+        font-size: 0.78rem;
+        font-weight: 600;
+      }
+
+      .header-nav a:hover,
+      .source-link:hover {
+        color: var(--orange);
+      }
+
+      .access-note {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.4rem 0.7rem;
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: clamp(4rem, 10vw, 8rem) 0 clamp(4.5rem, 9vw, 7rem);
+      }
+
+      .hero::before {
+        position: absolute;
+        z-index: -1;
+        top: 4%;
+        right: -9rem;
+        width: min(52vw, 42rem);
+        aspect-ratio: 1;
+        border: 1px solid var(--orange-ring);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 3rem var(--orange-halo),
+          0 0 0 8rem var(--orange-halo-wide);
+        content: "";
+      }
+
+      .hero-inner {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
+        align-items: center;
+        gap: clamp(2rem, 7vw, 7rem);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.65rem;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 750;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 1.8rem;
+        height: 1px;
+        background: var(--orange);
+        content: "";
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 11ch;
+        margin-bottom: 1.4rem;
+        font-size: clamp(3.4rem, 8vw, 7.5rem);
+        font-weight: 680;
+        letter-spacing: -0.085em;
+        line-height: 0.91;
+      }
+
+      h1 em {
+        color: var(--orange);
+        font-style: normal;
+      }
+
+      .hero-copy {
+        max-width: 34rem;
+        margin-bottom: 2rem;
+        color: var(--muted);
+        font-size: clamp(1rem, 1.5vw, 1.18rem);
+        line-height: 1.7;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .primary-link {
+        display: inline-flex;
+        min-height: 2.9rem;
+        align-items: center;
+        gap: 0.65rem;
+        border-radius: 999px;
+        background: var(--ink);
+        color: var(--white);
+        padding: 0.8rem 1.2rem;
+        text-decoration: none;
+        font-size: 0.82rem;
+        font-weight: 700;
+        transition: transform 160ms ease, background 160ms ease;
+      }
+
+      .primary-link:hover {
+        transform: translateY(-0.125rem);
+        background: var(--orange);
+      }
+
+      .read-time {
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .hero-art {
+        position: relative;
+        display: grid;
+        min-height: 25rem;
+        place-items: center;
+      }
+
+      .orbit {
+        position: absolute;
+        width: min(94%, 25rem);
+        aspect-ratio: 1;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+      }
+
+      .orbit::before,
+      .orbit::after {
+        position: absolute;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .orbit::before {
+        inset: 12%;
+      }
+
+      .orbit::after {
+        inset: 26%;
+      }
+
+      .hero-year {
+        position: absolute;
+        top: 12%;
+        left: 3%;
+        color: var(--orange);
+        font-size: clamp(2.2rem, 5vw, 4rem);
+        font-weight: 700;
+        letter-spacing: -0.08em;
+      }
+
+      .hero-caption {
+        position: absolute;
+        right: 0;
+        bottom: 8%;
+        max-width: 10rem;
+        color: var(--muted);
+        font-size: 0.72rem;
+        line-height: 1.5;
+      }
+
+      .device {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid var(--ink);
+        background: var(--ink);
+        color: var(--white);
+        box-shadow: 0 1.25rem 3rem var(--ink-shadow);
+      }
+
+      .device-old {
+        z-index: 1;
+        top: 22%;
+        left: 15%;
+        width: 7.5rem;
+        height: 14rem;
+        transform: rotate(-12deg);
+        border-radius: 1.1rem;
+        background: var(--orange);
+      }
+
+      .device-old::before {
+        position: absolute;
+        top: -1.6rem;
+        left: 50%;
+        width: 0.2rem;
+        height: 1.8rem;
+        transform: rotate(-4deg);
+        background: var(--ink);
+        content: "";
+      }
+
+      .device-old::after {
+        position: absolute;
+        inset: 1rem 0.75rem 3.2rem;
+        border: 1px solid var(--ink-edge);
+        border-radius: 0.3rem;
+        background: var(--yellow);
+        content: "";
+      }
+
+      .device-old span {
+        position: absolute;
+        z-index: 1;
+        bottom: 1rem;
+        font-size: 0.58rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .device-new {
+        z-index: 2;
+        top: 14%;
+        right: 17%;
+        width: 10.5rem;
+        height: 20rem;
+        transform: rotate(8deg);
+        border-radius: 1.8rem;
+        background: var(--ink);
+      }
+
+      .device-new::before {
+        position: absolute;
+        inset: 0.6rem;
+        border: 1px solid var(--white-edge);
+        border-radius: 1.4rem;
+        background:
+          radial-gradient(ellipse at 70% 30%, var(--orange-glow), transparent 34%),
+          linear-gradient(155deg, var(--blue), var(--lavender) 52%, var(--green));
+        content: "";
+      }
+
+      .device-new::after {
+        position: absolute;
+        top: 0.9rem;
+        left: 50%;
+        width: 2.5rem;
+        height: 0.35rem;
+        transform: translateX(-50%);
+        border-radius: 999px;
+        background: var(--ink);
+        content: "";
+      }
+
+      .device-label {
+        position: absolute;
+        z-index: 3;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--paper);
+        padding: 0.55rem 0.8rem;
+        font-size: 0.66rem;
+        font-weight: 700;
+      }
+
+      .label-past {
+        right: 8%;
+        bottom: 20%;
+      }
+
+      .label-first {
+        bottom: 17%;
+        left: 6%;
+      }
+
+      .chapter-nav-wrap {
+        position: sticky;
+        z-index: 5;
+        top: 4.5rem;
+        border-block: 1px solid var(--line);
+        background: var(--paper);
+      }
+
+      .chapter-nav {
+        display: flex;
+        width: min(var(--page-width), calc(100% - 3rem));
+        min-height: 3.8rem;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-inline: auto;
+        overflow-x: auto;
+        scrollbar-width: thin;
+      }
+
+      .chapter-nav a {
+        flex: 0 0 auto;
+        border-radius: 999px;
+        color: var(--muted);
+        padding: 0.55rem 0.75rem;
+        text-decoration: none;
+        font-size: 0.71rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .chapter-nav a:hover,
+      .chapter-nav a[aria-current="location"] {
+        background: var(--ink);
+        color: var(--white);
+      }
+
+      .timeline {
+        padding: clamp(4.5rem, 9vw, 8rem) 0;
+      }
+
+      .section-intro {
+        display: grid;
+        grid-template-columns: 1fr minmax(15rem, 0.55fr);
+        align-items: end;
+        gap: 2rem;
+        margin-bottom: clamp(3rem, 7vw, 6rem);
+      }
+
+      .section-intro h2,
+      .closing h2 {
+        max-width: 12ch;
+        margin-bottom: 0;
+        font-size: clamp(2.4rem, 5.4vw, 5rem);
+        font-weight: 650;
+        letter-spacing: -0.075em;
+        line-height: 0.98;
+      }
+
+      .section-intro p {
+        max-width: 28rem;
+        margin-bottom: 0.3rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.75;
+      }
+
+      .story-layout {
+        display: grid;
+        grid-template-columns: 11rem minmax(0, 1fr);
+        align-items: start;
+        gap: clamp(2rem, 6vw, 6rem);
+      }
+
+      .story-aside {
+        position: sticky;
+        top: 9.5rem;
+        padding-top: 1rem;
+      }
+
+      .story-aside-label {
+        margin-bottom: 1.4rem;
+        color: var(--muted);
+        font-size: 0.65rem;
+        font-weight: 750;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .aside-year {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+
+      .aside-year::before {
+        width: 0.5rem;
+        aspect-ratio: 1;
+        border: 1px solid var(--muted);
+        border-radius: 50%;
+        background: var(--paper);
+        content: "";
+      }
+
+      .aside-year[aria-current="location"] {
+        color: var(--orange);
+      }
+
+      .aside-year[aria-current="location"]::before {
+        border-color: var(--orange);
+        background: var(--orange);
+        box-shadow: 0 0 0 0.25rem var(--orange-focus);
+      }
+
+      .chapter-list {
+        position: relative;
+        display: grid;
+        gap: 1.25rem;
+        padding-block: 0.35rem;
+      }
+
+      .chapter-list::before {
+        position: absolute;
+        top: 1.2rem;
+        bottom: 1.2rem;
+        left: 0.2rem;
+        width: 1px;
+        background: var(--line);
+        content: "";
+      }
+
+      .chapter {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(15rem, 1.15fr);
+        align-items: center;
+        gap: clamp(1.5rem, 4vw, 4rem);
+        padding: 1.1rem 0 2.4rem 2rem;
+        scroll-margin-top: 10rem;
+      }
+
+      .chapter::before {
+        position: absolute;
+        top: 1.6rem;
+        left: 0;
+        width: 0.45rem;
+        aspect-ratio: 1;
+        border: 1px solid var(--orange);
+        border-radius: 50%;
+        background: var(--paper);
+        content: "";
+      }
+
+      .chapter-copy {
+        padding-block: 1.5rem;
+      }
+
+      .chapter-era {
+        display: block;
+        margin-bottom: 1rem;
+        color: var(--orange);
+        font-size: 0.72rem;
+        font-weight: 750;
+        letter-spacing: 0.14em;
+      }
+
+      .chapter h3 {
+        max-width: 15ch;
+        margin-bottom: 0.9rem;
+        font-size: clamp(1.65rem, 3vw, 2.6rem);
+        font-weight: 650;
+        letter-spacing: -0.065em;
+        line-height: 1.04;
+      }
+
+      .chapter p {
+        max-width: 31rem;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.75;
+      }
+
+      .fact-note {
+        display: inline-block;
+        margin-top: 1.2rem;
+        color: var(--muted);
+        font-size: 0.71rem;
+        line-height: 1.5;
+      }
+
+      .device-card {
+        position: relative;
+        display: grid;
+        min-height: 19rem;
+        overflow: hidden;
+        place-items: center;
+        border: 1px solid var(--ink-border);
+        border-radius: 1rem;
+        isolation: isolate;
+      }
+
+      .device-card::before {
+        position: absolute;
+        z-index: -1;
+        inset: 0;
+        background-image: radial-gradient(var(--ink-dot) 0.7px, transparent 0.7px);
+        background-size: 0.75rem 0.75rem;
+        content: "";
+        opacity: 0.42;
+      }
+
+      .tone-orange {
+        background: var(--yellow);
+      }
+
+      .tone-yellow {
+        background: var(--orange);
+      }
+
+      .tone-blue {
+        background: var(--blue);
+      }
+
+      .tone-green {
+        background: var(--green);
+      }
+
+      .tone-lavender {
+        background: var(--lavender);
+      }
+
+      .tone-paper {
+        background: var(--paper-deep);
+      }
+
+      .art-caption {
+        position: absolute;
+        right: 1rem;
+        bottom: 0.85rem;
+        left: 1rem;
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        color: var(--ink-text-soft);
+        font-size: 0.64rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .brick-phone {
+        position: relative;
+        display: grid;
+        width: 7.2rem;
+        height: 13.8rem;
+        align-content: end;
+        justify-items: center;
+        transform: rotate(-7deg);
+        border: 0.35rem solid var(--ink);
+        border-radius: 1rem;
+        background: var(--orange);
+        box-shadow: 0 1.2rem 2rem var(--ink-shadow);
+        padding-bottom: 0.75rem;
+      }
+
+      .brick-phone::before {
+        position: absolute;
+        top: -2.3rem;
+        left: 52%;
+        width: 0.22rem;
+        height: 2.6rem;
+        transform: rotate(-8deg);
+        transform-origin: bottom;
+        border-radius: 999px;
+        background: var(--ink);
+        content: "";
+      }
+
+      .brick-screen {
+        position: absolute;
+        top: 1rem;
+        right: 0.65rem;
+        left: 0.65rem;
+        display: grid;
+        height: 4.5rem;
+        place-items: center;
+        border: 0.25rem solid var(--ink);
+        border-radius: 0.25rem;
+        background: var(--yellow);
+        color: var(--ink);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.95rem;
+      }
+
+      .brick-keys {
+        display: grid;
+        width: 4.4rem;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.23rem;
+      }
+
+      .brick-keys span {
+        height: 0.34rem;
+        border-radius: 0.2rem;
+        background: var(--ink);
+      }
+
+      .tiny-phone {
+        position: relative;
+        display: grid;
+        width: 7rem;
+        height: 12rem;
+        place-items: center;
+        transform: rotate(6deg);
+        border: 0.3rem solid var(--ink);
+        border-radius: 1.1rem;
+        background: var(--ink);
+        box-shadow: 0 1.2rem 2rem var(--ink-shadow);
+      }
+
+      .tiny-phone::before {
+        position: absolute;
+        inset: 0.55rem 0.35rem 1.1rem;
+        border-radius: 0.7rem;
+        background: linear-gradient(145deg, var(--yellow), var(--orange));
+        content: "";
+      }
+
+      .tiny-phone::after {
+        position: absolute;
+        bottom: 0.35rem;
+        width: 0.4rem;
+        aspect-ratio: 1;
+        border: 1px solid var(--white);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .sim-screen {
+        position: relative;
+        width: 8rem;
+        height: 11.5rem;
+        transform: rotate(-6deg);
+        border: 0.42rem solid var(--ink);
+        border-radius: 1rem;
+        background: var(--white);
+        box-shadow: 0 1.2rem 2rem var(--ink-shadow);
+        padding: 1.1rem 0.65rem;
+      }
+
+      .sim-screen::before {
+        display: block;
+        width: 2rem;
+        height: 0.2rem;
+        margin: 0 auto 0.8rem;
+        border-radius: 999px;
+        background: var(--ink);
+        content: "";
+      }
+
+      .sim-top {
+        margin-bottom: 0.6rem;
+        font-size: 0.62rem;
+        font-weight: 750;
+      }
+
+      .sim-row {
+        margin-top: 0.35rem;
+        border-radius: 0.15rem;
+        background: var(--blue);
+        padding: 0.35rem 0.3rem;
+        font-size: 0.46rem;
+      }
+
+      .old-web {
+        position: relative;
+        width: 9rem;
+        height: 13rem;
+        transform: rotate(4deg);
+        border: 0.4rem solid var(--ink);
+        border-radius: 1.4rem;
+        background: var(--ink);
+        box-shadow: 0 1.2rem 2rem var(--ink-shadow);
+        padding: 0.75rem;
+      }
+
+      .old-web::before {
+        display: block;
+        height: 0.35rem;
+        margin: 0 auto 0.7rem;
+        border-radius: 999px;
+        background: var(--muted);
+        content: "";
+      }
+
+      .web-window {
+        height: 10rem;
+        overflow: hidden;
+        background: var(--white);
+        padding: 0.5rem;
+      }
+
+      .web-window b {
+        display: block;
+        margin-bottom: 0.4rem;
+        color: var(--orange);
+        font-size: 0.6rem;
+      }
+
+      .web-window span {
+        display: block;
+        height: 0.22rem;
+        margin-top: 0.35rem;
+        background: var(--line);
+      }
+
+      .app-grid {
+        display: grid;
+        width: 10rem;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.75rem;
+        transform: rotate(-5deg);
+      }
+
+      .app-grid span {
+        display: grid;
+        aspect-ratio: 1;
+        place-items: center;
+        border: 1px solid var(--ink-border-light);
+        border-radius: 0.8rem;
+        background: var(--white);
+        box-shadow: 0 0.5rem 1rem var(--ink-shadow-light);
+        font-size: 1.2rem;
+      }
+
+      .modern-phones {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        transform: rotate(-5deg);
+      }
+
+      .modern-phone {
+        width: 6.4rem;
+        height: 12rem;
+        border: 0.35rem solid var(--ink);
+        border-radius: 1.3rem;
+        background: linear-gradient(160deg, var(--orange), var(--lavender) 50%, var(--blue));
+        box-shadow: 0 1.2rem 2rem var(--ink-shadow);
+      }
+
+      .modern-phone:nth-child(2) {
+        height: 10rem;
+        transform: translateY(1.4rem) rotate(9deg);
+        background: linear-gradient(160deg, var(--green), var(--blue), var(--lavender));
+      }
+
+      .chapter-end {
+        padding-top: 1rem;
+      }
+
+      .future {
+        position: relative;
+        overflow: hidden;
+        background: var(--ink);
+        color: var(--white);
+        padding: clamp(4rem, 9vw, 7rem) 0;
+      }
+
+      .future::after {
+        position: absolute;
+        top: -18rem;
+        right: -7rem;
+        width: 42rem;
+        aspect-ratio: 1;
+        border: 1px solid var(--white-ring);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 4rem var(--white-halo),
+          0 0 0 10rem var(--white-halo-wide);
+        content: "";
+        pointer-events: none;
+      }
+
+      .closing-inner {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(17rem, 0.65fr);
+        align-items: end;
+        gap: 3rem;
+      }
+
+      .future .eyebrow {
+        color: var(--white-text-soft);
+      }
+
+      .future .eyebrow::before {
+        background: var(--orange);
+      }
+
+      .closing h2 {
+        max-width: 10ch;
+        margin-top: 1.2rem;
+      }
+
+      .closing-copy {
+        max-width: 28rem;
+        color: var(--white-text);
+        font-size: 0.96rem;
+        line-height: 1.8;
+      }
+
+      .closing-copy p {
+        margin-bottom: 1.5rem;
+      }
+
+      .future .primary-link {
+        background: var(--orange);
+      }
+
+      .future .primary-link:hover {
+        background: var(--white);
+        color: var(--ink);
+      }
+
+      .sources {
+        padding: clamp(3.5rem, 7vw, 6rem) 0;
+      }
+
+      .sources-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 1.2rem;
+      }
+
+      .sources h2 {
+        margin-bottom: 0;
+        font-size: 1.45rem;
+        letter-spacing: -0.045em;
+      }
+
+      .sources-heading p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .source-list {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+        margin-top: 1.25rem;
+      }
+
+      .source-link {
+        display: flex;
+        min-height: 5rem;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        border: 1px solid var(--line);
+        border-radius: 0.75rem;
+        background: var(--white);
+        padding: 1rem;
+        text-decoration: none;
+        font-size: 0.78rem;
+        font-weight: 700;
+        line-height: 1.45;
+      }
+
+      .source-link span:last-child {
+        color: var(--orange);
+        font-size: 1rem;
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--line);
+        padding: 1.5rem 0 2.5rem;
+      }
+
+      .footer-inner {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+
+      .footer-inner p {
+        margin-bottom: 0;
+      }
+
+      .read-only-mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.45rem 0.7rem;
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .read-only-mark::before {
+        width: 0.4rem;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: #4a7553;
+        content: "";
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        clip-path: inset(50%);
+      }
+
+      @media (max-width: 48rem) {
+        .header-inner,
+        .hero-inner,
+        .story-layout,
+        .closing-inner,
+        .footer-inner,
+        .chapter-nav {
+          width: min(100% - 2rem, var(--page-width));
+        }
+
+        .header-inner {
+          min-height: 4rem;
+        }
+
+        .header-nav {
+          gap: 0.7rem;
+        }
+
+        .header-nav a {
+          font-size: 0.68rem;
+        }
+
+        .header-nav a:nth-child(2) {
+          display: none;
+        }
+
+        .access-note {
+          display: none;
+        }
+
+        .hero {
+          padding-top: 4rem;
+        }
+
+        .hero-inner {
+          grid-template-columns: 1fr;
+          gap: 1rem;
+        }
+
+        .hero-art {
+          min-height: 23rem;
+        }
+
+        .hero-year {
+          top: 4%;
+          left: 8%;
+        }
+
+        .device-old {
+          left: 20%;
+        }
+
+        .device-new {
+          right: 22%;
+        }
+
+        .chapter-nav-wrap {
+          top: 4rem;
+        }
+
+        .chapter-nav {
+          justify-content: flex-start;
+        }
+
+        .section-intro {
+          grid-template-columns: 1fr;
+          gap: 1.2rem;
+        }
+
+        .story-layout {
+          display: block;
+        }
+
+        .story-aside {
+          display: none;
+        }
+
+        .chapter-list {
+          gap: 1rem;
+        }
+
+        .chapter {
+          grid-template-columns: 1fr;
+          gap: 0.5rem;
+          padding-bottom: 2.5rem;
+        }
+
+        .chapter-copy {
+          padding-block: 0.5rem 1rem;
+        }
+
+        .device-card {
+          min-height: 17rem;
+        }
+
+        .closing-inner {
+          grid-template-columns: 1fr;
+          gap: 1.5rem;
+        }
+
+        .source-list {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 24rem) {
+        .wordmark {
+          font-size: 0.78rem;
+        }
+
+        .header-nav {
+          gap: 0.5rem;
+        }
+
+        .hero-art {
+          min-height: 20rem;
+        }
+
+        .device-old {
+          left: 15%;
+          transform: scale(0.88) rotate(-12deg);
+        }
+
+        .device-new {
+          right: 13%;
+          transform: scale(0.88) rotate(8deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to the story</a>
+    <div
+      class="reading-progress"
+      role="progressbar"
+      aria-label="Story reading progress"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="0"
+    >
+      <span id="progress-bar"></span>
+    </div>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="wordmark" href="#top" aria-label="Pocket-sized planet, back to top">
+          <span class="wordmark-mark" aria-hidden="true">P</span>
+          <span>POCKET-SIZED PLANET</span>
+        </a>
+        <nav class="header-nav" aria-label="Main navigation">
+          <a href="#timeline">The timeline</a>
+          <a href="#next">What comes next</a>
+          <a href="#sources">Sources</a>
+          <span class="access-note">Free to explore · Read only</span>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="page-title">
+        <div class="hero-inner">
+          <div>
+            <p class="eyebrow">A small device. A big change.</p>
+            <h1 id="page-title">The world,<br />in your <em>pocket.</em></h1>
+            <p class="hero-copy">
+              A mobile phone began as a way to make a call away from home. It grew into a camera, a map,
+              a library, and a window to almost everywhere. Scroll through the moments that changed it.
+            </p>
+            <div class="hero-actions">
+              <a class="primary-link" href="#timeline">
+                Start the journey <span aria-hidden="true">↓</span>
+              </a>
+              <span class="read-time">7 moments · about 4 minutes</span>
+            </div>
+          </div>
+          <div class="hero-art" aria-label="Illustration comparing an early mobile phone and a modern smartphone">
+            <div class="orbit" aria-hidden="true"></div>
+            <span class="hero-year">1973 →</span>
+            <div class="device device-old" aria-hidden="true"><span>First call</span></div>
+            <div class="device device-new" aria-hidden="true"></div>
+            <span class="device-label label-first">A call, anywhere</span>
+            <span class="device-label label-past">A world in hand</span>
+            <p class="hero-caption">From one mobile call to a billion daily routines.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="chapter-nav-wrap">
+        <nav class="chapter-nav" aria-label="Timeline chapters">
+          <a href="#chapter-1973" aria-current="location">1970s</a>
+          <a href="#chapter-1983">1980s</a>
+          <a href="#chapter-1994">1990s</a>
+          <a href="#chapter-2007">2000s</a>
+          <a href="#chapter-2010s">2010s</a>
+          <a href="#chapter-2020s">Today</a>
+        </nav>
+      </div>
+
+      <section class="timeline" id="timeline" aria-labelledby="timeline-title">
+        <div class="section-intro header-inner">
+          <div>
+            <p class="eyebrow">Seven moments in motion</p>
+            <h2 id="timeline-title">Not just a phone. A new way to be somewhere.</h2>
+          </div>
+          <p>
+            Each leap made the device smaller, more useful, or more connected. Together, they changed how
+            people work, travel, learn, and stay close.
+          </p>
+        </div>
+
+        <div class="story-layout">
+          <aside class="story-aside" aria-label="Current timeline chapter">
+            <p class="story-aside-label">You are exploring</p>
+            <span class="aside-year" id="active-year" aria-current="location">1973</span>
+          </aside>
+
+          <div class="chapter-list">
+            <article class="chapter" id="chapter-1973" data-year="1973">
+              <div class="chapter-copy">
+                <span class="chapter-era">1973 · THE FIRST HANDHELD CALL</span>
+                <h3>A phone leaves the wall.</h3>
+                <p>
+                  Motorola engineer Martin Cooper made a public call on a handheld cellular phone
+                  prototype in New York. It was heavy, short on battery, and remarkable for one reason:
+                  the call could travel with you.
+                </p>
+                <span class="fact-note">A prototype made the call. A practical phone was still years away.</span>
+              </div>
+              <div class="device-card tone-orange" role="img" aria-label="Illustration of an early handheld mobile phone">
+                <div class="brick-phone" aria-hidden="true">
+                  <div class="brick-screen">1:73</div>
+                  <div class="brick-keys" aria-hidden="true">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span>
+                  </div>
+                </div>
+                <div class="art-caption"><span>One call, untethered</span><span>01 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter" id="chapter-1983" data-year="1983">
+              <div class="chapter-copy">
+                <span class="chapter-era">1983 · MOBILE GOES ON SALE</span>
+                <h3>The handset becomes real.</h3>
+                <p>
+                  The Motorola DynaTAC 8000X became the first handheld mobile phone approved for commercial
+                  sale in the United States. It was expensive and far from pocket-sized, but people could
+                  finally buy a mobile phone of their own.
+                </p>
+                <span class="fact-note">The first commercial model followed a decade of engineering.</span>
+              </div>
+              <div class="device-card tone-yellow" role="img" aria-label="Illustration of a large 1980s mobile phone">
+                <div class="brick-phone" aria-hidden="true">
+                  <div class="brick-screen">HELLO</div>
+                  <div class="brick-keys" aria-hidden="true">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span>
+                  </div>
+                </div>
+                <div class="art-caption"><span>Made to move</span><span>02 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter" id="chapter-1994" data-year="1994">
+              <div class="chapter-copy">
+                <span class="chapter-era">1994 · A COMPUTER IN YOUR HAND</span>
+                <h3>The phone learns new tricks.</h3>
+                <p>
+                  IBM Simon combined a phone with tools such as a calendar, contacts, notes, and email.
+                  Its touchscreen hinted at a new idea: a phone could be a small personal computer, not
+                  just a way to talk.
+                </p>
+                <span class="fact-note">First shown in 1992; it went on sale in 1994.</span>
+              </div>
+              <div class="device-card tone-blue" role="img" aria-label="Illustration of a touchscreen personal communicator">
+                <div class="sim-screen" aria-hidden="true">
+                  <div class="sim-top">SIMON</div>
+                  <div class="sim-row">Calendar</div>
+                  <div class="sim-row">Address book</div>
+                  <div class="sim-row">Notes</div>
+                  <div class="sim-row">Email</div>
+                </div>
+                <div class="art-caption"><span>Phone meets pocket computer</span><span>03 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter" id="chapter-2007" data-year="2007">
+              <div class="chapter-copy">
+                <span class="chapter-era">2007 · TOUCH CHANGES THE SCREEN</span>
+                <h3>Fingers become the interface.</h3>
+                <p>
+                  The first iPhone put a phone, music player, and internet communicator behind a large
+                  multi-touch screen. Touch became the main way to move around, and the screen became the
+                  heart of the device.
+                </p>
+                <span class="fact-note">Apple introduced the iPhone on January 9, 2007.</span>
+              </div>
+              <div class="device-card tone-lavender" role="img" aria-label="Illustration of a touchscreen smartphone">
+                <div class="tiny-phone" aria-hidden="true"></div>
+                <div class="art-caption"><span>Tap. Swipe. Discover.</span><span>04 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter" id="chapter-2008" data-year="2008">
+              <div class="chapter-copy">
+                <span class="chapter-era">2008 · APPS OPEN NEW DOORS</span>
+                <h3>A phone becomes many things.</h3>
+                <p>
+                  App stores and new mobile platforms let people add tools to their phones. The first
+                  Android phone arrived in 2008. A single device could now become a camera, a game console,
+                  a notebook, or something new with every download.
+                </p>
+                <span class="fact-note">The T-Mobile G1 was the first Android-powered phone.</span>
+              </div>
+              <div class="device-card tone-green" role="img" aria-label="Illustration of a grid of mobile apps">
+                <div class="app-grid" aria-hidden="true">
+                  <span>✦</span><span>◷</span><span>⌖</span>
+                  <span>♫</span><span>▣</span><span>✉</span>
+                  <span>☼</span><span>▤</span><span>◎</span>
+                </div>
+                <div class="art-caption"><span>Your phone, your tools</span><span>05 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter" id="chapter-2010s" data-year="2010s">
+              <div class="chapter-copy">
+                <span class="chapter-era">2010s · ALWAYS WITH YOU</span>
+                <h3>The internet travels along.</h3>
+                <p>
+                  Faster mobile networks made maps, music, video, and video calls feel close at hand.
+                  The smartphone moved from a special gadget into an everyday companion for billions of
+                  people.
+                </p>
+                <span class="fact-note">Access still depends on networks, devices, and where people live.</span>
+              </div>
+              <div class="device-card tone-blue" role="img" aria-label="Illustration of a phone connected to the web">
+                <div class="old-web" aria-hidden="true">
+                  <div class="web-window">
+                    <b>hello, world</b>
+                    <span></span><span></span><span></span><span></span><span></span>
+                  </div>
+                </div>
+                <div class="art-caption"><span>A map, a song, a message</span><span>06 / 07</span></div>
+              </div>
+            </article>
+
+            <article class="chapter chapter-end" id="chapter-2020s" data-year="2020s">
+              <div class="chapter-copy">
+                <span class="chapter-era">2020s · THE PHONE KEEPS CHANGING</span>
+                <h3>One screen is no longer the limit.</h3>
+                <p>
+                  Foldable displays change the shape of the phone. On-device assistants add new ways to
+                  search and create. The next chapter is still being written, with better access,
+                  longer-lasting devices, and more useful connections still to solve.
+                </p>
+                <span class="fact-note">New features vary by phone, network, country, and service.</span>
+              </div>
+              <div class="device-card tone-lavender" role="img" aria-label="Illustration of two modern smartphones">
+                <div class="modern-phones" aria-hidden="true">
+                  <div class="modern-phone"></div>
+                  <div class="modern-phone"></div>
+                </div>
+                <div class="art-caption"><span>Still becoming</span><span>07 / 07</span></div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="future" id="next" aria-labelledby="future-title">
+        <div class="closing-inner closing">
+          <div>
+            <p class="eyebrow">The next chapter is yours</p>
+            <h2 id="future-title">What should a phone help us do next?</h2>
+          </div>
+          <div class="closing-copy">
+            <p>
+              The story of mobile technology is still unfolding. A better future can mean easier access
+              for more people, devices that last longer, and tools that respect our time and attention.
+            </p>
+            <a class="primary-link" href="#sources">
+              Explore the sources <span aria-hidden="true">↓</span>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="sources" id="sources" aria-labelledby="sources-title">
+        <div class="header-inner">
+          <div class="sources-heading">
+            <h2 id="sources-title">Keep exploring</h2>
+            <p>Start with these histories and original announcements.</p>
+          </div>
+          <div class="source-list">
+            <a
+              class="source-link"
+              href="https://en.wikipedia.org/wiki/Motorola_DynaTAC"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Motorola DynaTAC history <span aria-hidden="true">↗</span>
+            </a>
+            <a
+              class="source-link"
+              href="https://en.wikipedia.org/wiki/IBM_Simon"
+              target="_blank"
+              rel="noreferrer"
+            >
+              IBM Simon Personal Communicator <span aria-hidden="true">↗</span>
+            </a>
+            <a
+              class="source-link"
+              href="https://www.apple.com/newsroom/2007/01/09Apple-Reinvents-the-Phone-with-iPhone/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Apple introduces iPhone · 2007 <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <p>Made for curious people. No account, payment, or app install needed.</p>
+        <span class="read-only-mark">Free to view · Read only for visitors</span>
+        <a href="#top">Back to the beginning ↑</a>
+      </div>
+    </footer>
+
+    <script>
+      (() => {
+        const progressBar = document.getElementById("progress-bar");
+        const activeYear = document.getElementById("active-year");
+        const chapters = [...document.querySelectorAll(".chapter[data-year]")];
+        const chapterLinks = [...document.querySelectorAll(".chapter-nav a")];
+        let frame = 0;
+
+        const updateProgress = () => {
+          frame = 0;
+          const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+          const progress = scrollable > 0 ? Math.min(1, Math.max(0, window.scrollY / scrollable)) : 0;
+          progressBar.style.transform = `scaleX(${progress})`;
+          progressBar.parentElement.setAttribute("aria-valuenow", String(Math.round(progress * 100)));
+        };
+
+        window.addEventListener(
+          "scroll",
+          () => {
+            if (!frame) frame = window.requestAnimationFrame(updateProgress);
+          },
+          { passive: true },
+        );
+        window.addEventListener("resize", updateProgress, { passive: true });
+        updateProgress();
+
+        if ("IntersectionObserver" in window) {
+          const observer = new IntersectionObserver(
+            (entries) => {
+              const visible = entries
+                .filter((entry) => entry.isIntersecting)
+                .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
+              if (!visible) return;
+
+              const year = visible.target.dataset.year;
+              activeYear.textContent = year;
+              const sectionLink = chapterLinks.find((link) => link.hash === `#${visible.target.id}`);
+              for (const link of chapterLinks) link.removeAttribute("aria-current");
+              if (sectionLink) sectionLink.setAttribute("aria-current", "location");
+            },
+            { rootMargin: "-18% 0px -65% 0px", threshold: 0 },
+          );
+          for (const chapter of chapters) observer.observe(chapter);
+        }
+      })();
+    </script>
+  </body>
+</html>
