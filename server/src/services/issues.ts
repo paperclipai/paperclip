@@ -12173,14 +12173,9 @@ export function issueService(db: Db) {
         ? db.transaction(runUpdate)
         : runUpdate(dbOrTx));
       if (dbOrTx === db) {
-        const committedStatus = (result as { status?: string } | null | undefined)
-          ?.status;
-        const committed = result as { id?: string; companyId?: string } | null;
-        if (
-          committed?.id &&
-          committed.companyId &&
-          (committedStatus === "done" || committedStatus === "cancelled")
-        ) {
+        const committed = result as { id?: string; companyId?: string; status?: string } | null;
+        const committedStatus = committed?.status;
+        if (committed?.id && committed.companyId && committedStatus === "done") {
           try {
             await taskWatchdogService(db).recordTerminalReviewDisposition(
               committed.companyId,
