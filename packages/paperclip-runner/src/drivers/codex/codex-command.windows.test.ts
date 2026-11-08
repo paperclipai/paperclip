@@ -13,6 +13,7 @@ function fixture() {
   const triple = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
   const binary = join(platform, "vendor", triple, "bin", "codex.exe");
   mkdirSync(join(base, "bin"), { recursive: true });
+  symlinkSync(base, join(root, "node_modules", "@openai", "codex-native"), "junction");
   mkdirSync(bridge, { recursive: true });
   writeFileSync(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.0.0" }));
   mkdirSync(dirname(binary), { recursive: true });

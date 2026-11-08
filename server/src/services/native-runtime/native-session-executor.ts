@@ -909,6 +909,7 @@ const NATIVE_PROVIDER_HOST_ENV_KEYS = [
   "XDG_CACHE_HOME",
   "XDG_DATA_HOME",
   "SystemRoot",
+  "SystemDrive",
   "PATHEXT",
 ] as const;
 

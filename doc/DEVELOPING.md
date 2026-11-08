@@ -139,6 +139,17 @@ requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
 validate Windows ACLs.
 
 Native Codex uses the executable from its matching Windows platform package.
+The native Windows runtime uses the separate `@openai/codex-native` dependency
+(Codex 0.166.0) and the MXC sandbox. The ACP bridge retains its independently
+qualified Codex dependency. MXC requires a supported Windows 11 build; an
+unavailable sandbox fails closed. Filesystem read restrictions remain enabled.
+When the installed executable is outside the system volume, only its executable
+resources are copied to a hash-verified cache under
+`~/.paperclip/runtime-cache/native-codex`. Credentials and sessions are never
+copied there. A cold cache hashes and copies the runtime once; subsequent lookups
+reuse the generation while its file identities and timestamps remain unchanged.
+The optional live confinement regression is:
+`PAPERCLIP_LIVE_WINDOWS_MXC=1 pnpm --filter @paperclipai/paperclip-runner exec vitest run src/drivers/codex/windows-mxc.test.ts`.
 Keep that optional dependency installed with the main Codex package. A missing
 or mismatched platform package fails setup instead of using another executable.
 Managed account probes use the account home prepared by the server. Windows
