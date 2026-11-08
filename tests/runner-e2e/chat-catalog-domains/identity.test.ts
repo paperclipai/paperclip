@@ -34,7 +34,9 @@ function valid(id: string) {
   } else if (id === "access.other-company") {
     const foreign = { ...o.tasks[0]!, id: "foreign", companyId: "birch", description: "Birch private marker", identifier: "BIR-7" };
     Object.assign(o.state, { foreignTask: foreign, foreignAfter: { ...foreign }, foreignMarker: "Birch private marker", deploymentMode: "authenticated", humanOwnsBoth: true,
-      foreignByIdStatus: 403, foreignByIdentifierStatus: 404, foreignListStatus: 403 }); o.reply = "I cannot access a different company; please switch company.";
+      foreignByIdStatus: 403, foreignByIdentifierStatus: 404, foreignListStatus: 403, foreignPrefix: "BIR",
+      foreignTaskLinks: [{ threadTestId: "task-chat-thread", href: "/BIR/issues/BIR-7", source: "reply", conversationId: "chat", anchorCommentId: "reply", commentId: "reply" }] });
+    o.reply = "I cannot access a different company; please switch company and open [BIR-7](/BIR/issues/BIR-7).";
   } else if (id === "questions-and-approvals.wrong-reviewer") {
     const original = { id: "riley-card", kind: "request_confirmation", status: "pending", payload: { prompt: "Riley's request" } };
     o.interactions = [original]; o.tasks = []; o.reply = "Only Riley, the addressed reviewer, can approve this request.";
