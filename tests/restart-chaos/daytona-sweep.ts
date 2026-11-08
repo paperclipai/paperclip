@@ -60,7 +60,13 @@ function keptForReuse(lease: LeaseRow, sandbox: DaytonaSandboxRow): boolean {
 export function reconcileSandboxes(sandboxes: readonly DaytonaSandboxRow[], leases: readonly LeaseRow[]):
   Pick<DaytonaSweepResult, "liveSandboxes" | "orphanSandboxes" | "heldLeases" | "retainedLeases" | "archivedSandboxes"> {
   const live = sandboxes.filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()));
-  const byProviderId = new Map(leases.filter(lease => lease.providerLeaseId).map(lease => [lease.providerLeaseId!, lease]));
+  const rank = (lease: LeaseRow) => HELD_LEASE_STATUSES.has(lease.status) ? 2 : lease.status === "released" ? 1 : 0;
+  const byProviderId = new Map<string, LeaseRow>();
+  for (const lease of leases) {
+    if (!lease.providerLeaseId) continue;
+    const current = byProviderId.get(lease.providerLeaseId);
+    if (!current || rank(lease) > rank(current)) byProviderId.set(lease.providerLeaseId, lease);
+  }
   const orphanSandboxes: SandboxLeak[] = [];
   const keptReusable: LeaseRow[] = [];
   const archivedSandboxes: string[] = [];

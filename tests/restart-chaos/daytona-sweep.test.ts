@@ -126,6 +126,16 @@ describe("Daytona R6 reconciliation", () => {
     expect(result.orphanSandboxes.map(leak => leak.sandboxId)).toEqual(["r2", "e1"]);
   });
 
+  it("judges a reused sandbox by its current lease row, whatever the listing order", () => {
+    const rows = [{ id: "old", status: "expired", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" },
+      { id: "new", status: "released", leasePolicy: "reuse_by_environment", providerLeaseId: "r1" }];
+    for (const leases of [rows, [...rows].reverse()]) {
+      const result = reconcileSandboxes([{ id: "r1", state: "stopped" }], leases);
+      expect(result.orphanSandboxes).toEqual([]);
+      expect(result.retainedLeases.map(lease => lease.leaseId)).toEqual(["new"]);
+    }
+  });
+
   it("reports sandboxes with no lease and leases still active at rest", () => {
     const result = reconcileSandboxes(
       [{ id: "s9", state: "started", labels: { "paperclip-run-id": "r9" } }, { id: "s1", state: "started" }],
