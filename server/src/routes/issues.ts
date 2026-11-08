@@ -572,6 +572,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       throw unprocessable("Task watchdog service is unavailable");
     },
     disableForIssue: async () => null,
+    recordTerminalReviewDisposition: async () => null,
     reconcileTaskWatchdogs: async () => ({
       checked: 0,
       triggered: 0,

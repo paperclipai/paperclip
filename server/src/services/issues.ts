@@ -242,6 +242,7 @@ import type {
 } from "./import-write-types.js";
 import {
   summarizeIssueWatchdog,
+  taskWatchdogService,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
 import {
@@ -12171,6 +12172,29 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db
         ? db.transaction(runUpdate)
         : runUpdate(dbOrTx));
+      if (dbOrTx === db) {
+        const committedStatus = (result as { status?: string } | null | undefined)
+          ?.status;
+        const committed = result as { id?: string; companyId?: string } | null;
+        if (
+          committed?.id &&
+          committed.companyId &&
+          (committedStatus === "done" || committedStatus === "cancelled")
+        ) {
+          try {
+            await taskWatchdogService(db).recordTerminalReviewDisposition(
+              committed.companyId,
+              committed.id,
+              { runId: data.actorRunId ?? null },
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: committed.id, status: committedStatus },
+              "terminal watchdog review disposition deferred to next round",
+            );
+          }
+        }
+      }
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications)
           publishActivity(publication);
