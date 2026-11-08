@@ -3942,6 +3942,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
   }
 
+  controllerAcceptedCompletedTurnId(): string | null {
+    if (this.options.provider === "acpx") return null;
+    const commands = this.#core?.store.state.commands ?? [];
+    const latest = [...commands].map(command => command as unknown as Record<string, unknown>)
+      .filter(command => command.type === "turn.start" && command.status === "completed").at(-1);
+    const accepted = latest ? record(record(latest.result).result).providerTurnId : null;
+    return typeof accepted === "string" && accepted.length > 0
+      ? controllerAcceptedTurnStartId(commands, { requireRequestedIdentity: false, runnerActiveTurnId: accepted }) : null;
+  }
+
   /** The active provider turn in the runner's latest authenticated session.snapshot. */
   #snapshotActiveProviderTurnId: string | null = null;
 
