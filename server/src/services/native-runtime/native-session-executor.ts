@@ -7745,6 +7745,27 @@ async function releaseWarmNativeSession(
 
 const RELEASED_WARM_NATIVE_SESSION_RETENTION_MS = 24 * 60 * 60_000;
 
+function retireOtherReleasedWarmNativeSessions(scope: string, entry: WarmNativeSession): void {
+  if (entry.environmentId === null || !entry.agentId) return;
+  for (const [otherScope, other] of [...warmNativeSessions]) {
+    if (otherScope === scope || other.environmentId !== entry.environmentId || other.agentId !== entry.agentId
+      || other.released !== true || other.busy
+      || other.preparingRunId || other.instructionPreparationRunId || other.closeOnReleaseReason !== undefined
+      || executingRunnerdSessionScopes.has(otherScope) || closingWarmNativeSessions.has(otherScope)) continue;
+    if (other.idleTimer !== null) clearTimeout(other.idleTimer);
+    other.idleTimer = null;
+    other.busy = true;
+    const closing: Promise<void> = detachReleasedWarmNativeSession(other)
+      .then(() => { forgetWarmNativeSession(otherScope, other); })
+      .catch(() => { other.closeOnReleaseReason = "released Runner local detach is unconfirmed"; })
+      .finally(() => {
+        other.busy = false;
+        if (closingWarmNativeSessions.get(otherScope) === closing) closingWarmNativeSessions.delete(otherScope);
+      });
+    closingWarmNativeSessions.set(otherScope, closing);
+  }
+}
+
 function armWarmNativeSessionIdleTimer(
   sessionId: string,
   entry: WarmNativeSession,
@@ -12148,6 +12169,7 @@ async function executePaperclipNativeSessionWithinScope(
                 return;
               }
               entry.released = true;
+              retireOtherReleasedWarmNativeSessions(scope, entry);
             }
           } catch {
             // The business turn already settled. An unknown release stays owned and active.

@@ -16391,6 +16391,67 @@ describe("runnerd provider runtime wiring", () => {
       }
     });
 
+  it("keeps one released plugin Runner cache per agent environment", async () => {
+    await closeIdleWarmNativeSessionsForRestart();
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = isolatedStateDirectory;
+    const home = join(isolatedStateDirectory, "released-environment-account");
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+    const release = async (suffix: string, environmentId: string, agentId: string) => {
+      const scoped = scopedNativeExecution(`released-environment-${suffix}`);
+      const current = { ...scoped, binding: { ...scoped.binding, agentId } };
+      current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+      const source = { runnerInstanceId: `runner-${suffix}`, environmentLeaseId: `lease-${suffix}`, runId: current.binding.runId,
+        normalizedSessionId: current.session.normalizedSessionId!, turnId: "settled-turn", itemId: "settled-item" };
+      await writeRunnerAuthority(await initializeScopedRunnerRoot(current, source.runnerInstanceId), source, "ready");
+      const taskId = `task-${suffix}`;
+      const task = vi.fn(async (_operation: unknown) => ({ kind: "description", taskId,
+        launchPreparationVersion: 1, projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1,
+        runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }));
+      const session = { release: vi.fn(async () => structuredClone(source)), close: vi.fn(async () => undefined),
+        detachControllerForRestart: vi.fn(async () => undefined) };
+      const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+        summary: "Completed", completionClaim: { contractRevision: current.completionContract.contract.revision,
+          objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [], artifacts: [], attentionRequests: [] });
+      if (!validated.ok) throw new Error("Invalid completion fixture");
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onCheckpoint?.({ backendKind: "runner", driverKind: current.session.driverKind, sessionId: "driver-session",
+          identity: { ...current.binding, sessionId: source.normalizedSessionId }, providerSessionId: "provider-session",
+          activeTurnId: null, pendingRuntimeRequests: [] });
+        await options.onSession?.(session);
+        return { result: validated.result, terminal: { runTerminalState: "succeeded" }, turnId: source.turnId,
+          normalizedSessionId: source.normalizedSessionId, providerSessionId: "provider-session", driverKind: "test", driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      });
+      await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current,
+        runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", environmentId, leaseId: source.environmentLeaseId,
+          runnerTask: task, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: taskId } },
+        managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account" }))
+        .resolves.toMatchObject({ sessionId: source.normalizedSessionId });
+      expect(session.release).toHaveBeenCalledOnce();
+      return session;
+    };
+    try {
+      const first = await release("first", "shared-environment", "shared-agent");
+      const otherAgent = await release("other-agent", "shared-environment", "other-agent");
+      const otherEnvironment = await release("other-environment", "other-environment", "shared-agent");
+      expect(first.detachControllerForRestart).not.toHaveBeenCalled();
+      const second = await release("second", "shared-environment", "shared-agent");
+      await vi.waitFor(() => expect(first.detachControllerForRestart).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(readNativeSessionIdleWork()).toBe("none"));
+      const retained = [second, otherAgent, otherEnvironment];
+      for (const session of [first, ...retained]) expect(session.close).not.toHaveBeenCalled();
+      for (const session of retained) expect(session.detachControllerForRestart).not.toHaveBeenCalled();
+      expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 3, busy: 0, failed: 0 });
+      for (const session of [first, ...retained]) expect(session.detachControllerForRestart).toHaveBeenCalledOnce();
+    } finally {
+      await closeIdleWarmNativeSessionsForRestart();
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+    }
+  });
+
   it.each([false, true])("retires a settled plugin Runner's idle cache by its host release state (released=%s)", async released => {
     await closeIdleWarmNativeSessionsForRestart();
     const previousHome = process.env.PAPERCLIP_HOME;
