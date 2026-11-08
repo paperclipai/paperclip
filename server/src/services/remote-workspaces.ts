@@ -38,7 +38,7 @@ import {
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
-import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
+import { attachPreservedRemoteWorkspaceSnapshots, retainRemoteRecoveryAttachments, retiredRecoveryAttachments } from "./remote-workspace-recovery-attachments.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -495,7 +495,9 @@ export async function prepareRemoteWorkspace(input: {
       savedArchive: isSavedWorkspaceRepository(input.workspace, initial, repository),
       resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
-  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string }> = [];
+  const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string; retired?: true }> = [];
+  // A copy that was shown to a run that then succeeded is removed and never attached again.
+  const retiredOperationIds = await retiredRecoveryAttachments(input.db, input.workspace, input.runId);
   if (!sameAllocation) {
     // Shared and inherited workspaces retain their original source task. The
     // current writer's task owns its recovery attachments, including a child's
@@ -515,7 +517,7 @@ export async function prepareRemoteWorkspace(input: {
       const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
       try {
         const scope = { db: input.db, companyId: input.workspace.companyId, issueId, sourceRunIds: recoverySourceRunIds,
-          cwd: scratch, storage: input.storage };
+          cwd: scratch, storage: input.storage, retiredOperationIds };
         const recovered = [
           ...await attachPreservedWorkspaceSnapshots(scope),
           ...await attachPreservedRemoteWorkspaceSnapshots({ ...scope, runId: input.runId, workspaceId: input.workspace.id }),
@@ -535,7 +537,7 @@ export async function prepareRemoteWorkspace(input: {
     }
   }
   await retainRemoteRecoveryAttachments({ db: input.db, workspace: input.workspace, runId: input.runId,
-    remoteRoot, target, recoveredFiles, assertOwned: input.assertOwned, storage: input.storage });
+    remoteRoot, target, recoveredFiles, retiredOperationIds, assertOwned: input.assertOwned, storage: input.storage });
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
     await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
@@ -558,8 +560,12 @@ export async function prepareRemoteWorkspace(input: {
       .where(eq(environmentLeases.id, lease.id)).returning();
     const [savedWorkspace] = await tx.update(executionWorkspaces).set({ cwd: remoteRoot, providerRef: remoteRoot,
       metadata: { ...workspace.metadata, remoteWorkspace: authority,
+        // A live copy names the run it is shown to; the next preparation retires
+        // it once that run has succeeded. Retired records stay so a sandbox
+        // restored from an older save is cleaned up too.
         ...(recoveredFiles.length || workspace.metadata?.remoteWorkspaceRecoveredFiles !== undefined
-          ? { remoteWorkspaceRecoveredFiles: recoveredFiles } : {}) }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+          ? { remoteWorkspaceRecoveredFiles: recoveredFiles.map(item => item.retired ? item : { ...item, presentedToRunId: input.runId }) } : {}) },
+      updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id)).returning();
     const runReference = reference(workspace.id, authority, "prepared");
     const issueId = await persistRunReference(tx, workspace.companyId, input.runId, runReference);
     if (restoredExport) {

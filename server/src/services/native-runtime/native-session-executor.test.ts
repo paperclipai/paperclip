@@ -8363,7 +8363,10 @@ describe("native terminal-turn accounting", () => {
           const nextRun = randomUUID();
           await db.insert(tables.heartbeatRuns).values({ id: nextRun, companyId, agentId, status: "queued", runtimeMode: "native" });
           await expect(reserveRunBudget(db, companyId, nextRun, null)).resolves.toMatchObject({ reused: false });
-        } else expect(block, scenario).not.toBeNull();
+        // Only a settled unpriced charge under a blocking policy refuses work.
+        // Pending accounting is exposure, never a gate (invariant 3).
+        } else if (ready) expect(block, scenario).not.toBeNull();
+        else expect(block, scenario).toBeNull();
       }
     } finally { await db.$client.end(); await database.cleanup(); await rm(directory, { recursive: true, force: true }); }
   }, 90_000);
@@ -16086,7 +16089,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };

@@ -1,6 +1,6 @@
 import { addCents, normalizeCents, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
 
 export interface BudgetExposure {
@@ -16,10 +16,9 @@ export interface BudgetExposure {
 export type SpendPolicy = Pick<typeof budgetPolicies.$inferSelect, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">;
 export type ObservedSpend = BudgetExposure & {
   windowStart: Date; windowEnd: Date; total: number; totalExact: string;
-  pendingRunCount: number; recoveringRunCount: number;
-  /** Pending runs that hold admission: they ended without succeeding, so
-   * their provider may not have stopped, and no coordinator is recovering them. */
-  waitingRunCount: number;
+  /** Terminal runs whose accounting is unfinished. Display only: each one
+   * contributes its bounded estimate to exposure and never gates admission. */
+  pendingRunCount: number;
 };
 
 export function budgetWindow(kind: string, now = new Date()) {
@@ -73,7 +72,7 @@ const liveCost = sql`case when ${heartbeatRuns.costAccountedAt} is null and ${he
 
 /** Batched ledger, held-operation and unfinished-run aggregates. Never scans
  * agents or receipt history; each policy retains its own scope and window. */
-async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, excludeRunId?: string | null): Promise<ObservedSpend[]> {
+async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): Promise<ObservedSpend[]> {
   const windows = policies.map(policy => budgetWindow(policy.windowKind, now));
   const billable = policies.map((policy, index) => ({ policy, index })).filter(({ policy }) => policy.metric === "billed_cents");
   const ledgerColumns: Record<string, SQL> = {}, heldColumns: Record<string, SQL> = {}, runColumns: Record<string, SQL> = {}, browserColumns: Record<string, SQL> = {};
@@ -120,30 +119,12 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     const run = and(eq(heartbeatRuns.companyId, policy.companyId), or(eq(heartbeatRuns.costAccountingPending, true), lateReceiptDebt),
       policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
       policy.scopeType === "project" ? sql`${usage}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined)!;
-    // A task never waits on its own unfinished accounting: the run being
-    // admitted and earlier runs of the same task (its recovery generation) are
-    // what its continuation and finalization settle. They still count as spend.
-    // coalesce keeps this a definite boolean when the admitted run has no task.
-    const ownTask = excludeRunId ? sql`coalesce(${heartbeatRuns.id} = ${excludeRunId}::uuid or (${heartbeatRuns.nativeIssueId} is not null
-      and ${heartbeatRuns.nativeIssueId} = (select admitted_run.native_issue_id from ${heartbeatRuns} admitted_run
-        where admitted_run.id = ${excludeRunId}::uuid and admitted_run.company_id = ${heartbeatRuns.companyId})), false)` : sql`false`;
-    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt),
-      sql`not ${ownTask}`)!;
+    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt))!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
     // qualifiers from a single-table selection's direct column chunks.
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
-    // A terminal failure whose final receipt never closed is still recovering
-    // accounting: once its provider stop is verified, accounting settles the
-    // known part as unpriced. That window holds new work; it is not a hard stop.
-    const closingReceipt = sql`${usage}->>'accountingReceiptReady' = 'false'
-      and ${usage}->>'accountingCaptureFailed' is distinct from 'true'`;
-    const recovering = sql`not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
-      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
-        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        and ${nativeRunFinalizations.resultId} is null
-        and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt})))`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
     // "Usage with no reliable price" means observed usage that could not be
@@ -192,16 +173,10 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // observation describe one operation, so count their maximum, not both.
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
-    runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
-    // A succeeded run whose provider reported observed usage has only its
-    // final usage report outstanding. Like a running run, that observed cost
-    // counts toward spend and reservation capacity, and its settled charge can
-    // still reach the hard stop, but it does not hold the whole scope's new
-    // work. A succeeded run with no observed cost (for example an unproven
-    // Cursor Cloud terminal) still holds new work.
-    const boundedSucceeded = sql`${heartbeatRuns.status} = 'succeeded' and ${usage}->'budgetExposure'->>'costCents' is not null`;
-    runColumns[`waiting${index}`] = sql`count(*) filter (where ${terminal} and not (${boundedSucceeded})
-      and not (${heartbeatRuns.runtimeMode} = 'native' and ${recovering}))::int`;
+    // Unfinished accounting is exposure, not a gate (SPEC 11.6, invariant 3).
+    // Its bounded estimate is the larger of the run's held reservation and its
+    // observed cost, counted above; a hard stop reads the ledger plus observed
+    // cost. No terminal run's cleanup or accounting state refuses new work.
   }
   // A single statement preserves hold-to-ledger atomicity even when a caller
   // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
@@ -233,8 +208,7 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     return { windowStart: windows[index].start, windowEnd: windows[index].end,
       ledgerCents, liveObservedCents, effectiveHeldCents: addCents(String(held[`held${index}`] ?? 0), String(runs[`unreserved${index}`] ?? 0), String(browser[`held${index}`] ?? 0)),
       total: Number(totalExact), totalExact, pendingRunCount, pendingTerminalRunCount: pendingRunCount,
-      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0),
-      waitingRunCount: Number(runs[`waiting${index}`] ?? 0) };
+      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0) };
   });
 }
 
@@ -242,14 +216,14 @@ export async function computeObservedSpend(db: Db, policy: SpendPolicy, now = ne
   return (await computeObservedSpends(db, [policy], now))[0];
 }
 
-export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date(), excludeRunId?: string | null): Promise<ObservedSpend[]> {
+export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date()): Promise<ObservedSpend[]> {
   return withBudgetSpan("budget.exposure.evaluate", async () => {
     // Each policy contributes several aggregate columns. Bound statement width
     // below PostgreSQL's target-list limit. Multi-scope evaluators/reports own
     // a repeatable-read transaction; individual admission batches fit one SQL.
     const result: ObservedSpend[] = [];
     for (let offset = 0; offset < policies.length; offset += 128)
-      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now, excludeRunId));
+      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now));
     return result;
   }, { "budget.policy_count": policies.length });
 }

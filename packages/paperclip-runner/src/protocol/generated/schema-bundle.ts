@@ -4971,6 +4971,12 @@ export const eventSchema = {
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -5754,6 +5760,12 @@ export const eventV2Schema = {
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -6088,6 +6100,12 @@ export const eventV3Schema = {
         "runner",
         "control_plane"
       ]
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
     },
     "runId": {
       "type": "string",

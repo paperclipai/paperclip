@@ -32,6 +32,8 @@ export interface LedgerLine {
   recordedAt: string;
   /** Known signatures masked for this wave, e.g. ["rc06"]. */
   masks?: string[];
+  /** Crash-point suite: the named point this wave armed. */
+  crashPoint?: string;
 }
 
 export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null,
@@ -49,6 +51,7 @@ export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade,
     signature: grade.signature, retried: Boolean(record.retry), evidence, replay: replayCommand(plan.waveId, record.plan.taskId),
     recordedAt: new Date().toISOString(),
     ...(plan.options.masks?.length ? { masks: [...plan.options.masks] } : {}),
+    ...(plan.options.crashPoint ? { crashPoint: plan.options.crashPoint } : {}),
   };
 }
 

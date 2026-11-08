@@ -7,6 +7,7 @@ import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type { PersistedNativeSession } from "../contracts/native-session-backend.js";
 import type { PrpEvent } from "../protocol/replay-contract.js";
 import { executeNativeSession } from "../native-session-runtime.js";
+import { unreadSteeredMessageIds } from "../steering-delivery.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 
 it.each(["none", "before-start", "after-start"] as const)("completes after the real runner and provider are killed (second crash: %s)", async (crash) => {
@@ -309,3 +310,115 @@ it("finalizes the durable proposed result when the runner and provider die befor
     await rm(root, { recursive: true, force: true });
   }
 }, 40_000);
+
+it.each(["unread", "read"] as const)("delivers a steered message the restart lost exactly once (%s before the kill)", async (state) => {
+  // A user steers the live turn during a tool call, then the controller,
+  // runner and provider die before the model's next step ("unread"), or after
+  // the provider recorded the message ("read"). Recovery reads the durable run
+  // log: the unread message must reach the continuation once; the read one
+  // must not reach it again.
+  const root = await mkdtemp(join(tmpdir(), "runner-restart-steer-"));
+  const identity = { runId: "run-steer", sessionId: "session-steer", companyId: "company-steer", issueId: "issue-steer", agentId: "agent-steer" };
+  const execution: NativeExecutionInputV1 = {
+    schema: "paperclip.native-execution-input.v1",
+    binding: { runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "workspace-steer" },
+    session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    task: { identifier: "TEST-4", title: "Finish checks", description: null, prompt: "Watch the already running checks and finish the request.", workMode: "standard" },
+    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    provider: { kind: "codex", model: null },
+    completionContract: { id: "contract-steer", sha256: "digest", schemaVersion: "paperclip.completion-contract.v1", contract: {
+      revision: "1", objective: "Finish checks", criteria: [{ id: "checks", requirement: "Check the outcome" }],
+    } },
+    interactionResponses: [], credentialBindings: [],
+  };
+  const commentId = "0b6f8c62-5d1a-4c55-9a7e-2f1c3b4d5e6f";
+  const steeredText = "HELLO steer-nonce-7f3a";
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn",
+      ...(state === "read" ? ["--consume-steer"] : [])],
+    stateDirectory: root,
+    prpIdentity: { runnerInstanceId: "runner-steer", environmentLeaseId: "lease-steer", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-steer", itemId: "item-steer" },
+  };
+  const first = createRunnerdCodexTransport(options);
+  let restored: ReturnType<typeof createRunnerdCodexTransport> | undefined;
+  const alive = (pid: number | null) => {
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  const kill = (pid: number | null) => {
+    if (!pid) return;
+    try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  // The server's run-log reader, over the events the control plane persisted.
+  const unread = (events: PrpEvent[]) => unreadSteeredMessageIds(events.map(event => ({
+    eventType: event.eventType, turnId: event.turnId, itemId: event.itemId,
+    kind: typeof (event.payload as { kind?: unknown }).kind === "string" ? (event.payload as { kind: string }).kind : null,
+  })));
+  try {
+    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-steer", transportFactory: () => first.transport });
+    const session = await backend.openSession({ identity, workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: execution.task.prompt } });
+    const started = await session.snapshot();
+    expect(started.activeTurnId).toBe("provider-turn-1");
+    expect((await session.capabilities()).steering).toBe(true);
+    await session.steer!({ turnId: started.activeTurnId!, message: { role: "user", text: steeredText }, correlationId: commentId });
+    const persisted = await session.snapshot();
+    const durableEvents: PrpEvent[] = [];
+    const initialEvents = session.events()[Symbol.asyncIterator]();
+    const kinds = () => durableEvents.map(event => (event.payload as { kind?: unknown }).kind);
+    // "read": the turn's input and the steered message are both userMessage items.
+    while (!kinds().includes("steering_acknowledgement") || (state === "read" && durableEvents.filter(event => event.eventType === "item.started" && (event.payload as { kind?: unknown }).kind === "userMessage").length < 2)) {
+      const event = await initialEvents.next();
+      if (event.done) throw new Error("initial event history ended early");
+      durableEvents.push(event.value);
+    }
+    expect(unread(durableEvents)).toEqual(state === "unread" ? [commentId] : []);
+    const owner = first.evidence();
+    await first.detachControllerForRestart();
+    kill(owner.runnerPid);
+    kill(owner.providerPid);
+    await vi.waitFor(() => { expect(alive(owner.runnerPid)).toBe(false); expect(alive(owner.providerPid)).toBe(false); });
+    const providerState = JSON.parse(await readFile(join(root, "fake-state.json"), "utf8"));
+    providerState.activeTurnId = null;
+    await writeFile(join(root, "fake-state.json"), JSON.stringify(providerState));
+    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: [], resumeActiveTurnId: persisted.activeTurnId });
+    const recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-steer", transportFactory: () => restored!.transport });
+    const completion = await executeNativeSession({
+      input: execution, backend: recovering, persistedSession: persisted, resumeInterruptedTurn: true,
+      getUnreadSteeredMessages: async () => unread(durableEvents).map(id => ({ id, text: id === commentId ? steeredText : "" })),
+      runnerInstanceId: "runner-steer", controlPlaneInstanceId: "controller-steer", timeoutMs: 15_000,
+      controlPlane: {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) { if (!("sourceSeq" in event)) throw new Error("Expected a durable PRP event"); durableEvents.push(event); return { cursor: durableEvents.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async replayEvents(request) {
+          const source = durableEvents.filter(event => event.sourceInstanceId === request.sourceInstanceId);
+          return { events: source.filter(event => event.sourceSeq > request.afterSourceSeq), highestContiguousSourceSeq: source.at(-1)?.sourceSeq ?? 0 };
+        },
+        async completeRun() {},
+      },
+    });
+    expect(completion).toMatchObject({ turnId: "provider-turn-2", terminal: { runTerminalState: "succeeded" } });
+    const journal = JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8"));
+    const submissions: Array<{ payload: { text: string } }> = journal.commands.filter((command: { type: string }) => command.type === "turn.start");
+    expect(submissions).toHaveLength(2);
+    const continuation = submissions[1]!.payload.text;
+    expect(continuation).toContain("Reconcile any unfinished tool or command");
+    expect(continuation.split(steeredText).length - 1).toBe(state === "unread" ? 1 : 0);
+    if (state === "unread") expect(JSON.parse(continuation).steeredMessages).toEqual([steeredText]);
+    // The continuation's completed turn is the durable read fact: a later
+    // restart has nothing left to deliver.
+    expect(unread(durableEvents)).toEqual([]);
+  } finally {
+    await restored?.transport.close().catch(() => undefined);
+    for (const bundle of [first, restored]) {
+      if (!bundle) continue;
+      const evidence = bundle.evidence();
+      kill(evidence.runnerPid);
+      kill(evidence.providerPid);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
