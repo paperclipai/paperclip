@@ -648,6 +648,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
@@ -2175,6 +2179,23 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
+Local snapshot hashing, encryption, and decryption use bounded 1 MiB filesystem
+stream buffers to reduce event-loop handoffs under background load. Each stream
+retains its existing integrity and cancellation checks; archive contents and
+saved snapshot formats are unchanged. Reproduce the scheduling effect with:
+
+```sh
+node --expose-gc scripts/benchmark-workspace-archive-io.mjs
+```
+
+This bounded benchmark alternates three baseline/treatment pairs over the same
+32 MiB archive with 5 ms of competing main-thread work per turn. It runs real
+hashing and encryption file passes, compares plaintext and ciphertext digests,
+and reports callback counts and diagnostic peak memory growth. Larger buffers
+trade additional bounded stream memory for fewer scheduling handoffs. The result
+is synthetic; it does not identify the competing workload or establish hosted
+finalization latency, and excludes sandbox, database, and object-storage time.
+
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
@@ -2189,6 +2210,18 @@ or `cleanup`) and its timeout in milliseconds. Command output is excluded from
 that diagnostic. A timeout does not prove the remote process stopped or that a
 save failed before publication. Reconcile the existing workspace and operation
 receipts before recovery; the transport does not automatically repeat the command.
+The internal helper commands suppress Node runtime warnings so their fixed
+failure labels stay separate from warning text. Actual command errors still
+fail the operation. This does not change an agent process's environment.
+
+Loading an encrypted saved snapshot cancels its storage request after five
+minutes without incoming bytes, including a wait for response headers. Incoming
+bytes renew that idle deadline, so a large download can take longer while it
+makes progress. The failure is `remote_workspace_snapshot_download_stalled`;
+private download scratch is removed before returning and the saved snapshot is
+unchanged. Preparation offers its existing bounded retry only after rechecking
+the same clean saved version and workspace owner. Caller cancellation still
+cancels the request and does not become a download timeout.
 Export cleanup keeps this typed timeout diagnostic in the operation's
 `metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
 The saved snapshot stays acknowledged and the cleanup obligation stays pending
@@ -3146,7 +3179,8 @@ and model.
 
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
-selection uses `allow` permissions and a `per_turn` lifecycle. Native `ask` and
+selection uses `allow` permissions and leaves the lifecycle unset (see "Runner
+lifecycle default" below). Native `ask` and
 `deny` policies remain available in agent configuration. Legacy custom commands,
 extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
@@ -3422,6 +3456,13 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+An explicit Retry can continue a recovered setup failure that began as a
+scheduled retry. Its settlement proof accepts the host-authored promotion event
+only when its deadline, reason and attempt match the run and its saved retry
+context. The exact failure and durable measurement must still follow. Provider
+dispatch evidence, an active controller, unsafe files or changed user authority
+keep the Retry held. This adds no automatic replay or recovery loop.
+
 For remote controller disk-loss work, use the existing control-plane snapshot
 transaction and `native-controller-recovery.ts`; do not add a second snapshot
 writer. The private versioned metadata is limited to 4 KiB. Its importer handles
@@ -3551,6 +3592,27 @@ that classification finishes.
   conflicting histories, changed profiles, and live or unverifiable owners do.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
+
+### Runner lifecycle default
+
+New native Codex, Claude and OpenCode agents store no `lifecycleMode`. For Codex
+and OpenCode on a local target, the controller resolves that to `warm` with the default 5-minute idle
+window (`resolveHeartbeatNativeLifecyclePolicy`), so a follow-up turn on the same
+task reuses the live runner and provider session instead of launching and
+loading them again. Claude (ACPX) relaunches its provider process on every
+follow-up turn by design, so warm does not shorten its follow-up and it resolves
+to `per_turn`, as do remote targets, other harnesses and managed providers
+without warm support. An explicit `per_turn` or `warm` choice
+("Turn by turn" or "Warm session" in the agent's Runner lifecycle field) always
+wins, and a session keeps the policy it was admitted with. The measurements are
+in [`plans/2026-11-07-warm-follow-up-ttft.md`](plans/2026-11-07-warm-follow-up-ttft.md).
+
+A warm local runner outlives its turn, so it carries a 7-minute reconnect grace
+(`localRunnerProcessReconnectGraceMs`, the same grace remote runners use). If its
+controller dies without suspending it, runnerd proves after the grace that no
+controller re-authenticated, stops its provider, keeps its durable state for a
+cold resume, and exits. A graceful controller shutdown suspends idle warm
+sessions first. A per-turn local runner keeps its connection-lease bound.
 
 Only successful turns retain a live warm provider session. A structured failed
 or cancelled result must retire that session and collect its managed files before
@@ -4023,6 +4085,13 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+  A resumed session restores its failover backup from durable storage before the
+  provider starts. Each read has a five-minute idle limit instead of a short total
+  limit: a large or slow backup keeps restoring while bytes flow. A read that makes
+  no progress for five minutes fails with `native_harness_storage_download_stalled`
+  and publishes no partial backup. The whole restore, including local decrypt,
+  digest and extraction, has a 30-minute outer limit
+  (`native_harness_storage_restore_deadline_exceeded`). Stop ends the restore.
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
@@ -4533,6 +4602,16 @@ retryable restoration failure. It never substitutes the default branch.
 Reopening failures reject the consuming request with HTTP 409 before saving a
 comment or changing its task. The response preserves the restoration message, so
 the composer keeps an editable draft and permits retry after access is restored.
+It also carries `diagnostic: { step, kind }`, and the server log records the same
+pair. Both are closed values: `step` names the failed stage (for example
+`source_materialize`, `restore_point` or `saved_commit`), and `kind` names the
+failure class (`remote_unavailable`, `auth_rejected`, `commit_unavailable`,
+`timeout`, `verification`, `filesystem`, `git_command` or `unknown`). They never
+contain paths, repository URLs or Git output.
+Nested checkout failures retain their original restore step. The checkout
+wrapper keeps process error codes and timeout flags privately for classification;
+it does not attach the raw command error as a cause or add those flags to the
+public error object.
 
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner

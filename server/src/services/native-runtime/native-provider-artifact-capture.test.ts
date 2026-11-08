@@ -34,9 +34,16 @@ it.each(["stop", "deadline"])(
         entered = done;
       });
     const runner = {
-      execute: vi.fn(async () => {
-        throw new Error("unexpected provider command");
-      }),
+      // The confined export staging and its cleanup run as sandbox commands.
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: null,
+      })),
       syncOut: async (operations) => {
         const destination = operations[0].files[0].targetPath;
         root = dirname(destination);
@@ -61,6 +68,7 @@ it.each(["stop", "deadline"])(
     const result = captureRemoteNativeProviderArtifacts(
       {
         runner,
+        remoteCwd: "/workspace",
         manifest,
         context,
         signal: context.signal,

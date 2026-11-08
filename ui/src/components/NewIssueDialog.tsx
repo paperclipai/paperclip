@@ -510,8 +510,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const isSubIssueMode = Boolean(parentId);
   const parentIssueLabel =
     (newIssueDefaults.parentId === parentId ? newIssueDefaults.parentIdentifier : undefined) ?? (parentId ? parentId.slice(0, 8) : "");
-  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
-  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
@@ -1237,15 +1235,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
   const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
     && (worktreesLoading || worktreesError || !selectedReusableWorktree);
-  const isUsingParentExecutionWorkspace =
-    isSubIssueMode && parentExecutionWorkspaceId
-      ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
-      : false;
-  const showParentWorkspaceWarning =
-    isSubIssueMode &&
-    currentProjectSupportsExecutionWorkspace &&
-    Boolean(parentExecutionWorkspaceId) &&
-    !isUsingParentExecutionWorkspace;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -1672,14 +1661,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       </div>
                     ) : null}
 
-                    {showParentWorkspaceWarning ? (
-                      <div className="mb-2">
-                        <InlineBanner tone="warning" compact>
-                          {t("issues.newIssueDialog.subtaskWorkspaceWarning")}
-                          {parentExecutionWorkspaceLabel ? t("issues.newIssueDialog.workspaceLabelSuffix", { label: parentExecutionWorkspaceLabel }) : ""}.
-                        </InlineBanner>
-                      </div>
-                    ) : null}
                     {effectiveCompanyId && neededUserSecretKeys.length > 0 ? (
                       <MissingUserSecretsBanner companyId={effectiveCompanyId} definitionKeys={neededUserSecretKeys} />
                     ) : null}
@@ -1737,7 +1718,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       <ComposerWorktreePicker
                         mode={executionWorkspaceMode}
                         workspaceId={selectedExecutionWorkspaceId}
-                        selectedWorkspaceLabel={selectedReusableWorktree?.name ?? (selectedExecutionWorkspaceId === parentExecutionWorkspaceId ? newIssueDefaults.parentExecutionWorkspaceLabel : undefined)}
+                        selectedWorkspaceLabel={selectedReusableWorktree?.name}
                         workspaces={selectableReusableWorkspaces}
                         onChange={(mode, workspaceId) => {
                           setExecutionWorkspaceMode(mode);

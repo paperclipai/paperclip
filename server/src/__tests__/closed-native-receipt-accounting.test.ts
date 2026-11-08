@@ -314,7 +314,7 @@ const support = await getEmbeddedPostgresTestSupport();
   // Chaos waves: a run that had just succeeded was terminal for ~100 ms before
   // its charge committed. The evaluator read that gap as a hard stop, paused the
   // company and cancelled unrelated running work, which then never settled.
-  it("holds admission without a hard stop while a finished run's charge commits", async () => {
+  it("neither pauses nor holds admission while a succeeded run's charge commits", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
       usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptReady":true,"costUsd":0.1}'::jsonb` })
@@ -332,6 +332,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
     expect(policy.enforcementVersion).toBe(f.policy.enforcementVersion);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runningId)))[0].status).toBe("running");
+    // Its provider work is over and its observed cost counts, like a running run.
+    expect(await f.block()).toBeNull();
+    // A run that ended without succeeding still holds new work.
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
     expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });
   });
 
@@ -429,7 +433,7 @@ const support = await getEmbeddedPostgresTestSupport();
   // Wave s7401: a local ACPX Claude run was killed after its result was
   // accepted. Ten receipts across two sources were all incomplete with zero
   // tokens, its local stop was verified, and the company refused all new work.
-  async function acceptedResultFixture(options: { stopEvidence?: boolean; finishedMinutesAgo?: number } = {}) {
+  async function acceptedResultFixture(options: { stopEvidence?: boolean; finishedMinutesAgo?: number; restart?: boolean } = {}) {
     const f = await fixture({ stopEvidence: options.stopEvidence });
     const contractId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issue.id, revision: 1,
@@ -445,10 +449,57 @@ const support = await getEmbeddedPostgresTestSupport();
       .where(eq(nativeRunFinalizations.runId, f.run.id));
     await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
       finishedAt: new Date(Date.now() - (options.finishedMinutesAgo ?? 0) * 60_000),
-      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSourceFences: { [randomUUID()]: 5 },
-        accountingReceiptSequence: 5 })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSequence: 5,
+        ...(options.restart === false ? {} : { accountingReceiptSourceFences: { [randomUUID()]: 5 } }) })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
     return f;
   }
+
+  // s7501 run 0a18c2d0: a succeeded ACPX run whose receipt stayed incomplete
+  // held all company work for the 10-minute closure bound, including tasks
+  // that never crossed a fault. Its provider work is over; only its usage
+  // report is outstanding, so it is bounded like a running run.
+  it("does not hold other work for a succeeded run with only usage outstanding", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ budgetExposure: { sourceId: f.sourceId, sequence: 5, costCents: "5.0512400" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await f.block()).toBeNull();
+    // Its observed cost still counts, so the hard stop still applies.
+    await db.update(heartbeatRuns).set({
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ budgetExposure: { sourceId: f.sourceId, sequence: 6, costCents: "600" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect((await f.block())?.reason).toMatch(/hard-stop|await accounting/);
+  });
+
+  // s7504 run bda81857 (ACPX Claude, K4): succeeded with a committed result,
+  // a fenced receipt source, its provider process still recorded, and an
+  // estimated 27.38-cent observation under the blocking policy.
+  // s7503 run 267936b9 (Claude C1, K6): succeeded after a restart with only
+  // provisional zero usage. Its live projection is a known zero, not null.
+  it("does not hold other work for the s7503 zero-token succeeded row shape", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ costStatus: "unpriced", costUsd: null, costUsdExact: null,
+        inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0,
+        pricingProvenance: { source: "unknown", version: "accounting-receipt/v1" },
+        budgetExposure: { sourceId: f.sourceId, sequence: 3, costCents: "0.0000000" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system", payload: { restartKind: "hard", runnerDisposition: "resume_dead_runner" } });
+    expect(await f.block()).toBeNull();
+  });
+
+  it("does not hold other work for the s7504 succeeded row shape", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, processPid: 28893, processGroupId: 28893,
+      processStartedAt: new Date(),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ costStatus: "estimated",
+        budgetExposure: { sourceId: f.sourceId, sequence: 40, costCents: "27.3762400" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await f.block()).toBeNull();
+  });
 
   it("closes a result-accepted run's lost receipt once its local stop is verified", async () => {
     const f = await acceptedResultFixture();
@@ -525,6 +576,35 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  // s7532 run 23dc4e9d (OpenCode Retry): failed at once with
+  // native_session_cleanup_quarantined before any provider start. Its usage
+  // recorder had bound an empty fence map, so the never-started rule did not
+  // apply and the run held company admission for the full closure bound.
+  it("settles a quarantined Retry whose recorder bound an empty fence map at once", async () => {
+    const f = await neverStartedFixture("never_launched");
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSourceId: randomUUID(),
+        accountingReceiptSourceFences: {}, accountingReceiptReady: false })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" })
+      .where(eq(nativeRunFinalizations.runId, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.charges()).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  it("does not count an empty fence map as restart evidence for a timed-out closure", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptSourceFences":{}}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
   it("keeps waiting for the bound when the provider process was never verified stopped", async () => {
     const f = await neverStartedFixture("unverified");
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
@@ -540,6 +620,95 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  async function captureFailed(f: { run: { id: string } }, finishedMinutesAgo: number, extra: Record<string, unknown> = {}) {
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - finishedMinutesAgo * 60_000),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingCaptureFailed: true, accountingReceiptReady: false, ...extra })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+
+  // A failed usage capture never completes its receipt. It used to be skipped
+  // by accounting and held company admission until the UTC month rolled over.
+  it("settles a capture failure as unpriced at the closure bound and releases held work", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80 });
+    expect(await f.block()).not.toBeNull();
+    expect((await readCostAccountingWork(db, Date.now())).pending).toBe(true);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const run = await f.readRun();
+    expect(run).toMatchObject({ costAccountingPending: false });
+    expect(run.usageJson).toMatchObject({ accountingReceiptUnavailable: true, accountingClosureTimedOut: true });
+    const [charge] = await f.charges();
+    expect(charge).toMatchObject({ inputTokens: 1200, outputTokens: 80 });
+    expect(charge?.costStatus).not.toBe("reported");
+    expect(JSON.stringify(charge?.pricingProvenance)).toContain("usage capture failed");
+    expect(await f.block()).toBeNull();
+  });
+
+  it("waits for the closure bound before settling a capture failure", async () => {
+    const f = await fixture();
+    await captureFailed(f, 1);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    const next = (await readCostAccountingWork(db, Date.now())).nextRunAt;
+    expect(next).not.toBeNull();
+    expect(next!).toBeGreaterThan(Date.now());
+  });
+
+  it("keeps a settled capture failure under the blocking unpriced-usage policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model" });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("keeps a capture failure after a receipt-source handoff under the blocking policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model",
+      accountingReceiptSourceFences: { [f.sourceId]: 2 } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("settles a capture failure at no less than its observed live price", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+    // 600 cents exceeds the 500-cent policy: the hard stop still holds.
+    expect((await f.block())?.reason).toMatch(/hard-stop|budget/i);
+  });
+
+  it.each([["no raw cost", {}], ["a lower cache-adjusted cost", { cacheAdjustedCostUsd: 5 }]] as const)(
+    "settles a lost receipt at no less than its observed live price (%s)", async (_name, raw) => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      ...raw, inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+    // A complete receipt arriving later posts only its growth over the accepted price.
+    await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: randomUUID(),
+      companyId: f.companyId, runId: f.run.id, adapterType: "paperclip_runner", sourceId: f.sourceId, sequence: 6,
+      receivedAt: new Date().toISOString(),
+      producerEvent: { sourceEventId: randomUUID(), eventType: "turn.completed" },
+      receipt: { complete: true, usageBasis: "per_run", provider: "anthropic", biller: "anthropic",
+        model: "unknown-model", billingType: "metered_api", costUsd: 7, costStatus: "reported",
+        pricingProvenance: { source: "provider_reported", version: "test" },
+        usage: { inputTokens: 2400, cachedInputTokens: 0, outputTokens: 160 } } });
+    await accountRunCost(db, f.run.id);
+    const total = (await f.charges()).reduce((sum, row) => sum + Number(row.costCents), 0);
+    expect(total).toBeCloseTo(700, 5);
+  });
+
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
     const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })
@@ -548,7 +717,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it("stops blocking once a complete late receipt accounts for a timed-out closure", async () => {
-    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
@@ -568,8 +737,77 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("keeps the blocking policy for a timed-out closure, since the run may still spend", async () => {
+  // s7503 run 267936b9 (Claude C1, K6): the run recovered and succeeded, but
+  // its final usage report was lost with the restart, so all 11 receipts were
+  // incomplete with zero tokens. At the closure bound it settled as unpriced 0
+  // cents; the blocking policy then opened a hard incident, paused the
+  // company and cancelled its pending Retry wakes.
+  it.each([
+    { name: "zero tokens", usage: {}, model: "claude-sonnet-5" },
+    { name: "tokens with no rate card", usage: { inputTokens: 1200, outputTokens: 80 }, model: "unknown-model" },
+  ])("never hard-stops a blocking policy for a restart-derived timed-out receipt ($name)", async ({ usage, model }) => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ ...usage, model })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system" });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: true, accountingReceiptUnavailable: true });
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  // s7505 run 3b4721a8 (OpenCode, K2): succeeded, but every receipt stayed
+  // incomplete while carrying an OpenRouter-reported cost. It held company work
+  // for the closure bound, settled as unpriced, and the blocking policy paused
+  // the company a second later.
+  it("settles a timed-out restart receipt at its provider-reported cost, without holding or pausing", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, processPid: 59875, processGroupId: 59875,
+      processStartedAt: new Date(),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ provider: "deepseek", biller: "openrouter",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731", billingType: "metered_api", costStatus: "unpriced",
+        costUsd: 0.00455988, costUsdExact: "0.004559880", inputTokens: 64052, cachedInputTokens: 128000, outputTokens: 2062,
+        cacheWriteTokens: 0, pricingProvenance: { source: "provider_reported", version: "accounting-receipt/v1" },
+        budgetExposure: { sourceId: f.sourceId, sequence: 15, costCents: "0.4559880" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system" });
+    expect(await f.block()).toBeNull();
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const charges = await f.charges();
+    expect(charges).toMatchObject([{ costStatus: "estimated", biller: "openrouter", inputTokens: 64052 }]);
+    expect(Number(charges[0].costCents)).toBeCloseTo(0.455988, 6);
+    expect((charges[0].pricingProvenance as { evidence?: string }).evidence).toMatch(/lower bound/);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  it("keeps the blocking policy for a timed-out closure whose only recovery was an ordinary same-run retry", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system",
+      payload: { restartKind: "hot", trigger: "same_run_retry", runnerDisposition: "reattach_remote_runner" } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("keeps the blocking policy for a timed-out closure with no restart evidence, since the run may still spend", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);

@@ -14,6 +14,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { notifyDeferredWakesForIssue } from "../deferred-execution-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
@@ -203,7 +204,10 @@ export async function projectCommittedRun(input: {
       })
       .where(needsRepair)
       .returning();
-    if (after) await settleNativeTerminalWake(tx, after);
+    if (after) {
+      await settleNativeTerminalWake(tx, after);
+      await notifyDeferredWakesForIssue(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
+    }
     return after ? { before, after } : null;
   });
 

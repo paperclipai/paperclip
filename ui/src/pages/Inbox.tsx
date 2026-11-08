@@ -412,6 +412,7 @@ export function FailedRunInboxRow({
           approval: t("inbox.inbox.failedRun.waiting.approval"), reconnect: t("inbox.inbox.failedRun.waiting.reconnect"), assign_agent: t("inbox.inbox.failedRun.waiting.assignAgent"), choose_model: t("inbox.inbox.failedRun.waiting.chooseModel"),
           resume: t("inbox.inbox.failedRun.waiting.resume"), budget: t("inbox.inbox.failedRun.waiting.budget"),
           project_access: t("inbox.inbox.failedRun.waiting.projectAccess"),
+          confirm_owner_stop: t("inbox.inbox.failedRun.waiting.confirmOwnerStop", "Confirm the previous server stopped"),
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;

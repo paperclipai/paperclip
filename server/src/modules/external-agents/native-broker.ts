@@ -31,7 +31,7 @@ interface Receipt extends Record<string,unknown> {id:string;companyId:string;ass
 interface Authority {binding:{id:string;companyId:string;agentId:string;generation:number};assignment:Pick<Assignment,"id"|"companyId"|"agentId"|"bindingId"|"bindingGeneration"|"runId"|"normalizedSessionId"|"turnId"|"revision"|"controllerGeneration"|"status"> & {expiresAt:Date;createdAt:Date;claimedAt?:Date|null}}
 interface Identity<S> {
   authorize(subject:S,assignmentId:string,settled?:boolean):Promise<Authority>;
-  enabled(provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
+  enabled(database:Pick<Db,"select">,provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
   expectedResource?():string;
   assertSubjectCredential?(tx:ExternalAdmissionTransaction,subject:S):Promise<void>;
 }
@@ -60,7 +60,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
   async function assertCurrentAuthority(database:Database,b:Binding,allowFence=false) {
     if(allowFence)return;
     const actualProvider=provider==="muse"?"muse":b.providerKind;
-    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
+    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(database,actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
     const [agent]=await database.select().from(agents).where(and(eq(agents.id,b.agentId),eq(agents.companyId,b.companyId)));
     const [company]=await database.select().from(companies).where(eq(companies.id,b.companyId));
     const [user]=await database.select({id:authUsers.id}).from(authUsers).where(eq(authUsers.id,b.operatorId));

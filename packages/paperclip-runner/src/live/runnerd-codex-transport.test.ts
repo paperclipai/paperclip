@@ -68,6 +68,7 @@ import {
   unwrapRunnerdProviderNotifications,
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
+  controllerAcceptedTurnStartId,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -76,6 +77,33 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("controllerAcceptedTurnStartId", () => {
+  // Shapes copied from the RC-59 durable controller journal.
+  const attach = { commandId: "command_prp_00000001", controllerSeq: 1, type: "run.attach", status: "completed", result: {} };
+  const start = (overrides: Record<string, unknown> = {}) => ({
+    commandId: "command_lab_start", controllerSeq: 4, type: "turn.start", status: "completed",
+    payload: { text: "Continue", turnId: "turn_lab_1" },
+    result: { commandType: "turn.start", controllerSeq: 4, status: "completed", result: { providerTurnId: "turn_lab_1", status: "accepted" } },
+    ...overrides,
+  });
+
+  it("names the turn this run's latest completed turn.start accepted", () => {
+    expect(controllerAcceptedTurnStartId([attach, start()])).toBe("turn_lab_1");
+  });
+
+  it.each([
+    ["no turn.start", [attach]],
+    ["a pending turn.start", [attach, start({ status: "pending", result: undefined })]],
+    ["a failed turn.start", [attach, start({ status: "failed" })]],
+    ["a result that did not accept the turn", [attach, start({ result: { result: { providerTurnId: "turn_lab_1", status: "rejected" } } })]],
+    ["a result for a different turn than requested", [attach, start({ result: { result: { providerTurnId: "turn_lab_2", status: "accepted" } } })]],
+    ["a later run attachment", [start({ controllerSeq: 1 }), { ...attach, controllerSeq: 2 }]],
+    ["a later pending turn.start", [attach, start(), start({ controllerSeq: 5, status: "pending", payload: { turnId: "turn_lab_2" }, result: undefined })]],
+  ])("returns null for %s", (_label, commands) => {
+    expect(controllerAcceptedTurnStartId(commands)).toBeNull();
+  });
+});
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;

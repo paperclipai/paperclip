@@ -46,6 +46,11 @@ export interface WaveOptions {
    * this many minutes, keeping `concurrency` tasks in flight, then drain.
    */
   stormMinutes?: number;
+  /**
+   * Runner lifecycle forced onto every seeded agent (`--lifecycle`). Absent
+   * keeps the catalog profile's own setting.
+   */
+  lifecycle?: "per_turn" | "warm" | "default";
 }
 
 export interface StormFault {
@@ -118,6 +123,10 @@ export interface RunSample {
   wakeCommentIds: string[];
   livenessState: string | null;
   lastEvidenceAt?: string | null;
+  /** A tool started with no matching end yet (a long `bench.sh` is quiet but live). */
+  toolInFlight?: boolean;
+  /** The run's recorded local runner process is still running with the same start time. */
+  processAlive?: boolean;
 }
 
 export interface InterruptionSample {

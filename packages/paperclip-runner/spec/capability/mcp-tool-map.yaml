@@ -331,10 +331,10 @@
     {
       "id": "mcp:paperclipAskUserQuestions",
       "name": "paperclipAskUserQuestions",
-      "description": "Create an ask_user_questions interaction on an issue",
+      "description": "Create an ask_user_questions interaction on an issue. Ask independent questions together in one interaction instead of one per card.",
       "sourceKind": "legacy_mcp_alias",
       "sourceAnchor": "packages/mcp-server/src/tools.ts:565",
-      "expectedSemantics": "Create an ask_user_questions interaction on an issue",
+      "expectedSemantics": "Create an ask_user_questions interaction on an issue. Ask independent questions together in one interaction instead of one per card.",
       "foldedInto": "eval:ix-questions-01",
       "evidenceId": "mcp:paperclipAskUserQuestions"
     },

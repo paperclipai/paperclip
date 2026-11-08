@@ -39,6 +39,7 @@ import { resolveConfirmationFromComment } from "../services/confirmation-comment
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
@@ -122,6 +123,7 @@ import {
   recoverWorkspaceSchema,
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -8014,7 +8016,7 @@ export function issueRoutes(
           "This issue is linked to a closed workspace that cannot be reopened.",
       });
     } else {
-      res.status(409).json({ error: result.message });
+      res.status(409).json({ error: result.message, ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}) });
     }
     return null;
   }
@@ -10026,6 +10028,17 @@ export function issueRoutes(
     res.status(202).json(receipt);
   });
 
+  router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const receipt = await confirmNativeControllerStopped({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
   router.post("/issues/:id/recovery-actions/retry-workspace-export", validate(retryWorkspaceExportSchema), async (req, res) => {
     assertBoard(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
@@ -10290,8 +10303,12 @@ export function issueRoutes(
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
         }
 
+        if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === NATIVE_CONTROLLER_HOST_UNVERIFIED) {
+          throw conflict("Confirm that the previous server stopped to resume this run.", { code: "native_controller_stop_required" });
+        }
+
         if ((outcome === "restored" || outcome === "false_positive") && activeRecoveryAction.cause === "native_workspace_finalization_owner_unverified") {
-          throw conflict("Verify the previous controller and its copyback processes stopped, then use Resume saved result.", { code: "workspace_owner_stop_required" });
+          throw conflict("Paperclip is still confirming that the previous server stopped. Saving resumes without repeating the agent's work.", { code: "workspace_owner_stop_required" });
         }
 
         if (outcome === "restored" && isNativeWorkspaceExportRepairCause(activeRecoveryAction.cause)) {

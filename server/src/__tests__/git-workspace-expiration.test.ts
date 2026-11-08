@@ -28,6 +28,21 @@ import * as activityLog from "../services/activity-log.js";
 import { readGitCacheRestoration } from "../services/git-workspace-restoration.js";
 import { assertReproducibleManagedCheckout, gitCacheExpirationLockLocations, readGitCacheExpiration } from "../services/git-workspace-restoration.js";
 
+const cloneFailure = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const execFile = (...args: unknown[]) => Reflect.apply(actual.execFile, undefined, args);
+  Object.defineProperty(execFile, promisify.custom, { value: (...args: unknown[]) => {
+    if (cloneFailure.error && args[0] === "git" && Array.isArray(args[1]) && args[1].includes("clone")) {
+      return Promise.reject(cloneFailure.error);
+    }
+    return Reflect.apply(execute, undefined, args);
+  } });
+  return { ...actual, execFile };
+});
+
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
   GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test", GIT_TERMINAL_PROMPT: "0" };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: gitEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -986,13 +1001,68 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     const f = await fixture();
     expect((await f.expire()).baseExpired).toBe(true);
     await fs.rename(f.remote, `${f.remote}.offline`);
-    expect(await f.reopen()).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry." });
+    const failed = await f.reopen();
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry.",
+      diagnostic: { step: "source_materialize", kind: "remote_unavailable" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
     expect(await f.reopen(randomUUID())).toMatchObject({ ok: false, code: "not_reopenable" });
     expect(await exists(f.cwd)).toBe(false);
     await fs.rename(`${f.remote}.offline`, f.remote);
     expect(await f.reopen()).toMatchObject({ ok: true });
     expect(git(f.cwd, "rev-parse", "HEAD")).toBe(f.commitA);
   });
+  it("reports the failed step and kind when the saved commit is gone from upstream", async () => {
+    const f = await fixture();
+    expect((await f.expire()).baseExpired).toBe(true);
+    git(f.source, "checkout", "--orphan", "rewritten");
+    await fs.writeFile(path.join(f.source, "marker.txt"), "rewritten\n");
+    git(f.source, "add", "."); git(f.source, "commit", "-m", "Rewritten");
+    git(f.source, "push", "--force", "origin", "rewritten:main");
+    git(f.remote, "reflog", "expire", "--expire=now", "--all"); git(f.remote, "gc", "--prune=now");
+    const failed = await f.reopen();
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry.",
+      diagnostic: { step: "saved_commit", kind: "commit_unavailable" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
+    expect(JSON.stringify(failed)).not.toContain(f.commitA);
+    expect((await f.row()).metadata?.gitCacheRestoration).toMatchObject({ commit: f.commitA });
+  });
+
+  it("retains the nested saved commit failure through checkout preparation and reopening", async () => {
+    const f = await nestedFixture(true, false);
+    expect((await f.expire({ expireBase: false })).expired).toBe(true);
+    git(f.nestedSource, "checkout", "--orphan", "rewritten");
+    await fs.writeFile(path.join(f.nestedSource, "nested.txt"), "rewritten\n");
+    git(f.nestedSource, "add", "."); git(f.nestedSource, "commit", "-m", "Rewritten nested history");
+    git(f.nestedSource, "push", "--force", f.nestedRemote, "rewritten:main");
+    git(f.nestedRemote, "reflog", "expire", "--expire=now", "--all");
+    git(f.nestedRemote, "gc", "--prune=now");
+    const failed = await f.reopen();
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed",
+      diagnostic: { step: "saved_commit", kind: "commit_unavailable" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
+    expect(JSON.stringify(failed)).not.toContain(f.nestedA);
+    expect((await f.row()).metadata?.gitCacheRestoration).toMatchObject({ contents: {
+      checkouts: [expect.objectContaining({ commit: f.nestedA })],
+    } });
+  });
+
+  it("retains a managed clone timeout through preparation and reopening", async () => {
+    const f = await fixture(true, false);
+    expect((await f.expire({ expireBase: false })).expired).toBe(true);
+    await fs.rename(f.baseCwd, `${f.baseCwd}.offline`);
+    cloneFailure.error = Object.assign(new Error("clone timed out; fixture credential must stay private"), {
+      killed: true, signal: "SIGTERM", code: null,
+    });
+    let failed: Awaited<ReturnType<typeof f.reopen>>;
+    try { failed = await f.reopen(); }
+    finally { cloneFailure.error = null; }
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed",
+      diagnostic: { step: "source_materialize", kind: "timeout" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
+    expect(JSON.stringify(failed)).not.toContain("fixture credential");
+    expect(await f.reopen()).toMatchObject({ ok: true });
+  });
+
   it("serializes concurrent reopening after deletion and publishes one transition", async () => {
     const f = await fixture();
     let release!: () => void, entered!: () => void;

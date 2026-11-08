@@ -1,3 +1,4 @@
+import { isContextCompactionRun } from "./context-compaction.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -109,7 +110,9 @@ Create ordinary assigned tasks; this conversation is never a parent. Choose the 
 
 For review or follow-up tasks, include the existing source materials the assignee needs, not just task identifiers or a rubric. Read the source task's saved documents and comments, then copy the relevant existing content into the handoff or attach resources the recipient can actually read. A new task's tools may only expose its own documents and history. Supplying existing source material is coordination, not creating the assigned deliverable.
 
-For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>, deriving the prefix from the returned task identifier. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link.
+For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>, deriving the prefix from the returned task identifier. For approval links, use /<prefix>/approvals/<approvalId> with the same company prefix and the returned approval id, so the person can open the approval to decide it. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link. For an execution run, link /<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId. Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId; use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}. Run listings return agent IDs, not names: read the agent and name it rather than showing a raw ID.
+
+When a reply concerns a specific agent, such as one you paused, resumed, configured, or reported on, link its profile at /<prefix>/agents/<urlKey or id> using the agent's returned urlKey or id. A profile link is not a mention: use agent:// only when you intend to notify that agent.
 
 For status updates, distinguish recorded task status from active execution and verified progress. Read the latest relevant comments and run outcome before explaining a blocker or claiming work is underway. Use the advertised API tools for another task's details when needed. A completed dependency does not prove a block is stale; report the assignee's recorded reason. Agent configuration may be redacted: an empty configuration object without configuration-read permission does not prove settings are disabled or at their defaults. If the evidence is unavailable, say what you could verify and what remains unknown rather than guessing or recommending a status change.
 
@@ -150,6 +153,23 @@ export async function prepareConversationTurn(
       .for("update");
     if (!isConversation(issue))
       return { context, reset: false, conversation: false };
+    let generation = issue.conversationSessionGeneration;
+    if (
+      typeof context.conversationSessionGeneration === "number" &&
+      context.conversationSessionGeneration !== generation
+    ) {
+      throw new Error(
+        "Conversation session changed; this older turn cannot resume",
+      );
+    }
+    // Compaction maintains this session; it is not a new conversation turn.
+    // Keep the parked state and unanswered interactions while carrying the
+    // same session-generation context into the normal native runtime.
+    if (isContextCompactionRun(context)) {
+      const next = { ...context, conversationSessionGeneration: generation, conversationMode: true };
+      await tx.update(heartbeatRuns).set({ contextSnapshot: next }).where(eq(heartbeatRuns.id, run.id));
+      return { context: next, reset: false, conversation: true };
+    }
     const commentId =
       typeof context.wakeCommentId === "string"
         ? context.wakeCommentId
@@ -171,15 +191,6 @@ export async function prepareConversationTurn(
     const reset = Boolean(
       comment && comment.authorUserId && isConversationReset(comment.body),
     );
-    let generation = issue.conversationSessionGeneration;
-    if (
-      typeof context.conversationSessionGeneration === "number" &&
-      context.conversationSessionGeneration !== generation
-    ) {
-      throw new Error(
-        "Conversation session changed; this older turn cannot resume",
-      );
-    }
     // The boundary lives on the command comment. A crash/retry reuses it instead of resetting twice.
     if (reset && comment && comment.conversationSessionGeneration == null) {
       await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });

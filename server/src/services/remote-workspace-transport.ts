@@ -11,6 +11,7 @@ import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
@@ -203,10 +204,12 @@ export function sandboxProviderFailureLabel(error: unknown): { label: string; co
   return { label, code, status };
 }
 
+const WORKSPACE_COMMAND_TIMEOUT_MS = 300_000;
+
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
-  args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
+  args: string[], env?: Record<string, string>, timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
-    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
+    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env, NODE_NO_WARNINGS: "1" }, timeoutMs, bypassSession: true });
   // Copy-back and restore record why the provider refused the command.
   const result = operation === "capture" || operation === "archive_helper" || operation === "restore"
     ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })
@@ -462,11 +465,13 @@ export async function captureRemoteWorkspaceArchive(input: {
   }
 }
 
-async function captureReadOnlyWorkspaceArchive(input: {
+/** Captures a sandbox directory without writing to the sandbox. The copy is
+ * verified against an inventory taken before and after the transfer. */
+export async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
-  const inspect = async (timeoutMs = 300_000) => {
+  const inspect = async (timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) => {
     const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd], undefined, timeoutMs)) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
     if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
       || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
@@ -495,11 +500,15 @@ async function captureReadOnlyWorkspaceArchive(input: {
     const same = (observed: typeof before) => observed.sha256 === before.sha256
       && observed.byteSize === before.byteSize && observed.entries === before.entries;
     if (!same(received) || !same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
+    const finalVerificationBudget = remaining();
     stage = "archive";
-    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: verificationSignal });
+    const captureSignal = AbortSignal.timeout(WORKSPACE_COMMAND_TIMEOUT_MS);
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: captureSignal });
+    captureSignal.throwIfAborted();
     stage = "verify";
-    if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
-    verificationSignal.throwIfAborted();
+    const finalVerificationSignal = AbortSignal.timeout(finalVerificationBudget);
+    if (!same(await inspect(finalVerificationBudget))) throw new Error("remote_workspace_readonly_capture_changed");
+    finalVerificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
     await removeTaskDirectoryTree(copy);
     const savedRoot = root;
@@ -574,7 +583,7 @@ async function captureSandboxWorkspaceArchive(input: {
     timing.transferMs = elapsedSince(transferStarted);
     const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
     timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };

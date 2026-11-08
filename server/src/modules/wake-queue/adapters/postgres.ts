@@ -314,14 +314,40 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queryableCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
-      const liveNonSelfCommentIds = queryableCommentIds.filter((commentId) => {
+      const liveAndUnauthored = queryableCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
         return Boolean(row && !row.deletedAt && (!targetsFinishingRunAgent || row.createdByRunId !== finishingRunId));
       });
+      // A succeeded run of the wake's agent that started after the comment's
+      // latest revision consumed it when it received the comment as its own
+      // wake input, or when it was a retry of an interrupted turn whose task
+      // history included the comment (the retry re-reads the whole thread).
+      // Promoting the saved wake again would deliver it twice and can reopen
+      // finished work. Task history alone does not consume a message saved
+      // for its own turn, and a run that was already running never counts:
+      // its context can be refreshed after the fact, and an edit made after
+      // it started is still unread.
+      const delivered = new Set(liveAndUnauthored.length === 0 ? [] : (await tx.select({ id: issueComments.id })
+        .from(issueComments).where(and(
+          eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, liveAndUnauthored),
+          sql`exists (select 1 from ${heartbeatRuns} delivered_run
+            where delivered_run.company_id = ${companyId} and delivered_run.agent_id = ${wakeAgentId}
+              and delivered_run.status = 'succeeded'
+              and (delivered_run.native_issue_id = ${issueId} or delivered_run.context_snapshot->>'issueId' = ${issueId})
+              and delivered_run.started_at > ${issueComments.createdAt}
+              and delivered_run.started_at >= ${issueComments.updatedAt}
+              and (coalesce(delivered_run.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? ${issueComments.id}::text
+                or (delivered_run.retry_of_run_id is not null and jsonb_path_exists(delivered_run.context_snapshot, '$.executionContinuation.messages[*] ? (@.id == $id)',
+                  jsonb_build_object('id', ${issueComments.id}::text))
+                or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
+                  jsonb_build_object('id', ${issueComments.id}::text)))))`,
+        ))).map(row => row.id));
+      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
-      return { liveNonSelfCommentIds, containedSelfAuthoredComment };
+      return { liveNonSelfCommentIds, containedSelfAuthoredComment, deliveredCommentIds: [...delivered] };
     },
 
     async cancelDeferredWake({ companyId, wakeId, agentId, reason, now }) {
@@ -1343,6 +1369,13 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           };
         }
 
+        // A native run blocked for a rejected model or incomplete configuration waits for that
+        // change and a retry. The provider refused the request, so there is no execution to
+        // reconcile; a reconciliation incident would also hide the run's Retry.
+        if (!handoffAssigneeAgentId && run.runtimeMode === "native" && isConfigurationIncompleteFailedRun(run)
+          && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }

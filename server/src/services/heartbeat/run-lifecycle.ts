@@ -197,6 +197,7 @@ import {
   setHeartbeatRunRuntimeStatus,
 } from "../heartbeat-run-runtime-status.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -578,7 +579,7 @@ function buildRunEventRuntimeProgress(input: {
 export async function persistHeartbeatRunProcessMetadata(
   db: Db,
   runId: string,
-  meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind?: "local" | "remote" },
+  meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind: "local" | "remote" },
 ) {
   // A sandbox PID belongs to a different host and may collide with a local PID.
   const observedStartedAt = meta.targetKind === "remote" ? null : await readProcessStartedAt(meta.pid).catch(
@@ -589,8 +590,11 @@ export async function persistHeartbeatRunProcessMetadata(
     const run = await tx
       .update(heartbeatRuns)
       .set({
+        legacyProcessSettlement: null,
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
+        // A sandbox PID never names a process in this PID space.
+        processHostHash: meta.targetKind === "remote" ? "remote" : currentProcessSpaceHash(),
         processStartedAt: Number.isNaN(startedAt.getTime())
           ? new Date()
           : startedAt,
@@ -2239,7 +2243,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind?: "local" | "remote" },
+    meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind: "local" | "remote" },
   ) {
     return persistHeartbeatRunProcessMetadata(db, runId, meta);
   }

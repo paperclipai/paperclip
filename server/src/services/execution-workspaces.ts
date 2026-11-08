@@ -20,7 +20,8 @@ import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, nextNe
   NESTED_CLONE_MIGRATION_RETRY_REASONS, type NestedCloneMigrationRotation } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
 import { getStorageService } from "../storage/index.js";
-import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired } from "./git-workspace-restoration.js";
+import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired,
+  classifyWorkspaceRestorationError, type GitCacheRestorationStep, type WorkspaceRestorationFailureKind } from "./git-workspace-restoration.js";
 
 export const GIT_RESTORE_POINT_EXPIRED_WARNING = "The saved state of this workspace expired, so it was reopened as a fresh workspace on its branch. Unpushed and uncommitted work from before it was cleaned up is no longer available.";
 import { parseObject } from "../adapters/utils.js";
@@ -28,6 +29,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
+import { bindsRelativesExecutionWorkspace, buildIndependentTaskWorkspaceSettings } from "./task-workspace-lineage.js";
 import { executionWorkspaceRepositoryService, canonicalRepositoryRoot } from "./execution-workspace-repositories.js";
 import { assertSelectedWorkspaceTrust, type TaskWorkspaceCreationTrustContext } from "./task-repository-acquisition.js";
 import { forbidden } from "../errors.js";
@@ -327,7 +329,16 @@ export type ReopenClosedIsolatedExecutionWorkspaceResult =
   // generation, so a stale actor never clears a newer reopen's fence.
   | { ok: true; workspace: ExecutionWorkspace; reopened: true; generation: number; warning?: string }
   | { ok: true; workspace: ExecutionWorkspace; reopened: false; generation: number }
-  | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string };
+  | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string; diagnostic?: WorkspaceReopenDiagnostic };
+
+export type WorkspaceReopenFailureStep = GitCacheRestorationStep | "managed_base" | "copy_identity" | "expiration_locks"
+  | "workspace_rebuild" | "publish" | "transaction";
+export type WorkspaceReopenDiagnostic = { step: WorkspaceReopenFailureStep; kind: WorkspaceRestorationFailureKind };
+
+export function workspaceReopenDiagnostic(step: WorkspaceReopenFailureStep, error: unknown): WorkspaceReopenDiagnostic {
+  if (error instanceof GitCacheRestorationFailure && error.step) return { step: error.step, kind: classifyWorkspaceRestorationError(error) };
+  return { step, kind: error === undefined ? "unknown" : classifyWorkspaceRestorationError(error) };
+}
 
 export type ExecutionWorkspaceServiceOptions = {
   pluginWorkerManager?: WorkspaceWorkers;
@@ -1711,6 +1722,55 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     });
   }
 
+  /**
+   * Releases a subtask from a workspace it shares with an ancestor (the shape
+   * older releases created by default) so this admission realizes the
+   * subtask's own workspace from the project base. The task that created the
+   * workspace keeps it and its files; a relative bound to it (an ancestor that
+   * selected a descendant's workspace included) is the one released. While an earlier run of this subtask is still
+   * running, finalizing, or under recovery, the binding is kept so that writer
+   * can save its files first; a later admission releases it. Never throws for
+   * that wait: the run proceeds on its current binding and nobody is asked to act.
+   */
+  async function releaseAncestorWorkspaceBindingAtAdmission(input: { companyId: string; issueId: string; runId: string }) {
+    // Cheap unlocked pre-check: a task bound to a workspace it created keeps it.
+    // When a relative selected that workspace, the relative is the one that moves.
+    const [candidate] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+      .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
+    if (!candidate || candidate.sourceIssueId === input.issueId) return false;
+    return db.transaction(async tx => {
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+      if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+      if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+        return false;
+      }
+      const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
+        or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+        eq(heartbeatRuns.status, "running"),
+      )).limit(1);
+      if (holder) return false;
+      if (await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId })) return false;
+      const selection = task.workspaceSelection;
+      await notifyStatusCardIssueChange(tx, task.companyId);
+      await tx.update(issues).set({
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        // Without a project workspace the old settings described the relative's
+        // task files; the project's defaults apply instead, as for a top-level task.
+        executionWorkspaceSettings: task.projectWorkspaceId
+          ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+          : null,
+        ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
+        workspaceBindingRevision: task.workspaceBindingRevision + 1,
+        updatedAt: new Date(),
+      }).where(eq(issues.id, task.id));
+      return true;
+    });
+  }
+
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
     return db.transaction(async tx => {
       const [task] = await measureRunPhase("workspace.row_lock", () => tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("no key update"));
@@ -2729,7 +2789,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     assertTaskRepositoryPublicationAllowed: executionWorkspaceRepositoryService(db).assertPublicationAllowed,
     prepareConfiguredRepositoryCopy: executionWorkspaceRepositoryService(db).prepareConfiguredRepositoryCopy,
     assertTaskRepositoryRecoveryBinding: executionWorkspaceRepositoryService(db).assertRecoveryBinding,
-    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
+    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, releaseAncestorWorkspaceBindingAtAdmission, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
@@ -4345,9 +4405,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
       await assertTaskWorkspaceExecutionAccess(db, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: snapshot.id });
-      let recipe: ReturnType<typeof readGitCacheRestoration>;
+      let recipe: ReturnType<typeof readGitCacheRestoration> = null;
+      const rebuildFailed = (step: WorkspaceReopenFailureStep, error: unknown, restoration = recipe !== null): ReopenClosedIsolatedExecutionWorkspaceResult => {
+        const diagnostic = workspaceReopenDiagnostic(step, error);
+        logger.warn({ event: "execution_workspace.reopen", outcome: "rebuild_failed", executionWorkspaceId: snapshot.id,
+          issueId: issue.id, companyId: issue.companyId, ...diagnostic }, "execution workspace reopen rebuild failed");
+        return { ok: false, code: "rebuild_failed", diagnostic,
+          message: restoration ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+      };
       try { recipe = readGitCacheRestoration(snapshot); }
-      catch { return { ok: false, code: "rebuild_failed", message: new GitCacheRestorationFailure().message }; }
+      catch (error) { return rebuildFailed("recipe", error, true); }
       const freshStart = recipe !== null && isClosedExecutionWorkspaceStatus(snapshot.status) && gitRestorePointExpired(recipe);
       const gitAuth = createIssueGitRemoteAuthProvider(db, snapshot.companyId, issue.id);
       const [
@@ -4383,9 +4450,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         resolvedBaseCwd = recipe && isClosedExecutionWorkspaceStatus(snapshot.status)
           ? await restoreGitCacheBase(snapshot, recipe, gitAuth, undefined, { freshStart })
           : await verifiedRecordedIsolatedRemoteSource(snapshot) ?? projectWorkspace?.cwd ?? null;
-      } catch {
-        return { ok: false, code: "rebuild_failed", message: recipe
-          ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+      } catch (error) {
+        return rebuildFailed("source_verify", error);
       }
       if (isClosedExecutionWorkspaceStatus(snapshot.status) && resolvedBaseCwd == null && snapshot.strategyType === "git_worktree" && snapshot.projectId) {
         try {
@@ -4409,8 +4475,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             resolveGitAuth: createIssueGitRemoteAuthProvider(db, snapshot.companyId, issue.id),
           });
           resolvedBaseCwd = managedWorkspace.cwd;
-        } catch {
-          return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+        } catch (error) {
+          return rebuildFailed("managed_base", error);
         }
       }
       let copyIdentity: { sourceCwd: string; configuredSourceCwd: string; targetCwd: string } | null = null;
@@ -4427,8 +4493,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             sourceCwd: await fs.realpath(sourceRoot),
             configuredSourceCwd: await fs.realpath(resolvedBaseCwd), targetCwd,
           };
-        } catch {
-          return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+        } catch (error) {
+          return rebuildFailed("copy_identity", error);
         }
       }
       const result = await db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
@@ -4478,7 +4544,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
         }
         try { await recoverGitCacheExpirationLocks(row); }
-        catch { return { ok: false, code: "rebuild_failed", message: new GitCacheRestorationFailure().message }; }
+        catch (error) { return rebuildFailed("expiration_locks", error, true); }
         const verifyCopyIdentity = copyIdentity ? async (sourceCwd: string, targetCwd: string) => {
           if (await fs.realpath(sourceCwd) !== copyIdentity.sourceCwd
             || await fs.realpath(resolvedBaseCwd!) !== copyIdentity.configuredSourceCwd
@@ -4525,6 +4591,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
 
         let rebuildError: string | null = null;
+        let rebuildDiagnostic: WorkspaceReopenDiagnostic | null = null;
         let taskDirectoryWarning: string | null = null;
         const taskDirectoryState = readTaskDirectoryRetention(row);
         try {
@@ -4644,9 +4711,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           });
           if (!realized) {
             rebuildError = "Execution workspace could not be rebuilt";
+            rebuildDiagnostic = workspaceReopenDiagnostic("workspace_rebuild", undefined);
           }
         } catch (error) {
           rebuildError = error instanceof Error ? error.message : String(error);
+          rebuildDiagnostic = workspaceReopenDiagnostic("workspace_rebuild", error);
         }
 
         if (rebuildError) {
@@ -4677,6 +4746,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               actorType: actor.actorType,
               actorAgentId: actor.agentId ?? null,
               generation: nextGeneration,
+              ...rebuildDiagnostic,
               error: rebuildError,
             },
             "execution workspace reopen rebuild failed",
@@ -4693,9 +4763,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               issueId: issue.id,
               outcome: "rebuild_failed",
               generation: nextGeneration,
+              ...rebuildDiagnostic,
             },
           });
-          return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+          return { ok: false, code: "rebuild_failed", ...(rebuildDiagnostic ? { diagnostic: rebuildDiagnostic } : {}),
+            message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
         }
 
         // The rebuild succeeded. Publish the row as active in one write, and clear
@@ -4730,7 +4802,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!activeRow) {
-          return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+          return rebuildFailed("publish", undefined);
         }
         logger.info(
           {
@@ -4770,7 +4842,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           ...(reopenWarning ? { warning: reopenWarning } : {}) };
       }).catch((error): ReopenClosedIsolatedExecutionWorkspaceResult => {
         logger.warn({ error, executionWorkspaceId: snapshot.id }, "Execution workspace reopen failed");
-        return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
+        return rebuildFailed("transaction", error);
       });
       return result;
       };

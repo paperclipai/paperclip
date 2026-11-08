@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
+import { chaosLifecycleOverrides } from "./seed.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
   StormRun, stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
 import type { WaveOptions } from "./types.js";
@@ -110,6 +111,18 @@ describe("CLI parsing", () => {
     expect(parsed).toMatchObject({ mode: "wave", options: { env: "local", adapters: ["codex", "claude", "opencode"], concurrency: 4, tasks: 8, faults: ["K1", "K2", "K4"], seed: 17 } });
   });
 
+  it("carries a forced runner lifecycle in the plan options", () => {
+    expect(parseCommand(["--lifecycle", "warm", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "warm" } });
+    expect(parseCommand(["--seed", "1"])).not.toHaveProperty("options.lifecycle");
+    expect(() => parseCommand(["--lifecycle", "sometimes"])).toThrow(/per_turn, warm or default/);
+    expect(parseCommand(["--lifecycle", "default", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "default" } });
+    // default drops the catalog's pinned lifecycle from the created agent.
+    expect(JSON.parse(JSON.stringify({ lifecycleMode: "per_turn", model: "m", ...chaosLifecycleOverrides("default") }))).toEqual({ model: "m" });
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--lifecycle", "warm"])).toThrow(/reproduces the saved plan/);
+    expect(chaosLifecycleOverrides("warm")).toEqual({ lifecycleMode: "warm", idleTimeoutMs: 300_000 });
+    expect(chaosLifecycleOverrides(undefined)).toBeUndefined();
+  });
+
   it("parses --replay", () => {
     expect(parseCommand(["--replay", "w-20261106T101112-s42/t03"])).toMatchObject({ mode: "replay", ref: { waveId: "w-20261106T101112-s42", taskId: "t03" } });
   });
@@ -161,6 +174,21 @@ describe("K13 restart storm", () => {
       else expect(fault.holdMs).toBe(0);
     }
     expect(new Set(storm.faults.map(fault => fault.kind)).size).toBeGreaterThan(1);
+  });
+
+  it("lets result-trigger tasks join a storm with their own K1 or K2, while time cells stay K13", () => {
+    const tasks = planTasks({ ...stormOptions, tasks: 36, triggers: ["time", "result"] });
+    const result = tasks.filter(task => task.trigger === "result");
+    expect(result.length).toBeGreaterThan(0);
+    for (const task of result) {
+      expect(task.workload).toBe("C1");
+      expect(["K1", "K2"]).toContain(task.fault);
+      expect(taskFaultSchedule(task)).toEqual([{ kind: task.fault, holdMs: 0, atMs: task.fireAfterMs, trigger: "result", delayMs: task.triggerDelayMs }]);
+    }
+    for (const task of tasks.filter(candidate => candidate.trigger === undefined)) expect(task.fault).toBe("K13");
+    expect(() => planTasks({ ...stormOptions, faults: ["K4", "K6"], triggers: ["result"], workloads: ["C1"] })).toThrow(/needs K1 or K2/);
+    // A plain wave keeps its plan for a seed.
+    expect(planTasks({ ...options, triggers: ["time"] })).toEqual(planTasks({ ...options, triggers: undefined }));
   });
 
   it("gives storm tasks no fault of their own", () => {

@@ -15,6 +15,18 @@ exact source proof under publication row locks. A changed source or checkpoint
 keeps local authority. Provider stop verification and any later file export
 remain the recovery owner's separate obligations.
 
+The same local file handoff can preserve a blocked prepared source after a
+native session is interrupted with ambiguous state, or after its file export
+recovery is exhausted. The interruption may precede a provider session. Its
+recorded session flag must be a boolean; it does not prove remote recovery.
+The interrupted source must retain its exact task failure block and declared
+recovery allocations. The exhausted source must retain its accepted
+result, bound original allocation, exhausted system recovery and blocked file
+recovery. An empty list of additional recovery allocations does not remove the
+original prepared allocation binding. The migration checks these records again
+under the same physical and task locks before publication. It keeps the failed
+run, accepted result, recovery action and remote file obligation unchanged.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown
@@ -181,6 +193,28 @@ runs. Another agent's run and a recovery-action wake still prevent takeover.
 Publication checks repeat this validation, so a wake that starts during copyback
 stops publication. Row locks are never held across physical copyback I/O.
 
+**Replaced deployment on a volume-backed service (automatic, no harness call).**
+Railway mounts a service volume into one deployment at a time: it stops the
+previous deployment before the new one starts, and a service with a volume has
+no replicas. When this server runs on a Railway service with an attached volume
+(`RAILWAY_VOLUME_ID` and `RAILWAY_VOLUME_MOUNT_PATH`), and the receipt names the
+same project, environment and service with a different deployment ID, the
+shared owner-liveness primitive (`proveOwnerGone`) returns `gone` with reason
+`deployment_replaced`. That deployment's controller and every copyback child
+in it have exited, on whichever host they ran. The finalizer then claims the
+exact receipt as it does for a harness receipt, logs
+`issue.workspace_owner_stop_verified` with `deploymentProof`, marks the
+recovery `resuming`, and resumes the save with no provider turn. The same
+deployment ID, another service or environment, or a server without a volume
+gives no proof; the harness request below still applies. New receipts also
+record the mounted volume ID, and the proof then requires this server to mount
+that same volume. Receipts saved by earlier releases already record the
+deployment, so they take this path after an upgrade. The finalizer reaches this
+check only after it holds the run's copyback advisory lock, so the previous
+owner's lock session has also ended. A wait that this rule and the harness
+cannot settle names the Resume saved result action; its text never asks a
+person to inspect a server.
+
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
 signed by the harness. This endpoint requires the companion cloud harness change.
@@ -222,6 +256,23 @@ copyback children after an abrupt parent death before the success barrier. It su
 automatic provider wake. This is an intentional limit: elapsed time or a missing
 database connection never proves the old copyback process stopped.
 
+**Same-host restart (automatic).** A control-plane restart that kills the
+controller mid-copyback leaves a receipt whose owner can never confirm its own
+stop. Each receipt records the controller's process group (`processGroupId`).
+Copyback children (tar and Git) are spawned without `detached`, so they keep that
+group after their parent dies. A successor on the same host releases the
+receipt itself only when all of these hold: the receipt names another
+controller boot, the recorded PID is dead or recycled (process start time), and
+the recorded process group is empty, or its only remaining members predate the
+old controller or belong to the successor's own process tree. It logs
+`issue.workspace_owner_stop_verified` with that local proof, marks the recovery
+`resuming`, and the ordinary finalizer resumes copyback from the accepted
+result with no provider turn. A still-live group member keeps the fence and is
+rechecked automatically (`local_stop_pending`). A receipt without a process
+group, from another host, or on a platform without `ps` still needs the board
+confirmation below. The copyback advisory lock and the coordinator lease are
+unchanged.
+
 An instance operator must first verify through the deployment platform that the
 exact prior controller **and its copyback subprocesses** have stopped. Retain the
 sandbox, accepted native result, and workspace descriptor. Do not run a new
@@ -229,7 +280,11 @@ provider turn, delete workspace contents, or relax archive confinement.
 
 For legacy receipts, an authorized company owner, company administrator or
 instance administrator records independently verified platform evidence through
-the operator API. The task has no shutdown form or resume control. The API is
+the operator API. The task shows this as its one action: its interruption is
+`waiting_for_user` with `userAction: "confirm_owner_stop"`, and the chat offers
+**Confirm the previous server stopped**, which asks for the stop evidence and
+calls the same API. The control is shown only to roles that hold
+`runtime:confirm_owner_stop`. The API is
 `POST /api/issues/:id/recovery-actions/resume-workspace-finalization` with:
 
 ```json
@@ -602,3 +657,21 @@ task's queue through current admission checks. Each saved request still advances
 its recovery cursor. Rejected attempts, changed source runs, and updated source evidence remain eligible,
 and the next pass checks current state again. Legacy per-request handling stays
 unchanged. Pending work is awaited before a source is marked checked.
+
+Retained saved-work recovery for a finished run uses the same owner receipt.
+When the receipt names a controller that a restart killed and no automatic proof
+can release it, the recovery worker does not spend an attempt on each recheck.
+It records the exact receipt on the retained recovery action as
+`workspaceOwnerRecovery.state = "operator_required"` and keeps rechecking within
+the bounded recovery window. A task Retry waiting on that saved result reports
+`workspace_owner_stop_required` and does not offer another Retry, because another
+click cannot release the receipt. The board confirms the stop through the same
+`resume-workspace-finalization` route. The task chat shows the same single
+**Confirm the previous server stopped** control in place of the retained file
+recovery controls while this hold is active, with the recorded receipt token, to
+roles that hold `runtime:confirm_owner_stop`. The confirmation must name the receipt that
+is still on the run. It clears only that receipt and returns the existing recovery
+to the worker (a spent budget gets one new generation). It accepts no result and
+starts no agent turn. The waiting Retry then continues through its normal path.
+If the recovery window ends first, the board handoff names the same confirmation
+instead of advising another Retry.

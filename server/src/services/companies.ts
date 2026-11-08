@@ -1,3 +1,4 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -342,6 +343,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          if(willReactivate)await notifyMuseContactVerification(tx,{companyId:id});
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });

@@ -8,6 +8,7 @@ import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
+import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
@@ -133,6 +134,9 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
   "GET /api/mcp/setup.md",
+  "GET /.well-known/oauth-protected-resource",
+  "GET /.well-known/oauth-protected-resource/mcp/paperclip",
+  "GET /.well-known/oauth-protected-resource/mcp/runner",
   "GET /.well-known/oauth-authorization-server",
   "POST /mcp/oauth/register",
   "POST /mcp/oauth/device_authorization",
@@ -256,9 +260,13 @@ function loadActualRoutes() {
 
     if (file === "public-mcp.ts") {
       // The shared gateway mounts these protocol paths for each OAuth resource.
-      if (source.includes("router.get(metadataPath,")) {
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server");
-        excludedRoutes.add("GET /.well-known/oauth-authorization-server/mcp/runner/oauth");
+      if (source.includes("mcpDiscoveryDocuments({") && source.includes("router.get(entry.path,")) {
+        for (const entry of mcpDiscoveryDocuments({ origin: "https://example.test",
+          authorizationOrigin: "https://example.test", profiles: ["personal-mcp", "dot-mcp"] })) {
+          const operation = `GET ${entry.path}`;
+          if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
+          else routes.add(operation);
+        }
       }
       for (const match of source.matchAll(/router\.(get|post)\(oauthPath \+ "([^"]+)"/g)) {
         for (const oauthPath of ["/mcp/oauth", "/mcp/runner/oauth"]) {
@@ -470,13 +478,13 @@ describe("openapi routes", () => {
     expect(operation.responses["404"]).toBeDefined();
   });
 
-  it("documents strict run-attributed feedback and board-only commentary reads", () => {
+  it("documents strict run-attributed feedback and board-or-agent commentary reads", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
     expect(Object.keys(path)).toEqual(["get", "post"]);
     const detail = spec.paths["/api/companies/{companyId}/agent-commentary/{id}"].get;
     for (const read of [path.get, detail]) {
-      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(read.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentBearerAuth: [] }]);
       expect(read.responses["403"]).toBeDefined();
       expect(read.responses["404"]).toBeDefined();
     }
@@ -547,6 +555,14 @@ describe("openapi routes", () => {
       required: ["companyId"], additionalProperties: false,
     });
     expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
+  it("tells agents that archiving keeps a status card and where a person restores it", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const patch = res.body.paths["/api/status-cards/{id}"].patch;
+    expect(patch.description).toContain("it is not deleted");
+    expect(patch.description).toContain("give them the returned href as a Markdown link");
+    expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
