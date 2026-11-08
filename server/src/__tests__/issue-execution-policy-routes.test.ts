@@ -23,9 +23,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async (): Promise<{ id: string } | null | undefined> => undefined),
   triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
+  getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
