@@ -1427,7 +1427,9 @@ export function environmentService(db: Db) {
           .where(
             and(
               eq(environmentLeases.environmentId, id),
-              eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+              // A kept sandbox outlives its run: a reusable one for the next turn,
+              // and a retain-on-failure one as a workspace-restore source.
+              inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "retain_on_failure"]),
               inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
             ),
           ),
