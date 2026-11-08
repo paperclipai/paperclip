@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { gradePortability } from "./identity-portability.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
-  const o: IdentityObservation = { scenarioId, origin: "http://fixture.invalid", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], interactions: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply: "The package omits credentials; reconnect the runtime environment before use.", state: {} };
+  const o: IdentityObservation = { scenarioId, origin: "http://fixture.invalid", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], interactions: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply: "Secrets are excluded; supply EXPORT_FIXTURE_KEY when importing.", state: {} };
   if (scenarioId.endsWith("export-company")) {
     o.runs = [{ id: "export", companyId: "acorn", agentId: "ceo", status: "succeeded" }];
-    o.state = { sourceId: "chat", originalAgentName: "CEO", exportAttachment: { id: "package", companyId: "acorn", issueId: "chat", createdByAgentId: "ceo", originatingRunId: "export", sha256: "bytes" },
+    o.company = { id: "acorn", name: "Acorn" };
+    o.state = { sourceId: "chat", originalAgentName: "CEO", secretKey: "EXPORT_FIXTURE_KEY", secretName: "Export prerequisite API key", exportAttachment: { id: "package", companyId: "acorn", issueId: "chat", createdByAgentId: "ceo", originatingRunId: "export", sha256: "bytes" },
       downloadSha256: "bytes", actualDownloadStatus: 200, fileVisible: true, agentExportPermissionStatus: 200, packageContainsPrivateValue: false, noForeignScope: true,
-      actualPackagePreview: { errors: [], manifest: { source: { companyId: "acorn" }, agents: [{ name: "CEO" }], projects: [{ name: "Launch" }], skills: [{ slug: "launch-checklist" }] },
-        files: { "COMPANY.md": "Acorn", "agents/ceo/AGENTS.md": "CEO", "skills/launch-checklist/SKILL.md": "Checklist" }, envInputs: [{ kind: "secret", requirement: "required" }] } };
+      actualPackagePreview: { errors: [], manifest: { source: null, company: { name: "Acorn" }, agents: [{ name: "CEO" }], projects: [{ name: "Launch" }], skills: [{ slug: "launch-checklist" }] },
+        files: { "COMPANY.md": "Acorn", "agents/ceo/AGENTS.md": "CEO", "skills/launch-checklist/SKILL.md": "Checklist" }, envInputs: [{ key: "EXPORT_FIXTURE_KEY", kind: "secret", requirement: "optional", defaultValue: "" }] } };
   } else {
     o.state = { existing: { id: "morgan" }, preview: { targetCompanyId: "acorn", errors: [], plan: { agentPlans: [{ slug: "morgan", existingAgentId: "morgan", action: "create" }] } },
       beforeChoiceUnchanged: true, initialReplyAskedChoice: true, actualPackageAttached: true, importedAgentId: "new", existingConfigurationUnchanged: true, existingStillPresent: true, importedAgentVisible: true };
@@ -24,6 +25,12 @@ describe("actual company package download and conflict-safe import", () => {
     it(`${id}: wrong scope or mutated original rejected`, () => { const o = valid(id); if (id.endsWith("export-company")) o.state.noForeignScope = false; else o.state.existingConfigurationUnchanged = false; expect(gradePortability(o).passed).toBe(false); });
   }
   it("does not accept prose or a link to an export page as a delivered CEO package", () => { const o = valid("companies.export-company"); delete o.state.exportAttachment; o.links = ["/ACO/company/export"]; expect(gradePortability(o).passed).toBe(false); });
+  it("accepts the omitted credential named by its secret name instead of its key", () => { const o = valid("companies.export-company"); o.reply = "Your export prerequisite API key was left out; add it after import."; expect(gradePortability(o).passed).toBe(true); });
+  it("rejects a reply that never names the omitted credential", () => { const o = valid("companies.export-company"); o.reply = "Exported the company setup as a reusable bundle."; expect(gradePortability(o).passed).toBe(false); });
+  it("rejects a package from another company or one carrying the credential value as a default", () => {
+    const foreign = valid("companies.export-company"); (foreign.state.actualPackagePreview as { manifest: { company: { name: string } } }).manifest.company.name = "Other Co"; expect(gradePortability(foreign).passed).toBe(false);
+    const valued = valid("companies.export-company"); (valued.state.actualPackagePreview as { envInputs: Array<{ defaultValue: string }> }).envInputs[0]!.defaultValue = "value"; expect(gradePortability(valued).passed).toBe(false);
+  });
   it("rejects secret values in an otherwise supported package", () => { const o = valid("companies.export-company"); o.state.packageContainsPrivateValue = true; expect(gradePortability(o).passed).toBe(false); });
   it("rejects silently performing the import before human conflict choice", () => { const o = valid("companies.import-preview"); o.state.beforeChoiceUnchanged = false; expect(gradePortability(o).passed).toBe(false); });
   it("rejects a replaced employee despite identical visible name", () => { const o = valid("companies.import-preview"); o.state.importedAgentId = "morgan"; expect(gradePortability(o).passed).toBe(false); });
