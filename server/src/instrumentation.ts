@@ -21,25 +21,40 @@
 // logs one diagnostic and leaves the server running without tracing; it
 // never throws.
 //
-// Timing guarantee: the bootstrap is async (dynamic imports), so it cannot
-// patch modules "before they are evaluated" — by the time the first await
-// yields, index.ts's static imports (http, express, pg) are already loaded.
-// What this module guarantees instead is `instrumentationReady`: the SDK has
-// started (or failed and logged) before that promise resolves. index.ts
-// awaits it at the top of `startServer()`, so tracing is active before any
-// DB connection is opened or the HTTP server is constructed — the patching
-// that matters happens at call time, not import time. Spans are flushed on
-// exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
+// Timing guarantee: auto-instrumentation only sees modules that load after
+// the SDK starts. The SDK is bootstrapped with dynamic imports, so when this
+// module is first imported by `index.ts` the app's own static imports
+// (http, express, ...) have already been linked and the HTTP / Express spans
+// are never produced. To get full coverage, load this module BEFORE the app:
+//   node --import @paperclipai/server/otel-register ...
+// (`otel-register.ts` imports this module and awaits `instrumentationReady`;
+// the CLI `run` command does the same before it imports the server). Node
+// evaluates a module once, so `index.ts`'s own import then reuses the
+// already-started SDK.
+//
+// Without the preload this module still works as a fail-open fallback:
+// `instrumentationReady` guarantees the SDK has started (or failed and logged)
+// before `startServer()` opens any DB connection or HTTP server, so custom
+// spans and anything that patches at call time are exported — but HTTP,
+// Express and other library auto-spans are missing. Spans are flushed on exit
+// via `shutdownInstrumentation()`, which index.ts awaits in its signal
 // handler before `process.exit`.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, register } from "node:module";
+import { pathToFileURL } from "node:url";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 
 export { checkExactPeerVersions } from "./peer-version-check.js";
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+
+// Set once an SDK has started in this process. A second copy of this module
+// (a bundled runtime that inlines it next to a separately loaded preload) reuses
+// the running SDK instead of registering a competing one.
+const STARTED_SDK_KEY = Symbol.for("paperclip.otel.started-sdk");
+type StartedSdkRegistry = { [STARTED_SDK_KEY]?: { shutdown: () => Promise<void> } };
 
 let sdkShutdown: (() => Promise<void>) | null = null;
 let shutdownPromise: Promise<void> | null = null;
@@ -453,7 +468,48 @@ export function resolveServiceVersion(
   return buildStamp || gitCommit || envVersion || "unknown";
 }
 
+/**
+ * Modules the ESM loader hook must leave alone: every file outside
+ * `node_modules` (the app's own sources, including workspace packages whose
+ * `export *` barrels the hook cannot wrap) and Paperclip's own published
+ * packages. Only third-party libraries need patching.
+ */
+const ESM_HOOK_EXCLUDE = [/^file:(?!.*\/node_modules\/)/, /\/node_modules\/@paperclipai\//];
+
+/**
+ * Register the `import-in-the-middle` loader hook that ships with
+ * `@opentelemetry/instrumentation`, so ESM `import`s of instrumented libraries
+ * (express, ...) that load after this call are patched. Resolved through the
+ * SDK package because under pnpm `@opentelemetry/instrumentation` is not a
+ * direct dependency of the server. Fails open: without the hook, CJS-based
+ * patching still works.
+ */
+function registerEsmInstrumentationHook(): void {
+  try {
+    const require = createRequire(import.meta.url);
+    const sdkRequire = createRequire(require.resolve("@opentelemetry/sdk-node"));
+    const hookPath = sdkRequire.resolve("@opentelemetry/instrumentation/hook.mjs");
+    register(pathToFileURL(hookPath).href, {
+      parentURL: import.meta.url,
+      data: { exclude: ESM_HOOK_EXCLUDE },
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] Could not register the OpenTelemetry ESM loader hook; " +
+        "Express and other ESM-loaded library spans may be missing.",
+      err,
+    );
+  }
+}
+
 async function bootstrapOtel(endpoint: string): Promise<void> {
+  const alreadyStarted = (globalThis as StartedSdkRegistry)[STARTED_SDK_KEY];
+  if (alreadyStarted) {
+    sdkShutdown = alreadyStarted.shutdown;
+    return;
+  }
+
   const { protocol, packageName: exporterPackage } = resolveProtocol();
 
   // Gate on exact peer versions before touching a single dynamic import: a
@@ -498,6 +554,8 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[paperclip] OpenTelemetry service.version=${serviceVersion}`);
 
+    registerEsmInstrumentationHook();
+
     const sdk = new NodeSDK({
       // This integration exports traces only. NodeSDK otherwise creates
       // default OTLP metric/log exporters even when none were configured.
@@ -526,6 +584,11 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
           "@opentelemetry/instrumentation-fs": { enabled: false },
           "@opentelemetry/instrumentation-dns": { enabled: false },
           "@opentelemetry/instrumentation-net": { enabled: false },
+          // One span per Express middleware/router layer is ~25 spans per
+          // request. Keep the request-handler span (and `http.route` on the
+          // HTTP span); the router instrumentation duplicates it.
+          "@opentelemetry/instrumentation-express": { ignoreLayersType: ["middleware", "router"] },
+          "@opentelemetry/instrumentation-router": { enabled: false },
         }),
       ],
     });
@@ -555,6 +618,7 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
           timer.unref?.();
         }),
       ]);
+    (globalThis as StartedSdkRegistry)[STARTED_SDK_KEY] = { shutdown: sdkShutdown };
     // index.ts awaits shutdownInstrumentation() in its own signal handler
     // before process.exit, which is what actually guarantees the flush.
     // These handlers are a backstop for entrypoints that import this module

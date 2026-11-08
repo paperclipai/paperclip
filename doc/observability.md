@@ -176,6 +176,50 @@ export OTEL_SERVICE_NAME="paperclip"
 export OTEL_SERVICE_VERSION="2026.5.0"
 ```
 
+### 3. Start the SDK before the app
+
+Auto-instrumentation only patches libraries that load **after** the SDK
+starts. If the SDK starts late, only Paperclip's own spans (`issue.read.*`,
+startup, sandbox) are exported; HTTP, Express and other library spans are
+missing, and the custom spans arrive as separate root traces.
+
+- **`paperclipai run`** starts the SDK before it imports the server whenever
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Nothing else to configure.
+- **Any other launcher** (`node dist/index.js`, a service unit, a container)
+  should preload the SDK entry point that `@paperclipai/server` exports:
+
+  ```bash
+  node --import @paperclipai/server/otel-register dist/index.js
+  # or, for a launcher you cannot edit:
+  export NODE_OPTIONS="--import @paperclipai/server/otel-register"
+  ```
+
+  In a source checkout under `tsx`, preload both:
+  `node --import tsx --import ./server/src/otel-register.ts server/src/index.ts`.
+
+The preload is a no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset and
+fails open when the packages are missing. The SDK registers the
+`import-in-the-middle` loader hook so ESM `import`s of instrumented libraries
+are patched. If the server starts without the preload, `instrumentationReady`
+still starts the SDK before the first DB connection, as before.
+
+Express emits one span per request handler. Per-middleware and per-router layer
+spans are disabled (they add roughly 25 spans to every request), and the
+duplicate `router` instrumentation is off.
+
+The server stores data through `postgres` (postgres.js), which has no
+OpenTelemetry instrumentation, so database calls do not produce spans; the
+`pg` instrumentation in the auto-instrumentation bundle does not apply.
+
+### `@opentelemetry/api` version pin
+
+`@opentelemetry/api` is pinned to `1.9.1`. `@opentelemetry/sdk-node@0.221.0`
+peer-requires `>=1.3.0 <1.10.0`; a caret range would let a fresh install
+resolve `1.10.0` next to the SDK's `1.9.x`, and the newer copy refuses the
+older copy's registration, leaving a no-op tracer. If you install the peer
+packages yourself, make sure only one `@opentelemetry/api` version resolves
+(`pnpm why @opentelemetry/api` / `npm ls @opentelemetry/api`).
+
 ### `service.version` resolution order
 
 The `service.version` span attribute reports the commit the running server was

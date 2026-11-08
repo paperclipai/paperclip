@@ -219,6 +219,18 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
   }
 }
 
+// OpenTelemetry auto-instrumentation only patches libraries that load after the
+// SDK starts, so the SDK must start before the server module graph is imported.
+// Fail open: tracing must never block server start.
+async function preloadOtelInstrumentation(specifier: string): Promise<void> {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return;
+  try {
+    await import(specifier);
+  } catch (err) {
+    p.log.warn(`OpenTelemetry preload failed; continuing without early instrumentation.\n${formatError(err)}`);
+  }
+}
+
 async function importServerEntry(): Promise<StartedServer> {
   // Dev mode: try local workspace path (monorepo with tsx)
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -226,6 +238,7 @@ async function importServerEntry(): Promise<StartedServer> {
   if (fs.existsSync(devEntry)) {
     ensureDevWorkspaceBuildDeps(projectRoot);
     maybeEnableUiDevMiddleware(devEntry);
+    await preloadOtelInstrumentation(pathToFileURL(path.resolve(projectRoot, "server/src/otel-register.ts")).href);
     const mod = await import(pathToFileURL(devEntry).href);
     return await startServerFromModule(mod, devEntry);
   }
@@ -235,6 +248,7 @@ async function importServerEntry(): Promise<StartedServer> {
     // A literal specifier would pull the whole server program into the CLI
     // typecheck. This import is untyped either way, like the dev import above.
     const serverPackage = "@paperclipai/server";
+    await preloadOtelInstrumentation(`${serverPackage}/otel-register`);
     const mod = await import(serverPackage);
     return await startServerFromModule(mod, serverPackage);
   } catch (err) {

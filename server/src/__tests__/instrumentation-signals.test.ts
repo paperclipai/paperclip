@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
-const sdk = vi.hoisted(() => ({ options: [] as Array<Record<string, unknown>>, start: vi.fn(), shutdown: vi.fn(async () => {}) }));
+const sdk = vi.hoisted(() => ({ options: [] as Array<Record<string, unknown>>, autoConfigs: [] as unknown[], start: vi.fn(), shutdown: vi.fn(async () => {}) }));
 vi.mock('../peer-version-check.js', () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
 vi.mock('@opentelemetry/sdk-node', () => ({ NodeSDK: class {
   constructor(options: Record<string, unknown>) { sdk.options.push(options); }
   start = sdk.start;
   shutdown = sdk.shutdown;
 } }));
-vi.mock('@opentelemetry/auto-instrumentations-node', () => ({ getNodeAutoInstrumentations: () => [] }));
+vi.mock('@opentelemetry/auto-instrumentations-node', () => ({ getNodeAutoInstrumentations: (config: unknown) => { sdk.autoConfigs.push(config); return []; } }));
 vi.mock('@opentelemetry/resources', () => ({ resourceFromAttributes: (attributes: unknown) => attributes }));
 vi.mock('@opentelemetry/semantic-conventions', () => ({ ATTR_SERVICE_NAME: 'service.name', ATTR_SERVICE_VERSION: 'service.version' }));
 vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({ OTLPTraceExporter: class {} }));
@@ -25,6 +25,10 @@ it('configures current plural SDK signal options so an opted-in trace exporter c
   expect(sdk.options[0]).not.toHaveProperty('metricReader');
   expect(sdk.options[0]).not.toHaveProperty('logRecordProcessor');
   expect(sdk.start).toHaveBeenCalledOnce();
+  expect(sdk.autoConfigs[0]).toMatchObject({
+    '@opentelemetry/instrumentation-express': { ignoreLayersType: ['middleware', 'router'] },
+    '@opentelemetry/instrumentation-router': { enabled: false },
+  });
   await instrumentation.shutdownInstrumentation();
   expect(sdk.shutdown).toHaveBeenCalledOnce();
 });

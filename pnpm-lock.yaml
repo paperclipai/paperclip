@@ -954,7 +954,7 @@ importers:
         specifier: 3.1.0
         version: 3.1.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
       '@opentelemetry/api':
-        specifier: ^1.9.0
+        specifier: 1.9.1
         version: 1.9.1
       '@opentelemetry/otlp-transformer':
         specifier: 0.221.0
