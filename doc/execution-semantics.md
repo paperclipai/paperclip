@@ -1445,7 +1445,11 @@ authorize an empty replacement or replay completed work.
 Read-only imports can use a superseded immutable snapshot with the exact saved
 operation receipt. They do not establish current workspace execution authority.
 Restored sidecars keep user edits, and only paths present with their recorded
-provenance in the current prepared root are published to the provider. Older
+provenance in the current prepared root are published to the provider.
+A remote sidecar records the run it was last shown to. Once that run
+succeeds, the next preparation removes the sidecar from the workspace and
+keeps only a retired record, so later saves stop carrying it and it is never
+attached or shown again. The source run's own saved snapshot is unaffected. Older
 attachment records rebuild this proof from saved receipts; reusing a live
 allocation never replaces their files. For a related task, retention requires
 the selected workspace’s committed migration history and matching source marker,
