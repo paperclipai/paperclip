@@ -18,6 +18,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import {
   createOwnershipReportState,
   ownershipReportFingerprint,
+  recheckSettlingKinds,
   runOwnershipReconciliationPass,
   type OwnershipReport,
 } from "../recovery/ownership-invariant-report.js";
@@ -836,6 +837,9 @@ export function registerOwnershipReconciliationWork(
   // no SQL; the next producer signal re-checks suppression.
   let parked = false;
   let lastPassAt: number | null = null;
+  // True when the only reason a pass is due is the settle watch: the next run
+  // re-checks the settling kinds alone, not every kind and invariant.
+  let watchOnly = false;
   const unsubscribers: Array<() => void> = [];
   const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
     retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
@@ -857,6 +861,16 @@ export function registerOwnershipReconciliationWork(
         nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
         return;
       }
+      if (watchOnly && !pendingWake) {
+        // Bounded and cheap: indexed listings of the settling kinds only.
+        lastPassAt = Date.now();
+        const recheck = await recheckSettlingKinds(db);
+        // A settle changes the set; the next full pass reports it.
+        if (recheck.settled.length > 0) { watchOnly = false; nextRunAt = Date.now(); return; }
+        nextRunAt = recheck.watched > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+        if (recheck.watched === 0) watchOnly = false;
+        return;
+      }
       lastPassAt = Date.now();
       pendingWake = false;
       const report = await runOwnershipReconciliationPass(db, { state });
@@ -864,7 +878,9 @@ export function registerOwnershipReconciliationWork(
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
       // A settling kind's live owner can die without writing a signal, so
       // keep one bounded re-check due while such records exist.
-      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded || report.settleWatch > 0
+      const fullPassDue = changing || report.awaitingSecondProof > 0 || report.retryNeeded;
+      watchOnly = !fullPassDue && report.settleWatch > 0;
+      const followUp = fullPassDue || report.settleWatch > 0
         ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;

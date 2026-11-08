@@ -196,7 +196,30 @@ export type SettledRecord = { kind: string; recordId: string; runId: string | nu
 export async function settleOwnableKind(db: Db, kindId: string, options: {
   now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
 } = {}): Promise<SettledRecord[]> {
-  const kind = OWNABLE_KINDS.find(candidate => candidate.id === kindId);
+  return (await settleKind(db, kindId, options)).settled;
+}
+
+/**
+ * The settle watch's light re-check: settles only the kinds that register a
+ * `settle`, through their own (indexed) listings, without the full report pass
+ * or the global invariant checks. Returns how many records are still watched.
+ */
+export async function recheckSettlingKinds(db: Db, options: { now?: Date; probe?: ProcessProbe; kinds?: readonly OwnableKind[] } = {}):
+  Promise<{ settled: SettledRecord[]; watched: number }> {
+  const settled: SettledRecord[] = [];
+  let watched = 0;
+  for (const kind of (options.kinds ?? OWNABLE_KINDS).filter(candidate => candidate.settle && candidate.listInProgress)) {
+    const result = await settleKind(db, kind.id, options, kind);
+    settled.push(...result.settled);
+    watched += result.watched;
+  }
+  return { settled, watched };
+}
+
+async function settleKind(db: Db, kindId: string, options: {
+  now?: Date; runIds?: readonly string[]; skipRunIds?: { has(runId: string): boolean }; probe?: ProcessProbe;
+}, explicitKind?: OwnableKind): Promise<{ settled: SettledRecord[]; watched: number }> {
+  const kind = explicitKind ?? OWNABLE_KINDS.find(candidate => candidate.id === kindId);
   if (!kind?.listInProgress || !kind.settle) throw new Error(`ownership kind ${kindId} has no settle path`);
   const now = options.now ?? new Date();
   const wanted = options.runIds ? new Set(options.runIds) : null;
@@ -218,13 +241,17 @@ export async function settleOwnableKind(db: Db, kindId: string, options: {
       && !(record.runId && options.skipRunIds?.has(record.runId)));
   const runProofs = await classifyRunOwners(db, unique);
   const settled: SettledRecord[] = [];
+  let watched = 0;
   for (const record of unique) {
     const proof = await classify(record.owner, runProofs, options.probe, now);
-    if (await settleOrSurface(db, kind, record, proof, now) === "settled") {
+    const outcome = await settleOrSurface(db, kind, record, proof, now);
+    if (outcome === "settled") {
       settled.push({ kind: kind.id, recordId: record.recordId, runId: record.runId, reason: proof.reason });
+    } else if (proof.verdict !== "unprovable") {
+      watched += 1;
     }
   }
-  return settled;
+  return { settled, watched };
 }
 
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;

@@ -25,6 +25,7 @@ import { registerOwnershipReconciliationWork } from "../services/native-runtime/
 import {
   createOwnershipReportState,
   OWNERSHIP_INVARIANT_VIOLATION_ACTION,
+  recheckSettlingKinds,
   runOwnershipReconciliationPass,
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
@@ -373,6 +374,13 @@ describe("report-only ownership reconciliation", () => {
     const reportOnly = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
       kinds: [{ ...fixture, settle: null }] });
     expect(reportOnly.settleWatch).toBe(0);
+    // The watch's re-check lists only settling kinds; a report-only kind's
+    // listing is never read.
+    const reportOnlyList = vi.fn(async () => ({ truncated: false, records: [] }));
+    const recheck = await recheckSettlingKinds(db, { kinds: [fixture, { ...fixture, id: "fixture_report_only", settle: null,
+      listInProgress: reportOnlyList }] });
+    expect(recheck).toEqual({ settled: [], watched: 1 });
+    expect(reportOnlyList).not.toHaveBeenCalled();
   });
 
   it("goes quiet with nothing in progress and follows up while records change", async () => {
