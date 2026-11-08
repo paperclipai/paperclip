@@ -99,6 +99,9 @@ describe("ttft baseline statistics", () => {
       span("task.time_to_first_agent_activity", -30_000, 35_000, { anchor: "wake_request" }),
     ], "claude");
     expect(runMetrics(deferred).firstActivityAfterRunCreatedMs).toBe(5_000);
+    const deferredText = run("e", "cold", [reuse("fresh"), span("heartbeat.queue", 0, 100),
+      span("task.time_to_first_token", -30_000, 35_000, { anchor: "wake_request" })], "claude");
+    expect(runMetrics(deferredText).ttftAfterRunCreatedMs).toBe(5_000);
   });
 
   it("ranks pre-turn steps by p95 without cumulative wrappers", () => {

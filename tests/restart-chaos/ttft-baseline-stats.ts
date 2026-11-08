@@ -109,18 +109,18 @@ export function runMetrics(run: BaselineRun): RunMetrics {
   const ingress = FIRST_SPAN(spans, "comment.to_run_created") ?? FIRST_SPAN(spans, "question_response.to_run_created");
   // Only an ingress that starts the TTFT span waited for its run to exist.
   const anchor = ttft ?? activity;
+  // From run creation, as the runtime budget judges it: the start of
+  // heartbeat.queue, else the end of the ingress span. Independent of the
+  // span's own anchor (an earlier wake request or comment is not counted).
+  const runCreatedAt = queue ? queue.startOffsetMs : ingress ? ingress.startOffsetMs + ingress.durationMs : null;
+  const afterRunCreated = (span: RunSpan) => runCreatedAt === null
+    ? Math.max(0, span.durationMs - (inputWaitMs ?? 0))
+    : Math.max(0, span.startOffsetMs + span.durationMs - runCreatedAt);
   const inputWaitMs = ingress && anchor && ingress.startOffsetMs <= anchor.startOffsetMs ? ingress.durationMs : null;
   return {
     inputWaitMs,
-    // From run creation, as the runtime budget judges it: the start of
-    // heartbeat.queue, else the end of the ingress span. Independent of the
-    // span's own anchor (an earlier wake request or comment is not counted).
-    firstActivityAfterRunCreatedMs: activity ? (() => {
-      const runCreatedAt = queue ? queue.startOffsetMs : ingress ? ingress.startOffsetMs + ingress.durationMs : null;
-      const activityEnd = activity.startOffsetMs + activity.durationMs;
-      return runCreatedAt === null ? activity.durationMs : Math.max(0, activityEnd - runCreatedAt);
-    })() : null,
-    ttftAfterRunCreatedMs: ttft ? Math.max(0, ttft.durationMs - (inputWaitMs ?? 0)) : null,
+    firstActivityAfterRunCreatedMs: activity ? afterRunCreated(activity) : null,
+    ttftAfterRunCreatedMs: ttft ? afterRunCreated(ttft) : null,
     ttftMs: ttft ? ttft.durationMs : null,
     ttftAnchor: ttft && typeof ttft.attributes.anchor === "string" ? ttft.attributes.anchor : null,
     bootMs: claimedAt !== null && turnStartAt !== null ? Math.max(0, turnStartAt - claimedAt) : null,
