@@ -16,7 +16,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-controller.js";
+import { hasPendingRunCleanup } from "../services/execution-blocker.js";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.js";
+import { hasRecoveredCleanupStopReceipt } from "../services/remote-execution-termination.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY } from "../services/sandbox-stop-and-retain.js";
 
@@ -116,8 +118,11 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     expect(released).toMatchObject({ status: "pending_cleanup", leasePolicy: "ephemeral",
       failureReason: "retained_orphan_sandbox_released" });
     expect(released.metadata?.remoteExecutionTermination).toBeUndefined();
-    expect(released.metadata?.retainedOrphanRelease).toMatchObject({ ownerProof: "owner_run_terminal",
-      stopReceipt: { state: "stopped" } });
+    expect(released.metadata?.workspaceRecoveryCleanup).toMatchObject({ runId: released.heartbeatRunId,
+      reason: "retained_orphan_sandbox_released", ownerProof: "owner_run_terminal", stopReceipt: { state: "stopped" } });
+    // Admission and Retry still see a stopped sandbox while the destroy waits.
+    expect(hasRecoveredCleanupStopReceipt(released)).toBe(true);
+    expect(await hasPendingRunCleanup(db, companyId, released.heartbeatRunId!)).toBe(false);
     // Due now, and the sweep destroys it from the recorded lease.
     expect(await nextEnvironmentCleanupAt(db)).toBeLessThanOrEqual(Date.now());
     const teardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>
@@ -186,6 +191,30 @@ suite("retained orphan sandbox on the shared ownership path", () => {
     const { kind } = await pass(false);
     expect(kind).toMatchObject({ inProgress: 1, settled: 0, verdicts: { gone: 1 } });
     expect(await row(leaseId)).toEqual(before);
+  });
+
+  it("leaves a reusable sandbox to warm reuse", async () => {
+    const leaseId = await retainedOrphan(await run("failed"));
+    await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" }).where(eq(environmentLeases.id, leaseId));
+    const before = await row(leaseId);
+    const { kind } = await pass();
+    expect(kind).toMatchObject({ inProgress: 0 });
+    expect(await row(leaseId)).toEqual(before);
+  });
+
+  it("keeps a sandbox with a pending native workspace export even past its retention window", async () => {
+    const runId = await run("failed");
+    const leaseId = await retainedOrphan(runId, { expiresAt: new Date(Date.now() - 1_000) });
+    const lease = await row(leaseId);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: { nativeWorkspaceSync: {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+      baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId,
+      providerLeaseId: lease.providerLeaseId, remoteCwd: "/workspace", resourceDisposition: "destroy" } } })
+      .where(eq(heartbeatRuns.id, runId));
+    const { kind } = await pass();
+    // Not listed, so the settle watch does not poll it while the export waits.
+    expect(kind).toMatchObject({ inProgress: 0 });
+    expect(await row(leaseId)).toEqual(lease);
   });
 
   it("leaves an ordinary retained sandbox (no orphan marker) alone", async () => {

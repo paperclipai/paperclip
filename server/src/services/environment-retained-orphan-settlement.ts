@@ -4,6 +4,7 @@ import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js"
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY } from "./sandbox-stop-and-retain.js";
 
 /** Failure reason on a retained orphan sandbox released for destruction. */
@@ -19,6 +20,9 @@ type LeaseRow = typeof environmentLeases.$inferSelect;
  * the stop is confirmed. */
 export function retainedOrphanSandboxCondition() {
   return and(eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
+    // An ephemeral lease only: a reusable lease stays for warm reuse, and a
+    // retain-on-failure lease belongs to workspace restore recovery.
+    eq(environmentLeases.leasePolicy, "ephemeral"),
     sql`${environmentLeases.heartbeatRunId} is not null`, sql`${environmentLeases.provider} is not null`,
     sql`${environmentLeases.providerLeaseId} is not null`,
     sql`${environmentLeases.metadata} ? ${ORPHANED_SANDBOX_RECOVERY_KEY}`,
@@ -49,6 +53,11 @@ function alwaysHeldSql() {
     or coalesce(${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending', false)
     or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
       and run.status not in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))
+    -- A prepared native workspace that has not been exported yet (the settle
+    -- re-checks the exact export state under the row lock).
+    or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
+      and run.runtime_mode = 'native' and (run.runner_profile_json#>>'{nativeWorkspaceSync,state}' = 'prepared'
+        or run.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
     or exists (select 1 from environment_leases other where other.id <> ${environmentLeases.id}
       and other.provider = ${environmentLeases.provider} and other.provider_lease_id = ${environmentLeases.providerLeaseId}
       and other.status in ('active', 'retained', 'pending_cleanup')))`;
@@ -84,10 +93,10 @@ export async function nextRetainedOrphanDueAt(db: Db, now: Date): Promise<Date |
  *   a stop-and-retain intent, an in-flight cleanup claim, a workspace restore
  *   recovery, a pending legacy shutdown fence, a bound source-recovery
  *   consumer) or another live lease on the same provider resource;
+ * - always held: a pending native workspace export or preservation fence;
  * - held while the stop receipt is still a usable workspace source (the
- *   lease's provider-attested `expiresAt` has not passed): a pending native
- *   workspace export or preservation fence, an open recovery action on the
- *   issue, or a queued, scheduled or running run on the issue. Past that
+ *   lease's provider-attested `expiresAt` has not passed): an open recovery
+ *   action on the issue, or a queued, scheduled or running run on the issue. Past that
  *   retention window no recovery path accepts the stopped sandbox as a source
  *   (`hasConfirmedSandboxStopAndRetain`), so these no longer hold it.
  *
@@ -104,18 +113,22 @@ export async function settleRetainedOrphanSandbox(db: Db, record: InProgressReco
     const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.id, record.recordId),
       eq(environmentLeases.heartbeatRunId, runId), eq(environmentLeases.status, "released"),
       eq(environmentLeases.cleanupStatus, "success"))).for("update");
-    if (!lease || !lease.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY] || !lease.provider || !lease.providerLeaseId) {
+    if (!lease || !hasRemoteTerminationReceipt(lease) || lease.leasePolicy !== "ephemeral" || !lease.metadata?.[ORPHANED_SANDBOX_RECOVERY_KEY]
+      || !lease.provider || !lease.providerLeaseId) {
       return { settled: false, reason: "no_longer_a_retained_orphan" };
     }
     const held = await heldBy(tx, lease, runId, context.now);
     if (held) return { settled: false, reason: held };
     const now = context.now;
+    // The destroy is queued through the recognized stopped-cleanup contract
+    // (`workspaceRecoveryCleanup` with the verified stop receipt), so admission
+    // and Retry keep treating the sandbox as stopped while it waits.
     const released = await writeEnvironmentCleanup(tx, write => write.update(environmentLeases).set({
-      status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral",
+      status: "pending_cleanup", cleanupStatus: "failed",
       failureReason: RETAINED_ORPHAN_RELEASED_REASON, updatedAt: now,
       metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination') || ${JSON.stringify({
-        retainedOrphanRelease: { runId, releasedAt: now.toISOString(), ownerProof: context.proof.reason,
-          stopReceipt: lease.metadata?.remoteExecutionTermination ?? null },
+        workspaceRecoveryCleanup: { runId, stopReceipt: lease.metadata?.remoteExecutionTermination,
+          reason: RETAINED_ORPHAN_RELEASED_REASON, releasedAt: now.toISOString(), ownerProof: context.proof.reason },
         pendingCleanupInFlight: false, pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0,
         pendingCleanupLeaseExpiresAtMs: 0 })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.heartbeatRunId, runId),
@@ -147,9 +160,11 @@ async function heldBy(tx: Db, lease: LeaseRow, runId: string, now: Date): Promis
     inArray(environmentLeases.status, ["active", "retained", "pending_cleanup"]))).limit(1);
   if (other) return "provider_resource_shared";
 
+  // A pending native export is an active preservation operation; the cleanup
+  // sweep would defer the destroy anyway, so it always holds the sandbox.
+  if (await nativeWorkspaceExportPendingForLease(tx, lease)) return "workspace_preservation_pending";
   // Held only while the stopped sandbox is still a usable workspace source.
   if (lease.expiresAt && lease.expiresAt <= now) return null;
-  if (await nativeWorkspaceExportPendingForLease(tx, lease)) return "workspace_preservation_pending";
   const issueId = run?.nativeIssueId ?? run?.issueId ?? lease.issueId;
   if (!issueId) return null;
   const [action] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
