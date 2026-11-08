@@ -225,6 +225,10 @@ describePostgres("saved intents while another run's accounting is pending", () =
       payload: expect.objectContaining({ executionWait: expect.objectContaining({ reason: refusal, trigger: "pause_lifted" }) }) })]);
     await settle(f);
     expect(deliveries(comment.id)).toHaveLength(0);
+    // The pause's own stop sweep (agent lifecycle "pausing") keeps the message
+    // it deferred; a terminate or cleanup stop would end it.
+    expect(await heartbeat.stopInvocationsForAgents([f.agentId], "Agent lifecycle stop requested",
+      { preservePauseDeferred: true })).toBe(true);
     expect((await readWake(saved[0].id)).status).toBe("deferred_issue_execution");
 
     await lift(f as never);

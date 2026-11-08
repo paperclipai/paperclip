@@ -62,6 +62,11 @@ const DEFERRED_RETRY_BACKOFF = sql`interval '30 seconds'`;
 export async function promoteDeferredWorkIntents(tx: object, input: {
   companyId: string; trigger: WorkIntentHoldTrigger; issueId?: string | null;
 }) {
+  // Register the work signals before the write they announce.
+  await notifyRunDispatch(tx, { companyId: input.companyId });
+  await notifyDeferredExecutionEligibility(tx, { companyId: input.companyId });
+  await notifyIssueRecovery(tx, { companyId: input.companyId });
+  if (input.issueId) await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
   const db = tx as Pick<Db, "update">;
   await db.update(agentWakeupRequests).set({
     updatedAt: sql`least(${agentWakeupRequests.updatedAt}, now() - ${DEFERRED_RETRY_BACKOFF})`,
@@ -72,8 +77,4 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
     sql`${agentWakeupRequests.updatedAt} > now() - ${DEFERRED_RETRY_BACKOFF}`,
     input.issueId ? sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}` : undefined,
   ));
-  await notifyRunDispatch(tx, { companyId: input.companyId });
-  await notifyDeferredExecutionEligibility(tx, { companyId: input.companyId });
-  await notifyIssueRecovery(tx, { companyId: input.companyId });
-  if (input.issueId) await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
 }

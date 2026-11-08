@@ -1,4 +1,5 @@
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
@@ -4152,8 +4153,8 @@ export function heartbeatService(
     }
   }
 
-  async function stopInvocationsForAgents(agentIds: string[], reason: string) {
-    await cancelInvocationsForAgentsInternal(agentIds, reason);
+  async function stopInvocationsForAgents(agentIds: string[], reason: string, options: StopInvocationOptions = {}) {
+    await cancelInvocationsForAgentsInternal(agentIds, reason, options);
     const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))

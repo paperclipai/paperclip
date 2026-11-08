@@ -12,7 +12,8 @@ describe("lifecycle host stop scope", () => {
     const driver = createLifecycleDriver(db, {} as never);
     expect(await driver.runHost({ id: "target", companyId: "company", lifecycleState: "pausing",
       lifecycleVersion: 2, lifecycleRequiredPluginIds: [], lifecycleError: null, lifecycleOperation: null })).toBe("complete");
-    expect(stop).toHaveBeenCalledWith(["target"], "Agent lifecycle stop requested");
+    // A pause keeps the messages it deferred (work-intent outbox).
+    expect(stop).toHaveBeenCalledWith(["target"], "Agent lifecycle stop requested", { preservePauseDeferred: true });
     expect(db.select).not.toHaveBeenCalled();
   });
 });
