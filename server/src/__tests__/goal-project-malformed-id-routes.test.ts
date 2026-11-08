@@ -97,6 +97,12 @@ describeEmbeddedPostgres("goal and project routes with a malformed id", () => {
     const found = await request(app).get(`/api/goals/${goalId.toUpperCase()}`);
     expect(found.status).toBe(200);
     expect(found.body.id).toBe(goalId);
+
+    const v7GoalId = "01900000-0000-7000-8000-000000000001";
+    await db.insert(goals).values({ id: v7GoalId, companyId, title: "V7 goal", level: "company", status: "active" });
+    const v7 = await request(app).get(`/api/goals/${v7GoalId}`);
+    expect(v7.status).toBe(200);
+    expect(v7.body.id).toBe(v7GoalId);
   });
 
   it("returns 404 for a project id that is not a UUID", async () => {
@@ -114,5 +120,11 @@ describeEmbeddedPostgres("goal and project routes with a malformed id", () => {
     const found = await request(app).get(`/api/projects/${projectId}`);
     expect(found.status).toBe(200);
     expect(found.body.id).toBe(projectId);
+
+    const v7ProjectId = "01900000-0000-7000-8000-000000000002";
+    await db.insert(projects).values({ id: v7ProjectId, companyId, name: "V7 project", status: "in_progress" });
+    const v7 = await request(app).get(`/api/projects/${v7ProjectId}`);
+    expect(v7.status).toBe(200);
+    expect(v7.body.id).toBe(v7ProjectId);
   });
 });

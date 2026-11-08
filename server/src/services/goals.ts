@@ -1,10 +1,12 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
-import { isUuidLike, updateGoalSchema, type UpdateGoal } from "@paperclipai/shared";
+import { updateGoalSchema, type UpdateGoal } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type GoalReader = Pick<Db, "select">;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function assertParentCompany(
   db: GoalReader,
@@ -60,7 +62,7 @@ export function goalService(db: Db) {
     list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
 
     getById: async (id: string) => {
-      if (id !== id.trim() || !isUuidLike(id)) return null;
+      if (!UUID_RE.test(id)) return null;
       return db
         .select()
         .from(goals)
