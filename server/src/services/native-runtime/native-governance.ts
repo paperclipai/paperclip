@@ -103,3 +103,23 @@ export async function conversationTurnAnswered(input: {
   // status gate, but it does not present the turn.
   return !(await pendingNativeInteraction(input));
 }
+
+/**
+ * The one rule for whether a successful conversation turn's prose is its
+ * answer. Live run completion and background presentation recovery both use
+ * it, so a restart between the status commit and the live presentation
+ * presents the same reply the live path would have.
+ */
+export async function conversationTurnPresentsAnswer(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  runId: string;
+  finalizationPhase: unknown;
+  finalizationReasonCode: unknown;
+}): Promise<boolean> {
+  if (input.finalizationReasonCode === "conversation_turn_finished") return true;
+  // A turn left waiting on an approval, an execution stage or a blocker still
+  // answered the person. Only its own question card presents it instead.
+  return input.finalizationPhase === "committed" && await conversationTurnAnswered(input);
+}
