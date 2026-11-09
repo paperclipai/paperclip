@@ -10,7 +10,7 @@ function valid(id: string) {
   const result = { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" }, worker: { id: "morgan" }, sourceTasks: [structuredClone(source)], ...(creation ? {} : { card: { ...card, archivedAt: null, archivedByAgentId: null }, originalUpdates: [structuredClone(update)], originalSummaries: [structuredClone(summary)], ...(archive ? { otherCard: { ...card, id: "other", interestPrompt: "Research blockers", archivedAt: null, archivedByAgentId: null } } : {}) }) },
     tasks: [source], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], links: ["/ACORN/status/card"],
     runs: [{ id: "source-run", agentId: "ceo", status: "succeeded" }, { id: "worker-run", agentId: "morgan", status: "succeeded" }],
-    activity: creation ? [{ id: "create", action: "status_card.created", entityId: "card", agentId: "ceo" }] : [], cardsEnabled: true, cards: archive ? [card, { ...card, id: "other", interestPrompt: "Research blockers", archivedAt: null, archivedByAgentId: null }] : [card], updates: { card: [update] }, summaries: { card: [summary] },
+    activity: creation ? [{ id: "create", action: "status_card.created", entityId: "card", agentId: "ceo" }] : [], cardsEnabled: true, cardOperations: undefined as Record<string, string[]> | undefined, cards: archive ? [card, { ...card, id: "other", interestPrompt: "Research blockers", archivedAt: null, archivedByAgentId: null }] : [card], updates: { card: [update] }, summaries: { card: [summary] },
     reply: creation ? "Created the Launch card; the generated summary is ready." : archive ? "The Launch card is archived. Restore it from archived cards and refresh its older content." : "I cannot manage Morgan's card: only its author or a human operator can change the refresh policy." };
   if (id === "status-cards.explain-card") {
     result.tasks[0]!.status = "done"; result.state.sourceTasks[0]!.status = "done";
@@ -23,6 +23,8 @@ function valid(id: string) {
   }
   if (id === "status-cards.refresh-card") {
     const first = structuredClone(result); first.reply = "The refresh was requested; generation is pending.";
+    first.activity.push({ id: "refresh", action: "status_card.refresh_requested", entityId: "card", agentId: "ceo" });
+    result.cards[0]!.fingerprint = { source: { status: "blocked", title: source.title } } as typeof card.fingerprint;
     Object.assign(result.state, { firstRefresh: first });
     result.cards[0]!.summaryBody = "The remaining blocker is mobile Safari checkout.";
     result.cards[0]!.lastGeneratedAt = "2026-10-26T12:00:00Z";
@@ -30,7 +32,7 @@ function valid(id: string) {
     result.summaries.card.push({ id: "new-summary", body: result.cards[0]!.summaryBody });
     result.runs.push({ id: "new-worker-run", agentId: "morgan", status: "succeeded" });
     result.reply = `${first.reply}\nThe refreshed summary identifies mobile Safari checkout as the remaining blocker.`;
-    const successful = structuredClone(result);
+    const successful = structuredClone(result); successful.runs.push({ id: "ceo-two", agentId: "ceo", status: "succeeded" });
     const work = cardWorkFixture();
     const initialChecklist = successfulCardWorkFixture("worker-run", "generation-task", "update");
     const successfulChecklist = successfulCardWorkFixture("new-worker-run", "refresh-task", "new-update");
@@ -39,7 +41,8 @@ function valid(id: string) {
     Object.assign(result.updates.card[0]!, initialChecklist.update); Object.assign(result.updates.card[1]!, successfulChecklist.update);
     Object.assign((result.state as Record<string, unknown>).originalUpdates as object[], [initialChecklist.update]);
     result.updates.card.push(work.update as unknown as typeof update);
-    Object.assign(result, { cardWork: work.evidence, runs: work.evidence.runs });
+    Object.assign(result, { cardWork: work.evidence, runs: work.evidence.runs, cardOperations: { "source-run": ["GET /api/status-cards/{id}", "POST /api/status-cards/{id}/refresh"], "ceo-two": ["GET /api/status-cards/{id}"], "ceo-three": ["POST /api/status-cards/{id}/refresh"], "ceo-four": ["GET /api/status-cards/{id}/updates"] } });
+    Object.assign(result.state, { failureQuestionRunIds: work.evidence.runs.map(run => run.id).filter(id => id !== "ceo-four") });
     result.reply += "\nThe latest generation failed; the prior successful summary was retained.";
 
   }
@@ -93,11 +96,22 @@ describe("saved card state and truthful generation controls", () => {
     const fabricated = structuredClone(o); fabricated.cards[0]!.lastGeneratedAt = "2026-10-26T12:00:00Z";
     expect(gradeIntegratorCards(fabricated).passed).toBe(false);
   });
-  it("rejects stale acknowledgement described as fresh, duplicate refresh and no later result", () => {
+  it("rejects an unqueued or unlinked acknowledgement, duplicate refresh and no later result, but not reworded replies", () => {
     const o = valid("status-cards.refresh-card");
     const first = (o.state as Record<string, unknown>).firstRefresh as ReturnType<typeof valid>;
-    const dishonest = structuredClone(o); ((dishonest.state as Record<string, unknown>).firstRefresh as ReturnType<typeof valid>).reply = "The card is updated and ready with a fresh summary.";
-    expect(gradeIntegratorCards(dishonest).passed).toBe(false);
+    const firstOf = (x: typeof o) => (x.state as Record<string, unknown>).firstRefresh as ReturnType<typeof valid>;
+    const unqueued = structuredClone(o); firstOf(unqueued).activity = [];
+    expect(gradeIntegratorCards(unqueued).passed).toBe(false);
+    const foreign = structuredClone(o); firstOf(foreign).activity[0]!.agentId = "morgan";
+    expect(gradeIntegratorCards(foreign).passed).toBe(false);
+    const unlinked = structuredClone(o); firstOf(unlinked).links = [];
+    expect(gradeIntegratorCards(unlinked).passed).toBe(false);
+    const unread = structuredClone(o); unread.cardOperations!["ceo-two"] = [];
+    expect(gradeIntegratorCards(unread).passed).toBe(false);
+    const unobserved = structuredClone(o); delete unobserved.cardOperations;
+    expect(gradeIntegratorCards(unobserved).passed).toBe(false);
+    const stale = structuredClone(o); stale.cards[0]!.fingerprint = { source: { status: "blocked", title: "Older title" } } as typeof stale.cards[0]["fingerprint"];
+    expect(gradeIntegratorCards(stale).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, reply: first.reply }).passed).toBe(false);
     const duplicate = structuredClone(o); duplicate.updates.card.push({ ...duplicate.updates.card[1]!, id: "duplicate" });
     expect(gradeIntegratorCards(duplicate).passed).toBe(false);
@@ -112,13 +126,43 @@ describe("saved card state and truthful generation controls", () => {
     expect(gradeIntegratorCards(rewritten).passed).toBe(false);
     const lostHistory = structuredClone(o); lostHistory.summaries.card.pop();
     expect(gradeIntegratorCards(lostHistory).passed).toBe(false);
-    expect(gradeIntegratorCards({ ...o, reply: o.reply + " A new summary is ready; refresh succeeded." }).passed).toBe(false);
+    const unread = structuredClone(o); unread.cardOperations!["ceo-four"] = ["POST /api/status-cards/{id}/refresh"];
+    expect(gradeIntegratorCards(unread).passed).toBe(false);
+    // A read in the earlier refresh turn does not answer the later question.
+    const earlier = structuredClone(o); delete earlier.cardOperations!["ceo-four"]; earlier.cardOperations!["ceo-three"]!.push("GET /api/status-cards/{id}/updates");
+    expect(gradeIntegratorCards(earlier).passed).toBe(false);
     const checkpoint = (o.state as Record<string, unknown>).successfulRefreshResult as ReturnType<typeof valid>;
-    expect(gradeIntegratorCards({ ...o, reply: checkpoint.reply + " The refresh could not finish. The last good output was kept unchanged." }).passed).toBe(true);
+    expect(gradeIntegratorCards({ ...o, reply: checkpoint.reply }).passed).toBe(false);
+    // Wording is not graded: a reworded account passes.
+    expect(gradeIntegratorCards({ ...o, reply: checkpoint.reply + " That run stopped early, so the card still shows the summary from before." }).passed).toBe(true);
   });
 });
 
-import { sourceTaskReads } from "./integrator-status-cards.js";
+import { sourceTaskReads, statusCardOperations } from "./integrator-status-cards.js";
+it("reads the status-card operations a run started from its tool-call events", () => {
+  const started = (name: string, input: Record<string, unknown>) => ({ eventType: "item.started", payload: { prpEvent: { payload: { item: { id: "1", name, type: "tool_use", input } } } } });
+  expect(statusCardOperations([
+    started("call_api", { data: "***REDACTED***", operationId: "GET /api/status-cards/{id}" }),
+    started("call_api", { operationId: "GET /api/issues/{id}" }),
+    started("search_api", { query: "status card" }),
+    { eventType: "item.completed", payload: { prpEvent: { payload: { item: { type: "tool_use", input: { operationId: "GET /api/status-cards/{id}/updates" } } } } } },
+  ])).toEqual(["GET /api/status-cards/{id}"]);
+});
+it("grades a created card by saved state and its link, not by the reply's wording", () => {
+  const o = valid("status-cards.create-card");
+  expect(gradeIntegratorCards({ ...o, reply: "Done: [Launch blockers](/ACORN/status/card). Morgan is putting the first summary together now." }).passed).toBe(true);
+  expect(gradeIntegratorCards({ ...o, reply: "Launch blockers card is set up." }).passed).toBe(true);
+  // A document written in place of a card, with no saved card, fails.
+  expect(gradeIntegratorCards({ ...o, cards: [], updates: {}, summaries: {}, activity: [] }).passed).toBe(false);
+  expect(gradeIntegratorCards({ ...o, links: ["/ACORN/issues/COM-2#document-launch-status-card"] }).passed).toBe(false);
+  // A summary the requester wrote without a successful summarizer generation fails.
+  expect(gradeIntegratorCards({ ...o, updates: { card: [] } }).passed).toBe(false);
+  // A card that has not yet been summarized passes when its compiled query watches Launch.
+  const pending = structuredClone(o); pending.cards[0]!.summaryBody = null as unknown as string; pending.cards[0]!.lastGeneratedAt = null as unknown as string;
+  expect(gradeIntegratorCards(pending).passed).toBe(true);
+  const unwatched = structuredClone(o); unwatched.cards[0]!.fingerprint = {} as typeof unwatched.cards[0]["fingerprint"];
+  expect(gradeIntegratorCards(unwatched).passed).toBe(false);
+});
 it("does not grade explanation wording, and does not need a link back to the card the person attached", () => {
   const o = valid("status-cards.explain-card"); const first = (o.state as Record<string, unknown>).accessCheckpoint as ReturnType<typeof valid>;
   first.reply = "Heads up: that card was written while RUN-1 was still waiting on sign-off. RUN-1 closed out shortly after, so the card is behind.";
