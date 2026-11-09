@@ -101,13 +101,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "workspace-repo": { type: "string" },
       storage: { type: "string" },
       "storage-faults": { type: "string" },
+      "storage-fault-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -213,6 +214,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
     options.storageFaults = list<"ST1" | "ST2" | "ST3">(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
+  }
+  if (values["storage-fault-seconds"] !== undefined) {
+    if (!options.storageFaults?.length) throw new Error("--storage-fault-seconds needs --storage-faults");
+    const match = /^(\d+)-(\d+)$/.exec(values["storage-fault-seconds"]);
+    const [min, max] = match ? [Number(match[1]), Number(match[2])] : [0, -1];
+    if (!match || min < 5 || max < min || max > 900) throw new Error("--storage-fault-seconds takes <min>-<max> seconds, 5 to 900, min not above max");
+    options.storageFaultMs = [min * 1000, max * 1000];
   }
   return { mode: "wave", options, keep };
 }

@@ -184,7 +184,8 @@ method and status are written to `storage-proxy.json`.
 | ST2 | slow store: 1–10 s added latency with jitter |
 | ST3 | 30% of requests answer 503, half of them `SlowDown` |
 
-The windows are logged in the timeline and written to `storage-faults.json`.
+`--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
+an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
 
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails

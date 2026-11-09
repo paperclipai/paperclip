@@ -277,7 +277,7 @@ async function main(): Promise<number> {
     const storm = plan.storm ? new StormRun(plan.storm, Date.now()) : null;
     if (storageProxy && plan.options.storageFaults?.length) {
       const windows = planStorageFaults({ kinds: plan.options.storageFaults, seed: plan.seed,
-        spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000 });
+        spanMs: plan.storm?.durationMs ?? plan.tasks.length * 4 * 60_000, ...(plan.options.storageFaultMs ? { durationMs: plan.options.storageFaultMs } : {}) });
       storageChaos = new StorageChaos(windows, Date.now(), storageProxy, (kind, data) => timeline.add(kind, data));
       timeline.add("storage_faults_planned", { windows: windows.map(window => `${window.kind}@${window.startMs}ms+${window.durationMs}ms`) });
     }

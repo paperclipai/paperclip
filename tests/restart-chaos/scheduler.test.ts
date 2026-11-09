@@ -56,6 +56,11 @@ describe("scheduler determinism", () => {
     if (faulted.mode !== "wave") throw new Error("expected a wave");
     expect(faulted.options.storageFaults).toEqual(["ST1", "ST3"]);
     expect(() => parseCommand(["--storage-faults", "ST1"])).toThrow(/needs --storage s3/);
+    const short = parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "15-45", "--seed", "5"]);
+    if (short.mode !== "wave") throw new Error("expected a wave");
+    expect(short.options.storageFaultMs).toEqual([15_000, 45_000]);
+    expect(() => parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "45-15"])).toThrow(/storage-fault-seconds/);
+    expect(() => parseCommand(["--storage", "s3", "--storage-fault-seconds", "15-45"])).toThrow(/needs --storage-faults/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });

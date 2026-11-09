@@ -75,6 +75,7 @@ export interface WaveOptions {
   workspaceRepo?: string;
   storage?: "s3";
   storageFaults?: Array<"ST1" | "ST2" | "ST3">;
+  storageFaultMs?: [number, number];
   workspaceCommit?: string;
 }
 
