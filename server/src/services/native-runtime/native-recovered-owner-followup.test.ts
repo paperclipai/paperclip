@@ -90,7 +90,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * later committed its result and released the controller lease, but no
    * suspended Runner receipt or failover backup ever reached the controller.
    * Only the database controller checkpoint and recovery pointer survive. */
-  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled",
+  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool"
+    | "failed-turn-start" | "rejected-turn-start" | "indeterminate-turn-start" | "unknown-outcome-turn-start"
+    | "unsuperseded-unknown-outcome-turn-start" | "failed-suspend" = "settled",
     options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
@@ -127,10 +129,25 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     try {
       // Shape the file-backed journal first; the database checkpoint captures
       // it when persistence moves to the controller's external writer.
-      const commands = ["run.prepare", "session.open", "turn.start", "runner.suspend"].map(type => controller.queueCommand(type));
+      const unknownOutcome = { status: "failed", result: { commandType: "turn.start", status: "failed",
+        result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } };
+      const answers = {
+        "failed-turn-start": { status: "failed", result: { status: "failed" } },
+        "rejected-turn-start": { status: "rejected", result: { status: "rejected" } },
+        "indeterminate-turn-start": { status: "indeterminate", result: { status: "indeterminate" } },
+        "unknown-outcome-turn-start": unknownOutcome,
+      } as const;
+      const answered = answers as Record<string, unknown>;
+      const commands = ["run.prepare", "session.open", ...(control in answered ? ["turn.start"] : []), "turn.start", "runner.suspend"]
+        .map(type => controller.queueCommand(type));
       for (const command of control === "pending-command" ? commands.slice(0, -1) : commands) {
         Object.assign(command, { status: "completed", result: { status: "completed" } });
       }
+      if (control in answered) Object.assign(commands[2]!, answers[control as keyof typeof answers]);
+      if (control === "unsuperseded-unknown-outcome-turn-start") {
+        Object.assign(commands.find(command => command.type === "turn.start")!, unknownOutcome);
+      }
+      if (control === "failed-suspend") Object.assign(commands.at(-1)!, { status: "failed", result: { status: "failed" } });
       const event = (sourceSeq: number, sourceEventId: string, eventType: string) => ({ sourceSeq, sourceEventId, eventType,
         priority: 0 as const, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
       controller.store.state.committedEvents.push(
@@ -627,6 +644,19 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(retry.selectedRunId).toBe(failed);
       expect(await retry.start()).toBe("native_controller_recovery_unsupported:metadata_format");
     }, 60_000);
+
+  it.each([
+    { control: "failed-turn-start", outcome: ADMITTED },
+    { control: "rejected-turn-start", outcome: ADMITTED },
+    { control: "indeterminate-turn-start", outcome: ADMITTED },
+    { control: "unknown-outcome-turn-start", outcome: ADMITTED },
+    { control: "unsuperseded-unknown-outcome-turn-start", outcome: stranded("journal_commands_unsettled(turn.start.failed)") },
+    { control: "failed-suspend", outcome: stranded("journal_commands_unsettled(runner.suspend.failed)") },
+  ] as const)("retires a finished owner whose journal holds an answered $control command", async ({ control, outcome }) => {
+    const prior = await seedRecoveredPriorRun(control);
+    const followUp = await admitFollowUp(prior);
+    expect(await followUp.start()).toBe(outcome);
+  }, 60_000);
 
   it("admits again when a retry rebuilds the same projection from the database", async () => {
     const prior = await seedRecoveredPriorRun();
