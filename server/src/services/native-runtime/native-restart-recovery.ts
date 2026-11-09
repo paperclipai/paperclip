@@ -1265,10 +1265,15 @@ export async function claimNativeRestartRecoveries(input: {
           coordinatedPreviousController:
             input.coordinatedPreviousController ?? null,
         });
-      const independentControllerEvidence = evaluatedTakeover.allowed
-        ? ["controller_stopped", "controller_fenced"].includes(evaluatedTakeover.reason)
-        : ["controller_lease_held", "controller_lease_grace"].includes(evaluatedTakeover.reason);
-      const namespaceAttentionNeeded = processSpaceUnverified && !nonExecutionOwner && !independentControllerEvidence;
+      const independentControllerWait = !evaluatedTakeover.allowed
+        && ["controller_lease_held", "controller_lease_grace"].includes(evaluatedTakeover.reason);
+      // Controller death does not prove a foreign local Runner or provider
+      // stopped. Remote execution never uses local PID probes and still owes
+      // its existing checkpoint or never-launched proof below.
+      const independentlyStoppedRemoteController = remoteProcess && evaluatedTakeover.allowed
+        && ["controller_stopped", "controller_fenced"].includes(evaluatedTakeover.reason);
+      const namespaceAttentionNeeded = processSpaceUnverified && !nonExecutionOwner
+        && !independentControllerWait && !independentlyStoppedRemoteController;
       const takeover = namespaceAttentionNeeded
         ? { allowed: false, reason: remoteProcess ? "remote_controller_process_space_unverified" : "controller_process_space_unverified" }
         : evaluatedTakeover;
