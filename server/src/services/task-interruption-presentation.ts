@@ -95,6 +95,14 @@ function boundedJsonString(value: SQL, limit: number) {
   return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
 
+/** Projected reason for a budget.blocked refusal caused by unpriced usage. */
+export const UNPRICED_USAGE_WAIT = "accounting.unpriced_usage";
+/** Admission's unpriced-usage refusal text (budgets.ts). Only this fixed
+ * phrase is matched; the stored message itself is never displayed. */
+const unpricedUsageWait = (reason: SQL, message: SQL) =>
+  sql<string | null>`case when ${reason} = 'budget.blocked' and ${message} like '%recorded usage has no reliable price%'
+    then ${UNPRICED_USAGE_WAIT} else ${reason} end`;
+
 // Persisted wait messages can contain diagnostics. Ordinary task views expose
 // only these stable categories, never arbitrary payloads or source identifiers.
 const retryWaitMessages: Record<string, string> = {
@@ -109,6 +117,9 @@ const retryWaitMessages: Record<string, string> = {
   execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
+  // Admission records an unpriced-usage refusal as budget.blocked; the
+  // projection shows it as the accounting matter it is.
+  [UNPRICED_USAGE_WAIT]: "Retry is waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy. Your message is saved.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   // Another click cannot release a copyback owner that stopped without reporting.
   // Retry starts a new recovery generation; the agent does not repeat its work.
@@ -136,6 +147,7 @@ function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
 // assigned-task liveness sweep admits it once the hold clears; no Retry needed.
 const admissionWaitMessages: Record<string, string> = {
   "budget.blocked": "Waiting for the budget to allow new work. The task starts automatically when it does.",
+  [UNPRICED_USAGE_WAIT]: "Waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -349,7 +361,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
-      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      executionWaitReason: boundedJsonString(sql`to_jsonb(${unpricedUsageWait(sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
+        sql`${agentWakeupRequests.payload}#>>'{executionWait,message}'`)})`, 80),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
       preparationUpdatedAt: chatActions.updatedAt })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
@@ -377,7 +390,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
     // Only consulted for tasks without a run: the latest wake says whether admission refused it.
     startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
-      status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, agentId: agentWakeupRequests.agentId })
+      status: agentWakeupRequests.status, reason: unpricedUsageWait(sql`${agentWakeupRequests.reason}`, sql`${agentWakeupRequests.error}`),
+      agentId: agentWakeupRequests.agentId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
   ]);

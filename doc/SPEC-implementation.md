@@ -1769,7 +1769,10 @@ hard stop refuses new work even while evaluation lags.
 waits on another run's cleanup or accounting completeness. Only these refuse it:
 
 - spend at the limit (ledger plus observed running spend), or unpriced usage
-  under a blocking policy (the hard stop);
+  a provider reported, under a blocking policy (the hard stop). A charge that
+  accounting settled without its receipt (lost, closure evidence that never
+  arrived, or a failed capture) is recorded and shown in Costs, but it is never
+  a company gate;
 - an explicit pause of the company, project or agent;
 - an inactive company.
 
@@ -1986,16 +1989,18 @@ its display label after fifteen minutes. Elapsed time never discards a late
 receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
-provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge unless
-a control-plane restart caused it. A restart-derived receipt (the run replaced
-its receipt source, recovered from a restart, or lost a provider turn on
-restore) never hard-stops or pauses a company under the blocking policy,
-whatever its token count; its activity entry and provenance remain the notice. A lost
+provenance saying closure evidence never arrived, and an activity entry names
+the run. Like any charge accounting settled without its receipt, it never
+hard-stops or pauses a company under the blocking policy, whatever its token
+count; its activity entry and provenance remain the notice. A verified local
+process stop closes the receipt source for a failed, cancelled, timed-out or
+interrupted run alike, so a restart-cancelled run settles at once. A lost
 receipt that already carries a provider-reported cost settles at that cost as
 an estimate marked as a lower bound, not as unpriced. A failed native run that
 never started provider work (no usage receipt, no replaced receipt source, and a
-local process that never launched or was verified stopped) settles at once
+local process that never launched or was verified stopped) settles at once,
+also when it carries the pid of a warm runner it attached to without starting
+a process of its own,
 with no charge and never holds admission; the empty receipt-source fence map
 that every usage recorder binds is not evidence that provider work began. A native
 turn that the restored Runner reports as lost on restore can never report its

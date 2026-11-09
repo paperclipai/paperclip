@@ -124,6 +124,36 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
 
+  // G1 wave s9802 t02: an accepted Retry held by the unpriced-usage refusal
+  // read as a budget wait. It is an accounting matter; name it so.
+  it("labels a Retry held by unpriced usage as accounting, not budget", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Unpriced", issuePrefix: `U${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Agent", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Task", identifier: "CHA-2",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    const [todo] = await db.insert(issues).values({ companyId, title: "Not started", identifier: "CHA-3",
+      status: "todo", assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined", finishedAt: new Date(Date.now() - 60_000) });
+    const refusal = "Company cannot start work because recorded usage has no reliable price.";
+    await db.insert(agentWakeupRequests).values([{ companyId, agentId, source: "on_demand", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 30_000),
+      payload: { issueId: task.id, taskRetry: { sourceRunId: runId }, executionWait: { reason: "budget.blocked", message: refusal } } },
+    { companyId, agentId, source: "assignment", reason: "budget.blocked", status: "skipped", error: refusal,
+      requestedAt: new Date(), payload: { issueId: todo.id } }]);
+    const held = await taskInterruptionPresentation(db, task);
+    expect(held?.retryWait).toMatchObject({ reason: "accounting.unpriced_usage", message: expect.stringContaining("has no price") });
+    expect(held?.retryWait?.message).not.toContain("budget to allow");
+    const waiting = (await taskInterruptionPresentations(db, companyId, [todo])).get(todo.id);
+    expect(waiting?.retryWait).toMatchObject({ reason: "accounting.unpriced_usage", message: expect.stringContaining("has no price") });
+    // A budget hard stop keeps its budget label.
+    await db.update(agentWakeupRequests).set({ payload: { issueId: task.id, taskRetry: { sourceRunId: runId },
+      executionWait: { reason: "budget.blocked", message: "Company is paused because its budget hard-stop was reached." } } })
+      .where(eq(agentWakeupRequests.reason, "task_retry"));
+    expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
+  });
+
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
     await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
