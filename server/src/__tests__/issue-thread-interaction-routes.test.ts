@@ -2798,10 +2798,11 @@ describe("issue thread interaction routes", () => {
       payload: { version: 1, prompt: "Riley: approve?" },
     });
     const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
-    mockDbSelectWhere.mockImplementation((...args: unknown[]) => ({
-      ...(defaultWhere as (...a: unknown[]) => Record<string, unknown>)(...args),
+    // The addressee name lookup ends in .limit(1); the other reads keep their defaults.
+    mockDbSelectWhere.mockImplementation((() => ({
+      ...defaultWhere(),
       limit: () => Promise.resolve([{ name: "Riley" }]),
-    }));
+    })) as unknown as typeof defaultWhere);
     const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });
 
     const res = await request(app)
