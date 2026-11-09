@@ -20,8 +20,7 @@ const migrationFile = "0451_heartbeat_runs_wakeup_request_index.sql";
         FROM pg_index WHERE indexrelid=${indexName}::regclass`;
       expect(built!.indisvalid).toBe(true);
       expect(built!.indisunique).toBe(false);
-      expect(built!.definition).toContain("heartbeat_runs");
-      expect(built!.definition).toContain("wakeup_request_id");
+      expect(built!.definition).toContain("ON public.heartbeat_runs USING btree (wakeup_request_id)");
 
       // Operators work around the missing index by creating it by hand. A
       // replay over that index must still record exactly one history receipt.
