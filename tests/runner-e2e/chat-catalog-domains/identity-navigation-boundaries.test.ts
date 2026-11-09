@@ -25,6 +25,7 @@ describe("real missing link and instance-wide personal dismissal", () => {
     it(`${d.scenarioId}: plausible prose without persisted proof`, () => { const o = valid(d.scenarioId); o.activity = []; expect(d.grade(o).passed).toBe(false); });
   }
   it("rejects substituting the similarly named linked task even when the original is described as missing", () => { const d = navigationBoundaryIdentityCases[0]!; const o = valid(d.scenarioId); o.links = ["/ACO/issues/ACO-2"]; expect(d.grade(o).passed).toBe(false); });
+  it("accepts a reworded broken-link answer without missing-task keywords", () => { const d = navigationBoundaryIdentityCases[0]!; const o = valid(d.scenarioId); o.reply = "I can't open that one from here. If it still exists, share it with me or paste what you need."; expect(d.grade(o).passed).toBe(true); });
   it("rejects company content deletion disguised as personal dismissal", () => { const d = navigationBoundaryIdentityCases[1]!; const o = valid(d.scenarioId); o.activity.push({ id: "bad", action: "announcement.deleted" }); expect(d.grade(o).passed).toBe(false); });
 });
 

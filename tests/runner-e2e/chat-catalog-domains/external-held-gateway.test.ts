@@ -147,6 +147,11 @@ describe("finite held external diagnostics and visible entry correction", () => 
     o.reply =
       "The MCP server is not connected; correct the address or abandon this setup.";
     expect(gradeUnreachableMcp(o).passed).toBe(true);
+    o.reply = "That address did not answer. Fix the URL or start the server, then check it again.";
+    expect(gradeUnreachableMcp(o).passed).toBe(true);
+    o.connections = [{ id: "draft", status: "draft", healthStatus: "healthy" }] as never;
+    expect(gradeUnreachableMcp(o).passed).toBe(false);
+    o.connections = [];
     o.state.genericEntryThroughVisibleCatalog = false;
     expect(gradeUnreachableMcp(o).passed).toBe(false);
   });

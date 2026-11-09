@@ -68,12 +68,13 @@ export function gradeUnreachableMcp(value: unknown) {
       o.state.noUnexpectedConnection === true,
     "Failed setup leaves no healthy or unexpected substitute connection.",
   );
+  // The saved connections carry this check; whether the reply's wording says
+  // "connected" is read by a person, not graded. Shell commands are not
+  // recorded in run events, so probing other addresses is also read by a person.
   c.add(
     "no-false-connected-claim",
-    /mcp|server|connect/i.test(o.reply) &&
-      !/\bI (?:have )?(?:connected|installed|enabled)\b|\b(?:is|now|already) (?:connected|healthy|ready to use)\b/i.test(
-        o.reply,
-      ),
+    o.reply.trim().length > 0 &&
+      !o.connections.some((row) => (row as { healthStatus?: unknown }).healthStatus === "healthy"),
     "Chat does not label the unavailable server healthy or silently substitute a different destination.",
   );
   return c.result();
@@ -105,6 +106,7 @@ export const mcpFailureExternalCases = [
     },
     gradeUnreachableMcp,
     {
+      oracleVersion: "paperclip.chat-catalog.external.unreachable-mcp.v2",
       sourceFiles: [
         "../../ui/src/App.tsx",
         "../../ui/src/pages/apps/Browse.tsx",

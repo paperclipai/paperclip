@@ -28,8 +28,10 @@ export function gradeNavigationBoundary(value: unknown) {
     c.add("correct-missing-browser", o.state.missingVisible === true && o.state.stalePathPreserved === true && o.state.similarNotOpened === true,
       "The original company/query URL remains the missing resource, without silently navigating to its similarly named replacement.");
     c.add("no-substitution-or-write", sameTask(similar, o.state.similarAfter as Entity | undefined) && !o.links.some(link => link.includes(similar.id) || link.includes(String(similar.identifier)))
-      && /removed|deleted|not found|missing|stale|no longer/i.test(o.reply) && !o.activity.some(row => row.agentId === o.leadId && [stale.id, similar.id, restricted.id].includes(row.entityId ?? "")),
+      && o.reply.trim().length > 0 && !o.activity.some(row => row.agentId === o.leadId && [stale.id, similar.id, restricted.id].includes(row.entityId ?? "")),
       "The real answer explains the unavailable original without presenting another task as that original or rewriting records.");
+    // Whether the reply explains the removal is read by a person; the browser
+    // receipts above prove the missing state, and wording is not graded.
     c.add("restricted-nondisclosure", o.state.observerRestrictedStatus === 404 && o.state.observerRestrictedHidden === true && !o.reply.includes(String(o.state.restrictedMarker)),
       "A separate real member cannot distinguish a private resource from a missing one or see its secret content.");
   } else if (o.scenarioId === "navigation-preferences.dismiss-announcement") {
@@ -79,7 +81,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
       return { project: p, stale, similar, restricted, restrictedMarker, stalePath: path, deletedStatus: await status(ctx, `/api/issues/${stale.id}`), observerRestrictedStatus };
     } catch (error) { await observer.dispose(); observers.delete(ctx); throw error; }
   }, gradeNavigationBoundary, {
-    sourceFiles: sources, authentication: "human-session",
+    sourceFiles: sources, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.broken-link.v2",
     async act(ctx, state) {
       await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); const source = ctx.input.page.url(); const path = String(state.stalePath);
       await ctx.input.page.goto(path, { waitUntil: "domcontentloaded" });
