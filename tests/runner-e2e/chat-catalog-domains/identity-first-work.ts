@@ -25,16 +25,19 @@ async function actualWebsite(ctx: ChatCatalogContext, state: Record<string, unkn
 }
 export function gradeFirstWork(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-first-website-work", !!o, "Actual first request, ordinary linked execution, authorized artifact bytes and browser rendering are required."); if (!o) return c.result();
-  const work = o.tasks[0]; const worker = entity(o.state, "worker"); const websites = o.state.websites as Website[] | undefined;
+  // The expectation is linked work under the available execution policy, not
+  // a particular assignee: the CEO may delegate to Morgan or own the task and
+  // run it itself. Either way the task's assignee must deliver the file.
+  const work = o.tasks[0]; const worker = entity(o.state, "worker"); const executor = [worker.id, o.leadId].includes(work?.assigneeAgentId ?? "") ? work!.assigneeAgentId! : undefined; const websites = o.state.websites as Website[] | undefined;
   const website = websites?.find(file => file.attachment.id === o.state.reviewedAttachmentId);
   c.add("actual-first-request-context", o.state.beforeSourceHumanComments === 0 && o.state.beforeSourceRuns === 0 && o.humanQueries.length === 1
     && o.humanQueries[0]?.trim() === "Make me a simple website introducing our business.", "The canonical request is the first real human instruction in this ready company's conversation.");
-  c.add("separate-requested-ordinary-work", o.tasks.length === 1 && work?.companyId === o.companyId && work.assigneeAgentId === worker.id && work.id !== o.state.sourceId && work.parentId == null
+  c.add("separate-requested-ordinary-work", o.tasks.length === 1 && work?.companyId === o.companyId && !!executor && work.id !== o.state.sourceId && work.parentId == null
     && work.status === "done" && hasLink(o, "issues", work) && o.state.sourceStillConversation === true
     && o.activity.some(row => row.action === "issue.created" && row.entityId === work.id && row.agentId === o.leadId), "The first chat creates one linked ordinary completed task; its standing conversation stays separate. Its delivered HTML (graded below), not its model-written title, proves it is the business website.");
   c.add("actual-run-attributed-website", !!work && !!website && website.attachment.issueId === work.id && website.attachment.companyId === o.companyId
-    && website.sha256 === website.attachment.sha256 && website.attachment.createdByAgentId === worker.id
-    && o.runs.some(run => run.id === website.attachment.originatingRunId && run.agentId === worker.id && run.status === "succeeded"
+    && website.sha256 === website.attachment.sha256 && !!executor && website.attachment.createdByAgentId === executor
+    && o.runs.some(run => run.id === website.attachment.originatingRunId && run.agentId === executor && run.status === "succeeded"
       && (run.contextSnapshot?.issueId === work.id || (run as unknown as { nativeIssueId?: string }).nativeIssueId === work.id))
     && /<html\b/i.test(website.body) && /<body\b/i.test(website.body) && /<h[1-6]\b/i.test(website.body)
     && /Acorn Notes/i.test(website.body) && /research|science/i.test(website.body), "Authorized exact HTML bytes match the immutable actual upload hash and originating worker run, introducing the real business rather than an empty onboarding task.");
@@ -49,7 +52,7 @@ export const firstWorkIdentityCases: readonly ChatCatalogCase[] = [identityDefin
   const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments`);
   return { sourceId: source.id, worker, project: p, beforeSourceHumanComments: comments.filter(comment => comment.authorUserId).length, beforeSourceRuns: (await ctx.allRuns()).length };
 }, gradeFirstWork, {
-  oracleVersion: "paperclip.chat-catalog.identity.first-work.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 600_000,
+  oracleVersion: "paperclip.chat-catalog.identity.first-work.v3", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 600_000,
   sourceFiles: ["chat-catalog-domains/identity-first-work.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/onboarding.yaml"],
   async act(ctx, state) {
     const o = await pollUntil({ label: "first real completed website and delivered HTML", deadlineAt: Date.now() + 360_000,

@@ -3713,7 +3713,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/onboarding.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.first-work.v2",
+    "oracleVersion": "paperclip.chat-catalog.identity.first-work.v3",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
