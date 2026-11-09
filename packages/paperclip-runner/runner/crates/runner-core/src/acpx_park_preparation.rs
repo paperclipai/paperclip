@@ -48,6 +48,7 @@ impl AcpxCommandExecutor {
         // proven gone, then it is saved suspended, so the next run resumes the
         // same conversation instead of starting a new one.
         self.failed_turn_end_restart = Some(error.to_string());
+        self.unreported_turn_end_restart_failure = Some(error.to_string());
         self.recover_failed_generation_restart()
     }
 

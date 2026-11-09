@@ -969,6 +969,8 @@ pub struct AcpxCommandExecutor {
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart already failed a turn of this run closed.
     turn_end_restart_failed_turn: bool,
+    /// The failed turn-end restart's cause, until the Runner records it.
+    unreported_turn_end_restart_failure: Option<String>,
 }
 
 // The durable command's turn and the live provider callback have separate IDs.
@@ -1010,6 +1012,7 @@ impl AcpxCommandExecutor {
             recovery_pending_effects: None,
             failed_turn_end_restart: None,
             turn_end_restart_failed_turn: false,
+            unreported_turn_end_restart_failure: None,
             restore_error: None,
             persistence_error: None,
             #[cfg(test)]
@@ -2937,6 +2940,10 @@ impl CommandExecutor for AcpxCommandExecutor {
 
     fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
         self.restart_session_after_turn()
+    }
+
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        self.unreported_turn_end_restart_failure.take()
     }
 
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {

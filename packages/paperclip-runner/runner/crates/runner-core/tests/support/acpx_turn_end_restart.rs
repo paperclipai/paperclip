@@ -356,6 +356,15 @@ fn the_next_run_resumes_the_conversation_after_a_failed_turn_end_restart() {
         harness.fixture.fault("reject-open");
         harness.executor.prepare_next_turn().unwrap();
         assert!(!alive(&old_pid));
+        // The Runner records the cause once as a diagnostic.
+        let reported = harness.executor.take_turn_end_restart_failure();
+        assert!(
+            reported
+                .as_deref()
+                .is_some_and(|cause| cause.contains("session.open")),
+            "{reported:?}"
+        );
+        assert_eq!(harness.executor.take_turn_end_restart_failure(), None);
         let saved = harness.fixture.state();
         assert_eq!(saved["lifecycle"], "suspended", "{saved}");
         assert_eq!(saved["providerExitUnconfirmed"], false);
