@@ -127,6 +127,26 @@ it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a co
   } finally { await heartbeat.drainActiveRunExecutions(); await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); await instanceSettingsService(db).updateExperimental(original); }
 }, 30_000);
 
+it("saves an OpenCode harness pool with automatic effort and rejects unsupported effort", async () => {
+  const catalog = await import("../services/openrouter-models.js");
+  const models = vi.spyOn(catalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/fixture/model", label: "Fixture model" }]);
+  try {
+    const account = await aiConnectionService(db).save(companyId, "alice", {
+      provider: "openrouter", method: "api_key", ownership: "personal", name: "OpenCode fixture",
+      apiKey: "synthetic-openrouter-key", agentIds: [], allAgents: true,
+    }, randomUUID());
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const connection = { mode: "delegated" as const, provider: "openrouter" as const, method: "api_key" as const, ...account };
+    const member = { id: randomUUID(), harness: { type: "opencode" as const }, connection, model: "openrouter/fixture/model" };
+    const config = { schemaVersion: 2 as const, kind: "harness_pool" as const, name: "Automatic effort", enabled: true, mode: "failover" as const, members: [member] };
+    const saved = await harnessPoolService(db).save(companyId, { config }, "alice");
+    expect(saved.members[0]).toMatchObject(member);
+    expect(saved.members[0].effort).toBeUndefined();
+    await expect(harnessPoolService(db).save(companyId, { config: { ...config, members: [{ ...member, effort: "max" }] } }, "alice"))
+      .rejects.toMatchObject({ status: 422 });
+  } finally { models.mockRestore(); }
+});
+
 it("rejects an unknown model before enabling a central harness pool", async () => {
   const { harnessPoolService } = await import("../services/harness-pools.js");
   const member = members[0]!;

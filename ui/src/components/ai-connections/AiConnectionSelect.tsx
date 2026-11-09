@@ -143,7 +143,7 @@ export function AiConnectionSelect({
             <SelectItem
               key={c.id}
               value={c.id}
-              disabled={Boolean(aiConnectionProblem(c))}
+              disabled={Boolean(aiConnectionProblem(c)) && (!explicitAccount || Boolean(c.unavailableReason) || c.status === "revoked")}
             >
               <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>

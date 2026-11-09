@@ -18,6 +18,10 @@ const harnessAdapters = { claude_code: "claude_local", codex: "codex_local", gro
 const allowedTypes = new Set(Object.values(harnessAdapters));
 const emptyModels: { id: string; label: string }[] = [];
 
+function poolMemberEffortOptions(adapter: string, model: string) {
+  return adapter === "opencode_local" ? [{ id: "", label: "Auto" }] : harnessThinkingEffortOptions(adapter, model);
+}
+
 export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange }: {
   companyId: string;
   member: HarnessPoolMemberDraft;
@@ -41,7 +45,7 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
     enabled: Boolean(member.connection) && !connectionModels && !connectionState.loading && !connectionState.error,
   });
   const catalogView = useQueryView(catalog);
-  const effortOptions = harnessThinkingEffortOptions(adapter, member.model);
+  const effortOptions = poolMemberEffortOptions(adapter, member.model);
 
   async function refreshModels() {
     setRefreshError(undefined);
@@ -78,7 +82,7 @@ export function HarnessPoolMemberFields({ companyId, member, readOnly, onChange 
       <ModelDropdown models={connectionModels?.models ?? catalog.data ?? emptyModels} value={member.model}
         open={modelOpen} onOpenChange={setModelOpen}
         onChange={model => onChange({ model: connectionModels?.resolveModel(model) ?? model,
-          effort: member.effort && harnessThinkingEffortOptions(adapter, model).some(option => option.id === member.effort) ? member.effort : undefined })}
+          effort: member.effort && poolMemberEffortOptions(adapter, model).some(option => option.id === member.effort) ? member.effort : undefined })}
         allowDefault={false} required groupByProvider={!connectionModels && adapter === "opencode_local"}
         preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapter)} creatable
         loadingModels={connectionState.loading || (connectionModels?.isLoading ?? (catalog.isLoading || catalogView.kind === "reconnecting"))}

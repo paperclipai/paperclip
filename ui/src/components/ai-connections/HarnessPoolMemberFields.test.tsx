@@ -131,9 +131,35 @@ it("refreshes the selected account's models through the ordinary model control",
   await choose("Refreshed account model"); expect(latest.model).toBe("refreshed-model");
 });
 
-it("offers the ordinary OpenCode effort options and retains a supported effort when changing models", async () => {
+it("only allows clearing unsupported saved OpenCode effort and keeps new model selections automatic", async () => {
   mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [account("First", { provider: "openrouter", method: "api_key" })] });
   await mount({ ...draft(), harness: { type: "opencode" }, connection: { ...binding("First"), provider: "openrouter", method: "api_key" } });
-  await open("Thinking effort"); await choose("Max"); expect(latest.effort).toBe("max");
-  await open("Model"); await choose("GPT-6 Luna"); expect(latest.effort).toBe("max");
+  await open("Thinking effort");
+  expect(Array.from(document.querySelectorAll('[role="option"]')).map(option => option.textContent)).toEqual(["Auto"]);
+  await choose("Auto"); expect(latest.effort).toBeUndefined();
+  await open("Model"); await choose("GPT-6 Luna"); expect(latest.effort).toBeUndefined();
+  expect(host.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+});
+
+it("selects an expired explicit account for repair from an empty member", async () => {
+  mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [account("First", { status: "expired" })] });
+  await mount({ id: "member", harness: { type: "codex" }, model: "" });
+  await open("Connection"); await choose("First");
+  expect(latest.connection).toEqual(binding("First"));
+  const reconnect = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Reconnect account")!;
+  expect(reconnect).toBeTruthy(); flushSync(() => reconnect.click()); await settle();
+  expect(setup?.reconnect?.id).toBe(ids.First!.id);
+  flushSync(() => setup!.onComplete(binding("First"))); await settle();
+  expect(latest.connection).toEqual(binding("First"));
+  expect(mocks.setDefault).not.toHaveBeenCalled();
+});
+
+it.each([
+  { status: "revoked" as const },
+  { status: "expired" as const, unavailableReason: "Access was removed" },
+])("keeps unavailable explicit accounts disabled (%j)", async problem => {
+  mocks.accounts.mockResolvedValue({ currentUserId: "owner", canManageConnections: true, connections: [account("First", problem)] });
+  await mount({ id: "member", harness: { type: "codex" }, model: "" });
+  await open("Connection"); await choose("First");
+  expect(latest.connection).toBeUndefined();
 });
