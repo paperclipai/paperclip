@@ -1929,6 +1929,22 @@ delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
 
+The reconciler's lost-wake check for user comments reads in three stages.
+The first stage keeps recent user comments that no wake request carries. The
+second stage removes comments with a live or later run, and it requires an
+earlier run. Each stage probes native and legacy run bindings separately with
+existing indexes. Only the remaining comments reach the steer check, which
+reads run event payloads. An OR across both bindings let PostgreSQL hash the
+runs by company only and test each comment against every run of its company.
+No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-check.ts --baseline-ref=02bfe71a6b
+```
+
+This disposable fixture compares the complete check result, the complete
+positional SQL rows, plans, and timings with and without nested-loop joins.
+
 ### Agent runtime synchronization journal
 
 Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
