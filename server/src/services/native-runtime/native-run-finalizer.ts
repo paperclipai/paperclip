@@ -15,7 +15,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
-import { pendingNativeGovernance } from "./native-governance.js";
+import { conversationTurnPresentsAnswer, pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -830,6 +830,7 @@ async function recoverCommittedNativeChatResponseInScope(
   let agentId: string | null = null;
   let materialized = false;
   let conversationReply = false;
+  let settledWithoutReply = false;
   const entered = beginRunPhase("response.transaction.entry");
   try {
     materialized = await measureRunPhase("response.transaction", () => db.transaction(async (transaction) => {
@@ -996,9 +997,13 @@ async function recoverCommittedNativeChatResponseInScope(
         return true;
       }
       const conversation = isConversation(issue);
-      const currentConversation = conversation && decision.reasonCode === "conversation_turn_finished"
+      // The turn is still the conversation's unsettled current turn. A held
+      // turn keeps whatever status its gate committed; a finished turn
+      // preserves in_progress.
+      const currentConversation = conversation
         && issue.conversationAgentId === run.agentId && issue.conversationUserId === run.responsibleUserId
-        && issue.status === "in_progress" && issue.conversationState === "active"
+        && (decision.reasonCode !== "conversation_turn_finished" || issue.status === "in_progress")
+        && issue.conversationState === "active"
         && (!issue.executionRunId || issue.executionRunId === run.id)
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
@@ -1013,7 +1018,10 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.runTerminalState === "succeeded" &&
         terminal.turnTerminalState === "completed" &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
-          (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review")) &&
+          (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
+          // A conversation turn can yield while an approval, an execution
+          // stage or a blocker holds its task; it still answered the person.
+          (conversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1049,6 +1057,10 @@ async function recoverCommittedNativeChatResponseInScope(
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
+          // The same answered rule as live run completion.
+          conversationTurnFinished: conversation && await conversationTurnPresentsAnswer({
+            db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
+          }),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });
@@ -1061,6 +1073,19 @@ async function recoverCommittedNativeChatResponseInScope(
                 reasonCodes: [...resolved.decision.reasonCodes, "committed_task_response_reused"] },
             })}::jsonb || ${settledResponsePublicationSql()}`, updatedAt: new Date(),
           }).where(eq(heartbeatRuns.id, run.id));
+          return false;
+        }
+        if (conversation && resolved.decision.commentAction === "none") {
+          // The turn's own question or confirmation card presents it, as on
+          // the live path. Record that decision once so the turn settles and
+          // leaves the pending presentation set.
+          await tx.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+              presentationDecision: { ...resolved.decision,
+                reasonCodes: [...resolved.decision.reasonCodes, "committed_conversation_interaction_presented"] },
+            })}::jsonb`, updatedAt: new Date(),
+          }).where(eq(heartbeatRuns.id, run.id));
+          settledWithoutReply = true;
           return false;
         }
         if (!resolved.text || resolved.decision.commentAction !== "create") return false;
@@ -1152,6 +1177,7 @@ async function recoverCommittedNativeChatResponseInScope(
   } finally {
     entered();
   }
+  if (settledWithoutReply) await settleConversationTurnForRun(db, input.companyId, input.runId);
   if (materialized && agentId) {
     if (conversationReply) await settleConversationTurnForRun(db, input.companyId, input.runId);
     publishChatPublicationCommitSignal({
@@ -1578,7 +1604,7 @@ export async function finalizeNativeRun(input: {
     // A reassigned-away run keeps its accepted result, but cannot close the
     // new owner's task. The status committer rechecks this under the issue lock.
     if (!isConversation(authoritativeIssue)) {
-      proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId);
+      proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);

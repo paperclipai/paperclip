@@ -317,7 +317,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
       const rows = (await source.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, context.company.id)))
         .filter(row => !before.has(row.id));
       expect(rows).toHaveLength(1);
-      return rows[0];
+      // This worker group exercises explicit deadlines. Ordinary human tool
+      // reviews have no implicit expiry; give this fixture its intended hour.
+      const [pending] = await writeToolReviewChange(source, context.company.id, tx => tx.update(toolActionRequests)
+        .set({ expiresAt: new Date(Date.now() + 60 * 60_000) }).where(eq(toolActionRequests.id, rows[0].id)).returning());
+      return pending;
     }
     async function expectExpired(id: string, invocationId: string) {
       expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, id)))[0].status).toBe("expired");
@@ -3330,7 +3334,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
   });
 
-  it("refreshes Vercel tokens after an upstream 401 without replaying the tool call", async () => {
+  for (const deadlinePassesDuringRefresh of [false, true]) it(deadlinePassesDuringRefresh
+    ? "keeps the explicit retry reason when the call deadline passes during the Vercel token refresh"
+    : "refreshes Vercel tokens after an upstream 401 without replaying the tool call", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     await db.update(toolConnections).set({
@@ -3355,12 +3361,20 @@ describeEmbeddedPostgres("tool gateway service", () => {
     }).where(eq(connectionGrants.connectionId, connection.id));
     await db.insert(toolPolicies).values(readPolicyRow(company, "Allow Vercel-backed reads"));
 
-    const getToken = vi.fn<VercelConnectClient["getToken"]>(async (_request, options) => ({
-      token: options?.forceRefresh ? "fresh-provider-bearer" : "stale-provider-bearer",
-      tokenId: options?.forceRefresh ? "stk_fresh" : "stk_stale",
-      expiresAt: Date.now() + 60_000,
-      connector: { id: "scl_posthog", uid: "posthog-paperclip", type: "api-key" },
-    }));
+    const refreshing = Promise.withResolvers<void>();
+    const refreshGate = Promise.withResolvers<void>();
+    const getToken = vi.fn<VercelConnectClient["getToken"]>(async (_request, options) => {
+      if (options?.forceRefresh && deadlinePassesDuringRefresh) {
+        refreshing.resolve();
+        await refreshGate.promise;
+      }
+      return {
+        token: options?.forceRefresh ? "fresh-provider-bearer" : "stale-provider-bearer",
+        tokenId: options?.forceRefresh ? "stk_fresh" : "stk_stale",
+        expiresAt: Date.now() + 60_000,
+        connector: { id: "scl_posthog", uid: "posthog-paperclip", type: "api-key" },
+      };
+    });
     const evict = vi.fn<VercelConnectClient["evict"]>();
     const vercelConnectClient: VercelConnectClient = {
       getConnectorMetadata: vi.fn(),
@@ -3387,11 +3401,23 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const tool = (await gateway.listToolsForSession(session.token))
       .find((candidate) => candidate.providerType === "mcp_remote_http");
 
-    await expect(gateway.executeTool({
+    if (deadlinePassesDuringRefresh) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const call = gateway.executeTool({
       sessionToken: session.token,
       tool: tool!.name,
       parameters: {},
-    })).rejects.toMatchObject({
+      ...(deadlinePassesDuringRefresh ? { timeoutMs: 1500 } : {}),
+    });
+    if (deadlinePassesDuringRefresh) {
+      try {
+        await refreshing.promise;
+        await vi.advanceTimersByTimeAsync(1500);
+      } finally {
+        vi.useRealTimers();
+        refreshGate.resolve();
+      }
+    }
+    await expect(call).rejects.toMatchObject({
       status: 409,
       reasonCode: "oauth_refreshed_retry_required",
     });

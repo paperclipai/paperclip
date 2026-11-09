@@ -106,6 +106,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { agentPermissionGrantRoutes } from "./routes/agent-permission-grants.js";
 import { resolveAgentRunnerTargetForCompany } from "./services/agent-runner-selection.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
@@ -214,6 +215,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
+import type { BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { nativeChatProgressWork } from "./services/chat-native-progress-work.js";
 import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-work.js";
@@ -241,6 +243,7 @@ import {
 } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { apiServerTiming } from "./middleware/api-server-timing.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
@@ -448,6 +451,8 @@ export async function createApp(
     databaseBackupService?: InstanceDatabaseBackupService;
     prepareIdleDatabaseBackup?: () => Promise<boolean>;
     idleDeadlineOwners?: IdleDeadlineOwners;
+    /** Filled with the chat service's Retry callback for background budget-resume delivery. */
+    budgetResumeDelivery?: BudgetResumeDelivery;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -480,6 +485,8 @@ export async function createApp(
   },
 ) {
   const app = express();
+  // First, so the reported server time includes admission and database waits.
+  app.use("/api", apiServerTiming());
   app.use(databaseOperationMiddleware);
   app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();
@@ -590,6 +597,7 @@ export async function createApp(
       deliverNativeQuestionResponse(db, interaction),
     storage: opts.storageService,
   });
+  if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
@@ -788,6 +796,7 @@ export async function createApp(
       },
     }),
   );
+  api.use(agentPermissionGrantRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(agentProfileAvatarRoutes(db, opts.storageService));
   api.use(projectToolRoutes(db));

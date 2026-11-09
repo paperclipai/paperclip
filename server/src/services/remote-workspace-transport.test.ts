@@ -21,6 +21,7 @@ import {
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
+import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase } from "./execution-preparation-timing.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 
@@ -238,6 +239,38 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       const targetDir = path.join(scratch, "large-restored");
       await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir, expectedManifestDigest: captured.manifestDigest });
       expect((await fs.readFile(path.join(targetDir, "large.bin"))).equals(content)).toBe(true);
+    } finally { await captured.cleanup(); }
+  });
+
+  it("times the restore's sandbox upload and extraction as separate run-log steps", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic files\n");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const pause = () => new Promise(resolve => setTimeout(resolve, 60));
+      const syncIn = remote.runner!.syncIn!;
+      remote.runner!.syncIn = async (...args) => { await pause(); return syncIn(...args); };
+      const original = execute.getMockImplementation()!;
+      execute.mockImplementation(async input => {
+        if (input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json")) await pause();
+        return original(input);
+      });
+      // Production wraps the restore in sandbox_restore; with an OTLP endpoint
+      // that traced step owns the scope, and the run log must still get both.
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+      const runId = randomUUID();
+      await createRunPreparationTiming(runId)("workspace", () => measureRunPhase("workspace.snapshot.sandbox_restore",
+        () => restoreRemoteWorkspaceDirectory({ target: remote,
+          remoteCwd: path.join(scratch, "restored"), archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) })));
+      vi.unstubAllEnvs();
+      expect(drainRunPreparationPhases(runId).map(phase => [phase.name, phase.outcome])).toEqual([
+        ["workspace.snapshot.sandbox_upload", "ok"],
+        ["workspace.snapshot.sandbox_extract", "ok"],
+        ["workspace.snapshot.sandbox_restore", "ok"],
+        ["heartbeat.prepare.workspace", "ok"],
+      ]);
+      expect(await fs.readFile(path.join(scratch, "restored", "saved.txt"), "utf8")).toBe("saved synthetic files\n");
     } finally { await captured.cleanup(); }
   });
 

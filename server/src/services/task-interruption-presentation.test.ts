@@ -7,6 +7,25 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("saved governed wait shutdown", () => {
+  const now = Date.parse("2026-11-09T12:00:00Z");
+  const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };
+  it("names automatic shutdown settlement without offering a duplicate Retry", () => {
+    expect(projectTaskInterruption(issue, { run: { ...pending, nativeResumeAt: new Date(now + 30_000) }, agent,
+      paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false,
+        retryWait: { reason: "governed_wait_settlement", message: "Your work is saved. Paperclip is finishing shutdown." } });
+  });
+  it("explains exhausted shutdown recovery while preserving the saved work", () => {
+    expect(projectTaskInterruption(issue, { run: pending, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "governed_wait_settlement",
+        message: "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused." } });
+  });
+  it("keeps genuine approvals authoritative", () => {
+    expect(projectTaskInterruption(issue, { run: pending, agent, paused: false, approval: true }, now))
+      .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+  });
+});
+
 describe("queued dependency wait presentation", () => {
   const waitingRun = { ...run, status: "cancelled", runtimeMode: "legacy" as const, startedAt: null,
     errorCode: "issue_dependencies_blocked", resultJson: {
@@ -341,5 +360,24 @@ describe("scheduled resource wait presentation", () => {
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
       retryWait: { id: "retry", sourceRunId: run.id, requestedAt: new Date(now), preparationStatus: "failed" } }, now))
       .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("saved Retry held by dependencies", () => {
+  const failedRun = { ...run, status: "failed", errorCode: "native_session_interrupted", resultJson: {} };
+  const retryWait = { id: "retry", requestedAt: new Date(0), sourceRunId: "run" };
+  const project = (retryDependencies: { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean }) =>
+    projectTaskInterruption(issue, { run: failedRun, agent, retryWait, paused: false, approval: false, retryDependencies });
+
+  it.each([
+    [{ count: 1, blocked: true, cancelled: false, savingFilesOnly: false }, "Retry or unblock it"],
+    [{ count: 1, blocked: false, cancelled: true, savingFilesOnly: false }, "Remove or replace that dependency"],
+    [{ count: 1, blocked: false, cancelled: false, savingFilesOnly: true }, "to save its files"],
+    [{ count: 2, blocked: false, cancelled: false, savingFilesOnly: false }, "to finish"],
+  ])("names what the saved Retry waits on (%o)", (dependencies, text) => {
+    const presentation = project(dependencies);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: "retry",
+      retryWait: { reason: "dependency_blocked" } });
+    expect(presentation?.retryWait?.message).toContain(text);
   });
 });

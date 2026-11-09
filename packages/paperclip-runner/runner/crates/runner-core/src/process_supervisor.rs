@@ -1282,7 +1282,7 @@ impl SupervisedProcess {
     /// never treats the provider as stopped while its tools still run.
     fn terminate_lineage(&mut self, grace: Duration) -> Result<(), LocalRunnerError> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(lineage) = self.lineage.as_ref() {
+        if let Some(lineage) = self.lineage.as_mut() {
             lineage
                 .terminate(grace, grace + LINEAGE_KILL_PROOF_WINDOW)
                 .map_err(|reason| {

@@ -19,7 +19,8 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
-import { verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { scopedRunnerdStateRoot, verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import { registerNativeCleanupReleaseWake } from "./native-runtime/native-cleanup-release-wake.js";
@@ -34,16 +35,20 @@ describe("task Retry after inherited native cleanup quarantine", () => {
   }, 90_000);
   afterAll(async () => { await db?.$client.end(); await postgres?.cleanup(); });
 
-  async function seed(base: string, transient = false) {
+  async function seed(base: string, transient = false, provider: "codex" | "acpx" = "codex") {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const ownerId = randomUUID(), sourceId = randomUUID(), nativeSessionId = randomUUID(), runnerInstanceId = randomUUID();
     const workspaceId = randomUUID();
     const execution = (runId: string) => parseNativeExecutionInput({
-      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      schema: "paperclip.native-execution-input.v1",
+      provider: provider === "acpx" ? { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive",
+        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+          agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
+          agentRuntimeVersion: null, commandDigest: "fixture" } } : { kind: "codex", model: null },
       binding: { companyId, agentId, issueId, runId, executionWorkspaceId: transient ? runId : workspaceId },
       task: { identifier: "TEST", title: "Continue saved work", description: null, prompt: "Continue saved work", workMode: "standard" },
       workspace: { cwd: base, repoUrl: null, repoRef: null, branchName: null },
-      session: { normalizedSessionId: nativeSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+      session: { normalizedSessionId: nativeSessionId, driverKind: provider === "acpx" ? "acpx_runtime" : "codex_app_server", protocolVersion: 1,
         lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
       completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
         contract: { revision: "1", objective: "Continue saved work", criteria: [{ id: "done", requirement: "Save the result" }] } },
@@ -96,16 +101,21 @@ describe("task Retry after inherited native cleanup quarantine", () => {
     await appendHeartbeatRunEvent(db, { companyId, runId: ownerId, agentId, eventType: event.eventType,
       payload: { prpEvent: normalized }, nativeSource: { sourceInstanceId: runnerInstanceId,
         sourceEventId: normalized.sourceEventId, sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayload: normalized } });
-    const root = join(base, nativeSha256({ schema: "paperclip.native-session-scope.v2", companyId, agentId,
+    const root = provider === "acpx" ? scopedRunnerdStateRoot(execution(ownerId)) : join(base, nativeSha256({ schema: "paperclip.native-session-scope.v2", companyId, agentId,
       workspace: transient ? { kind: "transient", cwd: base, repoUrl: null, repoRef: null, branchName: null }
         : { kind: "managed", executionWorkspaceId: workspaceId },
       provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId }));
-    const files = {
+    const files: Record<string, Record<string, unknown>> = {
       "control-plane/control-plane-state.json": { schema: "paperclip.runner.durable.control-plane-state.v1", identity,
         committedEvents: [{ envelope: { payload: event } }], commands: [{ status: "pending", payload: { commandType: "tool.result" } }] },
       "runner/runner-state.json": { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "suspended", outbox: [] },
-      "runner/codex-provider-state.json": { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open",
-        threadId: "retained-provider-thread", startupAttempt: null, pendingEvents: [], queuedEvents: [] },
+      ...(provider === "acpx" ? {
+        "runner/acpx-provider-state.json": { schema: "paperclip.runner.acpx-provider-state.v3", lifecycle: "session_open",
+          startupAttempt: null, pendingEvents: [], queuedEvents: [] },
+      } : {
+        "runner/codex-provider-state.json": { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open",
+          threadId: "retained-provider-thread", startupAttempt: null, pendingEvents: [], queuedEvents: [] },
+      }),
     };
     await mkdir(join(root, "control-plane"), { recursive: true });
     await mkdir(join(root, "runner"), { recursive: true });
@@ -267,6 +277,50 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       const proof = await verifyStoppedNativeSessionForContinuation(db, source);
       if (mode === "stopped") expect(proof).not.toBeNull();
       else expect(proof).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { provider: "codex", mode: "stopped" }, { provider: "codex", mode: "owner_running" },
+    { provider: "acpx", mode: "stopped" }, { provider: "acpx", mode: "provider_alive" },
+  ] as const)(
+    "recovers a quarantined $provider source that never launched with no click once its owner is proven stopped ($mode)", async ({ provider, mode }) => {
+    const base = await mkdtemp(join(tmpdir(), "quarantined-auto-continuation-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base, false, provider);
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, f.sourceId));
+      if (provider === "acpx") await writeFile(join(f.root, "runner", "acpx-provider-state.json"), JSON.stringify({
+        ...f.files["runner/acpx-provider-state.json"],
+        identity: { agentPid: mode === "provider_alive" ? process.pid : 99_999_997 } }));
+      if (mode === "owner_running") await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.ownerId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined", attempt: 1,
+        failureDetail: { recoverable: false, recoveryMode: "exact_checkpoint_resume", originalFailureCode: "native_session_cleanup_quarantined",
+          providerEventsExist: false, checkpointExists: true, providerSessionEstablished: true } })
+        .where(eq(nativeRunFinalizations.runId, f.sourceId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      await db.update(issueRecoveryActions).set({ evidence: { ...hold!.evidence,
+        nativeFailureBlock: { runId: f.sourceId, statusVersion: task!.statusVersion } } })
+        .where(eq(issueRecoveryActions.id, hold!.id));
+      const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceId));
+      await reconcileSafeNativeReplacements(db, new Date(), {
+        verifyStoppedSession: run => verifyStoppedNativeSessionForAutomaticReplacement(db, run) });
+      const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceId));
+      const successorRunId = after?.failureDetail?.successorRunId;
+      if (mode !== "stopped") {
+        expect(successorRunId).toBeUndefined();
+        return;
+      }
+      expect(typeof successorRunId).toBe("string");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, String(successorRunId)));
+      expect(successor?.contextSnapshot).toMatchObject({ forceFreshSession: true });
+      expect(successor?.scheduledRetryAttempt).toBe(before!.attempt);
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });

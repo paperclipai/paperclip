@@ -72,7 +72,7 @@ import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { runnerApiCatalog, searchRunnerApi } from "./runner-api-catalog.js";
-import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
+import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -176,6 +176,14 @@ const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
   "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
 ]);
+const idSimilarity = (left: string, right: string) => {
+  const a = left.toLowerCase(), b = right.toLowerCase();
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix += 1;
+  return Math.max(prefix, suffix);
+};
 const readOnlyApiMethod = (method: string) => ["GET", "HEAD", "OPTIONS"].includes(method);
 const toolCallKey = (callId: string) => createHash("sha256").update(callId).digest("hex");
 const toolInputDigest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -519,13 +527,25 @@ export class PaperclipRunnerToolAuthority {
     return null;
   }
 
+  async #agentNotFound(actorId: string): Promise<Error> {
+    const actors = await this.db.select({ id: agents.id, name: agents.name }).from(agents)
+      .where(and(eq(agents.companyId, this.binding.companyId), sql`${agents.status} <> 'terminated'`));
+    const closest = actors.map(actor => ({ actor, score: idSimilarity(actorId, actor.id) }))
+      .filter(candidate => candidate.score >= 8)
+      .sort((left, right) => right.score - left.score).slice(0, 3)
+      .map(({ actor }) => `${actor.name} (${actor.id})`);
+    return new Error(`paperclip_runner_agent_not_found: no agent in this company has id ${JSON.stringify(actorId.slice(0, 80))}.`
+      + (closest.length ? ` Closest ids: ${closest.join(", ")}.` : "")
+      + " Call list_agents and copy a valid id exactly; nothing was created or changed.");
+  }
+
   async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     try {
       return { result: await this.execute(call) };
     } catch (error) {
       // A known read failure is a tool outcome, not a failed transport. Keep
       // authorization, uncertain effects, and unexpected storage errors fatal.
-      if (!(error instanceof Error && (RECOVERABLE_READ_ERRORS.has(error.message)
+      if (!(error instanceof Error && (RECOVERABLE_READ_ERRORS.has(error.message.split(":")[0]!)
         || (error instanceof HttpError && [400, 404, 422].includes(error.status))))) throw error;
       await this.binding.assertBridgeAuthority?.();
       await this.#boundContext();
@@ -831,7 +851,8 @@ export class PaperclipRunnerToolAuthority {
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Workspace tool authentication is unavailable");
-        return callTaskWorkspaceTool({ name: call.tool, arguments: input, apiUrl, token, companyId: this.binding.companyId, issueId: this.binding.issueId, workspaceRoot: this.binding.workspaceRoot });
+        return callTaskWorkspaceTool({ name: call.tool, arguments: input, apiUrl, token, companyId: this.binding.companyId, issueId: this.binding.issueId, workspaceRoot: this.binding.workspaceRoot,
+          workspacePagePrefix: ["get_workspace", "list_workspaces"].includes(call.tool) ? await this.#workspacePagePrefix() : null });
       }
       case "create_project":
       case "list_project_repositories":
@@ -841,7 +862,8 @@ export class PaperclipRunnerToolAuthority {
         if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
         return callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
-          conversation: Boolean(context.issue.conversationAgentId) });
+          conversation: Boolean(context.issue.conversationAgentId),
+          companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
       }
       case "search_api": return searchRunnerApi(call.arguments);
       case "hire_agent": {
@@ -981,8 +1003,9 @@ export class PaperclipRunnerToolAuthority {
       case "list_agents":
         return { actors: (await agentService(this.db).list(this.binding.companyId)).map(redactedActor) };
       case "get_agent": {
-        const actor = await agentService(this.db).getById(requiredString(input.actorId));
-        if (!actor || actor.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");
+        const actorId = requiredString(input.actorId);
+        const actor = await agentService(this.db).getById(actorId);
+        if (!actor || actor.companyId !== this.binding.companyId) throw await this.#agentNotFound(actorId);
         return { actor: redactedActor(actor) };
       }
       case "list_approvals":
@@ -1056,6 +1079,19 @@ export class PaperclipRunnerToolAuthority {
   }) {
     return nativeRunKeyScope({ contextSnapshot: context.run.contextSnapshot,
       issueId: this.binding.issueId, workMode: context.issue.workMode });
+  }
+
+  /** Company prefix for page hrefs in tool results, so chat replies link real pages. */
+  async #companyPagePrefix() {
+    const [row] = await this.db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, this.binding.companyId));
+    return row?.issuePrefix ?? null;
+  }
+
+  /** Workspace pages are routed only while isolated workspaces are enabled. */
+  async #workspacePagePrefix() {
+    return (await instanceSettingsService(this.db).getExperimental()).enableIsolatedWorkspaces
+      ? this.#companyPagePrefix() : null;
   }
 
   #apiToken(context: {
@@ -1135,6 +1171,9 @@ export class PaperclipRunnerToolAuthority {
         const result = await this.#apiReceiptResult(existing);
         return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
       }
+      // A new call that would be rejected before dispatch must not reserve a
+      // pending receipt; that would make its callId report an unknown outcome.
+      assertRunnerApiDispatchable(operation, input, Object.keys(record(value)));
       if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
@@ -1880,7 +1919,7 @@ export class PaperclipRunnerToolAuthority {
     const assigneeAgentId = assigneeUserId ? null : input.assigneeActorId == null ? this.binding.agentId : requiredString(input.assigneeActorId);
     if (assigneeAgentId) {
       const assignee = await agentService(this.db).getById(assigneeAgentId);
-      if (!assignee || assignee.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");
+      if (!assignee || assignee.companyId !== this.binding.companyId) throw await this.#agentNotFound(assigneeAgentId);
     }
     const priority = input.priority === "critical" || input.priority === "high"
       || input.priority === "medium" || input.priority === "low"

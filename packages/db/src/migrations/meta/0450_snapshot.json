@@ -1,5 +1,5 @@
 {
-  "id": "a692504a-a410-4db3-b565-ac6a4deacb20",
+  "id": "b8f43f1a-3230-4cda-991d-0e7b6323114b",
   "prevId": "4bd9d289-9cb8-4262-9dd7-04ce2b6020c4",
   "version": "7",
   "dialect": "postgresql",
@@ -3970,28 +3970,6 @@
           "method": "btree",
           "with": {}
         },
-        "agent_wakeup_requests_review_handoff_retry_idempotency_uq": {
-          "name": "agent_wakeup_requests_review_handoff_retry_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'review-handoff:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "agent_wakeup_requests_question_response_delivery_idempotency_uq": {
           "name": "agent_wakeup_requests_question_response_delivery_idempotency_uq",
           "columns": [
@@ -4121,6 +4099,28 @@
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'chat-completion:%'",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_issue_blocker_stalled_uq": {
+          "name": "agent_wakeup_requests_issue_blocker_stalled_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_blocker_stalled:%' AND \"agent_wakeup_requests\".\"status\" IN ('queued', 'deferred_issue_execution', 'claimed', 'coalesced', 'completed')",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },

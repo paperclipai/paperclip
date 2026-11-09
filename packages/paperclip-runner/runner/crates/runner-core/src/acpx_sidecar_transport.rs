@@ -85,6 +85,7 @@ pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
     session_open_timeout: Duration,
+    request_deadline: Option<Instant>,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
@@ -389,6 +390,7 @@ impl AcpxSidecarTransport {
             process,
             request_timeout: config.request_timeout,
             session_open_timeout: config.request_timeout,
+            request_deadline: None,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
@@ -405,6 +407,10 @@ impl AcpxSidecarTransport {
         } else {
             self.request_timeout
         }
+    }
+
+    pub(crate) fn bound_requests_by(&mut self, deadline: Option<Instant>) {
+        self.request_deadline = deadline;
     }
 
     pub fn process_id(&self) -> u32 {
@@ -508,13 +514,13 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<CommandOutcome, LocalRunnerError> {
+        let timeout_at = Instant::now() + self.command_timeout(command);
+        let deadline = self
+            .request_deadline
+            .map_or(timeout_at, |bound| bound.min(timeout_at));
         let request_id = self.send_request(command, params)?;
-        self.receive_response(
-            command,
-            request_id,
-            Instant::now() + self.command_timeout(command),
-        )?
-        .ok_or_else(|| self.request_timeout_error(command))
+        self.receive_response(command, request_id, deadline)?
+            .ok_or_else(|| self.request_timeout_error(command))
     }
 
     /// A park observation may expire without revoking a healthy provider.

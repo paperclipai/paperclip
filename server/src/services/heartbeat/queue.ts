@@ -1,6 +1,9 @@
+import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -101,6 +104,7 @@ import {
   cases,
   agentWakeupRequests,
   activityLog,
+  budgetIncidents,
   chatConversations,
   chatEndpoints,
   companies,
@@ -150,8 +154,8 @@ import {
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-  isIssueBlockersResolvedWakePayload,
-  issueBlockersResolvedWakePayloadSql,
+  isDependencyResolvedWakePayload,
+  dependencyResolvedWakePayloadSql,
 } from "../issue-dependency-wakeups.js";
 import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
@@ -171,7 +175,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsIssueInteractionWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { allowsDependencyBlockedWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -227,6 +231,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   runTaskKey: (run: HeartbeatRun) => string | null;
   filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null, live: { has(id: string): boolean }) => T | null;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
+  isRunAdmissionClosed?: () => boolean;
   canStartNewExternalBotWork: (agent: typeof agents.$inferSelect) => Promise<boolean>;
   executeRun: (runId: string) => Promise<void>;
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
@@ -353,6 +358,14 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   );
 }
 
+/** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
+const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
+function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
+  // No receipt is written, so the person's message stays owed in the outbox
+  // until the limit resets (agent-conversations.ts conversationDeliveryHold).
+  return conflict("Agent reached its daily limit", { reason: cap.reason, observed: cap.observed, limit: cap.limit });
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -411,6 +424,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
+    isRunAdmissionClosed = isProcessRunAdmissionClosed,
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -468,6 +482,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       finishedAt: now,
       error: reason,
     });
+    await releaseConversationCommentsForDailyCap(cancelled);
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -486,6 +501,34 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
 
     return cancelled;
+  }
+
+  /**
+   * A chat message accepted before the limit was reached must not be consumed
+   * when dispatch then cancels its run at the limit. Releasing the outbox key
+   * on its receipts (the run's own and any coalesced into it) makes the
+   * message owed again; the outbox holds it until the limit resets.
+   */
+  async function releaseConversationCommentsForDailyCap(run: typeof heartbeatRuns.$inferSelect) {
+    const owned = and(
+      eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId),
+      or(eq(agentWakeupRequests.runId, run.id),
+        run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
+      sql`${agentWakeupRequests.idempotencyKey} like ${CONVERSATION_COMMENT_KEY_PREFIX + "%"}`,
+    );
+    await db.transaction(async tx => {
+      const receipts = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(owned).for("update");
+      if (!receipts.length) return;
+      // Register the recovery signal before the write it announces.
+      await notifyIssueRecovery(tx, { companyId: run.companyId });
+      await tx.update(agentWakeupRequests).set({
+        idempotencyKey: null,
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
+          || jsonb_build_object('releasedConversationCommentKey', ${agentWakeupRequests.idempotencyKey})`,
+        updatedAt: new Date(),
+      }).where(and(owned, inArray(agentWakeupRequests.id, receipts.map(row => row.id))));
+    });
   }
 
   async function markTimerHeartbeatChecked(
@@ -919,7 +962,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // message, Retry, or recovery it carries; keep it queued. Settling
       // accounting re-notifies run dispatch. A reached hard stop is the board's.
       if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      // Record which budget stops this queued run, so Raise budget and resume
+      // continues it (budget-resume-continuation.ts). Saved before the cancel
+      // so a crash between them cannot lose it; the resume matches it only
+      // against a recorded cancellation with this same reason.
+      const budgetAdmissionStop = { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
+        reason: budgetBlock.reason.slice(0, 512) };
+      const stamped = await db.transaction(async tx => {
+        // The same commit touches the scope's open incident. A Raise budget
+        // and resume whose repeatable-read snapshot predates this commit then
+        // conflicts on that row and retries, so its resume sees the stamp
+        // (a still-queued stamped run is claimed and waits for this cancel).
+        const open = await tx.update(budgetIncidents).set({ updatedAt: new Date() }).where(and(
+          eq(budgetIncidents.companyId, run.companyId), eq(budgetIncidents.scopeType, budgetBlock.scopeType),
+          eq(budgetIncidents.scopeId, budgetBlock.scopeId), eq(budgetIncidents.status, "open")))
+          .returning({ id: budgetIncidents.id });
+        if (!open.length) return false;
+        await tx.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
+          || jsonb_build_object('budgetAdmissionStop', jsonb_build_object('scopeType', ${budgetAdmissionStop.scopeType}::text,
+            'scopeId', ${budgetAdmissionStop.scopeId}::text, 'reason', ${budgetAdmissionStop.reason}::text))` })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, run.status)));
+        return true;
+      });
+      if (!stamped) {
+        // No open incident: a resume may have just closed it and raised the
+        // budget. Read the block again; resumed work stays queued.
+        const current = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+          issueId: readNonEmptyString(context.issueId), projectId: readNonEmptyString(context.projectId) });
+        if (!current) return null;
+        if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, current))) return null;
+        await cancelRunInternal(run.id, current.reason);
+        return null;
+      }
+      await cancelRunInternal(run.id, budgetBlock.reason, { resultJson: { budgetAdmissionStop } });
       return null;
     }
 
@@ -1018,11 +1093,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      // The run's wake request records who asked for it.
+      const blockerStallVerified = unresolvedBlockerCount > 0 && await verifyBlockerStallWake(db, {
+        companyId: run.companyId, issueId, contextSnapshot: context,
+        requestedByActorType: run.wakeupRequestId
+          ? (await db.select({ actor: agentWakeupRequests.requestedByActorType }).from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId)).then(rows => rows[0]?.actor ?? null))
+          : null,
+      });
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
+        !allowsDependencyBlockedWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          blockerStallVerified,
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -1855,7 +1939,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`jsonb_typeof(${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}') = 'array'`,
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
-        issueBlockersResolvedWakePayloadSql),
+        dependencyResolvedWakePayloadSql),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
           WHERE live_issue_run.company_id = ${issues.companyId}
@@ -1866,7 +1950,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
     for (const { wake } of strandedQueues) {
-      const dependencyWake = isIssueBlockersResolvedWakePayload(wake.payload);
+      const dependencyWake = isDependencyResolvedWakePayload(wake.payload);
       if (!dependencyWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
       const [latest] = await db.select({
@@ -1947,6 +2031,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   async function resumeQueuedRuns() {
+    if (isRunAdmissionClosed()) return;
     await resumeDeferredExecutionReceipts();
     await resumeQueuedRunsAfterDrain();
   }
@@ -1954,7 +2039,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // Release admission promptly without first scanning unrelated recovery work.
   // Every run still passes the ordinary per-agent claim and dispatch gates.
   async function resumeQueuedRunsAfterDrain(scope?: { companyId: string }) {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    if (isRunAdmissionClosed() || (await getSchedulingSuppression()).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -2048,7 +2133,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if (isRunAdmissionClosed() || (await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
     // Cancelled after the start lock is released: cancelRunInternal promotes the
     // agent's next queued run, which takes this same lock.
@@ -3022,7 +3107,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               // so the task explains it and a new click can replace this intent.
               const declineRetry = async (reason: string, message: string) => {
                 await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                  requestId: pending.id }, { reason, message }, { replace: true });
+                  requestId: pending.id }, { reason, message }, { replace: true, publications: issueActivityPublications });
                 logger.warn({ requestId: pending.id, issueId, reason }, "Task Retry could not start");
                 return { kind: "deferred" as const };
               };
@@ -3496,7 +3581,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
             if (executionWaitRequestId) {
               await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                requestId: executionWaitRequestId }, condition, { replace: true });
+                requestId: executionWaitRequestId }, condition, { replace: true, publications: issueActivityPublications });
               return { kind: "deferred" as const, admitted: true };
             }
             if (durableRequest || wakeCommentId ||
@@ -3901,12 +3986,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // Blocked descendants should stay idle until the final blocker resolves.
           // Human comment/mention wakes are the exception: they may run in a
           // bounded interaction mode so the assignee can answer or triage.
+          // A stalled child or blocker (issue_blocker_stalled, once per stall)
+          // is the other exception: the assignee must be able to re-delegate,
+          // escalate or block with a reason while that dependency is stuck.
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
+            allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+              await verifyBlockerStallWake(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+                contextSnapshot: enrichedContextSnapshot, requestedByActorType: opts.requestedByActorType }),
             );
 
           if (blockedInteractionWake) {
@@ -4379,6 +4469,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
               return deferBlockedExecution(executionBlocker);
             }
+            if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
             const now = new Date();
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -4788,6 +4879,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         tx,
       );
       if (dailyCapBlock) {
+        if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
         const now = new Date();
         await tx.insert(agentWakeupRequests).values({
           ...durableReceiptFields,

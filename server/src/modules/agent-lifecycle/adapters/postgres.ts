@@ -147,6 +147,11 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
       : agent.lifecycleOperation?.resumeState,
   };
   if (next === "ready") operation.resumeState = "ready";
+  if (next === "pausing") {
+    const [company] = await tx.select({ pauseReason: companies.pauseReason }).from(companies)
+      .where(eq(companies.id, agent.companyId));
+    operation.pauseCause = { holds, companyPauseReason: company?.pauseReason ?? null };
+  }
   const status = compatibilityStatus(next, agent.status);
   if(!canConfigureAgentConnection(agent)&&canConfigureAgentConnection({lifecycleState:next,status}))await effects.beforeConnectionEligibilityRestore?.(tx,agent.companyId,agent.id);
   if (status !== agent.status) await effects.beforeStatusChange(tx, agent.companyId, agent.id, agent.status, status);

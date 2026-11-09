@@ -51,6 +51,7 @@ import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../..
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -479,8 +480,16 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    // A verified stall wake runs while its stalled dependency is unresolved,
+    // including after a resource wait replaced it with a scheduled retry.
+    const stallAdmitted = readiness && !readiness.isDependencyReady && input.contextSnapshot.blockerStall
+      ? await verifyBlockerStallWake(db, { companyId: input.companyId, issueId, contextSnapshot: input.contextSnapshot,
+          requestedByActorType: input.wakeupRequestId ? await db.select({ actor: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
+      : false;
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady
+      readiness && !readiness.isDependencyReady && !stallAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -646,9 +655,13 @@ export function createPostgresRunDispatchAdapter(
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const readiness = replacementReadiness && !replacementReadiness.isDependencyReady && context.blockerStall
+      && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
+        contextSnapshot: context, requestedByActorType: null })
+      ? null : replacementReadiness;
     return {
       runId: input.runId,
       runAgentId: input.agentId,

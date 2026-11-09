@@ -111,6 +111,8 @@ Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
@@ -1028,7 +1030,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.

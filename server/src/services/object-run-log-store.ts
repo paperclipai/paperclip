@@ -8,6 +8,10 @@ import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 const MAX_SEGMENT_BYTES = 1024 * 1024;
 const MAX_PENDING_BYTES = MAX_RUN_LOG_RECORD_BYTES;
 const MAX_READ_BYTES = 4 * MAX_SEGMENT_BYTES;
+const ALIGN_WINDOW_BYTES = 32_000;
+// Most records are short, so the first alignment window rides along with the
+// body read. Longer records continue with ALIGN_WINDOW_BYTES windows.
+const ALIGN_FIRST_LOOKBACK_BYTES = 4096;
 export interface ObjectRunLogStoreOptions {
   provider: StorageProvider;
   keyPrefix: string;
@@ -250,14 +254,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   return {
     async begin(input) {
       const logRef = `${input.companyId}/${input.agentId}/${input.runId}`;
-      const store = journal(logRef),
-        current = await store.head(input.signal);
+      const store = journal(logRef);
       const writer = await store.claim({
-        expectedOwner: current?.head.owner ?? null,
         assertAuthority: () => options.assertWriterAuthority(input),
         signal: input.signal,
       });
-      const sourcePrefixVerified = await store.hasVerifiedSourcePrefix(writer.head, input.signal);
+      const sourcePrefixVerified = writer.head.generation > 1 && await store.hasVerifiedSourcePrefix(writer.head, input.signal);
       const handle: RunLogHandle = {
         store: "s3_segments",
         logRef,
@@ -360,12 +362,20 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         limit = opts.limitBytes ?? 256_000;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_READ_BYTES)
         throw new Error("Invalid object log read limit");
-      const fetched = await store.readRange(
+      const bodyLimit = Math.min(MAX_READ_BYTES, limit + 3);
+      // Read the alignment window and the body in one range, so a tail read
+      // walks the index once instead of once for each part.
+      const lookback = opts.alignStartToRecord && offset > 0
+        ? Math.min(offset, ALIGN_FIRST_LOOKBACK_BYTES, MAX_READ_BYTES - bodyLimit)
+        : 0;
+      const window = await store.readRange(
         snapshot.head,
-        offset,
-        Math.min(MAX_READ_BYTES, limit + 3),
+        offset - lookback,
+        lookback + bodyLimit,
         opts.signal,
       );
+      const lookbackBytes = window.subarray(0, lookback);
+      const fetched = window.subarray(lookback);
       let end = Math.min(limit, fetched.length);
       while (end < fetched.length && (fetched[end]! & 0xc0) === 0x80) end++;
       if (
@@ -386,9 +396,16 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         return { content: bytes.toString("utf8"), nextOffset };
       const parts = [bytes];
       let before = offset;
+      if (lookback > 0) {
+        const boundary = lookbackBytes.lastIndexOf(10);
+        parts.unshift(lookbackBytes.subarray(boundary + 1));
+        before = boundary >= 0 ? 0 : offset - lookback;
+        if (before > 0 && parts.reduce((n, part) => n + part.length, 0) > MAX_PENDING_BYTES)
+          throw new Error("Object log record exceeds read alignment limit");
+      }
 
       while (before > 0) {
-        const start = Math.max(0, before - 32_000);
+        const start = Math.max(0, before - ALIGN_WINDOW_BYTES);
         const prefix = await store.readRange(snapshot.head, start, before - start, opts.signal);
         const boundary = prefix.lastIndexOf(10);
         parts.unshift(prefix.subarray(boundary + 1));

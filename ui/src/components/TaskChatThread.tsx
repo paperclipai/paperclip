@@ -55,6 +55,7 @@ import {
   taskChatStatusRelevance,
   withoutHistoricalRunStatus,
 } from "@/components/task-chat/status-relevance";
+import { selectBudgetedTranscriptRuns } from "@/components/task-chat/transcript-reveal-budget";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -267,6 +268,12 @@ function isRunnerResponseComment(params: {
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
 const INITIAL_HISTORY_REVEAL_TIMEOUT_MS = 15_000;
+// Once saved history is ready, a run transcript may hold the first reveal only
+// this long. A slow run-log read must not hide saved messages and the composer.
+// Live runs then stream into the tail; settled compact runs keep a fixed
+// "More run output" control instead of inserting output after the reveal.
+export const INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS = 600;
+const EMPTY_RUN_IDS: ReadonlySet<string> = new Set<string>();
 const INITIAL_FONT_REVEAL_TIMEOUT_MS = 3000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 const LONG_THREAD_BLOCKER_REPEAT_COUNT = 4;
@@ -1005,9 +1012,21 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   if (requestedTranscripts.current.issueId !== issueId) {
     requestedTranscripts.current = { issueId, ids: new Set<string>() };
   }
+  // Runs whose transcript outlasted INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS on the
+  // first open of this issue. Latched per issue so the decision never flips.
+  // `deferred` holds only runs that had already settled at that moment, so a
+  // live transcript that finishes later stays visible.
+  const [slowTranscripts, setSlowTranscripts] = useState<{
+    issueId: typeof issueId; ids: ReadonlySet<string>; deferred: ReadonlySet<string>;
+  } | null>(null);
+  const slowTranscriptsForIssue = slowTranscripts && slowTranscripts.issueId === issueId ? slowTranscripts : null;
+  const slowTranscriptRunIds = slowTranscriptsForIssue?.ids ?? EMPTY_RUN_IDS;
+  const slowSettledTranscriptRunIds = slowTranscriptsForIssue?.deferred ?? EMPTY_RUN_IDS;
+  const compactTranscriptDeferral = Boolean(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash);
   const deferredTranscriptRunIds = useMemo(() => {
     const deferred = new Set<string>();
-    if (!props.compactHistory || conversationMode || !props.onExpandHistory || scrollNavigation.hash) return deferred;
+    if (!compactTranscriptDeferral) return deferred;
+    for (const run of runs) if (slowSettledTranscriptRunIds.has(run.id)) deferred.add(run.id);
     for (const run of runs) {
       if (requestedTranscripts.current.ids.has(run.id) || run.status !== "succeeded" ||
         !run.createdAt || toMs(run.createdAt) > openedAt) continue;
@@ -1024,7 +1043,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       )) deferred.add(run.id);
     }
     return deferred;
-  }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, props.compactHistory, conversationMode, props.onExpandHistory, scrollNavigation.hash, openedAt]);
+  }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);
   const transcriptRuns = useMemo(() => runs.filter(run =>
     !deferredTranscriptRunIds.has(run.id) &&
     !(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash &&
@@ -2888,7 +2907,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
-      } : undefined);
+      } : undefined, args[1]);
       const selectionVersion = ++inputSelectionVersionRef.current;
       explicitlyOpenedInputRef.current = null;
       setTakeoverMode("normal");
@@ -3185,7 +3204,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         initialCommentWindow.current.oldestAt
     );
   });
-  const transcriptHistoryPending = initialRuns.some((run) => {
+  const pendingTranscriptRuns = initialRuns.filter((run) => {
+    if (slowTranscriptRunIds.has(run.id)) return false;
     // A scheduled retry has not started and has no log to hydrate yet.
     if (run.status === "scheduled_retry") return false;
     if (
@@ -3204,6 +3224,20 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ? !hydratedLogRunIds.has(run.id)
       : logsAreInitiallyHydrating;
   });
+  const transcriptHistoryPending = pendingTranscriptRuns.length > 0;
+  // Only these may stop holding the reveal after the budget. See
+  // selectBudgetedTranscriptRuns for the live, steered and settled rules.
+  const budgetedTranscriptRuns = selectBudgetedTranscriptRuns(pendingTranscriptRuns, {
+    compactDeferral: compactTranscriptDeferral,
+    hasTimelineAnchors: (run) => ((isNativePaperclipRunnerRun(run)
+      ? steeringAnchorsByRun.get(run.id)
+      : legacyTimelineAnchorsByRun.get(run.id))?.length ?? 0) > 0,
+  });
+  // The budget timer reads the runs that are still pending when it fires, so
+  // a transcript that hydrates early does not restart the budget.
+  const budgetedTranscriptRunsRef = useRef(budgetedTranscriptRuns);
+  budgetedTranscriptRunsRef.current = budgetedTranscriptRuns;
+  const hasBudgetedTranscriptRuns = budgetedTranscriptRuns.length > 0;
   // Hydrating a run inserts activity around its saved reply and can move the
   // latest viewport substantially. Compact opens hydrate only their bounded
   // recent window, but its saved cards and latest turn must arrive together so
@@ -3213,7 +3247,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     (decisionReceipts.enabled && decisionReceipts.isPending) ||
     (taskHandoffs.enabled && taskHandoffs.isPending)
   ));
-  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending || chatMetadataPending;
+  const savedHistoryPending = initialHistoryPending || planLoading || chatMetadataPending;
+  const historyPending = savedHistoryPending || transcriptHistoryPending;
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
   }, [issueId, planLoading, transcriptHistoryPending, historyPending]);
@@ -3233,6 +3268,32 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useEffect(() => {
     if (revealCachedHeader) setRevealedHistoryKey(historyKey);
   }, [revealCachedHeader, historyKey]);
+  // The budget is one deadline per history key. It starts the first time
+  // saved history is ready, and later changes to the pending runs keep it.
+  const transcriptRevealDeadline = useRef<{ historyKey: typeof historyKey; at: number } | null>(null);
+  useEffect(() => {
+    if (historyRevealed || savedHistoryPending) return;
+    if (transcriptRevealDeadline.current?.historyKey !== historyKey) {
+      transcriptRevealDeadline.current = { historyKey, at: Date.now() + INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS };
+    }
+    if (!hasBudgetedTranscriptRuns) return;
+    const timer = window.setTimeout(() => {
+      const expired = budgetedTranscriptRunsRef.current;
+      if (expired.length === 0) return;
+      setSlowTranscripts((current) => {
+        const previous = current && current.issueId === issueId ? current : null;
+        return {
+          issueId,
+          ids: new Set([...(previous?.ids ?? []), ...expired.map((run) => run.runId)]),
+          deferred: new Set([
+            ...(previous?.deferred ?? []),
+            ...expired.filter((run) => run.settled).map((run) => run.runId),
+          ]),
+        };
+      });
+    }, Math.max(0, transcriptRevealDeadline.current.at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [historyRevealed, savedHistoryPending, hasBudgetedTranscriptRuns, historyKey, issueId]);
   const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
