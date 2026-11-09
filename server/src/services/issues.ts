@@ -7673,18 +7673,19 @@ export function issueService(db: Db) {
    * nothing changed, and says the existing order must not be dropped or
    * reversed without the requester's choice: a bare "cycle" denial left
    * agents to guess, and they swapped the existing dependency.
+   *
+   * The chain can pass through issues the caller cannot read, and this
+   * service has no request to decide read access. It therefore names issues
+   * by identifier only, the same fields a locked relation stub exposes, and
+   * never by title.
    */
   async function blockingCycleError(companyId: string, chain: string[], dbOrTx: DbReader) {
     const rows = await dbOrTx
-      .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+      .select({ id: issues.id, identifier: issues.identifier })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), inArray(issues.id, chain)));
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    const label = (id: string) => {
-      const row = byId.get(id);
-      if (!row) return id;
-      return row.identifier ? `${row.identifier} (${row.title})` : row.title;
-    };
+    const identifierById = new Map(rows.map((row) => [row.id, row.identifier]));
+    const label = (id: string) => identifierById.get(id) ?? id;
     const issueLabel = label(chain[0]!);
     const blockerLabel = label(chain[chain.length - 1]!);
     // Each issue in the chain already waits for the one before it.
@@ -7700,11 +7701,7 @@ export function issueService(db: Db) {
         code: "blocking_cycle",
         issueId: chain[0],
         requestedBlockerIssueId: chain[chain.length - 1],
-        existingChain: chain.map((id) => ({
-          id,
-          identifier: byId.get(id)?.identifier ?? null,
-          title: byId.get(id)?.title ?? null,
-        })),
+        existingChain: chain.map((id) => ({ id, identifier: identifierById.get(id) ?? null })),
       },
     );
   }
