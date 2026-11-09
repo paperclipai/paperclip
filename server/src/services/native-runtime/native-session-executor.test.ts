@@ -20540,6 +20540,22 @@ it("saves a runner-marked model rejection from a provider terminal as a model ch
   expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", false,
     "openrouter/unavailable-model is not a valid model ID"))).toBe("native_provider_terminal_failed");
 });
+it("records a runner process exit that closed the provider event stream as runner loss", () => {
+  // Shape the Codex/OpenCode drivers write when runnerd exits mid-turn.
+  const lost = new NativeProviderTerminalFailure("notification_transport_failed", false,
+    "Notification transport failed closed: native_runner_process_exited: runnerd exited unexpectedly with code 137");
+  const code = nativeSessionFailureSourceCode(lost);
+  expect(code).toBe("native_runner_process_exited");
+  expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted" });
+  expect(nativeSessionFailureDisposition(3, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+  // Other closed-stream causes, and the runner code only inside provider text, stay provider failures.
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("notification_transport_failed", false,
+    "Notification transport failed closed: provider stream ended"))).toBe("native_provider_terminal_failed");
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("provider_turn_failed", false,
+    "Notification transport failed closed: native_runner_process_exited: runnerd exited unexpectedly"))).toBe("native_provider_terminal_failed");
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("notification_transport_failed", false,
+    "Notification transport failed closed: tool said native_runner_process_exited: oops"))).toBe("native_provider_terminal_failed");
+});
 it("keeps an ACPX missing runtime package failure actionable and stops automatic retries", () => {
   const failure = new Error('PRP command session.open failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=runtime_package_missing)"},"status":"failed"}');
   const code = nativeSessionFailureSourceCode(failure);
