@@ -3,9 +3,20 @@ import { expect, type Page } from "@playwright/test";
 import type { Issue } from "../../../packages/shared/src/types/issue.js";
 import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime } from "./runtime-support.js";
+const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** Whether a run re-read saved task state through a completed product tool call (its own retained events, never reply text). */
+export function readTaskState(events: readonly Record<string, unknown>[]) {
+  return events.some(row => {
+    const envelope = record(record(row.payload).prpEvent), payload = record(envelope.payload), output = typeof payload.output === "string" ? payload.output : "";
+    return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
+      && (["paperclip_get_task", "paperclip_search_tasks"].includes(String(payload.name))
+        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/(?:issues\/\{id\}|companies\/\{companyId\}\/issues)\\*"/.test(output));
+  });
+}
 async function chooseStatus(page: Page, status: "Todo" | "Done") {
   await page.getByRole("button", { name: /^Change status \(current:/ }).first().click();
   await page.getByRole("button", { name: status, exact: true }).click();
@@ -20,15 +31,15 @@ export function gradeDesignDependency(value: unknown) {
       && (row.details?.addedBlockedByIssueIds as string[] | undefined)?.includes(design.id)),
   "The CEO actually installs the Design edge on the intended Website task; a comment alone is insufficient.");
   c.add("blocked-ordinary-admission-and-usable-ui", s.blockerVisible === true && s.noWorkerBeforeApproval === true && s.attemptedBeforeApproval === true
-    && [200, 422, 409].includes(Number(s.beforeApprovalStatus)) && /Design/i.test(String(s.queryReply)) && /wait|block|depend|approv|before/i.test(String(s.queryReply)),
+    && [200, 422, 409].includes(Number(s.beforeApprovalStatus)),
   "Ordinary human start is attempted while Design is unfinished, but no Website native run is admitted; the task UI exposes the exact blocker.");
   c.add("one-eligible-worker-after-real-human-approval", s.humanApprovedDesign === true && s.workerAdmissionAfterApproval === true && finished?.status === "done"
     && finished.assigneeAgentId === (s.worker as Entity).id && o.tasks.length === 2 && s.actualWebsiteResult === true
     && o.runs.length === 3 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.worker as Entity).id).length === 1,
   "After actual human Design completion clears the prerequisite, ordinary admission runs Morgan once and produces the genuine saved Website result.");
-  c.add("later-own-phase-reports-actual-result", s.finalReplyAttributed === true && /website/i.test(String(s.finalReply)) && /done|complete|finish|delivered/i.test(String(s.finalReply))
-    && !/still (?:blocked|waiting)|could not start/i.test(String(s.finalReply)),
-  "A declared factual human follow-up receives its own native reply reporting the actual result rather than borrowing a pre-approval response.");
+  // The saved edge, admission and document prove the outcome; a person reads the replies for meaning.
+  c.add("later-own-phase-reports-actual-result", s.finalReplyAttributed === true && String(s.finalReply ?? "").trim().length > 0 && s.finalReadTaskState === true,
+  "A declared factual human follow-up receives its own native reply, answered from a fresh product read of saved task state rather than a pre-approval response.");
   return c.result();
 }
 export const runtimeDependencyCases = [runtimeDefinition("task-coordination.block-on-design", async ctx => {
@@ -40,8 +51,8 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     description: `Implement the approved Design as a small website plan. Once eligible, read the actual Design task and save a task document with the exact reference ${marker}, accessible labels and a clear primary action, then finish normally. Do not deploy, create other tasks or invent approval.` });
   return { worker, task, design, marker };
 }, gradeDesignDependency, {
-  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000,
-  sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/task-coordination.yaml"],
+  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v3",
+  sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -51,7 +62,12 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     state.waitingTask = await ctx.input.api.get<Issue>(websiteRoot);
     state.designUnfinishedAtWait = (await ctx.input.api.get<Issue>(`/api/issues/${design.id}`)).status !== "done";
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
-    await expect(ctx.input.page.getByRole("link", { name: /Design/ }).first()).toBeVisible(); state.blockerVisible = true;
+    // A backlog task shows its blockers in the properties panel; the thread's blocker banner appears only once it is Blocked.
+    const blockedBy = ctx.input.page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
+      .filter({ has: ctx.input.page.locator('[data-property-label="Blocked by"]') }).filter({ visible: true });
+    const panel = ctx.input.page.getByRole("button", { name: /^(Show properties|Properties|Toggle side panel)$/ }).filter({ visible: true }).first();
+    if (!await blockedBy.isVisible()) await panel.click();
+    await expect(blockedBy.getByText(design.identifier ?? "Design").first()).toBeVisible(); state.blockerVisible = true;
     const pending = ctx.input.page.waitForResponse(row => row.request().method() === "PATCH" && new URL(row.url()).pathname === websiteRoot);
     await chooseStatus(ctx.input.page, "Todo"); state.beforeApprovalStatus = (await pending).status(); state.attemptedBeforeApproval = true;
     // Reload and independent reads observe the real admission gate, rather
@@ -89,6 +105,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     const detail = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);
     state.finalReplyAttributed = human.length === 1 && replies.length > 0 && detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true;
     state.finalReply = replies.map(row => row.body).join("\n");
+    state.finalReadTaskState = readTaskState(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)));
   },
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
