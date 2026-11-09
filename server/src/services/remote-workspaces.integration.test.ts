@@ -843,7 +843,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+        .toMatchObject([{ ...repository, state: "ready", failureCode: null, pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
           branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
