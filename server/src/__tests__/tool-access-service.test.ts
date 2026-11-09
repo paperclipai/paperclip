@@ -13637,6 +13637,172 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(completed)).not.toContain("supabase-dcr-secret");
   });
 
+  it("accepts a public DCR client that a confidential-only provider registers in place of the requested method", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SUPABASE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SUPABASE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "supabase",
+      connectionMethodKey: "mcp-oauth",
+      name: "Supabase public DCR",
+      configValues: { projectRef: "abcdefghijklmnopqrst", readOnly: true, features: "database" },
+    });
+    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp") {
+          return mcpHttpResponse({
+            resource: "https://mcp.supabase.com/mcp",
+            authorization_servers: ["https://api.supabase.com"],
+          });
+        }
+        if (href === "https://api.supabase.com/.well-known/oauth-authorization-server") {
+          return mcpHttpResponse({
+            issuer: "https://api.supabase.com",
+            authorization_endpoint: "https://api.supabase.com/v1/oauth/authorize",
+            token_endpoint: "https://api.supabase.com/v1/oauth/token",
+            registration_endpoint: "https://api.supabase.com/platform/oauth/apps/register",
+            code_challenge_methods_supported: ["plain", "S256"],
+            token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
+          });
+        }
+        if (href === "https://api.supabase.com/platform/oauth/apps/register") {
+          const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          expect(requestBody.token_endpoint_auth_method).toBe("client_secret_basic");
+          return mcpHttpResponse({
+            client_id: "public-dcr-client",
+            client_id_issued_at: 1794223920,
+            redirect_uris: [redirectUri],
+            token_endpoint_auth_method: "none",
+            require_pkce: true,
+            client_name: "[Unverified Dynamic Application] Paperclip",
+            dynamic: true,
+          });
+        }
+        if (href === "https://api.supabase.com/v1/oauth/token") {
+          const headers = (init?.headers ?? {}) as Record<string, string>;
+          expect(headers.Authorization).toBeUndefined();
+          const body = init?.body as URLSearchParams;
+          expect(body.get("client_id")).toBe("public-dcr-client");
+          expect(body.get("client_secret")).toBeNull();
+          expect(body.get("code")).toBe("public-code");
+          expect(body.get("code_verifier")).toBeTruthy();
+          return mcpHttpResponse({
+            access_token: "public-access-token",
+            refresh_token: "public-refresh-token",
+            expires_in: 7200,
+            token_type: "Bearer",
+          });
+        }
+        if (href.startsWith("https://mcp.supabase.com/mcp")) {
+          expect(init?.headers).toEqual(
+            expect.objectContaining({ Authorization: "Bearer public-access-token" }),
+          );
+          return mcpHttpResponse(catalogResponse([
+            { name: "list_tables", annotations: { readOnlyHint: true } },
+          ]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("public-dcr-client");
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    const completed = await service.completeOAuthCallback({
+      state: authorizationUrl.searchParams.get("state")!,
+      code: "public-code",
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(completed.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "list_tables", riskLevel: "read" }),
+    ]);
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(connection.config).toMatchObject({
+      oauth: {
+        clientId: "public-dcr-client",
+        clientRegistrationSource: "dcr",
+        clientTokenEndpointAuthMethod: "none",
+      },
+    });
+    expect(connection.credentialSecretRefs).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ configPath: "oauth.client_secret" })]),
+    );
+    expect(connection.credentialSecretRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ configPath: "oauth.access_token" }),
+        expect.objectContaining({ configPath: "oauth.refresh_token" }),
+      ]),
+    );
+  });
+
+  it("still rejects a DCR registration that omits the secret without registering a public client", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SUPABASE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SUPABASE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "supabase",
+      connectionMethodKey: "mcp-oauth",
+      name: "Supabase secretless DCR",
+      configValues: { projectRef: "abcdefghijklmnopqrst", readOnly: true, features: "database" },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.supabase.com/mcp",
+          authorization_servers: ["https://api.supabase.com"],
+        });
+      }
+      if (href === "https://api.supabase.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://api.supabase.com",
+          authorization_endpoint: "https://api.supabase.com/v1/oauth/authorize",
+          token_endpoint: "https://api.supabase.com/v1/oauth/token",
+          registration_endpoint: "https://api.supabase.com/platform/oauth/apps/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_basic"],
+        });
+      }
+      if (href === "https://api.supabase.com/platform/oauth/apps/register") {
+        return mcpHttpResponse({
+          client_id: "supabase-secretless-client",
+          redirect_uris: ["https://paperclip.example/api/tools/oauth/callback"],
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await expect(
+      service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      }),
+    ).rejects.toMatchObject({
+      status: 502,
+      details: { code: "oauth_dcr_response_invalid", field: "client_secret", reason: "missing" },
+    });
+  });
+
   it.each(["default", "none", "agent", "company"] as const)(
     "negotiates JSON OAuth tokens and preserves MCP agent reach (%s)", async (reach) => {
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");

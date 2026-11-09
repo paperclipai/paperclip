@@ -224,8 +224,13 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       required: true,
       maxLength: MAX_OAUTH_DCR_CLIENT_ID_LENGTH,
     })!;
+    const registeredTokenEndpointAuthMethod: OAuthTokenEndpointAuthMethod =
+      record.token_endpoint_auth_method === "none" &&
+      (record.client_secret === undefined || record.client_secret === null)
+        ? "none"
+        : tokenEndpointAuthMethod;
     const clientSecret = parseOAuthDcrString(record, "client_secret", {
-      required: tokenEndpointAuthMethod !== "none",
+      required: registeredTokenEndpointAuthMethod !== "none",
       maxLength: MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH,
     });
     // Some authorization servers add provider-owned metadata to the registered
@@ -260,8 +265,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     );
     if (
       record.token_endpoint_auth_method !== undefined &&
-      record.token_endpoint_auth_method !==
-        requestedMetadata.token_endpoint_auth_method
+      record.token_endpoint_auth_method !== registeredTokenEndpointAuthMethod
     ) {
       throw invalidOAuthDcrResponse(
         "token_endpoint_auth_method",
@@ -293,7 +297,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     const clientSecretExpiresAt = clientSecret
       ? returnedClientSecretExpiresAt
       : null;
-    return { clientId, clientSecret, tokenEndpointAuthMethod, clientIdIssuedAt, clientSecretExpiresAt };
+    return { clientId, clientSecret, tokenEndpointAuthMethod: registeredTokenEndpointAuthMethod, clientIdIssuedAt, clientSecretExpiresAt };
   }
 
   async function exchangeOAuthToken(input: {
