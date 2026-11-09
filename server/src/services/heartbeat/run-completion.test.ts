@@ -807,6 +807,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
   });
 
+  it("does not start another retry chain once a storage wait is exhausted", async () => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 } as never);
+    await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
   it("keeps an ordinary adapter failure on the normal recovery path", async () => {
     const f = await fixture();
     await f.completion.failRun(f.failure(new Error("adapter crashed")));

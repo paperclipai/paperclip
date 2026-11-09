@@ -1294,7 +1294,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           return null;
         })
         : null;
-      if (storageWait?.outcome !== "scheduled") {
+      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted") {
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
           agent,

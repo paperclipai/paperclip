@@ -86,10 +86,10 @@ describe("object byte journal", () => {
     const claimA = waitOutStorageOutages(async () => {
       endStorageOutageWaitOn(stopA.signal);
       return createObjectByteJournal({ provider: s.provider, prefix: "company/a/log" })
-        .claim({ expectedOwner: null, assertAuthority: authority, signal: stopA.signal });
+        .claim({ assertAuthority: authority, signal: stopA.signal });
     });
     const claimB = waitOutStorageOutages(() => createObjectByteJournal({ provider: s.provider, prefix: "company/b/log" })
-      .claim({ expectedOwner: null, assertAuthority: authority }));
+      .claim({ assertAuthority: authority }));
     void claimA.catch(() => undefined);
     setTimeout(() => stopA.abort(new Error("Stopped by a board operator")), 200);
     await expect(claimA).rejects.toBeTruthy();
@@ -99,7 +99,7 @@ describe("object byte journal", () => {
   it("rereads a head whose download was cut off during a storage outage", async () => {
     const s = storage();
     const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/reset/log" });
-    const first = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    const first = await journal.claim({ assertAuthority: authority });
     const get = s.provider.getObject;
     let cut = false;
     s.provider.getObject = async (input) => {
@@ -110,7 +110,7 @@ describe("object byte journal", () => {
       recordS3BodyFailure(reset, { $metadata: { httpStatusCode: 200 } });
       return { ...result, stream: new Readable({ read() { this.destroy(reset); } }) };
     };
-    const next = await waitOutStorageOutages(() => journal.claim({ expectedOwner: first.head.owner, assertAuthority: authority }));
+    const next = await waitOutStorageOutages(() => journal.claim({ assertAuthority: authority }));
     expect(cut).toBe(true);
     expect(next.head.generation).toBe(first.head.generation + 1);
   }, 30_000);
@@ -129,7 +129,7 @@ describe("object byte journal", () => {
       }), input.signal);
     };
     const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/slow/log" });
-    const failure = await journal.claim({ expectedOwner: null, assertAuthority: authority }).catch((error: unknown) => error);
+    const failure = await journal.claim({ assertAuthority: authority }).catch((error: unknown) => error);
     expect(isStorageUnavailableError(failure)).toBe(true);
   }, 40_000);
 

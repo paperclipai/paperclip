@@ -128,6 +128,18 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("ends an answered interaction's storage wait at its limit and escalates it", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "storage_unavailable", scheduledRetryReason: "storage_unavailable_wait", scheduledRetryAttempt: 10,
+      contextSnapshot: { issueId: "issue", interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+        mutation: "interaction", retryReason: "storage_unavailable_wait",
+        executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0 } } } as Run;
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent);
+    expect(retry).toMatchObject({ outcome: "retry_exhausted", maxAttempts: 10 });
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledWith(expect.objectContaining({ run, maxAttempts: 10 }));
+  });
+
   it("leaves successor work to the committed case handoff without retry escalation", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
