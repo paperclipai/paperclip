@@ -26,6 +26,8 @@ describe("attributed diagnosis history with explicitly requested missing facts",
   });
   it("rejects wrong author, synthetic revision provenance and handoff-as-fact substitution", () => {
     const wrong = valid(); wrong.diagnosisRevisions[1]!.createdByAgentId = "morgan"; expect(gradeIntegratorCaseHistory(wrong).passed).toBe(false);
+    const hyphen = valid(); hyphen.diagnosisRevisions[0]!.body = "Preliminary: the customer suspects an event-handler binding problem."; expect(gradeIntegratorCaseHistory(hyphen).passed).toBe(true);
+    const order = valid(); order.diagnosisRevisions[1]!.revisionNumber = 0; expect(gradeIntegratorCaseHistory(order).passed).toBe(false);
     const fake = valid(); fake.diagnosisRevisions[1]!.createdByRunId = "unrelated"; expect(gradeIntegratorCaseHistory(fake).passed).toBe(false);
     const event = valid(); event.caseEvents[0]!.kind = "handoff_applied"; expect(gradeIntegratorCaseHistory(event).passed).toBe(false);
     const routing = valid(); routing.handoffs[2]!.actorId = "morgan"; expect(gradeIntegratorCaseHistory(routing).passed).toBe(false);
