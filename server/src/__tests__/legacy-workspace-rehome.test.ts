@@ -1,0 +1,178 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, executionWorkspaces,
+  heartbeatRuns, issueRecoveryActions, issueRelations, issues } from "@paperclipai/db";
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
+import { LEGACY_WORKSPACE_REHOME_OUTCOME, rehomeStrandedLegacyWorkspaceTasks } from "../services/recovery/legacy-workspace-rehome.js";
+import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
+
+const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
+if (!recoveryPostgresSupport.supported) console.warn(`Skipping legacy workspace rehome tests: ${recoveryPostgresSupport.reason}`);
+
+// Recovery text never asks a person to inspect or fix a sandbox.
+const adminText = /sandbox|environment|administrator|board member|board operator|owner must|inspect the/i;
+
+/**
+ * The staging shape (Nov 4-5): a parent task and three children that an older
+ * release bound to the parent's remote workspace (before #19860). One child's
+ * ended run still holds that workspace with unsaved files. The other two
+ * children's runs failed setup on that hold before any provider work, and
+ * stranded-work recovery blocked them with a board-owned escalation.
+ */
+describePostgres("stranded subtasks bound to a parent's held workspace", () => {
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
+  let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
+  const adapterType = "legacy_rehome_test";
+  const dispatched: Array<{ issueId: string; context: Record<string, unknown> }> = [];
+  const oldHome = process.env.PAPERCLIP_HOME;
+  let home: string;
+
+  beforeAll(async () => {
+    temporary = await startRecoveryPostgres("legacy-workspace-rehome-");
+    db = createDb(temporary.connectionString);
+    home = await mkdtemp(path.join(tmpdir(), "paperclip-legacy-rehome-"));
+    process.env.PAPERCLIP_HOME = home;
+    heartbeat = heartbeatService(db);
+    registerServerAdapter({
+      type: adapterType, supportsLocalAgentJwt: false,
+      execute: async input => {
+        const issueId = String(input.context.issueId);
+        dispatched.push({ issueId, context: input.context as Record<string, unknown> });
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
+      },
+      testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+  }, 240_000);
+
+  afterAll(async () => {
+    await heartbeat?.drainActiveRunExecutions();
+    unregisterServerAdapter(adapterType);
+    await db?.$client.end({ timeout: 0 });
+    await temporary?.cleanup();
+    if (oldHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = oldHome;
+    if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  async function seedSharedFamily() {
+    const companyId = randomUUID(), agentId = randomUUID(), userId = `owner-${companyId}`;
+    await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companies).values({ id: companyId, name: "Legacy family", defaultResponsibleUserId: userId, issuePrefix: `L${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "owner" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType, status: "idle", adapterConfig: {} });
+    const [parent] = await db.insert(issues).values({ companyId, title: "Landing page", status: "blocked", assigneeAgentId: agentId,
+      responsibleUserId: userId, executionWorkspacePreference: "reuse_existing", issueNumber: 1 }).returning();
+    const writerRunId = randomUUID();
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: parent.id, name: "Parent workspace",
+      mode: "shared_workspace", strategyType: "project_primary", status: "active", providerType: "cloud_sandbox",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 2, snapshotId: randomUUID(),
+        source: { kind: "empty" }, writerRunId, dirty: true, location: null } } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, parent.id));
+    const child = async (title: string, issueNumber: number) => (await db.insert(issues).values({ companyId, title, parentId: parent.id,
+      status: "blocked", assigneeAgentId: agentId, responsibleUserId: userId, executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
+      issueNumber, createdAt: new Date("2026-11-04T23:56:00Z") }).returning())[0];
+    const [hero, pricing, writer] = [await child("Hero copy", 2), await child("Pricing table", 3), await child("FAQ", 4)];
+    for (const blocker of [hero, pricing, writer])
+      await db.insert(issueRelations).values({ companyId, issueId: blocker.id, relatedIssueId: parent.id, type: "blocks" });
+    // The writer child's ended run holds the workspace (its save is still pending).
+    await db.insert(heartbeatRuns).values({ id: writerRunId, companyId, agentId, issueId: writer.id, status: "failed",
+      finishedAt: new Date(Date.now() - 4 * 86_400_000), contextSnapshot: { issueId: writer.id } });
+    const strand = async (issueId: string, error = REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE) => {
+      const finishedAt = new Date(Date.now() - 4 * 86_400_000);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "failed", errorCode: "setup_failed",
+        error, startedAt: new Date(finishedAt.getTime() - 90_000), finishedAt,
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        contextSnapshot: { issueId, wakeReason: "workspace_busy_retry" } }).returning();
+      const blockedAt = new Date(finishedAt.getTime() + 900);
+      await db.update(issues).set({ blockedTransitionAt: blockedAt, statusVersion: 2 }).where(eq(issues.id, issueId));
+      const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
+        status: "active", ownerType: "board", previousOwnerAgentId: agentId, returnOwnerAgentId: agentId, cause: "stranded_assigned_issue",
+        fingerprint: `source_scoped_recovery:${companyId}:${issueId}:stranded_assigned_issue`,
+        nextAction: "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
+        evidence: { latestRunId: run.id, retryReason: "workspace_busy", recoveryCause: "stranded_assigned_issue",
+          routingPolicy: "board_escalation_no_takeover_v1", sourceIssueId: issueId, previousStatus: "in_progress",
+          latestRunStatus: "failed", latestIssueStatus: "in_progress", latestRunErrorCode: "setup_failed" },
+        createdAt: blockedAt, updatedAt: blockedAt }).returning();
+      return { runId: run.id, actionId: action.id };
+    };
+    return { companyId, agentId, workspaceId: workspace.id, parent, hero, pricing, writer, strand };
+  }
+
+  const issue = async (id: string) => (await db.select().from(issues).where(eq(issues.id, id)))[0]!;
+  const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
+
+  it("moves each stranded child to its own workspace and continues it, leaving the parent's workspace alone", async () => {
+    const f = await seedSharedFamily();
+    const hero = await f.strand(f.hero.id), pricing = await f.strand(f.pricing.id);
+    const workspaceBefore = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0];
+
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+
+    for (const [child, stranded] of [[f.hero, hero], [f.pricing, pricing]] as const) {
+      const moved = await issue(child.id);
+      // Its next run realizes its own workspace from the project base; nothing of the parent's is carried over.
+      expect(moved).toMatchObject({ executionWorkspacePreference: null, workspaceBindingRevision: child.workspaceBindingRevision + 1 });
+      expect(moved.executionWorkspaceId).not.toBe(f.workspaceId);
+      const resolved = await action(stranded.actionId);
+      expect(resolved).toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system",
+        resolutionNote: LEGACY_WORKSPACE_REHOME_OUTCOME, returnOwnerAgentId: f.agentId });
+      expect(resolved.evidence).toMatchObject({
+        legacyWorkspaceRehome: { previousExecutionWorkspaceId: f.workspaceId, runId: stranded.runId } });
+      expect(String(resolved.nextAction)).not.toMatch(adminText);
+    }
+    // The parent keeps its own workspace, and the writer child keeps its saved-work binding.
+    expect(await issue(f.parent.id)).toMatchObject({ executionWorkspaceId: f.workspaceId, status: "blocked" });
+    expect(await issue(f.writer.id)).toMatchObject({ executionWorkspaceId: f.workspaceId, status: "blocked" });
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0]).toEqual(workspaceBefore);
+    const rehomed = await db.select().from(activityLog).where(eq(activityLog.action, "issue.legacy_workspace_rehomed"));
+    expect(rehomed.filter(row => row.companyId === f.companyId).map(row => row.entityId).sort())
+      .toEqual([f.hero.id, f.pricing.id].sort());
+
+    // Each moved child is woken exactly once, with a fresh session, and runs outside the shared workspace.
+    await heartbeat.drainActiveRunExecutions();
+    for (const child of [f.hero, f.pricing]) {
+      const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.reason, "issue_recovery_action_restored")));
+      expect(wakes.filter(wake => wake.payload?.issueId === child.id)).toHaveLength(1);
+      const turns = dispatched.filter(turn => turn.issueId === child.id);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].context).toMatchObject({ forceFreshSession: true, wakeReason: "issue_recovery_action_restored" });
+      expect(turns[0].context.executionWorkspaceId ?? null).not.toBe(f.workspaceId);
+      expect((await issue(child.id)).status).toBe("done");
+    }
+    // Nothing ran for the parent or the writer child in the shared workspace.
+    expect(dispatched.filter(turn => [f.parent.id, f.writer.id].includes(turn.issueId))).toEqual([]);
+    // A later pass changes nothing.
+    expect(await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).toEqual([]);
+    expect((await issue(f.hero.id)).executionWorkspaceId).not.toBe(f.workspaceId);
+  }, 60_000);
+
+  it("keeps a stranded child whose setup failed for another reason", async () => {
+    const f = await seedSharedFamily();
+    const other = await f.strand(f.hero.id, "Project access denied");
+
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+
+    expect(await issue(f.hero.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
+    expect(await action(other.actionId)).toMatchObject({ status: "active", ownerType: "board" });
+  }, 60_000);
+
+  it("keeps a task bound to its own workspace", async () => {
+    const f = await seedSharedFamily();
+    // The parent itself created the workspace; it never moves.
+    const own = await f.strand(f.parent.id);
+    await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, f.parent.id));
+
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+
+    expect(await issue(f.parent.id)).toMatchObject({ status: "blocked", executionWorkspaceId: f.workspaceId });
+    expect(await action(own.actionId)).toMatchObject({ status: "active" });
+  }, 60_000);
+});

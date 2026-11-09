@@ -180,6 +180,7 @@ import {
 import { withRecoveryContext } from "./status-only-context.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
 import {
   collectDispositionRepairSourceState,
   readDispositionRepairDurableWaitingState,
@@ -4540,6 +4541,11 @@ export function recoveryService(
           ))),
         ),
       );
+    // Blocked subtasks that an older release bound to a relative's held
+    // workspace move to their own workspace. They are read after this pass's
+    // candidates, so the wake the move sends is their only wake.
+    await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId, issueId: opts?.issueId })
+      .catch(error => logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"));
 
     const result = {
       assignmentDispatched: 0,
