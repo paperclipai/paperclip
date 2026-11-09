@@ -342,6 +342,15 @@ describe("openapi routes", () => {
     expect(route.post.description).toContain("--acknowledge-retention");
   });
 
+  it("documents the agent Mine inbox read as a person's inbox that requires their user id", () => {
+    const operation = buildOpenApiSpec().paths["/api/agents/me/inbox/mine"].get;
+    expect(operation.summary).not.toMatch(/current agent/i);
+    expect(operation.description).toContain("/<prefix>/inbox/mine");
+    expect(operation.description).toContain("not your own work queue");
+    const userId = operation.parameters.find((parameter: { name: string; in: string }) => parameter.name === "userId" && parameter.in === "query");
+    expect(userId).toMatchObject({ required: true });
+  });
+
   it("documents the export include body so agents can request projects and skills", () => {
     const spec = buildOpenApiSpec();
     for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
