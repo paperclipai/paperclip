@@ -26,6 +26,7 @@ import {
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { createHeartbeatTimerPolicy, parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 
@@ -610,6 +611,45 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
   for (const publication of publications) publishActivity(publication);
 }
 
+/** Why the conversation outbox holds a person's message, and when the hold lifts. */
+export type ConversationDeliveryHold = { reason: string; message: string; retryAt: number };
+
+/**
+ * The agent's daily run or cost limit holds a chat message, as queue
+ * admission would. The message stays owed in the outbox (never a skipped
+ * receipt) and is sent when the limit resets at the next UTC day.
+ */
+export async function conversationDeliveryHold(
+  db: Pick<Db, "select">,
+  agent: typeof agents.$inferSelect,
+  now = new Date(),
+): Promise<ConversationDeliveryHold | null> {
+  const cap = await createHeartbeatTimerPolicy(db).getHeartbeatDailyCapBlock(agent, parseHeartbeatPolicy(agent), { now });
+  if (!cap) return null;
+  const limit = cap.reason === "heartbeat.daily_cost_limit" ? "daily cost limit" : "daily run limit";
+  return {
+    reason: cap.reason,
+    retryAt: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    message: `${agent.name} reached its ${limit}. Your message is saved and sends automatically when the limit resets at 00:00 UTC.`,
+  };
+}
+
+/** Owed chat messages held by a daily limit, so the chat can show them as saved and waiting. */
+export async function heldConversationComments(
+  db: Db,
+  issue: { id: string; companyId: string; conversationAgentId?: string | null },
+) {
+  if (!issue.conversationAgentId) return null;
+  const [agent] = await db.select().from(agents).where(and(
+    eq(agents.id, issue.conversationAgentId), eq(agents.companyId, issue.companyId),
+  ));
+  if (!agent) return null;
+  const hold = await conversationDeliveryHold(db, agent);
+  if (!hold) return null;
+  const comments = await undeliveredConversationComments(db, issue.companyId, issue.id);
+  return comments.length ? { hold, comments } : null;
+}
+
 /** Serialize durable outbox delivery across API servers; the normal wake queue owns execution. */
 export async function deliverConversationComments(
   db: Db,
@@ -627,16 +667,24 @@ export async function deliverConversationComments(
       contextSnapshot: Record<string, unknown>;
     },
   ) => Promise<unknown>,
+  options: { onDeferredDeadline?: (at: number) => void } = {},
 ) {
   if (!issue.conversationAgentId) return;
-  const canDeliver = async (connection: Db) => {
+  const canDeliver = async (connection: Db): Promise<{ invokable: true } | { invokable: false; reason: string }> => {
     const [agent] = await connection.select().from(agents).where(and(
       eq(agents.id, issue.conversationAgentId!), eq(agents.companyId, issue.companyId),
     ));
     // Match queue admission: setup may retain accepted work, but a pause or
     // invalid reporting chain must leave the durable comment outbox untouched.
-    return evaluateAgentInvokabilityFromDb(connection,
+    const invokability = await evaluateAgentInvokabilityFromDb(connection,
       agent && isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
+    if (!invokability.invokable || !agent) return invokability;
+    // A reached daily limit is a temporary hold, not a reason to consume the
+    // message: admission would record it as a terminal skip.
+    const hold = await conversationDeliveryHold(connection, agent);
+    if (!hold) return invokability;
+    options.onDeferredDeadline?.(hold.retryAt);
+    return { invokable: false, reason: hold.reason };
   };
   for (;;) {
     const delivered = await db.transaction(async (tx) => {
