@@ -49,7 +49,19 @@ export const restoreAgentInstructionSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
+export const agentAdapterRuntimePolicySchema = z.object({
+  transcriptRetentionDays: z.custom<number>(value => typeof value === "number" && Number.isInteger(value) && value >= 1, {
+    message: "Claude transcript retention days must be a positive integer",
+  }).optional(),
+}).passthrough();
+
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
+  const policy = agentAdapterRuntimePolicySchema.safeParse(value);
+  if (!policy.success) {
+    for (const issue of policy.error.issues) ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: issue.path, message: issue.message,
+    });
+  }
   const envValue = value.env;
   if (envValue === undefined) return;
   const parsed = envConfigSchema.safeParse(envValue);

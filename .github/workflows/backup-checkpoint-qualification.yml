@@ -46,6 +46,8 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Resolve bot-owned lockfile for this source revision
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build workspace import prerequisites
         run: |

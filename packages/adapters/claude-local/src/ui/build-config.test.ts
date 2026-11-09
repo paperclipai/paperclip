@@ -103,3 +103,9 @@ describe("buildClaudeLocalConfig", () => {
     });
   });
 });
+
+it.each([0, -1, 1.5, NaN, Infinity])("rejects invalid retention days %s before agent creation", days => {
+  expect(() => buildClaudeLocalConfig(makeValues({
+    claudeTranscriptRetentionEnabled: false, claudeTranscriptRetentionDays: days,
+  }))).toThrow("positive integer");
+});

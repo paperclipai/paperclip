@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "./agent-config-patch";
 
@@ -183,4 +183,18 @@ describe("buildAgentUpdatePatch", () => {
       desiredSkills: ["research", "code-review"],
     });
   });
+});
+
+it.each([0, -1, 1.5, NaN, Infinity])("blocks the Save callback for invalid retention days %s", days => {
+  const onSave = vi.fn();
+  expect(() => onSave(buildAgentUpdatePatch(makeAgent(), makeOverlay({
+    adapterConfig: { transcriptRetentionEnabled: false, transcriptRetentionDays: days },
+  })))).toThrow("positive integer");
+  expect(onSave).not.toHaveBeenCalled();
+});
+it("allows clearing retention days to restore the inherited default", () => {
+  const agent = makeAgent();
+  agent.adapterConfig.transcriptRetentionDays = 7;
+  expect(buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { transcriptRetentionDays: undefined } })).adapterConfig)
+    .not.toHaveProperty("transcriptRetentionDays");
 });

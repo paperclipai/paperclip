@@ -1,3 +1,4 @@
+import { agentAdapterRuntimePolicySchema } from "@paperclipai/shared";
 import { buildAdapterEnvConfig, type CreateConfigValues } from "@paperclipai/adapter-utils";
 
 function parseCommaArgs(value: string): string[] {
@@ -68,5 +69,5 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
-  return ac;
+  return agentAdapterRuntimePolicySchema.parse(ac);
 }

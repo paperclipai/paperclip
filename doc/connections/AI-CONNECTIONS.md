@@ -408,6 +408,8 @@ to it at the same time.
 Under **Advanced → Run policies**, local Claude agents have typed settings:
 `profileImportMode` (`off`, `copy`, `cache`), `profileSourceDir`,
 `transcriptRetentionEnabled`, and `transcriptRetentionDays` (a positive integer).
+The form and API reject zero, negative, fractional, or nonnumeric retention days,
+even when retention is off. Clear the field to restore the inherited default.
 Typed values take precedence over legacy environment bindings, including explicit
 `off`, `false`, and an empty source path. Leaving a field unset keeps its legacy
 environment/instance fallback. Existing non-secret mode and retention choices are

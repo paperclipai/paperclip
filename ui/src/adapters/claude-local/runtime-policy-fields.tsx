@@ -24,6 +24,7 @@ export function ClaudeRuntimePolicyFields({
   const source = isCreate ? values!.claudeProfileSourceDir : eff("adapterConfig", "profileSourceDir", config.profileSourceDir as string | undefined);
   const retention = isCreate ? values!.claudeTranscriptRetentionEnabled : eff("adapterConfig", "transcriptRetentionEnabled", config.transcriptRetentionEnabled as boolean | undefined);
   const days = isCreate ? values!.claudeTranscriptRetentionDays : eff("adapterConfig", "transcriptRetentionDays", config.transcriptRetentionDays as number | undefined);
+  const invalidDays = days !== undefined && (!Number.isInteger(days) || days < 1);
   return <>
     <Field label="Local Claude skills and plugins" hint="Import enabled plugins and skills from a trusted local Claude profile. Plugin hooks run with this agent's permissions. Authentication stays separate. Applies to local managed CLI and ACP runs.">
       <select aria-label="Local Claude skills and plugins" className={inputClass}
@@ -49,10 +50,11 @@ export function ClaudeRuntimePolicyFields({
       </select>
     </Field>
     <Field label="Claude transcript retention days" hint="Delete retained transcripts after a task has been closed and unused for this many days. Unset uses the environment/instance default. A change takes effect when the task next runs.">
-      <input aria-label="Claude transcript retention days" type="number" min={1} step={1} className={inputClass} value={days ?? ""} placeholder={legacyDays === undefined ? "Environment / instance default" : `Environment / instance default (${legacyDays} days)`}
+      <input aria-label="Claude transcript retention days" aria-invalid={invalidDays} type="number" min={1} step={1} className={inputClass} value={days ?? ""} placeholder={legacyDays === undefined ? "Environment / instance default" : `Environment / instance default (${legacyDays} days)`}
         onChange={(event) => { const value = event.target.value === "" ? undefined : Number(event.target.value);
           isCreate ? set!({ claudeTranscriptRetentionDays: value }) : mark("adapterConfig", "transcriptRetentionDays", value);
         }} />
+      {invalidDays && <p role="alert" className="text-sm text-destructive">Enter a whole number of days greater than zero, or clear the field to use the default.</p>}
     </Field>
   </>;
 }
