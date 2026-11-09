@@ -13,7 +13,10 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { issueRunPresenceService } from "../services/issue-run-presence.js";
+import { activityService } from "../services/activity.js";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
@@ -3573,6 +3576,8 @@ export function issueRoutes(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db, { pluginWorkerManager: opts.pluginWorkerManager });
   const workProductsSvc = workProductService(db);
+  const activitySvc = activityService(db);
+  const issueRunPresence = issueRunPresenceService(db, { heartbeat, getAgentById: (id) => agentsSvc.getById(id) });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -3707,7 +3712,8 @@ export function issueRoutes(
 
   const issueDetailEtag = privateJsonEtag();
   router.use((req, res, next) => {
-    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path)) {
+    // The chat bootstrap is `no-store`: always a fresh body, never a 304.
+    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path) && !/^\/issues\/[^/]+\/chat-bootstrap\/?$/.test(req.path)) {
       issueDetailEtag(req, res, next);
       return;
     }
@@ -8595,6 +8601,106 @@ export function issueRoutes(
     res.json(summaries);
   });
 
+  /** `GET /issues/:id?view=core`, shared with the chat bootstrap. */
+  async function readIssueCore<T extends Parameters<typeof documentsSvc.getIssueDocumentPayload>[0] & { id: string }>(
+    issue: T,
+    time: <R>(phase: "documents" | "work_products", read: () => Promise<R>) => Promise<R> = (_phase, read) => read(),
+  ) {
+    const [documentPayload, workProducts] = await Promise.all([
+      time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
+      time("work_products", () => workProductsSvc.listForIssue(issue.id)),
+    ]);
+    return { ...issue, ...documentPayload, workProducts };
+  }
+
+  /**
+   * What the task chat reads before its first frame, for up to ten tasks, in
+   * the exact shapes of the individual task endpoints. Read-only: no activity,
+   * no break-glass. Unreadable tasks are omitted like `/issues/summaries`.
+   */
+  router.get("/companies/:companyId/issues/chat-bootstrap", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (isTaskBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
+      return;
+    }
+    const parsed = issueChatBootstrapQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "ids must be the only query parameter and contain one to ten comma-separated task UUIDs or identifiers" });
+      return;
+    }
+    const items = await readIssueChatBootstrapItems({
+      companyId,
+      refs: parsed.data.ids,
+      resolve: (ref) => (isUuidLike(ref) ? svc.getById(ref) : svc.getByIdentifier(ref)),
+      filterReadable: (rows) => filterIssuesForActor(req, rows),
+      read: (issue) => readChatBootstrapPayload(req, issue),
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ items });
+  });
+
+  /**
+   * The single-task chat bootstrap, for a hard load of a task URL before the
+   * page knows its company. The same item as the batch route; 404 when the
+   * task is missing or unreadable. Read-only and without break-glass. The
+   * issue-detail ETag middleware skips this path, so it is never a 304.
+   */
+  // `:ref`, not `:id`: the `id` param hook rewrites identifiers to UUIDs, and
+  // the item must echo the caller's reference.
+  router.get("/issues/:ref/chat-bootstrap", async (req, res) => {
+    const raw = (req.params.ref as string).trim();
+    const ref = isUuidLike(raw) ? raw.toLowerCase() : normalizeIssueReferenceIdentifier(raw);
+    if (!ref) {
+      res.status(404).json(issueNotFoundBody(req));
+      return;
+    }
+    const issue = await getAccessibleResource(req, res, getIssueById(req, ref), "Issue not found", issueNotFoundBody(req));
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, { finalForAgents: true }))) return;
+    const payload = await readChatBootstrapPayload(req, issue);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ ref, ...payload });
+  });
+
+  /**
+   * One task's chat bootstrap payload, shared by the batch and single-task
+   * routes. Each field is the payload of the named single endpoint; the caller
+   * has already resolved the task and authorized the read.
+   */
+  async function readChatBootstrapPayload(req: Request, issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
+    const [issueCore, recentCommentsAndFacts, recentActivity, recentRuns, interactions, attachments, liveRuns, activeRun] = await Promise.all([
+      readIssueCore(issue),
+      readRecentComments(issue).then(async (recentComments) => ({
+        recentComments,
+        // `/activity?view=comment-inputs` for the saved recent comments, as the chat requests them.
+        commentInputFacts: await activitySvc.inputFactsForIssue(
+          issue.companyId,
+          issue.id,
+          recentComments.comments.map((comment) => comment.id).sort(),
+        ),
+      })),
+      activitySvc.forIssue(issue.id, 50),
+      activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, { skipLivenessBackfill: true }),
+      issueThreadInteractionService(db).listForIssue(issue.id),
+      svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
+      issueRunPresence.liveRuns(issue),
+      issueRunPresence.activeRun(issue),
+    ]);
+    return {
+      issue: issueCore,
+      ...recentCommentsAndFacts,
+      recentActivity,
+      recentRuns,
+      interactions,
+      attachments,
+      liveRuns,
+      activeRun,
+    };
+  }
+
   async function prepareIssueListForActor(
     req: Request,
     companyId: string,
@@ -9803,12 +9909,9 @@ export function issueRoutes(
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
-      const [documentPayload, workProducts] = await Promise.all([
-        timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
-        timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
-      ]);
+      const core = await readIssueCore(issue, timing.time);
       res.setHeader("Server-Timing", timing.header());
-      res.json({ ...issue, ...documentPayload, workProducts });
+      res.json(core);
       return;
     }
     const inboxArchiveFieldsPromise =
@@ -17251,19 +17354,22 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.get("/issues/:id/recent-comments", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
-    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+  /** `GET /issues/:id/recent-comments`, shared with the chat bootstrap. */
+  async function readRecentComments(issue: {
+    id: string;
+    companyId: string;
+    description?: string | null;
+    conversationAgentId?: string | null;
+  }) {
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
       const comments = recent.slice(0, 20);
-      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+      return runRedactions.redactForIssue(issue.companyId, issue.id, {
         comments,
         latestCommentId: comments[0]?.id ?? null,
         oldestCommentId: comments.at(-1)?.id ?? null,
         hasMore: recent.length > 20,
-      }));
-      return;
+      });
     }
     const [recent, human, firstInstruction] = await Promise.all([
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
@@ -17273,11 +17379,17 @@ export function issueRoutes(
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
-    res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+    return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
       hasMore: recent.length > 4,
-    }));
+    });
+  }
+
+  router.get("/issues/:id/recent-comments", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json(await readRecentComments(issue));
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

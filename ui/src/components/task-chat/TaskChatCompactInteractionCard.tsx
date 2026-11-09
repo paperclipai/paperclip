@@ -560,12 +560,12 @@ function ReceiptDisclosure({
               <strong>{interaction.payload.toolAction.toolDisplayName}</strong>{" "}
               · {interaction.payload.toolAction.risk} risk
             </p>
-            <p className="mt-1">
+            {interaction.payload.toolAction.expiresAt ? <p className="mt-1">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </p>
+            </p> : null}
             <div className="mt-2">
               <MarkdownBody externalReferences={externalReferences}>
                 {interaction.payload.toolAction.previewMarkdown}
@@ -921,12 +921,12 @@ function ConfirmationCard({
             >
               {interaction.payload.toolAction.risk} risk
             </span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            {interaction.payload.toolAction.expiresAt ? <span className="ml-auto text-xs text-muted-foreground">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </span>
+            </span> : null}
           </div>
           <MarkdownBody externalReferences={externalReferences}>
             {interaction.payload.toolAction.previewMarkdown}

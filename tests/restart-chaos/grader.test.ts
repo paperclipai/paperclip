@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
+import { crossingFaults, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
 import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
@@ -236,6 +236,21 @@ describe("T-oracles", () => {
     expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=2 wakes=1 unwoken=c2:a2" });
     expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1, { stalledIssueId: "c2", recoveryActionId: "a2" }] } as never)[0]).toMatchObject({ ok: true });
     expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
+  });
+
+  it("grades a Retry the user could not click in the board UI under its own R3 signature", () => {
+    const record = { plan: { workload: "A1" }, launchError: null, finalStatus: "blocked", timedOut: false, createdAt: 0, restAt: 1,
+      samples: [{ at: 1, reachable: true, serverReady: true, issueStatus: "blocked", interruption: { state: "failed", canRetry: true } }],
+      retry: { at: 2, observedRunId: "r1", httpStatus: null, accepted: null, error: "ui_retry_button_missing", via: "ui", bannerText: "Saving files" } } as unknown as TaskRecord;
+    expect(gradeR3(record)).toEqual({ verdict: "fail", detail: "ui_retry_button_missing (user saw: Saving files)" });
+    expect(gradeR3({ ...record, retry: { ...record.retry!, clicked: true, error: "ui_retry_no_request" } } as TaskRecord).detail).toMatch(/^ui_retry_no_request/);
+  });
+
+  it("reports R2 as not checked for a sandbox-only workspace instead of passing it", () => {
+    const record = { plan: { workload: "R1" }, launchError: null, finalStatus: "done", timedOut: false, createdAt: 0, restAt: 1,
+      remoteWorkspace: true, preFaultFiles: null, samples: [{ at: 1, reachable: true, serverReady: true, issueStatus: "done", interruption: null }] } as unknown as TaskRecord;
+    expect(gradeR2(record, { verdict: "pass", checks: [] })).toEqual({ verdict: "n/a",
+      detail: "remote workspace: files before and after the fault are not compared from this host" });
   });
 
   it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
