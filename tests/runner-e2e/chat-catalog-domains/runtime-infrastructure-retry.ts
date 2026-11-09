@@ -23,6 +23,17 @@ export function isHumanRetryRequest(request: { method(): string; url(): string }
   return request.method() === "POST" && (path === `/api/agents/${workerId}/wakeup` || path === `/api/issues/${taskId}/retry`);
 }
 /**
+ * Whether a run is a Retry of the original run. A person's task Retry names its
+ * source in the execution continuation (`task_retry` from the original run);
+ * an automatic scheduled retry names it in `retryOfRunId`.
+ */
+export function retriesOriginalRun(run: Pick<HeartbeatRun, "retryOfRunId" | "contextSnapshot">, originalRunId: string) {
+  if (run.retryOfRunId === originalRunId) return true;
+  const context = (run.contextSnapshot ?? {}) as { previousRunId?: unknown; executionContinuation?: { trigger?: { reason?: unknown; sourceRunId?: unknown } } };
+  const trigger = context.executionContinuation?.trigger;
+  return context.previousRunId === originalRunId && trigger?.reason === "task_retry" && trigger.sourceRunId === originalRunId;
+}
+/**
  * The released Retry's own brief listener. A Retry can start in a fresh
  * isolated workspace, so read the directory from that run's saved execution
  * input, never from the task's earlier binding. It must be the worker's one
@@ -33,7 +44,7 @@ export async function releasedRetryListener(run: HeartbeatRun, expected: { compa
   root = process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT) {
   const profile = (run as { runnerProfileJson?: { nativeExecutionInput?: { workspace?: { cwd?: unknown }; binding?: { executionWorkspaceId?: unknown } } } }).runnerProfileJson;
   const cwd = profile?.nativeExecutionInput?.workspace?.cwd, workspaceId = profile?.nativeExecutionInput?.binding?.executionWorkspaceId;
-  if (!root || run.companyId !== expected.companyId || run.agentId !== expected.workerId || run.retryOfRunId !== expected.originalRunId
+  if (!root || run.companyId !== expected.companyId || run.agentId !== expected.workerId || !retriesOriginalRun(run, expected.originalRunId)
     || ![run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].includes(expected.taskId) || typeof cwd !== "string" || typeof workspaceId !== "string") return null;
   const real = await realpath(cwd).catch(() => null), ownedRoot = await realpath(root);
   if (!real || !real.startsWith(`${ownedRoot}${path.sep}`)) return null;
@@ -154,7 +165,7 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
       reject: v => v.runs.length > 4 || v.runs.some(row => row.id !== state.workerRunId && ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Eligible Retry failed or duplicated native work" : undefined });
     const retried = completed.runs.filter(row => row.agentId === worker.id && row.id !== state.workerRunId); state.retryRunCount = retried.length;
     const full = retried[0] && await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${retried[0].id}`); state.retryRunId = full?.id;
-    state.retryBoundToOriginal = full?.retryOfRunId === state.workerRunId && [full.contextSnapshot?.issueId, full.contextSnapshot?.taskId].includes(task.id);
+    state.retryBoundToOriginal = !!full && retriesOriginalRun(full, String(state.workerRunId)) && [full.contextSnapshot?.issueId, full.contextSnapshot?.taskId].includes(task.id);
     state.retryAdmissionAfterGateClear = !!full && Date.parse(String(full.createdAt)) >= Number(state.gatesClearedAt);
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     const finalQuery = `I restored Morgan's budget and used the supported Retry for Website ${task.identifier ?? task.id}. What is the actual result now, and is the earlier exhausted attempt still retained?`;
