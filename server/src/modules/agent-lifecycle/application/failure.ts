@@ -33,8 +33,9 @@ const configurationFailures = new Set([
 
 export function lifecycleVerificationNeedsRetry(context: LifecycleFailure, error: unknown): boolean {
   const code = lifecycleFailureCode(error) ?? "";
-  return context.phase === "verifying" && context.stage === "host"
-    && (readAiConnectionConfigurationFailure(error) !== null || configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3));
+  return ["verifying", "resuming"].includes(context.phase ?? "") && context.stage === "host"
+    && (readAiConnectionConfigurationFailure(error) !== null || context.phase === "verifying"
+      && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3)));
 }
 
 export function lifecycleFailureCode(error: unknown): string | undefined {

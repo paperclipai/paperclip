@@ -663,6 +663,12 @@ worker and retains the original queued turn; it does not enqueue another model
 turn. Decline, Stop, reassignment and other lifecycle holds remain effective.
 Setup cards stay bound to their queued source turn. A replacement turn supersedes
 the prior setup card instead of reusing a stopped turn's delivery.
+New cards also name the lifecycle operation, so a stale completion cannot recheck
+a newer configuration. Owned AI selection failures park during resume as well as
+initial verification. For a routed agent, repair uses the account already pinned
+to that lifecycle operation; it never allocates a task route, advances the pool
+cursor, or replaces the agent's pool. Legacy direct-account setup cards remain
+readable without an operation ID.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until

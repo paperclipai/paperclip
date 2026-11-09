@@ -2909,6 +2909,7 @@ export function issueThreadInteractionService(
       const payload = connectionIntentPayloadSchema.parse(input.payload);
       const sameSavedSetup = (candidate: typeof payload) =>
         candidate.agentSetup === payload.agentSetup
+        && candidate.agentSetupOperationId === payload.agentSetupOperationId
         && candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
         && candidate.savedSetup?.connectionId === payload.savedSetup?.connectionId
         && candidate.savedSetup?.action === payload.savedSetup?.action

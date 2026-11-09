@@ -137,7 +137,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     const retiredForAvailableConnection = interaction?.status === "expired"
       && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
       && typeof interaction.result.connectionId === "string";
-    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai"; agentSetup?: true } | undefined;
+    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai"; agentSetup?: true; agentSetupOperationId?: string } | undefined;
     if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))
       || ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId) {
       await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
@@ -158,9 +158,10 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         return;
       }
     }
-    if (interaction.status === "accepted") {
+    if (interaction.status === "accepted" && payload?.agentSetup !== true) {
       const ready = await connectionIntentService(db).usableConnectionForAgent({ companyId: claimed.companyId,
-        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose });
+        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose, sourceRunId: interaction.sourceRunId,
+        agentSetup: payload!.agentSetup, agentSetupOperationId: payload!.agentSetupOperationId });
       if (!ready) return;
     }
     if (payload?.agentSetup === true && payload.purpose === "ai") {
@@ -170,14 +171,19 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           eq(heartbeatRuns.id, interaction!.sourceRunId!), eq(heartbeatRuns.companyId, claimed.companyId),
           eq(heartbeatRuns.agentId, payload.requestingAgentId!),
         )).for("no key update");
-        const [agent] = await tx.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId!), eq(agents.companyId, claimed.companyId)));
+        const [agent] = await tx.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId!), eq(agents.companyId, claimed.companyId))).for("update");
         const [company] = await tx.select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
           .from(companies).where(eq(companies.id, claimed.companyId));
         const verificationUserId = agent?.lifecycleOperation?.responsibleUserId ?? company?.defaultResponsibleUserId;
         if (interaction!.status === "accepted" && task && !["done", "cancelled"].includes(task.status)
           && task.assigneeAgentId === payload.requestingAgentId && source?.status === "queued" && !source.startedAt
           && source.runtimeMode === "legacy" && agent && isAgentAwaitingSetup(agent)
-          && verificationUserId === interaction!.addresseeUserId) {
+          && verificationUserId === interaction!.addresseeUserId
+          && (!payload.agentSetupOperationId || agent.lifecycleOperation?.id === payload.agentSetupOperationId)) {
+          const ready = await connectionIntentService(db).usableConnectionForAgent({ companyId: claimed.companyId,
+            agentId: payload.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload.serviceSlug!, purpose: "ai",
+            sourceRunId: interaction!.sourceRunId, agentSetup: true, agentSetupOperationId: payload.agentSetupOperationId });
+          if (!ready) return;
           await requestAgentLifecycleRecheckInTransaction(tx, { companyId: claimed.companyId, agentId: agent.id,
             configurationRepaired: true }, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
         }

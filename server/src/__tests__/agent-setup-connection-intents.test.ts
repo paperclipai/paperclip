@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, companies, companyMemberships, heartbeatRuns, issues, issueThreadInteractions,
-  connectionIntentDeliveries, toolApplications, toolConnections, connectionGrants, aiProviderDefaults, createDb } from "@paperclipai/db";
+  connectionIntentDeliveries, toolApplications, toolConnections, connectionGrants, aiProviderDefaults, plugins, aiConnectionTaskPins, aiConnectionRouterCursors, createDb } from "@paperclipai/db";
+import type { AiConnectionRouterRequest } from "@paperclipai/shared";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService, wakeConnectionIntentAfterResolution } from "../services/connection-intent-delivery.js";
@@ -43,8 +48,10 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
   }
   const cards = (issueId: string) => db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
 
-  it("creates one existing inline card without admitting runtime tokens, then rechecks verification once for the same queued turn", async () => {
+  it.each(["verifying", "resuming"] as const)("repairs %s through one inline card and the same queued turn", async phase => {
     const f = await fixture();
+    if (phase === "resuming") await db.update(agents).set({ lifecycleState: phase,
+      lifecycleOperation: sql`${agents.lifecycleOperation} || '{"resumeState":"ready"}'::jsonb` }).where(eq(agents.id, f.agentId));
     await expect(f.service.validate(f.claims)).rejects.toThrow("no longer active");
     await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
     await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
@@ -63,7 +70,7 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     await delivery.deliver(pending[0]!.id);
     expect(wakeup).not.toHaveBeenCalled();
     const [held] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-    expect(held!.lifecycleState).toBe("verifying");
+    expect(held!.lifecycleState).toBe(phase);
     expect(held!.lifecycleOperation).not.toHaveProperty("retryRequired");
     const onReady = vi.fn();
     const host = vi.fn(async () => "complete" as const);
@@ -108,6 +115,69 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(source).toMatchObject({ status: "queued", startedAt: null, responsibleUserId: f.userId });
     expect(source!.contextSnapshot).toEqual({ issueId: f.issueId });
+  });
+
+  it("repairs a router's pinned lifecycle account without rerouting the task or changing its pool", async () => {
+    const f = await fixture();
+    const account = await aiConnectionService(db).save(f.companyId, f.setupUserId, { provider: "openai", method: "api_key",
+      ownership: "personal", name: "Router setup account", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-key");
+    const pluginKey = `fixture.setup-router-${f.companyId}`;
+    await db.insert(plugins).values({ pluginKey, packageName: pluginKey, version: "0.1.0", status: "ready", manifestJson: {
+      id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Setup router", description: "Fixture", author: "Tests",
+      categories: ["connector"], capabilities: ["ai.connections.route"], aiConnectionRouter: { name: "Setup pool", description: "Saved accounts" }, entrypoints: { worker: "worker.js" } } });
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const route = vi.fn(async (_id: string, _method: string, input: AiConnectionRouterRequest) =>
+      ({ kind: "selected", memberId: input.candidates[0]!.member.id }));
+    const router = aiConnectionRouterService(db, { isRunning: () => true, call: route } as unknown as PluginWorkerManager);
+    const binding = { mode: "delegated", provider: "openai", method: "api_key", ...account } as const;
+    const pool = await router.save(pluginKey, { companyId: f.companyId, config: { name: "Lifecycle setup pool", enabled: true,
+      mode: "round_robin", thresholdPercent: 90, members: [{ id: randomUUID(), binding,
+        profile: { provider: "codex", model: "gpt-5.6-sol", effort: "low" } }] } }, f.setupUserId);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const routerBinding = { mode: "router", connectionId: pool.id };
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routerBinding } }).where(eq(agents.id, f.agentId));
+    const input = { companyId: f.companyId, poolId: pool.id, agentId: f.agentId, userId: f.setupUserId,
+      adapterType: "paperclip_runner", taskKey: `lifecycle:${agent!.lifecycleOperation!.id}` };
+    const selected = await router.resolve(input);
+    await db.update(toolConnections).set({ healthStatus: "error" }).where(eq(toolConnections.id, account.connectionId));
+    try { await router.resolve(input); throw new Error("Expected owned account refusal"); }
+    catch (error) { expect(readAiConnectionConfigurationFailure(error)).toBe("ai_connection_unavailable"); }
+    route.mockClear();
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const [card] = await cards(f.issueId);
+    expect(card).toMatchObject({ status: "pending", sourceRunId: f.runId, payload: { purpose: "ai", serviceSlug: "openai", agentSetup: true } });
+    expect((await f.service.setupOptions(card!.id)).aiConnection).toEqual(binding);
+    await db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, account.connectionId));
+    const alternate = await aiConnectionService(db).save(f.companyId, f.setupUserId, { provider: "openai", method: "api_key",
+      ownership: "personal", name: "Unselected router account", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-alternate-key");
+    await expect(f.service.complete(card!.id, alternate.connectionId, f.setupUserId)).rejects.toMatchObject({ status: 409 });
+    await f.service.complete(card!.id, account.connectionId, f.setupUserId);
+    const wakeup = vi.fn();
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
+    const [repaired] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(repaired!.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(repaired!.runtimeConfig.aiConnection).toEqual(routerBinding);
+    expect((await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.agentId, f.agentId))))
+      .toMatchObject([{ taskKey: input.taskKey, selection: selected }]);
+    expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]!.version).toBe(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.contextSnapshot).toEqual({ issueId: f.issueId });
+    expect(route).not.toHaveBeenCalled();
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("supersedes a setup card when the lifecycle operation changes on the same queued turn", async () => {
+    const f = await fixture();
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const [old] = await cards(f.issueId);
+    const operationId = randomUUID();
+    await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} || ${JSON.stringify({ id: operationId })}::jsonb` }).where(eq(agents.id, f.agentId));
+    await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
+    const all = await cards(f.issueId);
+    expect(all).toHaveLength(2);
+    expect(all.find(card => card.id === old!.id)).toMatchObject({ status: "expired", result: { outcome: "superseded" } });
+    expect(all.find(card => card.status === "pending")).toMatchObject({ sourceRunId: f.runId,
+      payload: { agentSetupOperationId: operationId } });
+    await expect(f.service.setupOptions(old!.id)).rejects.toMatchObject({ status: 409 });
   });
 
   it("replaces a stopped turn's setup card and repairs the current queued turn", async () => {
@@ -164,7 +234,7 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
-  it.each(["decline", "stop", "reassign", "setup_owner_changed"] as const)("does not dispatch or lift verification after %s", async action => {
+  it.each(["decline", "stop", "reassign", "setup_owner_changed", "setup_operation_changed"] as const)("does not dispatch or lift verification after %s", async action => {
     const f = await fixture();
     await f.service.requestForQueuedAgentSetup(f.companyId, f.agentId);
     const [card] = await cards(f.issueId);
@@ -174,12 +244,14 @@ describe.skipIf(!support.supported)("queued agent setup uses task connection car
       await f.service.complete(card!.id, account.id, f.userId);
       if (action === "stop") await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
       else if (action === "reassign") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
-      else await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} || ${JSON.stringify({ responsibleUserId: randomUUID() })}::jsonb` }).where(eq(agents.id, f.agentId));
+      else if (action === "setup_owner_changed") await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} || ${JSON.stringify({ responsibleUserId: randomUUID() })}::jsonb` }).where(eq(agents.id, f.agentId));
+      else await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} || ${JSON.stringify({ id: randomUUID() })}::jsonb` }).where(eq(agents.id, f.agentId));
     }
     const wakeup = vi.fn();
     await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
     expect(wakeup).not.toHaveBeenCalled();
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.lifecycleOperation?.retryRequired).toBe(true);
+    expect((await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, card!.id)))[0]!.deliveredAt).not.toBeNull();
   });
 
   it.each(["manual_pause", "started", "foreign_company"] as const)("does not create a setup card for %s", async state => {

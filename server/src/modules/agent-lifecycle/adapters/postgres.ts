@@ -17,7 +17,7 @@ type ChangeOptions = { version?: number; owner?: string; reason?: string };
 export const pendingLifecycleWork = and(
   inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
   sql`not (${agents.lifecycleState} = 'verifying' and ${agents.lifecycleHolds} @> '["setup"]'::jsonb)`,
-  sql`not (${agents.lifecycleState} = 'verifying' and coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true')`,
+  sql`not (${agents.lifecycleState} in ('verifying', 'resuming') and coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true')`,
   sql`not (${agents.lifecycleState} = 'verifying' and coalesce(${agents.lifecycleOperation}->>'waitingForSignal', 'false') = 'true')`,
 );
 
@@ -65,7 +65,7 @@ export async function requestAgentLifecycleRecheckInTransaction(
   const [agent] = await tx.select().from(agents).where(and(
     eq(agents.id, input.agentId), eq(agents.companyId, input.companyId),
   )).for("update");
-  if (!agent || !["preparing", "verifying"].includes(agent.lifecycleState)
+  if (!agent || !["preparing", "verifying", "resuming"].includes(agent.lifecycleState)
     || agent.lifecycleOperation?.retryRequired && !input.configurationRepaired
     || input.expectedVersion !== undefined && agent.lifecycleVersion !== input.expectedVersion
     || input.onlyIfWaiting && !agent.lifecycleOperation?.waitingForSignal) return false;
@@ -268,7 +268,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
           sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
         return rows.length > 0;
       }
-      const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && agent.lifecycleState === "verifying"
+      const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && ["verifying", "resuming"].includes(agent.lifecycleState)
         ? { retryRequired: true }
         : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
