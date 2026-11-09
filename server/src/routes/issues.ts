@@ -44,6 +44,7 @@ import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } fro
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
+import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
@@ -7637,12 +7638,14 @@ export function issueRoutes(
         ? queueState.response
         : await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload)
       : null;
-    const comments = await queueCommentsForWake(
+    // Messages the active run took into its first turn are no longer queued.
+    const claimedByFirstTurn = queueState?.state === "deferred" ? firstTurnClaimedCommentIds(input.activeRun) : new Set<string>();
+    const comments = (await queueCommentsForWake(
       input.executor,
       input.issue.id,
       wake,
       response,
-    );
+    )).filter((comment) => !claimedByFirstTurn.has(comment.id));
     const assignedAgent = input.issue.assigneeAgentId
       ? await input.executor
           .select({ adapterType: agents.adapterType })
@@ -17017,10 +17020,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board access required" });
-      return;
-    }
+    assertBoard(req);
     if (!req.actor.userId) {
       throw forbidden("Board user context required");
     }
@@ -17269,7 +17269,7 @@ export function issueRoutes(
         }
       }
       const actor = getActorInfo(req);
-      const runToInterrupt = await db.transaction(async (tx) => {
+      const interruptPlan = await db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
         const locked = await lockQueuedCommentState({
           tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
           allowStoppedTarget: true,
@@ -17286,6 +17286,16 @@ export function issueRoutes(
         if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
           throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
         }
+        // A run that has not started its first provider turn takes these
+        // messages into that turn. Stopping it would only discard its setup.
+        if (locked.activeRun && !issue.conversationAgentId && issue.executionRunId === locked.activeRun.id &&
+            deferredWakeJoinsFirstTurn(locked.wake, locked.activeRun) &&
+            await firstTurnTakesAllQueuedComments(tx, { companyId: issue.companyId, issueId: issue.id,
+              responsibleUserId: locked.activeRun.responsibleUserId,
+              commentIds: queuedCommentIdsFromWakePayload(locked.wake.payload) }) &&
+            await runAcceptsFirstTurnQueuedInput(tx, locked.activeRun)) {
+          return { firstTurnRunId: locked.activeRun.id };
+        }
         // The click is durable fresh user intent, including when the message
         // predates a failed run's stop. Keep its content and original attribution.
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: locked.wake.id });
@@ -17297,8 +17307,10 @@ export function issueRoutes(
           } },
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));
-        return locked.activeRun?.status === "running" ? locked.activeRun.id : null;
+        return { runToInterrupt: locked.activeRun?.status === "running" ? locked.activeRun.id : null };
       });
+      const firstTurnRunId = "firstTurnRunId" in interruptPlan ? interruptPlan.firstTurnRunId : null;
+      const runToInterrupt = "runToInterrupt" in interruptPlan ? interruptPlan.runToInterrupt : null;
       // Never hold the issue lock while joining the adapter. Queue edits and
       // discards stay authoritative until the dispatcher claims the successor.
       const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
@@ -17307,18 +17319,23 @@ export function issueRoutes(
         suppressImmediateRecovery: true,
         resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
       });
-      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
+      if (!firstTurnRunId) await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
         action: "issue.queued_comments_interrupted", entityType: "issue", entityId: issue.id,
-        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId },
+        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId,
+          ...(firstTurnRunId ? { deliveredWithFirstTurnOfRunId: firstTurnRunId } : {}) },
       });
       const currentIssue = await svc.getById(issue.id);
       const queue = await buildQueuedCommentQueue({
         executor: db, issue: currentIssue ?? issue,
         activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
       });
+      if (firstTurnRunId && queue.state === "deferred" && queue.entries.length > 0) {
+        queue.executionWait = { reason: "first_turn_pending",
+          message: "The agent is still starting. These messages will be included in its first turn." };
+      }
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );

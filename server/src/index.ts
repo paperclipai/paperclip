@@ -92,6 +92,7 @@ import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
+import { deliverBudgetResumeContinuations, type BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
@@ -948,8 +949,11 @@ async function startServerWithDatabaseTeardown(
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
   const idleDeadlineOwners: IdleDeadlineOwners = {};
+  // createApp fills the chat Retry callback; the continuation worker reads it.
+  const budgetResumeDelivery: BudgetResumeDelivery = {};
   const app = await createApp(db as any, {
     idleDeadlineOwners,
+    budgetResumeDelivery,
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null
       : undefined,
@@ -1396,13 +1400,19 @@ async function startServerWithDatabaseTeardown(
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);
+        await deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+          resumeTaskRetry: (companyId, requestId) => heartbeat.resumeTaskRetry(companyId, requestId) });
       }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
+    deliverResumeContinuations: () => deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+      resumeTaskRetry: (companyId, requestId) => accountingHeartbeat.resumeTaskRetry(companyId, requestId) }),
   });
+  // Its stop also removes the run-status listener that wakes resume delivery.
+  server.on("close", () => { void budgetEnforcementWorker.stop(); });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);

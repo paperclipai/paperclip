@@ -238,6 +238,17 @@ describe("T-oracles", () => {
     expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
   });
 
+  it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: { brief: "CHAOS-abcd1234\nCONTINUE-abcd1234\n- one\n- two\n- three\n" },
+      agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stop: { runId: "r1", runStatus: "cancelled", runsStartedBeforeContinue: [], continuePosted: true } };
+    expect(workloadDefinitions.S1.grade("abcd1234", base).verdict).toBe("pass");
+    const restarted = workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runsStartedBeforeContinue: ["r2"] } });
+    expect(restarted.checks.find(check => check.name === "nothing_ran_after_stop")).toMatchObject({ ok: false, detail: "continue=true runs=r2" });
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runStatus: "succeeded" } }).verdict).toBe("fail");
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: undefined }).verdict).toBe("fail");
+  });
+
   it("grades B1 by running the tests and the CLI", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
       files: { "NOTES-abcd1234.md": "B1-abcd1234\n" },

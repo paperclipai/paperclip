@@ -24,6 +24,32 @@ export async function lockNativeGovernanceSources(input: { db: Db; companyId: st
       eq(approvals.companyId, input.companyId))).for("share", { noWait: true });
 }
 
+/** The pending thread interaction (question or confirmation card) that gates this run, if any. */
+async function pendingNativeInteraction(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  runId: string;
+  ignoredInteractionIds?: string[];
+}): Promise<{ id: string } | null> {
+  const [issue] = await input.db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+    .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+  return input.db
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        ...(input.ignoredInteractionIds?.length ? [notInArray(issueThreadInteractions.id, input.ignoredInteractionIds)] : []),
+        activeIssueInteractionCondition({ runId: input.runId, conversationMode: isConversation(issue) }),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
 export async function pendingNativeGovernance(input: {
   db: Db;
   companyId: string;
@@ -37,23 +63,8 @@ export async function pendingNativeGovernance(input: {
   if (record(input.executionState).status === "pending") {
     return { kind: "execution_stage", id: input.runId };
   }
-  const [issue] = await input.db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
-    .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
   const [pendingInteraction, pendingApproval] = await Promise.all([
-    input.db
-      .select({ id: issueThreadInteractions.id })
-      .from(issueThreadInteractions)
-      .where(
-        and(
-          eq(issueThreadInteractions.companyId, input.companyId),
-          eq(issueThreadInteractions.issueId, input.issueId),
-          eq(issueThreadInteractions.status, "pending"),
-          ...(input.ignoredInteractionIds?.length ? [notInArray(issueThreadInteractions.id, input.ignoredInteractionIds)] : []),
-          activeIssueInteractionCondition({ runId: input.runId, conversationMode: isConversation(issue) }),
-        ),
-      )
-      .limit(1)
-      .then((rows) => rows[0] ?? null),
+    pendingNativeInteraction(input),
     input.db
       .select({ id: approvals.id })
       .from(issueApprovals)
@@ -75,3 +86,20 @@ export async function pendingNativeGovernance(input: {
   return null;
 }
 
+
+/**
+ * A committed conversation turn has answered the person, whatever status its
+ * task keeps. An approval or an execution stage can hold the task, but neither
+ * presents that answer in the conversation. Only a pending thread interaction
+ * (a question or confirmation card) is the turn's visible response.
+ */
+export async function conversationTurnAnswered(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  runId: string;
+}): Promise<boolean> {
+  // Check cards on their own: an execution stage outranks a card as the
+  // status gate, but it does not present the turn.
+  return !(await pendingNativeInteraction(input));
+}

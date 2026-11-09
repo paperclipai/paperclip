@@ -253,6 +253,7 @@ import {
   NATIVE_CURRENT_WAKE_COMMENTS_UNREAD,
   resolveCurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
+import { claimFirstTurnQueuedInput } from "./first-turn-queued-input.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
@@ -267,7 +268,7 @@ import {
   remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -302,7 +303,7 @@ import { noteNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
-import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { proveOwnerGone } from "../owner-proof.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
@@ -5458,7 +5459,7 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     }
     if (!isSettledRemoteWarmControlState(settledControl, identity)) {
       // Closed vocabulary only: known command types and statuses, never payloads.
-      const unsettled = settledCommands.filter(command => command.status !== "completed")
+      const unsettled = unsettledControllerCommands(settledCommands)
         .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
       return refuse(unsettled.length > 0 ? `journal_commands_unsettled(${[...new Set(unsettled)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");
@@ -5808,7 +5809,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner checkpoint unavailable");
       savePluginRunnerCheckpoint(scoped, result.state, identity);
     }
-    if (input.restartRecovery?.kind === "bootstrap_incomplete") {
+    if (input.restartRecovery?.kind === "bootstrap_incomplete" && identity.runId === input.execution.binding.runId) {
       // A local runner's process ids belong to this host, so a fresh provider
       // session it opened before any turn can be proven gone here.
       const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
@@ -5883,7 +5884,8 @@ async function migrateRunnerdStateRootForExecution(input: {
       // Name the failed retirement proof: the shared error otherwise hides
       // which of several independent fences held the follow-up.
       let retirementRefusal = "";
-      if (verification === "terminal_state_indeterminate" && !input.restartRecovery && !input.retainedWarmOwnerRunId) {
+      if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
+        && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
         const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
         if (retirement.retired) return;
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
@@ -9994,6 +9996,7 @@ async function executePaperclipNativeSessionWithinScope(
           }
           const leaseNow = new Date();
           confirmedLeaseDeadline = performance.now() + executionLeaseTtlMs;
+          currentControllerProcessStamp();
           const claimed = await tx
             .update(nativeRunFinalizations)
             .set({
@@ -11061,6 +11064,12 @@ async function executePaperclipNativeSessionWithinScope(
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
+            // A failed seal commits nothing: the messages stay queued for the
+            // turn boundary instead of failing this run before its turn.
+            getFirstTurnQueuedInput: () => claimFirstTurnQueuedInput(input.db, input.execution.binding).catch((error) => {
+              logger.warn({ err: error, runId: input.execution.binding.runId }, "first-turn queued input was not sealed");
+              return null;
+            }),
             getUnreadSteeredMessages: () => readUnreadSteeredMessages(input.db, {
               companyId: input.execution.binding.companyId,
               runId: input.execution.binding.runId,
@@ -15673,6 +15682,15 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
+                    } else if (state.incompleteReason === "not_suspended"
+                      && input.restartRecovery?.kind === "bootstrap_incomplete"
+                      && state.notSuspendedRunId === input.execution.binding.runId
+                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                      if (!(await moveInterruptedBootstrapSessionAside()
+                        && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
+                        && await claimUntouchedRemoteSession())) {
+                        throw new Error("runner_harness_state_mismatch: created_not_suspended");
+                      }
                     }
                   }
                 } else if (remoteTarget && remoteCommandRunner) {
