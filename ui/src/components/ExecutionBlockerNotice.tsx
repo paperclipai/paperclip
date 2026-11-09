@@ -77,6 +77,18 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       </ul> : null}
     </div>;
   }
+  // Other person-owned decisions have their own card on the task (approval,
+  // project access, ...). A budget hold has none, so name it here and keep the
+  // failure visible. The saved attempt starts by itself once the budget allows.
+  if (!optimistic && presentation?.state === "waiting_for_user" && presentation.userAction === "budget") return (
+    <div className={cn("pt-4", className)}>
+      <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
+        className="flex items-center gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
+        <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
+        <span className="min-w-0 flex-1">Couldn’t finish this attempt. Your message is saved. It is waiting for the budget to allow new work. Raise the budget in Costs.</span>
+      </div>
+    </div>
+  );
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   return (
