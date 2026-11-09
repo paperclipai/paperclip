@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 
 type Seen = { method: string; range: string | null; ifMatch: string | null; body: string };
@@ -145,6 +145,30 @@ describe("S3 transient failures on saved files", () => {
     object.stream.destroy();
 
     await expect(Promise.race([connectionClosed.then(() => "closed"),
+      new Promise(resolve => setTimeout(() => resolve("still open"), 2_000))])).resolves.toBe("closed");
+  });
+
+  it("closes a stalled resume request when its reader gives up", async () => {
+    let closed!: () => void;
+    const resumeClosed = new Promise<void>(resolve => { closed = resolve; });
+    respond = (_req, res, _body, index) => {
+      if (index === 0) {
+        res.writeHead(200, { "content-length": "20", etag: '"v1"' });
+        res.write("01234567");
+        setTimeout(() => res.socket?.destroy(), 20);
+        return;
+      }
+      res.on("close", () => closed());
+    };
+
+    const object = await provider().getObject({ objectKey: "company/restore.pcws" });
+    const reader = object.stream[Symbol.asyncIterator]();
+    expect(String((await reader.next()).value)).toBe("01234567");
+    void reader.next().catch(() => undefined);
+    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 5_000 });
+    object.stream.destroy();
+
+    await expect(Promise.race([resumeClosed.then(() => "closed"),
       new Promise(resolve => setTimeout(() => resolve("still open"), 2_000))])).resolves.toBe("closed");
   });
 

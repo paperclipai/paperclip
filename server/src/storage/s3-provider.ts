@@ -84,8 +84,10 @@ function isTransientBodyError(error: unknown) {
     || (typeof message === "string" && /socket hang up|aborted|premature close/i.test(message));
 }
 
-function resumableBody(first: Readable, reopen: (offset: number) => Promise<Readable>, length: number, signal?: AbortSignal) {
+function resumableBody(first: Readable, reopen: (offset: number, signal: AbortSignal) => Promise<Readable>, length: number, signal?: AbortSignal) {
   let current = first, closed = false;
+  const reading = new AbortController();
+  const resumeSignal = signal ? AbortSignal.any([signal, reading.signal]) : reading.signal;
   async function* chunks() {
     let offset = 0, resumes = 0;
     while (true) {
@@ -101,7 +103,7 @@ function resumableBody(first: Readable, reopen: (offset: number) => Promise<Read
         if (offset >= length) return;
         if (closed || signal?.aborted || resumes >= BODY_RESUME_ATTEMPTS || !isTransientBodyError(error)) throw error;
         resumes += 1;
-        current = await reopen(offset);
+        current = await reopen(offset, resumeSignal);
         if (closed) { current.destroy(); return; }
       }
     }
@@ -110,6 +112,7 @@ function resumableBody(first: Readable, reopen: (offset: number) => Promise<Read
   const destroyWrapper = stream._destroy.bind(stream);
   stream._destroy = (error, callback) => {
     closed = true;
+    reading.abort(error ?? new Error("download_closed"));
     current.destroy();
     destroyWrapper(error, callback);
   };
@@ -257,11 +260,11 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         const etag = output.ETag;
         const start = input.range?.start ?? 0;
         const end = input.range?.end ?? (typeof output.ContentLength === "number" ? output.ContentLength - 1 : undefined);
-        const reopen = async (offset: number) => {
+        const reopen = async (offset: number, resumeSignal: AbortSignal) => {
           const resumed = await withS3FailureDiagnostics("get_object", () => client.send(new GetObjectCommand({
             Bucket: bucket, Key: key, IfMatch: etag,
             Range: `bytes=${start + offset}-${end ?? ""}`,
-          }), { abortSignal: input.signal }));
+          }), { abortSignal: resumeSignal }));
           return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
         };
         const stream = etag && end !== undefined
