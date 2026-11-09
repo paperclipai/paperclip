@@ -345,7 +345,7 @@ describe("openapi routes", () => {
   it("documents the agent Mine inbox read as a person's inbox that requires their user id", () => {
     const operation = buildOpenApiSpec().paths["/api/agents/me/inbox/mine"].get;
     expect(operation.summary).not.toMatch(/current agent/i);
-    expect(operation.description).toContain("/<prefix>/issues?view=mine");
+    expect(operation.description).toContain("/<prefix>/inbox/mine");
     expect(operation.description).toContain("not your own work queue");
     const userId = operation.parameters.find((parameter: { name: string; in: string }) => parameter.name === "userId" && parameter.in === "query");
     expect(userId).toMatchObject({ required: true });

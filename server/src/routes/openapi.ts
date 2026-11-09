@@ -3768,7 +3768,7 @@ registry.registerPath({
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
   summary: "List a person's Mine inbox tasks",
-  description: "Agent read of one board user's personal inbox: the same tasks as their Mine list at /<prefix>/issues?view=mine, meaning tasks that person participated in and has not archived. Use it when a person asks what is in their inbox or needs their attention; it is not your own work queue (GET /api/agents/me/inbox-lite) and a company-wide task search is not a substitute. userId is required: use the person's user id, such as the authorUserId of their message.",
+  description: "Agent read of one board user's personal inbox: the tasks that person participated in and has not archived, the same set as their Mine list, which they open at /<prefix>/inbox/mine. Use it when a person asks what is in their inbox or needs their attention; it is not your own work queue (GET /api/agents/me/inbox-lite) and a company-wide task search is not a substitute. userId is required: use the person's user id, such as the authorUserId of their message.",
   request: {
     query: z.object({
       userId: z.string().min(1).describe("The person's user id, such as the authorUserId of their message. Required."),
