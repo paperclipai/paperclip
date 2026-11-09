@@ -314,7 +314,8 @@ describe("Daytona idle eligibility", () => {
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
       mockGet.mockResolvedValue(sandbox);
       sandbox.start.mockRejectedValue(stateChangeInProgress());
-      await expect(realize(1_000)).rejects.toThrow("Sandbox state change in progress");
+      await expect(realize(1_000)).rejects.toThrow("is still stopping at its start deadline");
+      expect(sandbox.start).not.toHaveBeenCalled();
       expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
     });
 

@@ -661,6 +661,9 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, sc
   const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
   for (;;) {
     await waitOutSandboxTransition(sandbox, deadline, readTimeoutMs);
+    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || Date.now() >= deadline) {
+      throw new Error(`Daytona sandbox ${sandbox.id} is still ${sandbox.state ?? "changing state"} at its start deadline`);
+    }
     const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
     try {
       await startSettledSandbox(sandbox, remainingSeconds, scope);
