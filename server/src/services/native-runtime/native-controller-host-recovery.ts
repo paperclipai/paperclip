@@ -62,8 +62,10 @@ export async function confirmNativeControllerStopped(input: {
       || coordinator.controllerHostHash !== (recorded.hostHash ?? null) || coordinator.controllerPid !== recorded.pid
       || coordinator.controllerBootId !== recorded.bootId
       || (coordinator.controllerProcessStartedAt?.toISOString() ?? null) !== recorded.processStartedAt
-      || run.runtimeMode !== "native" || run.status !== "running" || coordinator.resultId !== null
-      || !["observed", "retryable_failure"].includes(coordinator.phase)
+      || run.runtimeMode !== "native"
+      || !(coordinator.resultId === null ? run.status === "running" : ["running", "cancelled"].includes(run.status))
+      || (coordinator.resultId === null ? !["observed", "retryable_failure"].includes(coordinator.phase)
+        : ["committed", "terminal_failure"].includes(coordinator.phase))
       || task.assigneeAgentId !== run.agentId || task.executionRunId !== run.id
       || (task.checkoutRunId !== null && task.checkoutRunId !== run.id)
       || (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== task.id
@@ -96,6 +98,9 @@ export async function confirmNativeControllerStopped(input: {
         eq(nativeRunFinalizations.leaseOwner, coordinator.leaseOwner),
         eq(nativeRunFinalizations.controllerGeneration, coordinator.controllerGeneration),
         eq(nativeRunFinalizations.attempt, coordinator.attempt),
+        eq(nativeRunFinalizations.phase, coordinator.phase),
+        coordinator.resultId === null ? isNull(nativeRunFinalizations.resultId)
+          : eq(nativeRunFinalizations.resultId, coordinator.resultId),
         sql`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text = ${expiry.epoch}`))
       .returning();
     if (!updated) throw changed();
@@ -107,8 +112,10 @@ export async function confirmNativeControllerStopped(input: {
     // The controller-only action is now resolved. Publish its responsible
     // next owner in this same transaction: an observed/no-checkpoint run is
     // not necessarily admitted by any deferred recovery scanner.
-    const { remoteProcess } = await readNativeRemoteExecutionOwnership(tx, { run, issueId: task.id });
-    await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator: updated, expiryEpoch: expiry.epoch, remoteProcess });
+    if (coordinator.resultId === null) {
+      const { remoteProcess } = await readNativeRemoteExecutionOwnership(tx, { run, issueId: task.id });
+      await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator: updated, expiryEpoch: expiry.epoch, remoteProcess });
+    }
     const publication = await persistActivity(tx, { companyId: input.companyId, actorType: "user", actorId: input.actorId,
       action: "issue.native_controller_stop_confirmed", entityType: "issue", entityId: input.issueId, runId: input.runId,
       details: { recoveryActionId: input.actionId, ...proof } });
