@@ -31,17 +31,16 @@ export function agentPermissionGrantRoutes(db: Db) {
       }
       if (enabled) {
         if (agent.status === "pending_approval" || agent.status === "terminated") {
-          throw conflict("Approve or restore the agent before granting permissions");
+          throw conflict("Cannot grant permissions to an unapproved or terminated agent");
         }
         const membership = await tx.select().from(companyMemberships).where(and(
           eq(companyMemberships.companyId, agent.companyId),
           eq(companyMemberships.principalType, "agent"),
           eq(companyMemberships.principalId, agent.id),
         )).for("update").then(rows => rows[0]);
-        if (membership && membership.status !== "active") {
+        if (!membership || membership.status !== "active") {
           throw conflict("Agent company membership is not active");
         }
-        if (!membership) await access.ensureMembership(agent.companyId, "agent", agent.id);
         await tx.insert(principalPermissionGrants).values({
           companyId: agent.companyId, principalType: "agent", principalId: agent.id,
           permissionKey, scope: null, grantedByUserId: req.actor.userId ?? null,

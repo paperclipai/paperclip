@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, authUsers, companies, companyMemberships, createDb,
   principalPermissionGrants, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { agentPermissionGrantRoutes } from "../routes/agent-permission-grants.js";
 import { agentCommentaryRoutes } from "../routes/agent-commentary.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import * as activityLogging from "../services/activity-log.js";
 
 describe("Board agent permission grants", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -103,6 +104,9 @@ describe("Board agent permission grants", () => {
       eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.agentId)));
     expect((await request(api).patch(path(f)).send(grant)).status).toBe(409);
     expect(await grants(f)).toEqual([]);
+    await db.delete(companyMemberships).where(and(
+      eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.agentId)));
+    expect((await request(api).patch(path(f)).send(grant)).status).toBe(409);
   });
 
   it("serializes concurrent additions of the same grant", async () => {
@@ -110,5 +114,14 @@ describe("Board agent permission grants", () => {
     const responses = await Promise.all([request(api).patch(path(f)).send(grant), request(api).patch(path(f)).send(grant)]);
     expect(responses.map(response => response.status)).toEqual([200, 200]);
     expect(await grants(f)).toHaveLength(1);
+  });
+
+  it("rolls back the grant if its audit record cannot be saved", async () => {
+    const f = await seed();
+    const failure = vi.spyOn(activityLogging, "logActivity").mockRejectedValueOnce(new Error("Audit storage unavailable"));
+    try {
+      expect((await request(owner(f)).patch(path(f)).send(grant)).status).toBe(500);
+      expect(await grants(f)).toEqual([]);
+    } finally { failure.mockRestore(); }
   });
 });
