@@ -21,7 +21,7 @@ import {
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
-import { createRunPreparationTiming, drainRunPreparationPhases } from "./execution-preparation-timing.js";
+import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase } from "./execution-preparation-timing.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 
@@ -255,13 +255,19 @@ describe("remote workspace transport safety with real sandbox commands", () => {
         if (input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json")) await pause();
         return original(input);
       });
+      // Production wraps the restore in sandbox_restore; with an OTLP endpoint
+      // that traced step owns the scope, and the run log must still get both.
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
       const runId = randomUUID();
-      await createRunPreparationTiming(runId)("workspace", () => restoreRemoteWorkspaceDirectory({ target: remote,
-        remoteCwd: path.join(scratch, "restored"), archivePath: captured.archivePath,
-        manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) }));
+      await createRunPreparationTiming(runId)("workspace", () => measureRunPhase("workspace.snapshot.sandbox_restore",
+        () => restoreRemoteWorkspaceDirectory({ target: remote,
+          remoteCwd: path.join(scratch, "restored"), archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) })));
+      vi.unstubAllEnvs();
       expect(drainRunPreparationPhases(runId).map(phase => [phase.name, phase.outcome])).toEqual([
         ["workspace.snapshot.sandbox_upload", "ok"],
         ["workspace.snapshot.sandbox_extract", "ok"],
+        ["workspace.snapshot.sandbox_restore", "ok"],
         ["heartbeat.prepare.workspace", "ok"],
       ]);
       expect(await fs.readFile(path.join(scratch, "restored", "saved.txt"), "utf8")).toBe("saved synthetic files\n");
