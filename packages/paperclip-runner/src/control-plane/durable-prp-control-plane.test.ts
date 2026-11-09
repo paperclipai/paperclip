@@ -1345,6 +1345,43 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
   }
 });
 
+it("fails closed when runner events keep failing to commit without progress", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
+  const commits = vi.fn(async () => { throw new Error("database unavailable"); });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "stalled-delivery-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      if (attempt < 20) expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_delivery_stalled" });
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
   return {
     protocol: "paperclip.runner", version: client.welcome.version,

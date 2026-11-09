@@ -23,11 +23,12 @@ import type {
   ReplayControlPlaneEventsInput,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  NativeSessionProtocolIntegrityError,
   normalizePrpResultSignals,
   validatePrpEvent,
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { appendHeartbeatRunEvent, HeartbeatRunEventConflictError } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
@@ -431,6 +432,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       // back its event and sequence allocation before the outer commit.
       this.#assertActive(options);
       return receipt;
+    }).catch((error: unknown) => {
+      if (error instanceof HeartbeatRunEventConflictError) {
+        throw new NativeSessionProtocolIntegrityError("runner_event_identity_conflict");
+      }
+      throw error;
     });
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;

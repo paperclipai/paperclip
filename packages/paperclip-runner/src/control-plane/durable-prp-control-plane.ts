@@ -73,6 +73,8 @@ class CommandJournalLimitError extends Error {
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
+const EVENT_DELIVERY_STALL_FAILURES = 20;
+const EVENT_DELIVERY_STALL_MS = 45_000;
 const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -2040,6 +2042,7 @@ export class DurablePrpControlPlane {
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
+  #eventDeliveryStall: { ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
@@ -4124,6 +4127,17 @@ export class DurablePrpControlPlane {
     );
   }
 
+  #eventDeliveryStalled(now = Date.now()): boolean {
+    const acked = this.#store.state.ackedSourceSeq;
+    const stall = this.#eventDeliveryStall;
+    if (stall === null || stall.ackedSourceSeq !== acked) {
+      this.#eventDeliveryStall = { ackedSourceSeq: acked, since: now, failures: 1 };
+      return false;
+    }
+    stall.failures += 1;
+    return stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS;
+  }
+
   #failProtocolIntegrity(
     connection: AuthorityConnection,
     error: NativeSessionProtocolIntegrityError,
@@ -4276,6 +4290,9 @@ export class DurablePrpControlPlane {
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
+      } else if (this.#eventDeliveryStalled()) {
+        this.#failProtocolIntegrity(connection,
+          new NativeSessionProtocolIntegrityError("runner_event_delivery_stalled"));
       } else {
         connection.close();
       }

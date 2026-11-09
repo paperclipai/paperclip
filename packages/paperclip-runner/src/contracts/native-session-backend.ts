@@ -188,12 +188,18 @@ export class NativeSessionProtocolIntegrityError extends Error {
   constructor(
     readonly reason:
       | "semantic_input_digest_mismatch"
-      | "source_event_replay_conflict",
+      | "source_event_replay_conflict"
+      | "runner_event_identity_conflict"
+      | "runner_event_delivery_stalled",
   ) {
     super(
       reason === "semantic_input_digest_mismatch"
         ? "native_event_replay_conflict: authenticated runner semantic input failed integrity validation; automatic recovery is stopped."
-        : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
+        : reason === "runner_event_identity_conflict"
+          ? "native_event_replay_conflict: runner_event_identity_conflict: the runner reused a source event identity that the server already stored with different content; automatic recovery is stopped."
+          : reason === "runner_event_delivery_stalled"
+            ? "native_event_replay_conflict: runner_event_delivery_stalled: runner events kept failing to commit without progress; automatic recovery is stopped."
+            : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
     );
     this.name = "NativeSessionProtocolIntegrityError";
   }
