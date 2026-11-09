@@ -363,6 +363,44 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(triggered.monitorNextCheckAt).toBeNull();
   });
 
+  it("does not record a deferred monitor claim as issue activity", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+    const sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
+      runtimeMode: "legacy", status: "interrupted", errorCode: "process_lost",
+      finishedAt: new Date(), contextSnapshot: { issueId } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId,
+      evidence: { runId: sourceRunId }, nextAction: "Inspect the interrupted execution before continuing." }).returning();
+    const [seeded] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    expect((await heartbeat.tickTimers(tickAt)).enqueued).toBe(0);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
+
+    const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(deferred.monitorWakeRequestedAt).toBeNull();
+    expect(deferred.monitorNextCheckAt).toEqual(nextCheckAt);
+    expect(deferred.monitorAttemptCount).toBe(0);
+    // A claim and its release are scheduler bookkeeping, not issue activity. Two
+    // sterile passes must leave the board's activity signal where the last real
+    // change left it, so a stalled task still reads as stalled.
+    expect(deferred.updatedAt).toEqual(seeded.updatedAt);
+
+    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(),
+      evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } } })
+      .where(eq(issueRecoveryActions.id, hold!.id));
+
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 60_000))).enqueued).toBe(1);
+
+    const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(triggered.monitorAttemptCount).toBe(1);
+    // The pass that dispatches is real activity, so it does move the signal.
+    expect(triggered.updatedAt.getTime()).toBeGreaterThan(seeded.updatedAt.getTime());
+  });
+
   it("recovers a rejected native monitor call and delivers the corrected schedule once", async () => {
     const { companyId, issueId, agentId } = await seedFixture();
     const runId = randomUUID();
