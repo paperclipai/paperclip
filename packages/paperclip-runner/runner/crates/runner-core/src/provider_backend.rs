@@ -1985,6 +1985,13 @@ impl CodexProviderState {
     }
 }
 
+struct NormalizationTrace {
+    frame_id: u64,
+    rule_id: String,
+    mapped: bool,
+    emitted_event_ids: Vec<String>,
+}
+
 pub struct CodexCommandExecutor {
     state_dir: PathBuf,
     state: Option<CodexProviderState>,
@@ -1998,6 +2005,7 @@ pub struct CodexCommandExecutor {
     startup_evidence_error: Option<DurableRunnerError>,
     recovery_pending_effects: Option<usize>,
     unsaved_frame_state: std::cell::Cell<bool>,
+    unsaved_trace_interpretations: Vec<NormalizationTrace>,
     #[cfg(test)]
     persist_count: std::cell::Cell<usize>,
 }
@@ -2017,6 +2025,7 @@ impl CodexCommandExecutor {
             startup_evidence_error: None,
             recovery_pending_effects: None,
             unsaved_frame_state: std::cell::Cell::new(false),
+            unsaved_trace_interpretations: Vec::new(),
             #[cfg(test)]
             persist_count: std::cell::Cell::new(0),
         }
@@ -2999,6 +3008,42 @@ impl CodexCommandExecutor {
         state.validate()?;
         self.write_state_bytes(&bytes)?;
         self.unsaved_frame_state.set(false);
+        Ok(())
+    }
+
+    fn record_saved_trace_interpretations(&mut self) {
+        let traces = std::mem::take(&mut self.unsaved_trace_interpretations);
+        let Some(provider) = self.provider.as_mut() else {
+            return;
+        };
+        for trace in traces {
+            provider.record_provider_trace_interpretation(
+                trace.frame_id,
+                &trace.rule_id,
+                if trace.mapped { "mapped" } else { "ignored" },
+                trace.emitted_event_ids,
+                if trace.mapped {
+                    "Provider notification normalized into durable PRP events"
+                } else {
+                    "Provider notification did not produce a durable PRP event"
+                },
+            );
+        }
+    }
+
+    fn save_before_provider_writes(
+        &mut self,
+        still_polling: bool,
+    ) -> Result<(), DurableRunnerError> {
+        self.save_unsaved_frame_state()?;
+        self.record_saved_trace_interpretations();
+        if let Some(provider) = self.provider.as_mut() {
+            provider
+                .release_courtesy_responses(still_polling)
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!("Codex provider failed: {error}"))
+                })?;
+        }
         Ok(())
     }
 
@@ -4551,7 +4596,7 @@ impl CodexCommandExecutor {
         call_id: String,
         operation_id: String,
     ) -> Result<(), DurableRunnerError> {
-        self.save_unsaved_frame_state()?;
+        self.save_before_provider_writes(true)?;
         let deadline_unix_ms =
             receipt_limit_deadline_after(RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS)?;
         let state = self
@@ -4819,7 +4864,7 @@ impl CodexCommandExecutor {
             .admit_tool_call(&call_id, &operation_id, &input);
         match admission {
             Ok(ToolCallAdmission::CompletedReplay(result)) => {
-                self.save_unsaved_frame_state()?;
+                self.save_before_provider_writes(true)?;
                 self.provider
                     .as_mut()
                     .expect("provider remains present while handling its tool call")
@@ -5151,8 +5196,11 @@ impl CodexCommandExecutor {
         if self.provider.is_none() {
             return self.settle_receipt_limit_interrupt_if_deadline_elapsed();
         }
+        if let Some(provider) = self.provider.as_mut() {
+            provider.hold_courtesy_responses();
+        }
         let polled = self.poll_provider_frames(allow_control, receipt_limit_terminal_poll);
-        let saved = self.save_unsaved_frame_state();
+        let saved = self.save_before_provider_writes(false);
         polled?;
         saved?;
         // Check the durable deadline only after a complete provider poll. A
@@ -5299,6 +5347,9 @@ impl CodexCommandExecutor {
                     };
                     let normalized_terminal_type =
                         normalized_codex_terminal_event_type(&method, &params);
+                    if normalized_terminal_type.is_some() {
+                        self.save_before_provider_writes(true)?;
+                    }
                     let cursor_cloud_delivery = if self
                         .state
                         .as_ref()
@@ -5557,24 +5608,16 @@ impl CodexCommandExecutor {
                     {
                         let _ = provider.acknowledge_cursor_cloud_terminal(delivery);
                     }
-                    if let (Some(frame_id), Some(provider)) =
-                        (trace_frame_id, self.provider.as_mut())
-                    {
-                        provider.record_provider_trace_interpretation(
+                    if let Some(frame_id) = trace_frame_id {
+                        self.unsaved_trace_interpretations.push(NormalizationTrace {
                             frame_id,
-                            &format!("codex.normalize.{}", method.replace('/', ".")),
-                            if normalized_event_count > 0 {
-                                "mapped"
-                            } else {
-                                "ignored"
-                            },
-                            trace_emitted_event_ids,
-                            if normalized_event_count > 0 {
-                                "Provider notification normalized into durable PRP events"
-                            } else {
-                                "Provider notification did not produce a durable PRP event"
-                            },
-                        );
+                            rule_id: format!("codex.normalize.{}", method.replace('/', ".")),
+                            mapped: normalized_event_count > 0,
+                            emitted_event_ids: trace_emitted_event_ids,
+                        });
+                    }
+                    if !self.unsaved_frame_state.get() {
+                        self.record_saved_trace_interpretations();
                     }
                 }
                 CodexProviderEvent::McpPermissionRequest { request_id, params } => {
@@ -5688,7 +5731,7 @@ impl CodexCommandExecutor {
 
 impl CommandExecutor for CodexCommandExecutor {
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
-        self.save_unsaved_frame_state()?;
+        self.save_before_provider_writes(false)?;
         let Some(state) = self.state.as_ref() else {
             return Ok(false);
         };
@@ -5756,7 +5799,7 @@ impl CommandExecutor for CodexCommandExecutor {
             command_type: command.command_type.clone(),
         });
         let outcome = (|| {
-            self.save_unsaved_frame_state()?;
+            self.save_before_provider_writes(false)?;
             self.restore()?;
             if self
                 .state
@@ -5861,7 +5904,7 @@ impl CommandExecutor for CodexCommandExecutor {
         if let Some(error) = &self.startup_evidence_error {
             return Err(error.clone());
         }
-        self.save_unsaved_frame_state()?;
+        self.save_before_provider_writes(false)?;
         Ok(self
             .state
             .as_ref()

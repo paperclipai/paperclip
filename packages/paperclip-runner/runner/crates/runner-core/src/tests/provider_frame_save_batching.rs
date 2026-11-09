@@ -50,6 +50,20 @@ fn streamed_turn_before_tool_call(
     tool: &str,
     wait_for_stream: bool,
 ) -> (PathBuf, CodexCommandExecutor) {
+    let tail = format!(
+        r#"{{"id":"tool-1","method":"item/tool/call","params":{{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"{tool}","arguments":{{}}}}}}"#
+    );
+    streamed_turn(frames, retained_results, &tail, wait_for_stream, |_| {})
+}
+
+#[cfg(unix)]
+fn streamed_turn(
+    frames: usize,
+    retained_results: usize,
+    tail: &str,
+    wait_for_stream: bool,
+    prepare_provider: impl FnOnce(&mut CodexProvider),
+) -> (PathBuf, CodexCommandExecutor) {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-streamed-frames-{}",
         uuid::Uuid::new_v4()
@@ -59,24 +73,24 @@ fn streamed_turn_before_tool_call(
     let script = r#"
 while IFS= read -r line; do
   case "$line" in
-*'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
-*'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
-*'"method":"turn/start"'*)
-  printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
-  printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}'
-  i=0
-  while [ "$i" -lt FRAMES ]; do
-    printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"x"}}'
-    printf '%s\n' '{"method":"item/updated","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"reasoning-1","type":"reasoning","summary":[],"content":[]}}}'
-    i=$((i+1))
-  done
-  printf '%s\n' '{"id":"tool-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"TOOL","arguments":{}}}'
-  touch 'STREAMED' ;;
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+      printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}'
+      i=0
+      while [ "$i" -lt FRAMES ]; do
+        printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"x"}}'
+        printf '%s\n' '{"method":"item/updated","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"reasoning-1","type":"reasoning","summary":[],"content":[]}}}'
+        i=$((i+1))
+      done
+      printf '%s\n' 'TAIL'
+      touch 'STREAMED' ;;
   esac
 done
 "#
     .replace("FRAMES", &frames.to_string())
-    .replace("TOOL", tool)
+    .replace("TAIL", tail)
     .replace("STREAMED", &streamed.display().to_string());
     let operation = streamed_task_context_operation();
     let mut bridge = ProviderToolBridge::default();
@@ -111,6 +125,7 @@ done
     state.config.model = None;
     state.tool_bridge = bridge;
     let mut provider = CodexProvider::start_with_tools(&state.config, [operation], None).unwrap();
+    prepare_provider(&mut provider);
     provider.start_turn("Test", &state.config.cwd).unwrap();
     state.provider_process_generation = provider.process_generation();
     let mut executor = CodexCommandExecutor::new(&directory);
@@ -330,4 +345,153 @@ fn measure_streamed_frame_cost_before_a_tool_call() {
             fs::remove_dir_all(directory).unwrap();
         }
     }
+}
+
+#[cfg(unix)]
+fn event_identity_for_tests() -> ProviderEventIdentity {
+    ProviderEventIdentity {
+        runner_instance_id: "runner-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+    }
+}
+
+#[cfg(unix)]
+fn read_saved_state(path: &std::path::Path) -> CodexProviderState {
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn courtesy_rejections_reach_the_provider_only_after_earlier_frames_are_saved() {
+    let directory_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<PathBuf>));
+    let saved_at_rejection = std::sync::Arc::new(std::sync::Mutex::new(None::<CodexProviderState>));
+    let observer_directory = std::sync::Arc::clone(&directory_slot);
+    let observer_saved = std::sync::Arc::clone(&saved_at_rejection);
+    let tail = r#"{"id":"courtesy-1","method":"paperclip/test/unsupported","params":{"threadId":"thread-1","turnId":"turn-1"}}"#;
+    let (directory, mut executor) = streamed_turn(20, 0, tail, true, move |provider| {
+        provider.sent_frame_observer = Some(Box::new(move |frame: &Value| {
+            if frame["id"] != "courtesy-1" {
+                return;
+            }
+            let directory = observer_directory.lock().unwrap().clone().unwrap();
+            *observer_saved.lock().unwrap() =
+                Some(read_saved_state(&directory.join(CODEX_PROVIDER_STATE_FILE)));
+        }));
+    });
+    *directory_slot.lock().unwrap() = Some(directory.clone());
+    let events = executor.poll_events().unwrap();
+    assert!(events.iter().any(|event| event.event_type == "item.delta"));
+
+    let resumed = saved_at_rejection
+        .lock()
+        .unwrap()
+        .take()
+        .expect("runnerd sent the courtesy rejection");
+    assert_eq!(
+        resumed
+            .pending_events
+            .iter()
+            .filter(|event| event.event_type == "item.delta")
+            .count(),
+        20
+    );
+    assert_eq!(
+        serde_json::to_value(&resumed).unwrap(),
+        serde_json::to_value(executor.state.as_ref().unwrap()).unwrap()
+    );
+    executor.provider.as_mut().unwrap().shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn trace_interpretations_name_only_saved_events() {
+    let directory_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<PathBuf>));
+    let checked = std::sync::Arc::new(std::sync::Mutex::new((0usize, Vec::<String>::new())));
+    let observer_directory = std::sync::Arc::clone(&directory_slot);
+    let observer_checked = std::sync::Arc::clone(&checked);
+    let trace_path = std::env::temp_dir().join(format!(
+        "paperclip-frame-trace-{}.jsonl",
+        uuid::Uuid::new_v4()
+    ));
+    let provider_trace_path = trace_path.clone();
+    let (directory, mut executor) = streamed_turn_before_tool_call_with(40, move |provider| {
+        provider.enable_trace_for_test(provider_trace_path);
+        provider.interpretation_observer = Some(Box::new(move |ids: &[String]| {
+            if ids.is_empty() {
+                return;
+            }
+            let directory = observer_directory.lock().unwrap().clone().unwrap();
+            let saved = read_saved_state(&directory.join(CODEX_PROVIDER_STATE_FILE));
+            let identity = event_identity_for_tests();
+            let saved_ids = (0..saved.next_provider_event_seq)
+                .map(|sequence| identity.source_event_id(&provider_event_id(sequence)))
+                .collect::<HashSet<_>>();
+            let mut checked = observer_checked.lock().unwrap();
+            checked.0 += ids.len();
+            checked
+                .1
+                .extend(ids.iter().filter(|id| !saved_ids.contains(*id)).cloned());
+        }));
+    });
+    *directory_slot.lock().unwrap() = Some(directory.clone());
+    poll_until_semantic_tool_call(&mut executor);
+    let (count, unsaved) = checked.lock().unwrap().clone();
+    assert!(count >= 40, "trace named {count} events");
+    assert!(
+        unsaved.is_empty(),
+        "trace named unsaved events: {unsaved:?}"
+    );
+    executor.provider.as_mut().unwrap().shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+    let _ = fs::remove_file(trace_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_crash_inside_an_unsaved_batch_leaves_saved_state_and_provider_output_unchanged() {
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let observer_sent = std::sync::Arc::clone(&sent);
+    let tail = r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"last"}}"#;
+    let (directory, mut executor) = streamed_turn(60, 0, tail, true, move |provider| {
+        provider.sent_frame_observer = Some(Box::new(move |frame: &Value| {
+            observer_sent.lock().unwrap().push(frame.clone());
+        }));
+    });
+    let path = executor.state_path();
+    let saved_before = fs::read(&path).unwrap();
+    let sent_before = sent.lock().unwrap().len();
+    executor
+        .provider
+        .as_mut()
+        .unwrap()
+        .hold_courtesy_responses();
+    executor.poll_provider_frames(true, false).unwrap();
+    assert!(executor.unsaved_frame_state.get());
+    let live_next = executor.state.as_ref().unwrap().next_provider_event_seq;
+    let saved_next = read_saved_state(&path).next_provider_event_seq;
+    assert!(live_next >= saved_next + 121);
+    assert_eq!(fs::read(&path).unwrap(), saved_before);
+    assert_eq!(sent.lock().unwrap().len(), sent_before);
+    executor.provider.as_mut().unwrap().shutdown().unwrap();
+    drop(executor);
+
+    let mut resumed = CodexCommandExecutor::new(&directory);
+    resumed.load_state_without_provider().unwrap();
+    let resumed_state = resumed.state.as_ref().unwrap();
+    assert_eq!(resumed_state.next_provider_event_seq, saved_next);
+    assert!(resumed_state.pending_events.is_empty());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+fn streamed_turn_before_tool_call_with(
+    frames: usize,
+    prepare_provider: impl FnOnce(&mut CodexProvider),
+) -> (PathBuf, CodexCommandExecutor) {
+    let tail = r#"{"id":"tool-1","method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","callId":"call-streamed","tool":"get_task_context","arguments":{}}}"#;
+    streamed_turn(frames, 0, tail, true, prepare_provider)
 }
