@@ -21,14 +21,18 @@ export function gradePreview(value: unknown) {
     && o.state.initialHttpStatus === 200 && o.state.initialHttpBody === o.state.websiteBytes
     && typeof o.state.initialHttpBody === "string" && o.state.initialHttpBody.includes(String(o.state.marker)) && o.state.browserPreviewVisible === true,
   "A real managed Website preview serves the actual provider-written website bytes in the intended workspace and is usable in the browser.");
-  c.add("accessible-registered-preview", !!service?.url && Array.isArray(products) && products.some(row => row.executionWorkspaceId === workspace.id
-    && row.runtimeServiceId === service.id && row.url === service.url && ["preview_url", "runtime_service"].includes(row.type)
-    && o.runs.some(run => run.id === row.createdByRunId && run.agentId === o.leadId))
+  // The query asks for a preview to look at; it does not ask for a work product. A registered
+  // preview/runtime-service product is optional, but one the lead registers must name this service.
+  const leadPreviewProducts = (products ?? []).filter(row => ["preview_url", "runtime_service"].includes(row.type)
+    && o.runs.some(run => run.id === row.createdByRunId && run.agentId === o.leadId));
+  c.add("accessible-registered-preview", !!service?.url && Array.isArray(products)
+    && leadPreviewProducts.every(row => row.url === service.url && (row.runtimeServiceId ?? service.id) === service.id
+      && (row.executionWorkspaceId ?? workspace.id) === workspace.id)
     && (o.state.queryLinks as string[] | undefined)?.includes(service.url) === true,
-  "The actual canonical reply exposes the ready endpoint and its run-attributed work product is tied to this exact workspace/service.");
+  "The actual canonical reply links the ready endpoint of this exact workspace's service; any preview work product the lead registers names that service.");
   const failure = o.state.failureOperation as WorkspaceOperation | undefined; const reply = String(o.state.failureReply ?? "");
   c.add("startup-failure-exposed-actionably", !!failure && failure.status === "failed" && failure.executionWorkspaceId === workspace.id
-    && (o.state.failureRunIds as string[] | undefined)?.includes(failure.heartbeatRunId ?? "") === true
+    && (o.state.failureRunIds as string[] | undefined)?.includes(String(o.state.failureOperationRunId ?? failure.heartbeatRunId ?? "")) === true
     && o.state.failedHttpReachable === false && reply.trim().length > 0,
   // The reply's wording (failure kept visible, next repair step) is for a human reader; saved state proves the outcome.
   "A separate explicit restart really fails under the fixture's process-start fault, the endpoint is down, and that restart turn answered in chat.");
@@ -88,7 +92,12 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
       accept: value => chatCatalogNativePhaseIsTimely(ctx) && value.source?.conversationState === "waiting" && value.runs.length === 3 && value.runs.every(run => run.status === "succeeded")
         && value.operations.some(row => !beforeOperations.includes(row.id) && row.status === "failed") });
     const ids = settled.runs.filter(run => !beforeRuns.includes(run.id)).map(run => run.id); state.failureRunIds = ids;
-    state.failureOperation = settled.operations.find(row => !beforeOperations.includes(row.id) && row.status === "failed" && ids.includes(row.heartbeatRunId ?? ""));
+    // Runtime controls an agent calls through the API record no heartbeatRunId; attribute such an
+    // operation to the restart turn whose run window contains its start.
+    const turnOf = (row: WorkspaceOperation) => row.heartbeatRunId ?? settled.runs.find(run => ids.includes(run.id) && run.startedAt
+      && Date.parse(String(row.startedAt)) >= Date.parse(String(run.startedAt)) && (!(run as { finishedAt?: string | null }).finishedAt || Date.parse(String(row.startedAt)) <= Date.parse(String((run as { finishedAt?: string | null }).finishedAt))))?.id ?? null;
+    const failed = settled.operations.find(row => !beforeOperations.includes(row.id) && row.status === "failed" && ids.includes(turnOf(row) ?? ""));
+    state.failureOperation = failed; state.failureOperationRunId = failed ? turnOf(failed) : null;
     const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
     state.failureReply = comments.filter(row => ids.includes(row.createdByRunId ?? "") && row.authorAgentId === ctx.input.fixtures.agent.id).map(row => row.body ?? "").join("\n");
     state.failedHttpReachable = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(5_000) }).then(async res => { await res.body?.cancel(); return res.ok; }, () => false);

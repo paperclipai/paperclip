@@ -71,8 +71,12 @@ export async function prepareRuntimeWorkerGate(ctx: ChatCatalogContext, options:
 }
 export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; observationDeadlineAt?: number } = {}) {
   const { worker, gate, previousRuns, company } = await prepareRuntimeWorkerGate(ctx, { ...options, taskBound: true });
-  const task = await ctx.input.api.post<Entity>(`${company}/issues`, { title: "Website task", status: "todo", assigneeAgentId: worker.id,
+  // Each busy worker owns its own task. Without allowDuplicate the product's recent-open-title
+  // deduplication returns the first worker's identically titled "Website task" (HTTP 200).
+  const task = await ctx.input.api.post<Entity>(`${company}/issues`, { title: "Website task", status: "todo", assigneeAgentId: worker.id, allowDuplicate: true,
     description: `The website brief is being supplied by the human. Run ${gate.command} once and wait for its real output. Do not invent a brief, replace the script, or mark work complete before it returns. Once the brief arrives, save it as a task document and finish normally.` });
+  if (task.assigneeAgentId !== worker.id || previousRuns.some(run => run.contextSnapshot?.issueId === task.id))
+    throw new Error("Busy worker fixture did not create its own task for this worker");
   const running = await pollUntil({ label: "Real Morgan process waiting for its human brief", deadlineAt: options.observationDeadlineAt ?? Date.now() + 150_000,
     load: async () => ({ runs: (await ctx.allRuns()).filter(run => !previousRuns.some(prior => prior.id === run.id)), waiting: await readRuntimeTaskGate(ctx, gate, task.id, worker.id) }),
     accept: value => (options.observationDeadlineAt === undefined || Date.now() < options.observationDeadlineAt) && value.waiting === "waiting" && value.runs.length === 1 && value.runs[0]?.agentId === worker.id && value.runs[0].status === "running",
