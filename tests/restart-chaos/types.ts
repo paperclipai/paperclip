@@ -221,7 +221,7 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
-  stop?: { runId: string; runStatus: string | null; runsStartedBeforeContinue: string[]; continuePosted: boolean };
+  stop?: { runId: string | null; runStatus: string | null; runsStartedBeforeContinue: string[]; continuePosted: boolean; missed?: boolean };
   children?: Array<{ id: string; title?: string | null; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
   childStalls?: Array<{ childIssueId: string; recoveryActionId: string | null }>;
   stallWakes?: Array<{ stalledIssueId: string | null; recoveryActionId: string | null }>;
@@ -283,7 +283,7 @@ export interface TaskRecord {
   deadlineAt: number | null;
   timedOut: boolean;
   followUp: { at: number; sentAt?: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
-  stop?: { at: number; runId: string; httpStatus: number | null; error: string | null };
+  stop?: { at: number; runId: string | null; httpStatus: number | null; error: string | null; missed?: boolean };
   faultIds: string[];
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */
