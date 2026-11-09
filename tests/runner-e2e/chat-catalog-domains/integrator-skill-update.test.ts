@@ -47,6 +47,11 @@ describe("genuine immutable public skill update qualification", () => {
     reversed.state.reviewCheckpoint.reply = review.replace("-…so every build or release runs them.\n+…so every new build runs them.", "-…so every new build runs them.\n+…so every new build or release runs them.");
     reversed.reply = `${reversed.state.reviewCheckpoint.reply}\nInstalled 4cffe22.`;
     expect(check(reversed, "review-diff-before-update")).toBe(false);
+    // A whole changed bullet quoted with its shared lead-in sits on the right side.
+    const leadIn = valid(bytes.old, bytes.next);
+    leadIn.state.reviewCheckpoint.reply = review.replace("-…so every build or release runs them.\n+…so every new build runs them.", "-- **Re-evaluate with each Change:** ... so every build or release runs them.\n+- **Re-evaluate with each Change:** ... so every new build runs them.");
+    leadIn.reply = `${leadIn.state.reviewCheckpoint.reply}\nInstalled 4cffe22.`;
+    expect(check(leadIn, "review-diff-before-update")).toBe(true);
     const fabricated = valid(bytes.old, bytes.next);
     fabricated.state.reviewCheckpoint.reply = review.replace("texts are key", "generous spacing is key");
     expect(check(fabricated, "review-diff-before-update")).toBe(false);
@@ -149,7 +154,7 @@ it("actual review-update setup keeps the real prerequisite and then prepares the
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
   try {
     const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
-    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.skill-update.diff-hunks.v1");
+    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.skill-update.diff-hunks.v2");
     expect(result.pinnedSkillText).toEqual({ old: bytes.old, next: bytes.next });
     expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
   } finally { vi.unstubAllGlobals(); }

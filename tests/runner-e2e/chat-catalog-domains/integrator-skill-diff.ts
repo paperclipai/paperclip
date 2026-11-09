@@ -62,8 +62,11 @@ export function gradeDiffReview(reply: string, oldText: string, newText: string)
       // Multi-line block quotes may span several added lines of one hunk.
       const addedSpan = added.findIndex(lines => normalize(lines.join("\n")).includes(piece));
       const removedSpan = removed.findIndex(lines => normalize(lines.join("\n")).includes(piece));
-      if (quote.side === "removed") { if (removedHunk < 0 || inNew) misplaced.push(`-${piece}`); else covered.add(removedHunk); continue; }
-      if (quote.side === "added") { if (addedHunk < 0 || inOld) misplaced.push(`+${piece}`); else covered.add(addedHunk); continue; }
+      // A side-marked excerpt must come from a changed line on that side; text the
+      // changed line shares with its counterpart (e.g. a bullet's lead-in) is
+      // allowed but only a side-unique excerpt identifies the hunk.
+      if (quote.side === "removed") { if (removedHunk < 0) misplaced.push(`-${piece}`); else if (!inNew) covered.add(removedHunk); continue; }
+      if (quote.side === "added") { if (addedHunk < 0) misplaced.push(`+${piece}`); else if (!inOld) covered.add(addedHunk); continue; }
       if (quote.side !== "inline" && !inOld && !inNew) { misplaced.push(piece); continue; }
       if (inNew && !inOld && addedSpan >= 0) covered.add(addedSpan);
       if (inOld && !inNew && removedSpan >= 0) covered.add(removedSpan);
