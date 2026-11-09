@@ -3322,6 +3322,30 @@ function createPluginEnvironmentDriver(
     };
   }
 
+  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
+    const settled = await settleDispatchedEnvironmentTask(db, workerManager, input.lease, { executionStopObserved });
+    const taskStopped = settled !== false ||
+      (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
+    if (settled !== "completed") {
+      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
+      await workerManager.call(plugin.id, "environmentReleaseLease", {
+        driverKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        issueId: input.lease.issueId,
+        config: driverConfig,
+        providerLeaseId: input.lease.providerLeaseId,
+        leaseMetadata: input.lease.metadata ?? undefined,
+      });
+    }
+    return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+      cleanupStatus: "success",
+      ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
+        { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
+    });
+  }
+
   return {
     driver: "plugin",
 
@@ -3363,7 +3387,7 @@ function createPluginEnvironmentDriver(
           providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
         });
         if (!resumed?.providerLeaseId) {
-          await this.releaseRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" });
+          await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
           resumed = undefined;
         }
       }
@@ -3423,25 +3447,8 @@ function createPluginEnvironmentDriver(
       });
     },
 
-    async releaseRunLease(input) {
-      await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
-      const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      await workerManager.call(plugin.id, "environmentReleaseLease", {
-        driverKey,
-        companyId: input.lease.companyId,
-        environmentId: input.environment.id,
-        issueId: input.lease.issueId,
-        config: driverConfig,
-        providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
-        cleanupStatus: "success",
-        ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
-          { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
-      });
+    releaseRunLease(input) {
+      return releasePluginRunLease(input);
     },
 
     async resumeRunLease(input) {
