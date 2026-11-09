@@ -3627,6 +3627,32 @@ after cancellation. The old task's Stop receipt cannot settle cleanup of a new
 replacement task. A lost reply with no known resource identity remains unresolved
 until provider inspection or operator reconciliation establishes its outcome.
 
+### Queued messages before a native run's first turn
+
+A user message that arrives while a Paperclip Runner run is still preparing,
+or after its coordinator claim but before `turn.start`, is not a reason to stop
+that run. Immediately before the first `turn.start`, the runner seals the
+turn's input: in one transaction under the task, queue, and run locks it takes
+the responsible user's plain queued comments for the task, in their queued
+order, adds them to that turn's prompt, and records a
+`firstTurnQueuedInput` receipt (`paperclip.first-turn-queued-input.v1`) in the
+run context. Interaction answers, interrupt intents, independent
+continuations, conversations, and other users' messages keep their own
+delivery. Taken messages leave the visible queue.
+
+The receipt does not consume the messages. They stay on their deferred wake
+until the provider accepts that run's turn (`turn.accepted` or the provider's
+`turn.started`); only then do release promotion, Send, and later first turns
+treat them as delivered, whatever the run's later outcome. A run that ends
+before acceptance leaves them queued for the next run, and a restart before
+acceptance repeats the same sealed input. An edit after the seal is unread.
+
+**Interrupt** on a run that has neither sealed its first turn nor had a turn
+accepted records no intent and does not stop the run; the response's
+`executionWait.reason` is `first_turn_pending`. Once the input is sealed or a
+turn was accepted, Interrupt stops the run as described below. A run saved by
+a release without the seal counts as started once its provider accepted a turn.
+
 ### Delivering queued messages after a legacy run stops
 
 The legacy queued-message Interrupt action accepts a null `targetRunId` when
