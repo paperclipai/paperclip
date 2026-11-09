@@ -118,6 +118,20 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
   } catch { return null; }
 }
 
+export function nativeRestartContinuationInFlight(snapshot: Pick<PersistedNativeSession,
+  "activeTurnId" | "terminalTurns"
+>): boolean {
+  const activeTurnId = snapshot.activeTurnId;
+  if (typeof activeTurnId !== "string" || !activeTurnId) return false;
+  const last = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
+  if (!last || typeof last.fingerprint !== "string" || !last.turnId || last.turnId === activeTurnId) return false;
+  try {
+    const fingerprint = JSON.parse(last.fingerprint);
+    return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
+      isNativeRestartInterruption(fingerprint.error);
+  } catch { return false; }
+}
+
 /**
  * Cancellation is a synchronous authority transition followed by passive
  * provider cleanup. Once `cancel` returns, the provider session must no longer
