@@ -692,8 +692,13 @@ async function archiveWorkerSlot(signal?: AbortSignal): Promise<() => void> {
 
 async function runArchiveWorker(input: ArchiveInput): ReturnType<typeof workspaceArchive> {
   const release = await archiveWorkerSlot(input.signal);
+  let workerScratch: string | undefined;
+  const fs = await import("node:fs/promises");
   try {
     input.signal?.throwIfAborted();
+    const path = await import("node:path"), os = await import("node:os");
+    workerScratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-worker-"));
+    await fs.chmod(workerScratch, 0o700);
     const { signal, ...parameters } = input;
     const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
     const worker = new Worker(`const {parentPort,workerData}=require("node:worker_threads");
@@ -703,6 +708,7 @@ parentPort.on("message",()=>controller.abort());
 const archive=${source};
 archive({...workerData,signal:controller.signal}).then(result=>parentPort.postMessage({result}),error=>parentPort.postMessage({error:{...error,name:error.name,message:error.message}})).finally(()=>parentPort.close());`, {
       eval: true, workerData: parameters, execArgv: [], stdout: true, stderr: true,
+      env: { ...process.env, TMPDIR: workerScratch, TMP: workerScratch, TEMP: workerScratch },
       resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64, stackSizeMb: 4 },
     });
     worker.stdout.resume(); worker.stderr.resume();
@@ -725,7 +731,10 @@ archive({...workerData,signal:controller.signal}).then(result=>parentPort.postMe
         });
       });
     } finally { signal?.removeEventListener("abort", abort); }
-  } finally { release(); }
+  } finally {
+    try { if (workerScratch) await fs.rm(workerScratch, { recursive: true, force: true }); }
+    finally { release(); }
+  }
 }
 
 export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {

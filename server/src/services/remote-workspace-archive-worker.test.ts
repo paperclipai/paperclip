@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ control: undefined as SharedArrayBuffer | undefined,
-  mode: "" as "" | "cpu" | "abort", spawned: 0, exited: 0 }));
+  mode: "" as "" | "cpu" | "abort" | "crash", spawned: 0, exited: 0, roots: [] as string[] }));
 vi.mock("node:worker_threads", async importOriginal => {
   const actual = await importOriginal<typeof import("node:worker_threads")>();
   return { ...actual, Worker: class extends actual.Worker {
@@ -28,9 +28,15 @@ vi.mock("node:worker_threads", async importOriginal => {
             while(!Atomics.load(testControl,4)) await new Promise(resolve=>setTimeout(resolve,5));
             await fs.rm(scratch, { recursive: true, force: true });`);
         }
+        if (state.mode === "crash") source = source.replace("const before = await walk(root, true);", `
+          await fs.mkdir(path.join(scratch,'copied-repository'));
+          await fs.writeFile(path.join(scratch,'copied-repository','retained'),'synthetic repository copy');
+          process.exit(73);
+          const before = await walk(root, true);`);
         options = { ...options, workerData: { ...options?.workerData, testControl: state.control } };
       }
       super(source, options);
+      if (options?.env && typeof options.env.TMPDIR === "string") state.roots.push(options.env.TMPDIR);
       state.spawned++;
       this.once("exit", () => { state.exited++; });
     }
@@ -41,7 +47,7 @@ import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive, workspa
 describe("workspace archive worker boundary", () => {
   let root: string, cwd: string;
   beforeEach(async () => {
-    state.control = undefined; state.mode = ""; state.spawned = 0; state.exited = 0;
+    state.control = undefined; state.mode = ""; state.spawned = 0; state.exited = 0; state.roots = [];
     root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-archive-worker-test-"));
     cwd = path.join(root, "source"); await fs.mkdir(cwd);
     await fs.writeFile(path.join(cwd, "saved.txt"), "retained work\n");
@@ -85,6 +91,14 @@ describe("workspace archive worker boundary", () => {
       expect(state.exited).toBe(8);
       await expect(fs.access(path.join(root, "queued.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { Atomics.store(control,1,1); await Promise.allSettled(captures); }
+  });
+  it("removes parent-owned capture scratch after an abnormal worker exit", async () => {
+    state.control = new SharedArrayBuffer(5 * 4); state.mode = "crash";
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "crashed.pcws") }))
+      .rejects.toThrow("remote_workspace_archive_worker_failed");
+    expect(state.exited).toBe(1); expect(state.roots).toHaveLength(1);
+    await expect(fs.access(state.roots[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(cwd,"saved.txt"),"utf8")).toBe("retained work\n");
   });
   it("waits for abort cleanup and actual worker exit before rejecting or releasing its slot", async () => {
     state.control = new SharedArrayBuffer(5 * 4); state.mode = "abort";
