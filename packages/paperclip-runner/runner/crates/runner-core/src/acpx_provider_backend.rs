@@ -5451,7 +5451,7 @@ mod tests {
         assert!(!marker.exists());
 
         drop(original_lifetime_fence);
-        recovered.shutdown().unwrap();
+        await_shutdown(&mut recovered).unwrap();
         let persisted: AcpxDurableState = serde_json::from_slice(
             &fs::read(recovered.state_path()).expect("read cleared ACPX state"),
         )
@@ -5611,7 +5611,7 @@ mod tests {
             .to_string()
             .contains("requires the same settled ACPX provider profile and session"));
         drop(original_lifetime_fence);
-        executor.shutdown().unwrap();
+        await_shutdown(&mut executor).unwrap();
         let recovered = executor.state.as_ref().unwrap();
         assert_eq!(recovered.lifecycle, "prepared");
         assert!(!recovered.provider_exit_unconfirmed);
@@ -5639,11 +5639,30 @@ mod tests {
             "another fixture must not impersonate a retired provider lifetime"
         );
         assert_eq!(
-            acquire_provider_lifetime_fence(original_candidates)
+            await_provider_lifetime_fence(original_candidates)
                 .expect("unrelated live fixture must not block the original cleanup proof")
                 .len(),
             2
         );
+    }
+
+    fn await_shutdown(executor: &mut AcpxCommandExecutor) -> Result<(), DurableRunnerError> {
+        let deadline = Instant::now() + PROVIDER_LIFETIME_CONFIRMATION_TIMEOUT;
+        loop {
+            match executor.shutdown() {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    if !error
+                        .to_string()
+                        .contains("original provider lifetime remains active")
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    std::thread::sleep(PROVIDER_LIFETIME_CONFIRMATION_RETRY);
+                }
+            }
+        }
     }
 
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
