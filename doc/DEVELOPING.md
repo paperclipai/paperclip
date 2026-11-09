@@ -3189,6 +3189,10 @@ Saved OpenCode agents keep their runner and runtime policies.
 Plugin environment drivers can declare `requiresAgent: true` when their leases
 need an agent-owned resource. The host selects that plugin's lifecycle work only for
 agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Moving a ready agent to an environment that needs a new plugin automatically
+pauses execution, waits for stop completion, starts the required resources, and
+verifies the saved configuration before allowing work. Existing pause holds
+still apply; the user does not need to pause or resume the agent for this move.
 Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
