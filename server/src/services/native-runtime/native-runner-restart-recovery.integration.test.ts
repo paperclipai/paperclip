@@ -2589,6 +2589,33 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(run).toMatchObject({ status: "running", errorCode: null });
   });
 
+  it("restarts a drained remote session whose controller only read its goal after opening it", async () => {
+    const readGoal = (core: DurablePrpControlPlane) => {
+      openSession(core, ["session.started", "session.capabilities.updated", "session.goal.snapshot", "session.goal.snapshot"]);
+      core.queueCommand("session.goal.get", {});
+      const goal = core.store.state.commands.at(-1)!;
+      goal.status = "completed";
+      goal.result = { goal: null } as never;
+    };
+    const fixture = await seedClaimedRemoteBootstrap("SESSION-GOAL-READ", { mutate: readGoal });
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ disposition: "bootstrap_incomplete",
+      reason: "remote_session_opened_without_turn" });
+    const executor = await seedClaimedRemoteBootstrap("SESSION-GOAL-READ-EXECUTOR", { mutate: readGoal });
+    const root = resolve(runtimeRoot, `goal-read-${executor.runId}`);
+    try {
+      expect(await restoreNativeRunnerCheckpoint(executor.db, { companyId, issueId: executor.issueId, runId: executor.runId },
+        root)).not.toBeNull();
+      expect(runnerdStateProvesNoRemoteProviderTurn(root)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("lets the executor prove a drained remote session had no turn from its restored checkpoint", async () => {
     const fixture = await seedClaimedRemoteBootstrap("SESSION-OPENED-EXECUTOR", { mutate: core => openSession(core) });
     const root = resolve(runtimeRoot, `opened-${fixture.runId}`);
@@ -2607,6 +2634,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
   it.each<[string, Parameters<typeof seedClaimedRemoteBootstrap>[1], { eventType: string } | null]>([
     ["a turn was issued", { mutate: core => { openSession(core);
       core.queueCommand("turn.start", { prompt: "Prior work must stay held." }); } }, null],
+    ["a goal was set after a read", { mutate: core => { openSession(core); core.queueCommand("session.goal.get", {});
+      core.queueCommand("session.goal.set", { objective: "Prior work must stay held." }); } }, null],
     ["a turn event was committed", { mutate: core => openSession(core, ["session.started", "turn.started"]) }, null],
     ["an acknowledged event is missing", { mutate: core => { openSession(core); core.store.state.ackedSourceSeq = 4; } }, null],
     ["a provider turn event was projected", { mutate: core => openSession(core) }, { eventType: "turn.started" }],
