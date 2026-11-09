@@ -53,7 +53,8 @@ it("forwards from the actual proxy open callback instead of losing normal semant
     async openSession() { diagnostic(JSON.stringify(offered));return {ids:()=>({driverSessionId:"actual-session",providerSessionId:"actual-session"})}; }
   }
   const invoke=new Function("OpenCodeServerDriver","createOpenCodeFinishDiagnosticForwarder","send","process",`
-    let session=null,driver,eventPump,cwd,activeModel;
+    let session=null,driver,eventPump,cwd,activeModel,activeCompletionContract;
+    const openCodeProxyCompletionContract=()=>undefined;
     const activeRunId="run",launchBinding={},resolve=x=>x,text=(x,f="")=>typeof x==="string"?x:f,record=x=>x;
     const runtimeDirectory=()=>"/synthetic",withoutAmbientOpenCodeCommand=()=>({}),parseOpenCodeProxyPermissionMode=()=>"allow",openCodeProxyTaskEnvelope=()=>({});
     const openCodeProxyCompletionFeedback=()=>()=>{},requestController=()=>{},pumpEvents=async()=>{},failProxy=()=>{},threadResponse=id=>({thread:{id}});
