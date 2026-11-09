@@ -4,6 +4,7 @@ import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -2230,9 +2231,14 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null)
         : null;
+      const dependencyResponse = issueId && issueContext?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
+          issueId, agentId: agent.id, context });
       if (
         issueId &&
         issueContext &&
+        !dependencyResponse &&
         isResolvedInteractionContinuationWakeContext(context)
       ) {
         try {

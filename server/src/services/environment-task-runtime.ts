@@ -493,7 +493,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
 }
 
 /** Failure leaves the dispatch marker and provider handle available to cleanup retries. */
-export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWorkerManager, lease: { id: string; companyId: string }) {
+export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWorkerManager, lease: { id: string; companyId: string },
+  options: { executionStopObserved?: boolean } = {}): Promise<false | "stopped" | "completed"> {
   const [current] = await db.update(environmentLeases).set({
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
@@ -503,19 +504,25 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
   if (current?.metadata?.runnerTaskDispatched !== true && !startup && !startupCleanup) {
     if (current?.metadata) await settlePluginTaskCredentialHandoff(db, { companyId: lease.companyId, leaseId: lease.id }, current.metadata,
       async () => { throw new Error("Undispatched task must not request credentials"); });
-    return current?.metadata?.runnerTaskExecutionStopped === true;
+    return current?.metadata?.runnerTaskExecutionStopped === true ? "stopped" : false;
   }
   const scope = { companyId: lease.companyId, leaseId: lease.id };
   try {
     const contextId = (startupCleanup as { contextId?: unknown } | undefined)?.contextId ?? (startup as { contextId?: unknown } | undefined)?.contextId;
     const draining = typeof contextId === "string" ? workers.drainStartup?.(contextId) : undefined;
     void draining?.catch(() => undefined);
-    await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });
-    const state = await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } });
-    if (state.kind !== "status" || state.executionStopped !== true || ((startup || startupCleanup?.requiresPreparationStop) && state.preparationStopped !== true)) throw new Error("Plugin Runner termination is unconfirmed");
+    const confirmed = (state?: Awaited<ReturnType<typeof executeEnvironmentTask>>) => state?.kind === "status" && state.executionStopped === true &&
+      (!(startup || startupCleanup?.requiresPreparationStop) || state.preparationStopped === true);
+    let state = options.executionStopObserved === true
+      ? await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } }) : undefined;
+    if (!confirmed(state)) {
+      await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });
+      state = await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } });
+    }
+    if (!confirmed(state)) throw new Error("Plugin Runner termination is unconfirmed");
     await draining;
     await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "complete" } });
-    return true;
+    return "completed";
   } catch {
     await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
       failureReason: "plugin_runner_task_cleanup_unconfirmed", releasedAt: new Date(), updatedAt: new Date(),

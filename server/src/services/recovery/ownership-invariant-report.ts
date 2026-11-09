@@ -9,6 +9,7 @@ import {
 import { taskClosedByAgentSql, TEMPORARY_REFUSAL_TRIGGERS } from "../work-intent-outbox.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
+import { getServerProcessStartedAt } from "../../server-info.js";
 import { persistActivity } from "../activity-log.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type ProcessProbe } from "../owner-proof.js";
 import { LEGACY_OWNER_REASONS, recordVersionAttestations } from "./owner-gone-attestation.js";
@@ -466,7 +467,7 @@ async function checkStaleDroppedComments(db: Db, now: Date, limit: number): Prom
  * finds a user comment on an assigned, non-conversation task with no live run
  * or lock, newer than every run of the task, that no wake request carries.
  * The reconciliation worker saves it as a deferred receipt and promotes it. */
-async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number, processStartedAt: Date): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
   const since = new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString();
   const rows = await db.execute<{ id: string; company_id: string; issue_id: string; created_at: string }>(sql`
     select c.id, c.company_id, c.issue_id, c.created_at::text as created_at from issue_comments c
@@ -498,8 +499,10 @@ async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: number): P
           or coalesce(w.payload#>'{_paperclipWakeContext,wakeCommentIds}', '[]'::jsonb) ? c.id::text))
     order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
   // A comment inside the grace may still get its normal wake: check it again
-  // when the grace ends (a saved deadline), and report only older ones.
-  const graceEnd = now.getTime() - COMMENT_WAKE_GRACE_MS;
+  // when the grace ends (a saved deadline), and report only older ones. This
+  // process writes that wake after the comment commits, so a comment from
+  // before it started has no writer left and is owed now.
+  const graceEnd = Math.max(now.getTime() - COMMENT_WAKE_GRACE_MS, processStartedAt.getTime());
   const young = [...rows].map(row => new Date(row.created_at).getTime()).filter(at => at >= graceEnd);
   return {
     violations: [...rows].filter(row => new Date(row.created_at).getTime() < graceEnd)
@@ -594,6 +597,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   limitPerKind?: number;
   probe?: ProcessProbe;
   now?: Date;
+  processStartedAt?: Date;
   /** Write new violations to the activity log. Defaults to true. */
   record?: boolean;
   /** Settle proven-gone records of kinds that register a `settle`, and surface
@@ -686,7 +690,8 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     () => checkExactlyOnceIntents(db, state, now, limit),
     () => checkStaleDroppedComments(db, now, limit),
     async () => {
-      const result = await checkUserCommentsWithoutWake(db, now, limit);
+      const result = await checkUserCommentsWithoutWake(db, now, limit,
+        options.processStartedAt ?? new Date(getServerProcessStartedAt()));
       if (result.nextDueAt && (!nextDueAt || result.nextDueAt < nextDueAt)) nextDueAt = result.nextDueAt;
       return result.violations;
     },

@@ -103,17 +103,25 @@ export function ownsNativeTaskCompletion(
   return issue.assigneeAgentId === agentId && !issue.assigneeUserId;
 }
 
+export function heldByAnotherRun(issue: { executionRunId?: string | null }, runId: string) {
+  return Boolean(issue.executionRunId && issue.executionRunId !== runId);
+}
+
 export function supersedeStaleOwnerCompletion(
   decision: NativeStatusDecision,
-  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null;
+    executionRunId?: string | null },
   agentId: string,
+  runId?: string,
 ): NativeStatusDecision {
-  if (decision.statusAction !== "done" || ownsNativeTaskCompletion(issue, agentId)) return decision;
+  if (decision.statusAction !== "done") return decision;
+  const ownerSuperseded = !ownsNativeTaskCompletion(issue, agentId);
+  if (!ownerSuperseded && !(runId && heldByAnotherRun(issue, runId))) return decision;
   return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
     statusAction: "preserve",
     toStatus: issue.status as NativeAuthoritativeIssueStatus,
-    reasonCode: "completion_owner_superseded",
+    reasonCode: ownerSuperseded ? "completion_owner_superseded" : "completion_run_superseded",
     unblockDescriptor: null,
     effects: [],
   };
@@ -160,6 +168,12 @@ export function arbitrateNativeStatus(input: {
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
+  /**
+   * This run, as the configured participant, recorded the approval that
+   * completed the task's final execution-policy stage. That durable decision is
+   * the completion authority for its done report, as the policy intends.
+   */
+  executionStageApprovedByRun?: boolean;
   /** Re-derived from the committed runner terminal and pinned execution identity. */
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
@@ -431,7 +445,13 @@ export function arbitrateNativeStatus(input: {
     !input.assessment.hasFailedVerification &&
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
-  const complete = evidenceComplete || policyClaimComplete;
+  const stageApprovalComplete =
+    input.executionStageApprovedByRun === true &&
+    input.assessment.reportedDisposition === "done" &&
+    !input.assessment.hasFailedVerification &&
+    input.assessment.attentionRequests.length === 0 &&
+    !input.assessment.hasBlockingRemainingWork;
+  const complete = evidenceComplete || policyClaimComplete || stageApprovalComplete;
   if (complete && input.hasPendingChildCompletion) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -448,9 +468,11 @@ export function arbitrateNativeStatus(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "done",
       toStatus: "done",
-      reasonCode: input.completionClaimPolicyAccepted
-        ? "completion_claim_policy_accepted"
-        : "completion_contract_satisfied",
+      reasonCode: !evidenceComplete && !policyClaimComplete
+        ? "execution_stage_approved"
+        : input.completionClaimPolicyAccepted
+          ? "completion_claim_policy_accepted"
+          : "completion_contract_satisfied",
       unblockDescriptor: null,
       effects: [{ kind: "release_checkout" }],
     };

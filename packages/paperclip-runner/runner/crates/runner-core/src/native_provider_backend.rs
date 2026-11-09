@@ -337,6 +337,33 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
     }
 
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(deadline),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        // A per-turn Runner exits with its run. Restarting the provider after
+        // its turn would only spawn a generation for teardown; a later turn of
+        // the same run still restarts lazily at its start.
+        if self.config.turn_scoped {
+            return Ok(());
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_next_turn(),
+            _ => Ok(()),
+        }
+    }
+
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.take_turn_end_restart_failure(),
+            _ => None,
+        }
+    }
+
     fn observe_recovery_state(
         &mut self,
         state: &crate::durable::DurableState,

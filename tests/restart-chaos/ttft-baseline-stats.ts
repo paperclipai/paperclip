@@ -24,6 +24,9 @@ export interface BaselineRun {
 export interface BaselineFault {
   kind: string;
   readyAt: number;
+  /** When the fault began. A recovery that a later fault interrupts before its
+   * next provider event is not a measurement of this fault's recovery. */
+  startedAt?: number;
   /** Runs that were in flight when the fault started. */
   runIds: string[];
 }
@@ -132,9 +135,46 @@ export function runMetrics(run: BaselineRun): RunMetrics {
 const PROVIDER_EVENT_TYPES = new Set(["turn.submitted", "turn.started", "turn.accepted", "item.started", "item.delta",
   "item.completed", "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "session.resumed"]);
 
-export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; readyAt: number; latencyMs: number | null }
+export interface RecoverySample { runId: string; adapter: string; kind: string; disposition: string; readyAt: number; latencyMs: number | null;
+  /** Paperclip's share: ready to the start of the provider's session load (`provider.session.load`), or the whole
+   * latency when nothing reloads. The judged row. */
+  controlPlaneMs: number | null;
+  /** The provider's share: session load start to the next provider event. Reported. */
+  providerLoadMs: number | null;
+  /** A later fault began before this recovery reached its next provider event
+   * (back-to-back faults). Its latencies are null: the later fault's own sample
+   * measures that run. */
+  interruptedByFault?: true }
 
 /** Control plane ready → the recovered run's next provider event, keyed by runner disposition. */
+/** The run's trace start: every span records its offset from it. A span event is
+ * written when the span ends, possibly through deferred work, so each one gives
+ * an upper bound (write time minus offset and duration); the earliest is used. */
+export function spanTraceStartMs(run: BaselineRun): number | null {
+  let earliest: number | null = null;
+  for (const event of run.events) {
+    if (event.eventType !== "run.performance.span" || !event.payload) continue;
+    const candidate = Date.parse(event.createdAt) - (Number(event.payload.startOffsetMs) + Number(event.payload.durationMs));
+    if (Number.isFinite(candidate) && (earliest === null || candidate < earliest)) earliest = candidate;
+  }
+  return earliest;
+}
+
+/** Stamps each provider session load with its wall-clock start (`wallStartMs`).
+ * The server writes the span's own start as `wallStartedAtMs`; runs logged before
+ * that field existed fall back to the trace start plus the span's offset, never to
+ * its write time. Call on the raw run, before outage removal rewrites offsets. */
+export function stampProviderLoadStarts(run: BaselineRun): BaselineRun {
+  const anchor = spanTraceStartMs(run);
+  return { ...run, events: run.events.map(event => {
+    if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load" || event.payload.wallStartMs !== undefined) return event;
+    const logged = Number(event.payload.wallStartedAtMs);
+    const offset = Number(event.payload.startOffsetMs);
+    const start = Number.isFinite(logged) ? logged : anchor !== null && Number.isFinite(offset) ? anchor + offset : null;
+    return start === null ? event : { ...event, payload: { ...event.payload, wallStartMs: start } };
+  }) };
+}
+
 export function recoverySamples(runs: readonly BaselineRun[], faults: readonly BaselineFault[]): RecoverySample[] {
   const byId = new Map(runs.map(run => [run.runId, run]));
   const samples: RecoverySample[] = [];
@@ -146,9 +186,25 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
       const transition = after.find(event => event.eventType === "native.recovery.transition"
         && Date.parse(event.createdAt) >= fault.readyAt - 60_000);
       const next = run.events.find(event => PROVIDER_EVENT_TYPES.has(event.eventType) && Date.parse(event.createdAt) >= fault.readyAt);
+      const nextAt = next ? Date.parse(next.createdAt) : null;
+      if (nextAt !== null && faults.some(other => other.startedAt !== undefined && other.startedAt > fault.readyAt && other.startedAt < nextAt)) {
+        samples.push({ runId, adapter: run.adapter, kind: fault.kind, readyAt: fault.readyAt,
+          disposition: String(transition?.payload?.runnerDisposition ?? "none"),
+          latencyMs: null, controlPlaneMs: null, providerLoadMs: null, interruptedByFault: true });
+        continue;
+      }
+      const stamped = stampProviderLoadStarts(run);
+      const loadStarts = nextAt === null ? [] : stamped.events.flatMap(event => {
+        if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load") return [];
+        const start = Number(event.payload.wallStartMs);
+        return Number.isFinite(start) && start >= fault.readyAt && start <= nextAt ? [start] : [];
+      });
+      const loadStart = loadStarts.length ? Math.min(...loadStarts) : null;
       samples.push({ runId, adapter: run.adapter, kind: fault.kind, readyAt: fault.readyAt,
         disposition: String(transition?.payload?.runnerDisposition ?? "none"),
-        latencyMs: next ? Date.parse(next.createdAt) - fault.readyAt : null });
+        latencyMs: nextAt === null ? null : nextAt - fault.readyAt,
+        controlPlaneMs: nextAt === null ? null : (loadStart ?? nextAt) - fault.readyAt,
+        providerLoadMs: nextAt === null ? null : loadStart === null ? 0 : nextAt - loadStart });
     }
   }
   return samples;

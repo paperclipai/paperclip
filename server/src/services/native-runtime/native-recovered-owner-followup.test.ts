@@ -337,6 +337,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(followUp.logs.join("")).not.toContain("starting a new runner for this conversation");
   }, 60_000);
 
+  it("starts an unclaimed remote follow-up from the previous owner's external marker under a bootstrap claim", async () => {
+    const fixture = await staleProjection("codex", true);
+    expect(await fixture.followUp.start("created", { kind: "bootstrap_incomplete", runId: fixture.followUp.runId,
+      leaseOwner: "successor", controllerGeneration: 1, providerAttempt: 0, restartKind: "hard", recoveryRequestId: null } as never))
+      .toBe(ADMITTED);
+    expect(JSON.parse(await readFile(fixture.path, "utf8")).identity).toEqual(fixture.latest.identity);
+    await fixture.assertBackup();
+    expect(await quarantined()).toEqual([]);
+  }, 60_000);
+
   it("rehydrates a same-source external marker before reading the suspended resumed sandbox", async () => {
     const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
     await writeFile(path, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: latest.identity }));
@@ -511,6 +521,22 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
     }, 60_000);
 
+  it.each(["created", "replacement"] as const)(
+    "bootstraps again when a restart cut the follow-up off after it retired the finished owner: %s sandbox", async outcome => {
+      const prior = await seedRecoveredPriorRun();
+      const followUp = await admitFollowUp(prior);
+      expect(await followUp.start(outcome)).toBe(ADMITTED);
+      const root = await sessionRoot();
+      expect(existsSync(join(root, "control-plane"))).toBe(false);
+      expect(await archivedOwners(root)).toEqual([prior.runId]);
+      followUp.logs.length = 0;
+      expect(await followUp.start(outcome, { kind: "bootstrap_incomplete", runId: followUp.runId, leaseOwner: "successor",
+        controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never)).toBe(ADMITTED);
+      const [copy] = await quarantined();
+      expect(copy).toMatch(/\.identity_indeterminate\./);
+      expect(existsSync(join(stateDirectory, "quarantine", copy!, "continuity-breaks"))).toBe(true);
+    }, 60_000);
+
   async function keepLocalRootWithoutPointer(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
     followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
@@ -668,6 +694,27 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never)).toBe(ADMITTED);
     expect(await quarantined()).toEqual([]);
     expect(await archivedOwners(root)).toEqual([prior.runId]);
+  }, 60_000);
+
+  it.each([
+    { label: "ended on another sandbox", status: "expired", sameSandbox: false, recorded: true, outcome: ADMITTED },
+    { label: "released on another sandbox", status: "released", sameSandbox: false, recorded: true, outcome: ADMITTED },
+    { label: "still retained", status: "retained", sameSandbox: false, recorded: true,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+    { label: "ended on this sandbox", status: "expired", sameSandbox: true, recorded: true,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+    { label: "not recorded", status: "expired", sameSandbox: false, recorded: false,
+      outcome: stranded("journal_commands_unsettled(runner.suspend.pending)") },
+  ])("retires a finished remote owner whose suspend never finished when its sandbox lease is $label", async ({ status, sameSandbox, recorded, outcome }) => {
+    const prior = await seedRecoveredPriorRun("pending-command");
+    const followUp = await admitFollowUp(prior);
+    if (recorded) {
+      await db.insert(environments).values({ id: followUp.environmentId, name: `ended-${followUp.environmentId}`, driver: "sandbox" });
+      await db.insert(environmentLeases).values({ companyId, environmentId: followUp.environmentId, issueId: prior.issueId,
+        heartbeatRunId: prior.runId, provider: "daytona", providerLeaseId: sameSandbox ? followUp.providerLeaseId : `sandbox-${prior.runId}`,
+        status, releasedAt: status === "retained" ? null : new Date(), metadata: { remoteCwd: "/workspace" } });
+    }
+    expect(await followUp.start()).toBe(outcome);
   }, 60_000);
 
   it("admits again when a retry rebuilds the same projection from the database", async () => {
@@ -873,10 +920,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       }
     }, 60_000);
   it.each([
-    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true },
-    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false },
-    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false },
-  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted }) => {
+    { label: "never delivered to a dead runner", connectionCount: 0, claim: true, admitted: true, archiveOnly: false },
+    { label: "possibly delivered", connectionCount: 1, claim: true, admitted: false, archiveOnly: false },
+    { label: "without a dead-runner claim", connectionCount: 0, claim: false, admitted: false, archiveOnly: false },
+    { label: "cut off before its new control plane was written", connectionCount: 0, claim: true, admitted: true, archiveOnly: true },
+    { label: "cut off before its new control plane, without a dead-runner claim", connectionCount: 0, claim: false, admitted: false,
+      archiveOnly: true },
+  ])("resumes from the previous turn when a warm attach rotation was $label", async ({ connectionCount, claim, admitted, archiveOnly }) => {
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
     const root = await restoreHeldRoot(prior, followUp);
@@ -890,22 +940,28 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await mkdir(join(root, "runner"), { recursive: true, mode: 0o700 });
     await writeFile(join(root, "runner", "codex-provider-state.json"), "{}");
     const identity = { ...priorIdentity, runId: followUp.runId, turnId: `turn-${followUp.runId}`, itemId: `item-${followUp.runId}` };
-    await mkdir(join(root, "control-plane"), { mode: 0o700 });
+    if (!archiveOnly) await mkdir(join(root, "control-plane"), { mode: 0o700 });
     const undelivered = JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity,
       bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: identity, credentialsIssued: 0, adopted: false },
       runAttachTemplate: {}, tickets: {}, leases: {},
       commands: [{ commandId: "attach", controllerSeq: 1, type: "run.attach", status: "pending", payload: {} }],
       committedEvents: [], ackedSourceSeq: 0, connectionCount, commandDeliveryCounts: {} });
-    await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
+    if (!archiveOnly) await writeFile(join(root, "control-plane", "control-plane-state.json"), undelivered);
     const outcome = await followUp.startLocal(claim ? { kind: "resume_dead_runner", runId: followUp.runId, leaseOwner: "successor",
       controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null } as never : undefined);
     if (!admitted) {
-      expect(outcome).toBe("runner_state_identity_mismatch: authority_indeterminate");
+      expect(outcome).toBe(archiveOnly ? "runner_state_identity_mismatch: durable_identity_unreadable"
+        : "runner_state_identity_mismatch: authority_indeterminate");
       return;
     }
     expect(outcome).toBe(ADMITTED);
     expect(JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8")).identity).toEqual(priorIdentity);
     expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    if (archiveOnly) {
+      expect(existsSync(join(root, "continuity-breaks"))).toBe(false);
+      expect(await quarantined()).toEqual([]);
+      return;
+    }
     const [archive] = await readdir(join(root, "continuity-breaks"));
     expect(await readFile(join(root, "continuity-breaks", archive!, "control-plane", "control-plane-state.json"), "utf8")).toBe(undelivered);
     expect(await quarantined()).toEqual([]);

@@ -19,6 +19,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
@@ -204,7 +205,7 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
   const samples = recoverySamples(runs, faults);
-  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |", "|---|---|---|---|---|---|---|");
+  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | Paperclip share p50 / p95 | No provider event |", "|---|---|---|---|---|---|---|---|");
   const groups = new Map<string, typeof samples>();
   for (const sample of samples) {
     const key = `${sample.adapter}|${sample.kind}|${sample.disposition}`;
@@ -213,7 +214,8 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   for (const [key, group] of [...groups.entries()].sort()) {
     const [adapter, kind, disposition] = key.split("|");
     const d = distribution(group.flatMap(sample => sample.latencyMs === null ? [] : [sample.latencyMs]));
-    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${group.length - d.n} |`);
+    const control = distribution(group.flatMap(sample => sample.controlPlaneMs === null ? [] : [sample.controlPlaneMs]));
+    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${ms(control.p50)} / ${ms(control.p95)} | ${group.length - d.n} |`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -279,9 +281,11 @@ async function main() {
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
   let stopping: Promise<void> | null = null;
-  const shutdown = () => (stopping ??= supervisor.stop().catch(error => {
+  const shutdown = () => (stopping ??= supervisor.stop().then(() => false, error => {
     process.stderr.write(`supervisor stop: ${String(error)}\n`);
-  }));
+    return true;
+  }).then(stopFailed => releaseInstance(supervisor.paths.temporaryRoot, { keep: false, stopFailed, owner: "ttft-baseline" }))
+    .then(() => undefined, error => { process.stderr.write(`instance cleanup: ${String(error)}\n`); }));
   const onSignal = (signal: NodeJS.Signals) => {
     timeline.add("baseline_interrupted", { signal });
     void shutdown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));

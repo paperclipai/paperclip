@@ -21,25 +21,43 @@ export interface ChaosLab {
   agents: Record<AdapterId, { id: string; name: string; body?: Record<string, unknown> }>;
 }
 
+export const DAYTONA_AGENT_READY_TIMEOUT_MS = 10 * 60_000;
+const TERMINAL_LIFECYCLE_STATES = new Set(["rejected", "terminating", "cleaning_up", "terminated"]);
+
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
 export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string; createdAt?: number }>>, timeline: Timeline,
   timeoutMs = 4 * 60_000, pollMs = 1_000, cancelled: () => boolean = () => false): Promise<void> {
   const started = Date.now();
   const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent] as const] : []));
+  const lastProblem = new Map<string, string>();
   while (pending.size) {
     if (cancelled()) throw new Error("Harness interrupted while waiting for agents to finish verification");
     for (const [adapter, { id: agentId, createdAt }] of [...pending]) {
-      const agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`).catch(() => null);
+      let agent: Record<string, unknown>;
+      try {
+        agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`);
+      } catch (error) {
+        lastProblem.set(adapter, `last read error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
+        continue;
+      }
+      const lifecycleError = agent?.lifecycleError ? String(agent.lifecycleError).slice(0, 300) : null;
       if (agent?.lifecycleState === "ready") {
         timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - (createdAt ?? started) });
         pending.delete(adapter);
-      } else if (agent?.lifecycleError) {
-        throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${String(agent.lifecycleError).slice(0, 300)}`);
+      } else if (lifecycleError) {
+        if (TERMINAL_LIFECYCLE_STATES.has(String(agent.lifecycleState))) {
+          throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${lifecycleError}`);
+        }
+        if (lastProblem.get(adapter) !== `last lifecycle error: ${lifecycleError}`) {
+          timeline.add("seed_agent_lifecycle_error", { adapter, agentId, error: lifecycleError });
+        }
+        lastProblem.set(adapter, `last lifecycle error: ${lifecycleError}`);
       }
     }
     if (!pending.size) return;
     if (Date.now() - started > timeoutMs) {
-      throw new Error(`Agents never reached lifecycleState ready within ${Math.round(timeoutMs / 1000)} s: ${[...pending.keys()].join(", ")}`);
+      const names = [...pending.keys()].map(adapter => lastProblem.has(adapter) ? `${adapter} (${lastProblem.get(adapter)})` : adapter);
+      throw new Error(`Agents never reached lifecycleState ready within ${Math.round(timeoutMs / 1000)} s: ${names.join(", ")}`);
     }
     await new Promise(resolve => setTimeout(resolve, pollMs));
   }
@@ -56,6 +74,7 @@ export function cloneWorkspaceRepository(source: string, directory: string, comm
       throw new Error(`--workspace-repo ${source} no longer has commit ${commit} that this wave used`, { cause: error });
     }
   }
+  git("remote", "remove", "origin");
   return directory;
 }
 
@@ -158,6 +177,7 @@ export async function seedChaosLab(input: {
   agentReadyTimeoutMs?: number;
   workspaceRepo?: string;
   workspaceCommit?: string;
+  workspaceGitUrl?: string;
   waveId: string;
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
@@ -241,7 +261,8 @@ export async function seedChaosLab(input: {
   }
   if (input.waitForReadyAgents) {
     await waitForAgentsReady(api, Object.fromEntries(Object.entries(agents).map(([adapter, agent]) =>
-      [adapter, { id: agent.id, createdAt: agentCreatedAt.get(adapter) }])), timeline, input.agentReadyTimeoutMs, 1_000, input.cancelled);
+      [adapter, { id: agent.id, createdAt: agentCreatedAt.get(adapter) }])), timeline,
+      input.agentReadyTimeoutMs ?? (input.env === "daytona" ? DAYTONA_AGENT_READY_TIMEOUT_MS : undefined), 1_000, input.cancelled);
   }
 
   // The project's git_worktree policy only takes effect when the instance has
@@ -264,7 +285,9 @@ export async function seedChaosLab(input: {
       environmentId,
       workspaceStrategy: { type: "git_worktree" },
     },
-    workspace: { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
+    workspace: input.workspaceGitUrl
+      ? { name: "Primary", sourceType: "git_repo", repoUrl: input.workspaceGitUrl, repoRef: input.workspaceCommit, isPrimary: true }
+      : { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
   });
   timeline.add("seed_project", { projectId: project.id, fixtureRepositoryPath });
   return { companyId: company.id, environmentId, environmentKind: input.env, projectId: project.id, fixtureRepositoryPath, agents };

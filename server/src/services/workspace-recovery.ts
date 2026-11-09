@@ -36,7 +36,9 @@ import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfil
 import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
 import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, recordRetainedSourceFallbackDeferral, settleExhaustedRetainedHold } from "./workspace-recovery-fallback.js";
-import { retainedSourceFallbackDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { retainedSourceFallbackDueCondition, stopProofRearmDueCondition } from "./workspace-recovery-fallback-discovery.js";
+import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
+import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -197,13 +199,16 @@ export async function requestWorkspaceRecovery(input: Source & { db: Db; idempot
 export async function recoverRetainedWorkspace(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService }) {
   const { db } = input;
   await adoptSystemRecovery(db, input);
-  const initial = await loadSystemRecovery(db, input);
+  let initial = await loadSystemRecovery(db, input);
   // A hold whose files a sibling saved, or whose source is refused permanently
   // (including holds saved by older releases), settles without a person.
   // An adoptable native source keeps its retention path; only the sibling
   // settlement applies to it.
   if (initial?.state === "exhausted"
     && await settleExhaustedRetainedHold(input, initial, { fallback: !canAdoptNativeSourceRetention(initial) })) return;
+  // An exhausted wait for stop proof is re-armed, bounded, once the run is over.
+  if (initial?.state === "exhausted" && await rearmExhaustedStopProof(db, input, initial))
+    initial = await loadSystemRecovery(db, input);
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
     // board confirmation in its handoff can release it (RC-50 wave databases).
@@ -446,6 +451,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           throw new Error("workspace_recovery_generation_changed");
         if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))
           throw new SystemRecoveryFailure("effect_unresolved", "recheck_evidence");
+        // A settled restore hold returns its warm sandbox to reuse. A hold that
+        // fails any guard keeps its protection; the saved files still count.
+        await settleRecoveredWorkspaceRestoreHolds(tx as unknown as Db, input);
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });
@@ -620,7 +628,7 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
-        or ${retainedSourceFallbackDueCondition(Date.now())})` : undefined,
+        or ${retainedSourceFallbackDueCondition(Date.now())} or ${stopProofRearmDueCondition(Date.now())})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,

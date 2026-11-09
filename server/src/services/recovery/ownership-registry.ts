@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
@@ -33,11 +34,12 @@ import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js
 import { OWNER_GONE_ATTESTATION_KEY, attestOwnerGoneByRecordVersion, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
-  settleNativeAcceptedResultLease,
+  settleNativeAcceptedResultLease, classifyNativeAcceptedResultLeaseOwners,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
-import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
-import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
 import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
@@ -520,6 +522,21 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 // ----------------------------------------------------------------------------
 // workspace_operations
 
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
+
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
 
@@ -656,6 +673,11 @@ const agentLifecycleLeaseKind: OwnableKind = {
   },
 };
 
+const acceptedNativeResultLease = nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
+  and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+    isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
+    sql`${nativeRunFinalizations.leaseExpiresAt} > now()`));
+
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
   nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
@@ -671,10 +693,13 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // exact lease so finalization runs now (RC-41).
     // Outstanding leases only: an expired lease no longer holds the result,
     // so it is not in progress for this kind (finalization reclaims it).
-    ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
-      and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
-        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`)),
+    ...acceptedNativeResultLease,
+    listInProgress: async (db, limit, offset) => {
+      const listed = await acceptedNativeResultLease.listInProgress!(db, limit, offset);
+      return { ...listed, records: await classifyNativeAcceptedResultLeaseOwners(db, listed.records) };
+    },
+    listForRuns: async (db, runIds) => classifyNativeAcceptedResultLeaseOwners(db,
+      await acceptedNativeResultLease.listForRuns!(db, runIds)),
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
@@ -854,13 +879,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     settle: settleAbandonedWorkspaceFinalizeAttempt,
 
   }, versionLock(workspaceOperations)),
+  ownerGoneAttestable({
+    ...operationKind("workspace_command_operation", "Local workspace command (provision, prepare, teardown)", "ownership",
+      and(inArray(workspaceOperations.phase, [...LOCAL_WORKSPACE_COMMAND_PHASES]), eq(workspaceOperations.status, "running"),
+        sql`not (${workspaceOperations.metadata} ? 'runtimeControlOwner')`),
+      row => json(row.metadata).commandOwner ? controllerStamp(json(row.metadata).commandOwner, "workspace_command_operation")
+        : runOwner(row.heartbeatRunId)),
+    settle: settleAbandonedWorkspaceCommandOperation,
+  }, versionLock(workspaceOperations)),
   operationKind("remote_provision_command", "Remote provision command intent", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_provision"), or(eq(workspaceOperations.status, "running"),
       sql`(${workspaceOperations.metadata}->>'uncertain')::boolean is true`)),
     row => runOwner(row.heartbeatRunId)),
-  operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
+  { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)),
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
@@ -898,7 +931,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)

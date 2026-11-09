@@ -58,7 +58,7 @@ EOF
 fi
 
 if [[ ! -f "$worktree_config_path" ]]; then
-  initial_provision_script="$base_cwd/scripts/provision-worktree.sh"
+  initial_provision_script="$base_cwd/scripts/setup-paperclip-worktree.sh"
   if [[ ! -f "$initial_provision_script" ]]; then
     echo "Worktree config does not exist and the built-in provision script is unavailable: $worktree_config_path" >&2
     exit 1

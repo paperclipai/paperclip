@@ -38,10 +38,6 @@ impl AcpxEventScope {
         self.active_turn_id.as_deref()
     }
 
-    pub(crate) fn has_settled_turns(&self) -> bool {
-        !self.settled_turn_ids.is_empty()
-    }
-
     pub fn bind_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         let turn_id = turn_id.into();
         validate_scope_id(&turn_id, "turn", DURABLE_STABLE_ID_CHARS)?;

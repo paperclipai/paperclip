@@ -1398,6 +1398,60 @@ it("refuses a terminal call that arrives before a held call's result (restart ch
   }
 }, 20_000);
 
+it("answers a held call before starting the next turn (restart chaos t101)", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-before-turn-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    return core = new OriginalCore(options);
+  });
+  const order: string[] = [];
+  const recovered = vi.fn(async (call: { callId: string }) => {
+    order.push(`recover:${call.callId}`);
+    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 300));
+    return { result: { success: true, contentItems: [{ type: "inputText", text: "brief body" }] } };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory, recoverSemanticToolInput: recovered,
+  });
+  bundle.transport.setServerRequestHandler(vi.fn(async () => ({ success: true, contentItems: [] })));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+    const identity = core.store.state.identity;
+    const correlation = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+      turnId: identity.turnId, itemId: identity.itemId };
+    core.store.state.committedEvents.unshift({ sourceSeq: 0, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+      priority: 1, deliveryCount: 1, logicalEffectCount: 1, envelope: { payload: { runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+        itemId: identity.itemId, payload: { semantic_tool: { callId: "exec-held-read", operationId: "read_document",
+          input: { key: "brief" }, correlation } } } } });
+    expect(core.semanticToolResultsSettled()).toBe(false);
+    const queueCommand = core.queueCommand.bind(core);
+    vi.spyOn(core, "queueCommand").mockImplementation((type, ...rest) => {
+      order.push(type);
+      return queueCommand(type, ...rest);
+    });
+    const startupPass = core.recoverPendingSemanticInputs();
+    await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
+    const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
+    void turnStarted.catch(() => undefined);
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
+    await turnStarted;
+    await startupPass;
+    expect(recovered).toHaveBeenCalledOnce();
+    expect(order.slice(0, 2)).toEqual(["recover:exec-held-read", "semantic_tool.result"]);
+    expect(order.indexOf("semantic_tool.result")).toBeLessThan(order.indexOf("turn.start"));
+    const result = core.store.state.commands.find(command => command.type === "semantic_tool.result");
+    expect(result).toMatchObject({ payload: { callId: "exec-held-read", operationId: "read_document" } });
+    expect(result!.status).not.toBe("pending");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
@@ -5974,13 +6028,34 @@ it("surfaces a runner exit while provider-ingress readiness is still pending", a
   }
 });
 
-it("rejects the notification stream promptly when runnerd exits after accepting a turn", async () => {
+function processAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // An exited child of this test process stays a zombie until reaped.
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+it.each([
+  { journal: true },
+  // A runnerd that never journalled (an older build) proves nothing: the
+  // cleanup stays fail-closed, as before the journal existed.
+  { journal: false },
+])("stops a lost runnerd's provider and escaped tool job from its lineage journal (journal=$journal)", async ({ journal }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
+  const jobPidFile = join(stateDirectory, "escaped-tool-job.pid");
   const diagnostics: string[] = [];
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
+    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start", "--spawn-escaped-tool-job", jobPidFile),
     stateDirectory,
     closeGraceMs: 400,
     onDiagnostic: (message) => diagnostics.push(message),
@@ -5989,6 +6064,8 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
     success: true,
     contentItems: [],
   }));
+  let jobPid: number | null = null;
+  let providerPid: number | null = null;
   try {
     await bundle.transport.request("initialize", {});
     await bundle.transport.request("thread/start", {
@@ -6012,8 +6089,23 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
       .notifications()
       [Symbol.asyncIterator]();
     await expectTurnStarted(notifications);
+    await vi.waitFor(async () => {
+      jobPid = Number((await readFile(jobPidFile, "utf8")).trim());
+      expect(processAlive(jobPid)).toBe(true);
+    }, { timeout: 10_000, interval: 20 });
+    // The tool job left the provider's session; give the lineage sampler
+    // (50ms) several reads to record it, as a real tool runs far longer.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
     const runnerPid = bundle.evidence().runnerPid;
     expect(runnerPid).not.toBeNull();
+    const lineage = join(stateDirectory, "runner", "process-lineage");
+    const journals = (await readdir(lineage)).filter((name) => name.startsWith("lineage-"));
+    expect(journals).toHaveLength(1);
+    const recorded = JSON.parse(await readFile(join(lineage, journals[0]!), "utf8"));
+    providerPid = recorded.root[0];
+    expect(processAlive(providerPid)).toBe(true);
+    expect(recorded.members.map((member: [number, number]) => member[0])).toContain(jobPid);
+    if (!journal) await rm(lineage, { recursive: true, force: true });
     process.kill(runnerPid!, "SIGKILL");
     await expect(
       Promise.race([
@@ -6026,27 +6118,47 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       ]),
     ).rejects.toThrow("native_runner_process_exited");
-  } finally {
-    try {
+    // The fake provider exits when runnerd's stdin pipe closes; the tool job
+    // that left its session is re-parented and keeps running.
+    expect(processAlive(jobPid)).toBe(true);
+    const runnerState = () => readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")
+      .then((text) => JSON.parse(text));
+    if (journal) {
+      await bundle.transport.close();
+      expect(processAlive(providerPid)).toBe(false);
+      expect(processAlive(jobPid)).toBe(false);
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: true, journals: 1, remaining: [],
+      });
+      // The crash stop keeps the durable record for recovery to read, and
+      // queues no suspend that the next runnerd on this root would receive.
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const control = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(control.commands.filter((command: { type: string; status: string }) =>
+        command.type === "runner.suspend" && command.status === "pending")).toEqual([]);
+    } else {
       await expect(bundle.transport.close()).rejects.toThrow(
         "runner did not durably suspend before checkpoint",
       );
-      const runnerState = JSON.parse(
-        await readFile(
-          join(stateDirectory, "runner", "runner-state.json"),
-          "utf8",
-        ),
-      );
-      expect(runnerState.lifecycle).not.toBe("suspended");
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: false, reason: "journal_unavailable",
+      });
       const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
-      expect(settlement).toBeDefined();
       expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
         runnerSuspended: false,
-        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+        suspensionState: { commandStatus: null },
       });
-    } finally {
-      await rm(stateDirectory, { recursive: true, force: true });
+      // Nothing was signalled without proof.
+      expect(processAlive(jobPid)).toBe(true);
     }
+  } finally {
+    for (const pid of [jobPid, providerPid]) {
+      if (pid && processAlive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    }
+    await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
 

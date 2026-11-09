@@ -344,6 +344,17 @@ unsettled Core tool result, other close error, or continuation of the same
 session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
 
+Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
+that sequence confirms the stop and completes the same task, Core does not also
+call `onEnvironmentReleaseLease`. Core still calls it when the release did not
+complete a dispatched task, and the cleanup retry calls it after any failure.
+When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
+first. It sends `stop` only when that `status` does not report
+`executionStopped: true` and any required `preparationStopped: true` proof.
+An old warm-start preparation marker does not force a repeated stop when both
+proofs are present. A driver must release task-scoped resources in its
+`status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
+
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection
 precedes in-memory session selection so a replacement cannot inherit the stopped
