@@ -661,6 +661,7 @@ fn admit_terminal_tool_authority(
             state.active_provider_result_fingerprint = Some(fingerprint);
             state.active_provider_result_disposition = Some(disposition);
             state.active_terminal_tool_rejected = false;
+            state.active_terminal_tool_rejection_is_capacity = false;
             Ok(())
         }
         (Some(existing_fingerprint), Some(existing_disposition))
@@ -825,6 +826,7 @@ fn normalize_provider_notification(
             state.active_provider_result_fingerprint = Some(fingerprint);
             state.active_provider_result_disposition = Some(disposition);
             state.active_terminal_tool_rejected = false;
+            state.active_terminal_tool_rejection_is_capacity = false;
             Ok(vec![NormalizedProviderEvent {
                 event_type: "run.result.proposed".to_owned(),
                 priority: EventPriority::P0,
@@ -887,7 +889,8 @@ fn receipt_limit_can_continue(state: &CodexProviderState, event_type: Option<&st
         && state.tool_bridge.pending_calls().next().is_none()
         && state.active_provider_result_fingerprint.is_none()
         && state.goal.is_none()
-        && !terminal_completion_rejected(state)
+        && (!state.active_terminal_tool_rejected
+            || state.active_terminal_tool_rejection_is_capacity)
 }
 
 fn terminal_events(
@@ -1341,6 +1344,8 @@ struct CodexProviderState {
     active_provider_result_disposition: Option<String>,
     #[serde(default)]
     active_terminal_tool_rejected: bool,
+    #[serde(default)]
+    active_terminal_tool_rejection_is_capacity: bool,
     last_agent_message: Option<String>,
     #[serde(default)]
     goal_capability: Option<SessionGoalCapability>,
@@ -1432,6 +1437,7 @@ impl CodexProviderState {
             active_provider_result_fingerprint: None,
             active_provider_result_disposition: None,
             active_terminal_tool_rejected: false,
+            active_terminal_tool_rejection_is_capacity: false,
             last_agent_message: None,
             goal_capability: None,
             goal: None,
@@ -1917,8 +1923,12 @@ impl CodexProviderState {
     }
 
     fn record_tool_admission_error(&mut self, operation_id: &str, error: &ProviderBridgeError) {
-        if !error.is_active_turn_receipt_limit() && !error.is_result_backpressure() {
-            self.record_terminal_tool_rejection(operation_id);
+        let capacity = error.is_active_turn_receipt_limit() || error.is_result_backpressure();
+        let prior_invalid =
+            self.active_terminal_tool_rejected && !self.active_terminal_tool_rejection_is_capacity;
+        self.record_terminal_tool_rejection(operation_id);
+        if capacity && !prior_invalid && self.active_terminal_tool_rejected {
+            self.active_terminal_tool_rejection_is_capacity = true;
         }
     }
 
@@ -1931,6 +1941,7 @@ impl CodexProviderState {
                 .any(|tool| tool.operation_id == operation_id)
         {
             self.active_terminal_tool_rejected = true;
+            self.active_terminal_tool_rejection_is_capacity = false;
         }
     }
 
@@ -1939,6 +1950,7 @@ impl CodexProviderState {
             && self.active_provider_turn_id != active_provider_turn_id
         {
             self.active_terminal_tool_rejected = false;
+            self.active_terminal_tool_rejection_is_capacity = false;
         }
         self.active_provider_turn_id = active_provider_turn_id;
         if self.active_provider_turn_id.is_some() {
@@ -2703,6 +2715,7 @@ impl CodexCommandExecutor {
                 state.active_provider_result_fingerprint = None;
                 state.active_provider_result_disposition = None;
                 state.active_terminal_tool_rejected = false;
+                state.active_terminal_tool_rejection_is_capacity = false;
                 state.last_agent_message = None;
                 state.lifecycle = "closed".to_owned();
                 let _ = state.push_terminal_event(NormalizedProviderEvent {
@@ -2758,6 +2771,7 @@ impl CodexCommandExecutor {
                 state.active_provider_result_fingerprint = None;
                 state.active_provider_result_disposition = None;
                 state.active_terminal_tool_rejected = false;
+                state.active_terminal_tool_rejection_is_capacity = false;
                 state.last_agent_message = None;
                 state.lifecycle = "closed".to_owned();
                 // Closing the provider is the safety boundary. Preserve that
@@ -3534,6 +3548,7 @@ impl CodexCommandExecutor {
         next_state.active_provider_result_fingerprint = None;
         next_state.active_provider_result_disposition = None;
         next_state.active_terminal_tool_rejected = false;
+        next_state.active_terminal_tool_rejection_is_capacity = false;
         next_state.last_agent_message = None;
         let mut attachment_accounting = Vec::new();
         let retention = if let Some(provider) = self.provider.as_mut() {
@@ -3782,6 +3797,7 @@ impl CodexCommandExecutor {
         state.active_provider_result_fingerprint = None;
         state.active_provider_result_disposition = None;
         state.active_terminal_tool_rejected = false;
+        state.active_terminal_tool_rejection_is_capacity = false;
         state.last_agent_message = None;
         state.lifecycle = "closed".to_owned();
         let provider_label = state.config.provider.clone();
@@ -4115,6 +4131,7 @@ impl CodexCommandExecutor {
                 state.active_provider_result_fingerprint = None;
                 state.active_provider_result_disposition = None;
                 state.active_terminal_tool_rejected = false;
+                state.active_terminal_tool_rejection_is_capacity = false;
                 state.last_agent_message = None;
             }
             self.save_state()?;
@@ -4155,6 +4172,7 @@ impl CodexCommandExecutor {
         state.active_provider_result_fingerprint = None;
         state.active_provider_result_disposition = None;
         state.active_terminal_tool_rejected = false;
+        state.active_terminal_tool_rejection_is_capacity = false;
         state.last_agent_message = None;
         state.lifecycle = "turn_active".to_owned();
         let provider_label = state.config.provider.clone();
@@ -4277,6 +4295,7 @@ impl CodexCommandExecutor {
         state.active_provider_result_fingerprint = None;
         state.active_provider_result_disposition = None;
         state.active_terminal_tool_rejected = false;
+        state.active_terminal_tool_rejection_is_capacity = false;
         state.last_agent_message = None;
         // Do not let the runner.drain command that follows turn.stop restore a
         // fresh provider process. `prepared` retains the durable thread while
@@ -5090,6 +5109,7 @@ impl CodexCommandExecutor {
         state.active_provider_result_fingerprint = None;
         state.active_provider_result_disposition = None;
         state.active_terminal_tool_rejected = false;
+        state.active_terminal_tool_rejection_is_capacity = false;
         state.lifecycle = "closed".to_owned();
         let thread_id = state.thread_id.clone();
         let provider_name = state.config.provider.clone();
@@ -7595,33 +7615,38 @@ done
         assert!(state.validate().is_ok());
     }
 
+    fn declared_completion_and_read_state(terminal_operation: &str) -> CodexProviderState {
+        let mut state = declared_finish_state();
+        let mut operations = state
+            .tool_bridge
+            .authorized_tools()
+            .cloned()
+            .collect::<Vec<_>>();
+        operations[0].operation_id = terminal_operation.to_owned();
+        operations.push(crate::provider_bridge::AuthorizedTool {
+            operation_id: "read_context".to_owned(),
+            version: 1,
+            description: "Read context".to_owned(),
+            input_schema: json!({"type":"object"}),
+            response_schema: json!({"type":"object"}),
+        });
+        state.tool_bridge = ProviderToolBridge::default();
+        state
+            .tool_bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            })
+            .unwrap();
+        state
+    }
+
     #[test]
     fn capacity_rejected_completion_remains_continuable_but_invalid_reports_do_not() {
         for terminal_operation in ["paperclip_finish", "paperclip_block"] {
-            let mut state = declared_finish_state();
-            let mut operations = state
-                .tool_bridge
-                .authorized_tools()
-                .cloned()
-                .collect::<Vec<_>>();
-            operations[0].operation_id = terminal_operation.to_owned();
-            operations.push(crate::provider_bridge::AuthorizedTool {
-                operation_id: "read_context".to_owned(),
-                version: 1,
-                description: "Read context".to_owned(),
-                input_schema: json!({"type":"object"}),
-                response_schema: json!({"type":"object"}),
-            });
-            state.tool_bridge = ProviderToolBridge::default();
-            state
-                .tool_bridge
-                .prepare(AuthorizedToolSet {
-                    schema: TOOL_SET_SCHEMA.to_owned(),
-                    schema_version: 1,
-                    catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
-                    operations,
-                })
-                .unwrap();
+            let mut state = declared_completion_and_read_state(terminal_operation);
             let mut exhausted = false;
             for index in 0..16 {
                 let call_id = format!("read-{index}");
@@ -7666,6 +7691,80 @@ done
                 !receipt_limit_can_continue(&state, Some("turn.interrupted")),
                 "invalid completion must still fail closed"
             );
+            assert!(state
+                .admit_tool_call(
+                    "later-valid-completion",
+                    terminal_operation,
+                    &valid_opencode_result()
+                )
+                .unwrap_err()
+                .is_active_turn_receipt_limit());
+            assert!(!receipt_limit_can_continue(
+                &state,
+                Some("turn.interrupted")
+            ));
+        }
+    }
+
+    #[test]
+    fn backpressured_completion_cannot_fabricate_success_and_can_retry() {
+        for operation in ["paperclip_finish", "paperclip_block"] {
+            let mut state = declared_completion_and_read_state(operation);
+            let mut completion = valid_opencode_result();
+            if operation == "paperclip_block" {
+                completion["reportedWorkDisposition"] = json!("blocked");
+                completion["blocker"] = json!({"reasonCode":"test_dependency", "owner":{"kind":"external","name":"fixture"}, "unblockAction":"Supply dependency", "scope":"task_wide"});
+            }
+            for index in 0..10 {
+                assert!(matches!(
+                    state
+                        .admit_tool_call(&format!("pending-{index}"), "read_context", &json!({}))
+                        .unwrap(),
+                    ToolCallAdmission::Pending(_)
+                ));
+            }
+            assert!(state
+                .admit_tool_call("backpressured-completion", operation, &completion)
+                .unwrap_err()
+                .is_result_backpressure());
+            assert_rejected_finish_terminal(&state);
+            let restored: CodexProviderState =
+                serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+            assert_rejected_finish_terminal(&restored);
+            for index in 0..10 {
+                state
+                    .tool_bridge
+                    .apply_result(ToolResult {
+                        call_id: format!("pending-{index}"),
+                        operation_id: "read_context".to_owned(),
+                        result: json!({}),
+                        is_error: false,
+                    })
+                    .unwrap();
+            }
+            state.receipt_limit_interrupt_pending = true;
+            assert!(receipt_limit_can_continue(&state, Some("turn.interrupted")));
+            let mut legacy = serde_json::to_value(&state).unwrap();
+            assert!(legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("activeTerminalToolRejectionIsCapacity")
+                .is_some());
+            let legacy: CodexProviderState = serde_json::from_value(legacy).unwrap();
+            assert_rejected_finish_terminal(&legacy);
+            assert!(!receipt_limit_can_continue(
+                &legacy,
+                Some("turn.interrupted")
+            ));
+            state.receipt_limit_interrupt_pending = false;
+            assert!(matches!(
+                state
+                    .admit_tool_call("retry-completion", operation, &completion)
+                    .unwrap(),
+                ToolCallAdmission::Pending(_)
+            ));
+            admit_terminal_tool_authority(&mut state, operation, &completion, false).unwrap();
+            assert!(!terminal_completion_rejected(&state));
         }
     }
 
@@ -8217,6 +8316,7 @@ done
             active_provider_result_fingerprint: None,
             active_provider_result_disposition: None,
             active_terminal_tool_rejected: false,
+            active_terminal_tool_rejection_is_capacity: false,
             last_agent_message: None,
             goal_capability: None,
             goal: None,
