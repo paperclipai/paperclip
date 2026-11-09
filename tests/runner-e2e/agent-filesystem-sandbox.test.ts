@@ -152,6 +152,14 @@ describe("runnerd launch rewriting", () => {
     expect(RUNNERD_LAUNCH_APIS).toEqual(["spawn", "spawnSync", "execFile", "execFileSync"]);
   });
 
+  it("keeps promisify(execFile) resolving { stdout, stderr } after wrapping", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const wrapped = wrapRunnerdLaunch(execFile, { hidden: ["/nowhere"], required: false }, "/usr/bin/python3", "execFile");
+    const result = await promisify(wrapped)(process.execPath, ["-e", "process.stdout.write('ok')"]);
+    expect(result).toEqual({ stdout: "ok", stderr: "" });
+  });
+
   it("hides a linked worktree's gitdir and the shared object store", async () => {
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-sandbox-git-")));
     try {

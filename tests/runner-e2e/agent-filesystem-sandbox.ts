@@ -2,6 +2,7 @@ import childProcess, { execFileSync, type SpawnOptions } from "node:child_proces
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
+import { promisify } from "node:util";
 import path from "node:path";
 import { requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import type { MatrixExecution } from "./types.js";
@@ -277,8 +278,8 @@ export type RunnerdLaunchApi = typeof RUNNERD_LAUNCH_APIS[number];
  * Wraps one launch API so runnerd starts inside the sandbox and other launches
  * pass through. A runnerd launch the wrapper cannot rewrite fails closed.
  */
-export function wrapRunnerdLaunch<T extends (...args: any[]) => unknown>(original: T, config: AgentFilesystemSandboxConfig, python: string, api: RunnerdLaunchApi = "spawn"): T {
-  return function (this: unknown, command: unknown, ...rest: unknown[]) {
+export function wrapRunnerdLaunch<T extends (...args: any[]) => unknown>(original: T, config: AgentFilesystemSandboxConfig, python: string, api: RunnerdLaunchApi = "spawn", wrapCustom = true): T {
+  const wrapped = function (this: unknown, command: unknown, ...rest: unknown[]) {
     if (!isRunnerdLaunch(command)) return Reflect.apply(original, this, [command, ...rest]);
     const hasArgs = Array.isArray(rest[0]);
     const args = hasArgs ? rest[0] as string[] : [];
@@ -291,6 +292,16 @@ export function wrapRunnerdLaunch<T extends (...args: any[]) => unknown>(origina
     console.log(`[agent-filesystem-sandbox] runnerd launched inside the sandbox via ${api}${pid ? ` (pid ${pid})` : ""}`);
     return result;
   } as T;
+  // execFile's promisified form resolves { stdout, stderr } through this hook;
+  // keep it, wrapped the same way, so promisify(execFile) keeps its shape.
+  const custom = (original as unknown as Record<symbol, unknown>)[promisify.custom];
+  if (wrapCustom && typeof custom === "function") {
+    Object.defineProperty(wrapped, promisify.custom, {
+      value: wrapRunnerdLaunch(custom as (...args: any[]) => unknown, config, python, api, false),
+      configurable: true,
+    });
+  }
+  return wrapped;
 }
 
 /** Back-compatible name for the spawn wrapper. */
