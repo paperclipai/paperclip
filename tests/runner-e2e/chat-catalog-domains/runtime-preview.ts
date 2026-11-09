@@ -11,6 +11,8 @@ import type { WorkspaceRuntimeService } from "../../../packages/shared/src/types
 import type { WorkspaceOperation } from "../../../packages/shared/src/types/workspace-operation.js";
 import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-product.js";
 interface PreviewWorkspace extends Entity { cwd: string; config: Record<string, unknown>; runtimeServices?: WorkspaceRuntimeService[] }
+// An origin URL and the same origin with a trailing slash name the same endpoint; compare parsed URLs.
+const sameUrl = (left: unknown, right: unknown) => { try { return typeof left === "string" && typeof right === "string" && new URL(left).href === new URL(right).href; } catch { return false; } };
 export function gradePreview(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("actual-preview-lifecycle-evidence", !!o, "Actual service identity, HTTP content, source output and subsequent startup failure must be independently observed."); if (!o) return c.result();
@@ -26,9 +28,9 @@ export function gradePreview(value: unknown) {
   const leadPreviewProducts = (products ?? []).filter(row => ["preview_url", "runtime_service"].includes(row.type)
     && o.runs.some(run => run.id === row.createdByRunId && run.agentId === o.leadId));
   c.add("accessible-registered-preview", !!service?.url && Array.isArray(products)
-    && leadPreviewProducts.every(row => row.url === service.url && (row.runtimeServiceId ?? service.id) === service.id
+    && leadPreviewProducts.every(row => sameUrl(row.url, service.url) && (row.runtimeServiceId ?? service.id) === service.id
       && (row.executionWorkspaceId ?? workspace.id) === workspace.id)
-    && (o.state.queryLinks as string[] | undefined)?.includes(service.url) === true,
+    && (o.state.queryLinks as string[] | undefined)?.some(link => sameUrl(link, service.url)) === true,
   "The actual canonical reply links the ready endpoint of this exact workspace's service; any preview work product the lead registers names that service.");
   const failure = o.state.failureOperation as WorkspaceOperation | undefined; const reply = String(o.state.failureReply ?? "");
   c.add("startup-failure-exposed-actionably", !!failure && failure.status === "failed" && failure.executionWorkspaceId === workspace.id
@@ -61,7 +63,7 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
   if (saved.runtimeServices?.some(row => row.status === "running")) throw new Error("Preview setup must not start the target service");
   return { ...state, workspace: saved, websiteBytes, failureFlag };
 }, gradePreview, {
-  oracleVersion: "paperclip.chat-catalog.preview-service.v3",
+  oracleVersion: "paperclip.chat-catalog.preview-service.v4",
   sourceFiles: ["chat-catalog-domains/runtime-preview.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml"],
   expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000,
   async act(ctx, state) {

@@ -69,7 +69,7 @@ async function setupTree(ctx: Parameters<typeof busyRuntimeWorker>[0]): Promise<
   return { ...first, second, parent, manualWorker, manualChild, manualHold: manual.hold, humanId: session.user.id, syntheticBudgetReceiptId: budgetReceipt.id, syntheticAccountingCostCents: 125, syntheticAccountingOrigin: "public-imported-synthetic-fixture" };
 }
 export const runtimeTreeCases = ["task-coordination.pause-tree", "steering.stop-versus-pause"].map(id => runtimeDefinition(id, setupTree, gradeTreePause, {
-  oracleVersion: "paperclip.chat-catalog.tree-pause.v3", authentication: "human-session", expectedRunCount: 5, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 4 } }, attemptTimeoutMs: 900_000,
+  oracleVersion: "paperclip.chat-catalog.tree-pause.v4", authentication: "human-session", expectedRunCount: 5, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 4 } }, attemptTimeoutMs: 900_000,
   sourceFiles: ["chat-catalog-domains/runtime-tree.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", `chat-scenarios/${id.split(".")[0]}.yaml`],
   setupPolicy: { readiness: "preserve-scenario", funding: "preserve-scenario", invariantCheckIds: ["lead-ready", "two-real-native-workers", "independent-child-pause-budget", "active-branches-funded"] },
   async verifySetup(ctx, state) {
@@ -135,6 +135,10 @@ export const runtimeTreeCases = ["task-coordination.pause-tree", "steering.stop-
     state.resumedRunIds = resumedRuns.map(run => run.id);
     state.resumedOnlyInterruptedBranches = resumedRuns.length === 2 && branchTasks.every(id => resumedRuns.filter(run => run.contextSnapshot?.issueId === id).length === 1)
       && resumedRuns.every(run => run.agentId !== (state.manualWorker as Entity).id);
+    // Stop a resumed run only after it resolved to the native runtime. A run cancelled during bootstrap
+    // never resolves its runtime mode and stays recorded as legacy, which the native-run bound rejects.
+    if (resumedRuns.length) await pollUntil({ label: "Resumed branch runs resolved to the native runtime before the fixture stops them", deadlineAt: Date.now() + 90_000,
+      load: () => ctx.allRuns(), accept: runs => resumedRuns.every(row => runs.some(run => run.id === row.id && run.runtimeMode === "native" && !!run.runtimeModeResolvedAt && run.status === "running")) });
     for (const run of resumedRuns) await ctx.input.api.post(`/api/heartbeat-runs/${run.id}/cancel`, {});
     await pollUntil({ label: "Resumed fixture branch runs stopped", deadlineAt: Date.now() + 90_000, load: () => ctx.allRuns(),
       accept: runs => resumedRuns.every(row => runs.some(run => run.id === row.id && run.status === "cancelled")) });
