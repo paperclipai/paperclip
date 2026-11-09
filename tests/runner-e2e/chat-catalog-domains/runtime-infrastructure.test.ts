@@ -30,6 +30,13 @@ it("reads the recovery record only from exact product tool output", () => {
   expect(readSourceRecoveryRecord([event(actions)], "other", "run")).toBe(false);
   expect(readSourceRecoveryRecord([event('{"apiOperationId":"GET /api/issues/{id}/recovery-actions/x"} website')], "website", "run")).toBe(false);
   expect(readSourceRecoveryRecord([event("I read the website recovery actions")], "website", "run")).toBe(false);
+  // The task read counts only when its saved blocker names this failed run.
+  const task = (body: string) => `{"apiOperationId":"GET /api/issues/{id}","data":${body}}`;
+  expect(readSourceRecoveryRecord([event(task('{"id":"website","executionBlocker":{"runId":"run","cause":"native_session_retry_exhausted"}}'))], "website", "run")).toBe(true);
+  expect(readSourceRecoveryRecord([event(task('{"id":"website","executionBlocker":null}'))], "website", "run")).toBe(false);
+  expect(readSourceRecoveryRecord([event(task('{"id":"other","executionBlocker":{"runId":"run"}}'))], "website", "run")).toBe(false);
+  expect(readSourceRecoveryRecord([event(task('{"id":"website","executionBlocker":{"runId":"run"}}'), "failed")], "website", "run")).toBe(false);
+  expect(readSourceRecoveryRecord([event('{"apiOperationId":"GET /api/issues/{id}/documents/{key}","data":"website run"}')], "website", "run")).toBe(false);
 });
 it("rejects duplicate repair chains", () => { const o = valid(); o.tasks.push({ id: "repair" }); expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
 it("rejects concealing resumed work as still failed", () => { const o = valid(); o.runs[0]!.status = "running"; expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
