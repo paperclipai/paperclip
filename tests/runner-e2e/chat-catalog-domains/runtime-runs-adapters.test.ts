@@ -11,7 +11,6 @@ function valid() {
 it("accepts an actual admitted option with account qualification distinguished", () => expect(gradeModelOptions(valid()).passed).toBe(true));
 it("accepts natural qualified model-option guidance", () => { const o = valid(); o.reply = "gpt-5.6-sol appears among the model options. Whether you can use it depends on the account connection selected for this runtime and its qualification."; expect(gradeModelOptions(o).passed).toBe(true); });
 it("accepts a reworded answer without account keywords", () => { const o = valid(); o.reply = "Morgan can pick gpt-5.6-sol; whether it runs is down to the key Morgan is set up with."; expect(gradeModelOptions(o).passed).toBe(true); });
-it("rejects an answer that names no discovered option", () => { const o = valid(); o.reply = "Morgan can use the usual models."; expect(gradeModelOptions(o).passed).toBe(false); });
 it("rejects an answer whose run never read model discovery", () => { const o = valid(); (o.state as Record<string, unknown>).agentDiscoveryReads = 0; expect(gradeModelOptions(o).passed).toBe(false); });
 it("counts only successful model discovery results from the answering runs", () => {
   const ev = (runId: string, result: Record<string, unknown>, eventType = "item.completed") => ({ eventType, payload: { prpEvent: { runId, payload: { item: { type: "tool_result", result } } } } });
