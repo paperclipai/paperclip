@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
   controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
@@ -178,6 +178,31 @@ suite("controller instance lease: a replaced container's records are provable", 
       await db.delete(heartbeatRuns);
       await db.delete(issues);
       await db.delete(agents);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps renewing while this boot runs a remote workspace save", async () => {
+    let now = 0;
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere({ now: () => now }, false);
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      now = 120_000;
+      vi.setSystemTime(Date.now() + 120_000);
+      const invocation = randomUUID();
+      const owner = { bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null };
+      await db.insert(workspaceOperations).values({ companyId, phase: "remote_workspace_snapshot", status: "running",
+        metadata: { boundary: "final", epoch: 1, saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [invocation],
+          unknown: false, quiescedAt: null, owners: { [invocation]: owner } } } });
+      beginIdleTrackedWork()();
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      await db.delete(workspaceOperations);
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
     } finally { vi.useRealTimers(); }
   });
 

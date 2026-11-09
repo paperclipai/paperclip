@@ -33,6 +33,7 @@ import {
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { trackRemoteWorkspaceSaveInvocationForTests } from "../services/remote-workspaces.js";
 import { workspaceOperationService } from "../services/workspace-operations.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
@@ -375,6 +376,7 @@ describe("report-only ownership reconciliation", () => {
     const runs = { failed: randomUUID(), live: randomUUID() };
     await db.insert(heartbeatRuns).values([run(runs.failed, "failed"), run(runs.live, "running")]);
     const quiesced = { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [], unknown: false, quiescedAt: minutesAgo(30).toISOString() };
+    const liveInvocation = randomUUID();
     const ops = { abandoned: randomUUID(), pendingAbandoned: randomUUID(), liveRun: randomUUID(), activeInvocation: randomUUID(),
       unknownWork: randomUUID(), notQuiesced: randomUUID(), invalidWork: randomUUID() };
     const op = (id: string, runId: string, saveWork: Record<string, unknown>, status = "running") => ({ id, companyId, heartbeatRunId: runId,
@@ -384,7 +386,8 @@ describe("report-only ownership reconciliation", () => {
       op(ops.abandoned, runs.failed, quiesced),
       op(ops.pendingAbandoned, runs.failed, quiesced, "pending"),
       op(ops.liveRun, runs.live, quiesced),
-      op(ops.activeInvocation, runs.failed, { ...quiesced, activeIds: [randomUUID()], quiescedAt: null }),
+      op(ops.activeInvocation, runs.failed, { ...quiesced, activeIds: [liveInvocation], quiescedAt: null,
+        owners: { [liveInvocation]: { bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null } } }),
       op(ops.unknownWork, runs.failed, { ...quiesced, unknown: true }),
       op(ops.notQuiesced, runs.failed, { ...quiesced, quiescedAt: null }),
       op(ops.invalidWork, runs.failed, { ...quiesced, quiescedAt: "" }),
@@ -393,7 +396,8 @@ describe("report-only ownership reconciliation", () => {
       .from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_snapshot")))
       .map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
 
-    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const untrack = trackRemoteWorkspaceSaveInvocationForTests(liveInvocation);
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() }).finally(untrack);
     expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 7, settled: 2 });
     expect(await statuses()).toEqual({ abandoned: "failed", pendingAbandoned: "failed", liveRun: "running", activeInvocation: "running",
       unknownWork: "running", notQuiesced: "running", invalidWork: "running" });
@@ -404,6 +408,48 @@ describe("report-only ownership reconciliation", () => {
     expect(settled.finishedAt).not.toBeNull();
     const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.failed));
     expect(failedRun.status).toBe("failed");
+  });
+
+  it("settles a remote snapshot save whose process died mid-save, and keeps live, foreign or unprovable ones", async () => {
+    const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
+      ...(status === "running" ? {} : { finishedAt: minutesAgo(2), errorCode: "process_lost" }) });
+    const runs = { lost: randomUUID(), live: randomUUID() };
+    await db.insert(heartbeatRuns).values([run(runs.lost, "failed"), run(runs.live, "running")]);
+    const dead = { bootId: "previous-boot", pid: 4_194_303, hostHash: currentProcessSpaceHash(),
+      processStartedAt: "2026-11-07T09:00:00.000Z" };
+    const self = { bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null };
+    const ops = { deadOwner: randomUUID(), selfOwner: randomUUID(), foreignOwner: randomUUID(), legacyLost: randomUUID(),
+      legacyLive: randomUUID(), mixed: randomUUID() };
+    const op = (id: string, runId: string, owners: Record<string, unknown> | undefined, activeIds = [randomUUID()]) => ({
+      id, companyId, heartbeatRunId: runId, phase: "remote_workspace_snapshot", status: "running",
+      metadata: { epoch: 1, boundary: "initial", generation: 1, exportCleanup: { state: "pending" },
+        saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds, unknown: false, quiescedAt: null,
+          ...(owners ? { owners: Object.fromEntries(activeIds.map((invocation, index) => [invocation, Object.values(owners)[index]])
+            .filter(([, stamp]) => stamp !== undefined)) } : {}) } } });
+    const twoIds = [randomUUID(), randomUUID()], selfInvocation = randomUUID();
+    await db.insert(workspaceOperations).values([
+      op(ops.deadOwner, runs.live, { a: dead }),
+      op(ops.selfOwner, runs.lost, { a: self }, [selfInvocation]),
+      op(ops.foreignOwner, runs.lost, { a: { ...dead, hostHash: "another-pid-space" } }),
+      op(ops.legacyLost, runs.lost, undefined),
+      op(ops.legacyLive, runs.live, undefined),
+      op(ops.mixed, runs.lost, { a: dead }, twoIds),
+    ]);
+    const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
+      .from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_snapshot")))
+      .map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
+
+    const untrack = trackRemoteWorkspaceSaveInvocationForTests(selfInvocation);
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() }).finally(untrack);
+    expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 6, settled: 2 });
+    expect(await statuses()).toEqual({ deadOwner: "failed", selfOwner: "running", foreignOwner: "running",
+      legacyLost: "failed", legacyLive: "running", mixed: "running" });
+    const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.deadOwner));
+    expect(settled.metadata).toMatchObject({ saveWork: { activeIds: [], owners: {}, unknown: false, quiescedAt: expect.any(String) },
+      abandonedSave: { reason: "abandoned_remote_snapshot_save", proof: "pid_dead", abandonedInvocationIds: [expect.any(String)] },
+      lastFailure: { code: "remote_workspace_save_abandoned" } });
+    const [liveRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.live));
+    expect(liveRun.status).toBe("running");
   });
 
   it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
