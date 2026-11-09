@@ -27,7 +27,9 @@ export function publicOpenRouterCatalogEndpoint(companyId: string) {
 }
 function normalized(id: string) { return id.toLowerCase().replace(/^openrouter\//, ""); }
 export function observedModelChoices(reply: string) {
-  const vendor = [...reply.matchAll(/\b(?:gpt-\d[\w.-]*|o[134](?:-[\w.-]+)?|claude-(?:sonnet|opus|haiku)-[\w.-]+)/gi)].map(m => m[0].replace(/[.,;:!?]+$/, ""));
+  // A family name such as "GPT-5.x" names no model; only concrete IDs are graded.
+  const vendor = [...reply.matchAll(/\b(?:gpt-\d[\w.-]*|o[134](?:-[\w.-]+)?|claude-(?:sonnet|opus|haiku)-[\w.-]+)/gi)].map(m => m[0].replace(/[.,;:!?]+$/, ""))
+    .filter(id => !/(?:^|[-.])x(?:$|[-.])/i.test(id));
   const code = [...reply.matchAll(/`([^`\n]+)`/g)].map(m => m[1]!).filter(s => /^[\w.-]+\/[\w./:+-]+$/.test(s) && !s.includes("://"));
   const plainOpenRouter = [...reply.matchAll(/(?<![\w/:])openrouter\/[a-z0-9][\w.-]*\/[a-z0-9][\w./:+-]*/gi)].map(m => m[0].replace(/[.,;:!?]+$/, ""));
   return [...new Set([...vendor, ...code, ...plainOpenRouter])];
