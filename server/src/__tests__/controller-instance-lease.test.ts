@@ -99,6 +99,9 @@ suite("controller instance lease: a replaced container's records are provable", 
     await startHere({}, false);
     const owner = await currentNativeControllerIdentity();
     await tickControllerInstanceLease();
+    expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toEqual([]);
+    currentControllerProcessStamp();
+    await tickControllerInstanceLease();
     expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toHaveLength(1);
     const decision = await evaluateNativeControllerTakeover({ now: new Date(), owner: {
       controllerBootId: replaced, controllerPid: 7, controllerHostHash: "old-container",

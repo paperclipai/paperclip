@@ -81,6 +81,7 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
 import { HttpError } from "../../errors.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { onControllerStamp } from "../controller-process-identity.js";
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../controller-instance-lease.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
@@ -2292,10 +2293,12 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     await fixture.db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "previous-pid-space",
       pid: 7, leaseExpiresAt: new Date(Date.now() + 60_000) });
     registerControllerInstanceDb(fixture.db);
+    const stamped = vi.fn(), unsubscribe = onControllerStamp(stamped);
     try {
       const [waiting] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
         restartKind: "hard", runIds: [fixture.runId] });
       expect(waiting).toMatchObject({ kind: "awaiting_evidence", reason: "controller_lease_held", retryAt: expect.any(Date) });
+      expect(stamped).not.toHaveBeenCalled();
       const [before] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
       await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
       const [after] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
@@ -2305,11 +2308,12 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         claimNativeRestartRecoveries({ db: fixture.db, controller, restartKind: "hard", runIds: [fixture.runId] })))).flat();
       expect(dispositions.filter(row => row.kind === "bootstrap_incomplete")).toHaveLength(1);
       expect(dispositions.filter(row => row.kind === "awaiting_evidence")).toHaveLength(1);
+      expect(stamped).toHaveBeenCalledOnce();
       const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
       expect(run).toMatchObject({ status: "running", processPid: null, nativeSessionId: fixture.native.normalizedSessionId });
       const [owner] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
       expect(owner).toMatchObject({ attempt: 1, controllerGeneration: 2 });
-    } finally { resetControllerInstanceLeaseForTests(); }
+    } finally { unsubscribe(); resetControllerInstanceLeaseForTests(); }
   });
 
   it("recovers an unclaimed remote startup once without requiring a provider checkpoint", async () => {

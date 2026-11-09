@@ -1938,8 +1938,9 @@ Railway services too: a process can crash and restart inside the same deployment
 and some saved ownership records do not contain a deployment identity.
 `PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off` explicitly disables it.
 
-Native controller identity stamps register held preparation with this lease before
-a runner PID or checkpoint exists. Restart recovery uses the recorded controller
+Native execution and restart claims register held preparation with this lease before
+a runner PID or checkpoint exists. Passive identity reads do not register work.
+Restart recovery uses the recorded controller
 boot and last write to prove its owner stopped or to fence it after the existing
 grace period. A live owner or a grace period keeps the preparation held, with a
 scheduled recovery check. Repeating the same evidence wait preserves its last-write

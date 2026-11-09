@@ -340,7 +340,6 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
  * from the OS once, so claims and renewals on the turn path spawn no `ps`. */
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
   const observed = await currentProcessStartedAtMs();
-  currentControllerProcessStamp();
   const fallback = new Date(getServerProcessStartedAt());
   return {
     bootId: currentControllerBootId(),
@@ -1659,6 +1658,7 @@ export async function claimNativeRestartRecoveries(input: {
       // The attempt the executor runs this resume as (see its execution claim).
       const progressAttempt = nextNativeProviderAttempt(providerAttempt, claimKind, !resumeKeepsAttempt);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
+      currentControllerProcessStamp();
       const claimed = await tx
         .update(nativeRunFinalizations)
         .set({
