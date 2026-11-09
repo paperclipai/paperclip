@@ -1,7 +1,7 @@
 import { LOCAL_SPEED_BUDGETS, type SpeedBudget, type SpeedBudgetAdapter } from "../../server/src/services/native-runtime/native-speed-budgets.js";
 import type { ChaosApi } from "./api.js";
 import {
-  baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth,
+  baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth, stampProviderLoadStarts,
   type BaselineEvent, type BaselineFault, type BaselineRun, type Distribution,
 } from "./ttft-baseline-stats.js";
 import type { AdapterId, EnvironmentKind, FaultReceipt, RunSample } from "./types.js";
@@ -263,7 +263,8 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
         }
         if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
         if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
-        const trimmed = withoutOutage(raw, windows);
+        // Stamp provider load starts from raw offsets before outage removal rewrites them.
+        const trimmed = withoutOutage(stampProviderLoadStarts(raw), windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
         runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });

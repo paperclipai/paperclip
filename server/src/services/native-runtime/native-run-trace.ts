@@ -452,7 +452,11 @@ export function createNativeRunTrace(input: {
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
-    if (name === PROVIDER_SESSION_LOAD_SPAN) providerLoadStartsMs.push(startedAtMs);
+    if (name === PROVIDER_SESSION_LOAD_SPAN) {
+      providerLoadStartsMs.push(startedAtMs);
+      // The measurement can arrive before its provider span is recorded; judge now.
+      if (pendingRecovery) judgeRestartRecovery();
+    }
     const attributes = safeAttributes(options.attributes);
     const parent = parentFor(options.parentName);
     let span: SpanHandle;
@@ -678,8 +682,11 @@ export function createNativeRunTrace(input: {
   /** Restart recovery latency: control plane ready to the recovered run's
    * next provider event, checked once per run. Only Paperclip's share is
    * judged: ready to the start of the provider's session load (or to the
-   * event when nothing reloads). The provider span can be committed after the
-   * event, so the judgement waits for the run to finish. */
+   * event when nothing reloads). It is judged as soon as both are known: at
+   * the check when the load span is already recorded or nothing reloads (a
+   * reattached runner, whose dispositions launch nothing), when the load span is recorded, and otherwise when
+   * the run finishes. A run that detaches for another restart therefore keeps
+   * its warning unless the detach lands between the event and a deferred span. */
   let recoveryChecked = false;
   let pendingRecovery: RestartRecoveryMeasurement | null = null;
   const judgeRestartRecovery = (): void => {
@@ -704,6 +711,10 @@ export function createNativeRunTrace(input: {
     if (measurement.committedAtMs < measurement.readyAtMs) return;
     recoveryChecked = true;
     pendingRecovery = measurement;
+    const readyAtMs = measurement.readyAtMs;
+    // Only a launched runner reloads a provider session (native-restart-recovery).
+    if (!["resume_dead_runner", "bootstrap_incomplete"].includes(measurement.disposition)
+      || providerLoadStartsMs.some(at => at >= readyAtMs && at <= measurement.committedAtMs)) judgeRestartRecovery();
   };
 
   return {

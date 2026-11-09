@@ -53,7 +53,9 @@ describe("wave speed grade", () => {
   it("judges Paperclip's share of a recovery and only reports the provider's session load", () => {
     const loadEnd = 10_000 + 1_500 + 9_000;
     const recovered: BaselineRun = { runId: "r", adapter: "codex", environment: "local", phase: "cold", events: [
-      { eventType: "run.performance.span", createdAt: new Date(loadEnd).toISOString(), payload: { span: "provider.session.load", durationMs: 9_000 } },
+      { eventType: "run.performance.span", createdAt: new Date(100).toISOString(), payload: { span: "heartbeat.queue", startOffsetMs: 0, durationMs: 100 } },
+      { eventType: "run.performance.span", createdAt: new Date(loadEnd).toISOString(),
+        payload: { span: "provider.session.load", startOffsetMs: 11_500, durationMs: 9_000 } },
       { eventType: "session.resumed", createdAt: new Date(loadEnd + 300).toISOString() }] };
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K2", readyAt: 10_000, runIds: ["r"] }], 0);
     expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 1_500 }, breaches: [] });

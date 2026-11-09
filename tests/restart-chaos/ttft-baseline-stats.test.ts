@@ -126,16 +126,24 @@ describe("ttft baseline statistics", () => {
 });
 
 describe("restart recovery split", () => {
+  // The trace starts at the epoch; the queue span is written promptly and anchors it.
+  const queue = { eventType: "run.performance.span", createdAt: at(100), payload: { span: "heartbeat.queue", startOffsetMs: 0, durationMs: 100 } };
+  const load = (writtenAt: number) => ({ eventType: "run.performance.span", createdAt: at(writtenAt),
+    payload: { span: "provider.session.load", startOffsetMs: 11_500, durationMs: 4_500 } });
+
   it("splits a recovery at the start of the provider's session load", () => {
     const readyAt = Date.parse(at(10_000));
-    const recovered = run("r1", "restart", [
-      // provider.session.load ran 11.5 s → 16.0 s after the epoch; its event is written when it ends.
-      { eventType: "run.performance.span", createdAt: at(16_000), payload: { span: "provider.session.load", durationMs: 4_500 } },
-      { eventType: "session.resumed", createdAt: at(16_400) },
-    ]);
+    const recovered = run("r1", "restart", [queue, load(16_000), { eventType: "session.resumed", createdAt: at(16_400) }]);
     expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])).toEqual([
       { runId: "r1", adapter: "codex", kind: "K2", disposition: "none", readyAt, latencyMs: 6_400, controlPlaneMs: 1_500, providerLoadMs: 4_900 },
     ]);
+  });
+
+  it("takes the load start from the span's offset, not its (possibly deferred) write time", () => {
+    const readyAt = Date.parse(at(10_000));
+    // The load span's run-log row is written 5 s late, after the provider event.
+    const recovered = run("r1", "restart", [queue, { eventType: "session.resumed", createdAt: at(16_400) }, load(21_000)]);
+    expect(recoverySamples([recovered], [{ kind: "K2", readyAt, runIds: ["r1"] }])[0]).toMatchObject({ controlPlaneMs: 1_500, providerLoadMs: 4_900 });
   });
 });
 

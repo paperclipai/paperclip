@@ -175,6 +175,21 @@ describe("speed budget checks in the native run trace", () => {
       restartTotalMs: control + 3_000, providerLoadMs: 3_000 })]);
   });
 
+  it("judges a recovery before the run finishes, so a later detach for restart keeps the warning", async () => {
+    const control = LOCAL_SPEED_BUDGETS.codex.restart_recovery_control_plane.p95Ms + 1_000;
+    // The load span arrives after the provider event: judged when it is recorded.
+    const resumed = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    resumed.trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: control + 2_000, committedAtMs: control + 2_000, disposition: "resume_dead_runner" });
+    await resumed.trace.record({ name: "provider.session.load", startedAtMs: control, endedAtMs: control + 1_900 });
+    // A reattached runner reloads nothing: judged at the check.
+    const reattached = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    reattached.trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: control, committedAtMs: control, disposition: "reattach_existing_runner" });
+    // Neither trace finishes (the controller detached for another restart).
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(resumed.breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery_control_plane", measuredMs: control })]);
+    expect(reattached.breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery_control_plane", measuredMs: control, providerLoadMs: 0 })]);
+  });
+
   it("does not spend the restart-recovery check on an event emitted before ready", async () => {
     const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
     const late = LOCAL_SPEED_BUDGETS.codex.restart_recovery_control_plane.p95Ms + 1_000;

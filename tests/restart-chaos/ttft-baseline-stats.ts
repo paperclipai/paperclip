@@ -140,6 +140,30 @@ export interface RecoverySample { runId: string; adapter: string; kind: string; 
   providerLoadMs: number | null }
 
 /** Control plane ready → the recovered run's next provider event, keyed by runner disposition. */
+/** The run's trace start: every span records its offset from it. A span event is
+ * written when the span ends, possibly through deferred work, so each one gives
+ * an upper bound (write time minus offset and duration); the earliest is used. */
+export function spanTraceStartMs(run: BaselineRun): number | null {
+  let earliest: number | null = null;
+  for (const event of run.events) {
+    if (event.eventType !== "run.performance.span" || !event.payload) continue;
+    const candidate = Date.parse(event.createdAt) - (Number(event.payload.startOffsetMs) + Number(event.payload.durationMs));
+    if (Number.isFinite(candidate) && (earliest === null || candidate < earliest)) earliest = candidate;
+  }
+  return earliest;
+}
+
+/** Stamps each provider session load with its wall-clock start, from the span's
+ * own offset (never its write time). Call on the raw run, before outage removal
+ * rewrites offsets. */
+export function stampProviderLoadStarts(run: BaselineRun): BaselineRun {
+  const anchor = spanTraceStartMs(run);
+  if (anchor === null) return run;
+  return { ...run, events: run.events.map(event => event.eventType === "run.performance.span" && event.payload?.span === "provider.session.load"
+    && Number.isFinite(Number(event.payload.startOffsetMs)) && event.payload.wallStartMs === undefined
+    ? { ...event, payload: { ...event.payload, wallStartMs: anchor + Number(event.payload.startOffsetMs) } } : event) };
+}
+
 export function recoverySamples(runs: readonly BaselineRun[], faults: readonly BaselineFault[]): RecoverySample[] {
   const byId = new Map(runs.map(run => [run.runId, run]));
   const samples: RecoverySample[] = [];
@@ -152,10 +176,10 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
         && Date.parse(event.createdAt) >= fault.readyAt - 60_000);
       const next = run.events.find(event => PROVIDER_EVENT_TYPES.has(event.eventType) && Date.parse(event.createdAt) >= fault.readyAt);
       const nextAt = next ? Date.parse(next.createdAt) : null;
-      // A span event is written when the span ends; its start is the write time minus its duration.
-      const loadStarts = nextAt === null ? [] : run.events.flatMap(event => {
+      const stamped = stampProviderLoadStarts(run);
+      const loadStarts = nextAt === null ? [] : stamped.events.flatMap(event => {
         if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load") return [];
-        const start = Date.parse(event.createdAt) - Number(event.payload?.durationMs);
+        const start = Number(event.payload.wallStartMs);
         return Number.isFinite(start) && start >= fault.readyAt && start <= nextAt ? [start] : [];
       });
       const loadStart = loadStarts.length ? Math.min(...loadStarts) : null;
