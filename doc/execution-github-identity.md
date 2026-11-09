@@ -99,6 +99,8 @@ or callback transport selection.
 
 Scripts that previously read a persistent `GH_TOKEN` must use managed `git`, `gh`, or GitHub gateway tools. Managed execution skips legacy GitHub token bindings in agent, environment, project, and routine configuration before secret preflight. Configure personal or dedicated access through the GitHub connection instead. Directly invoking an unmanaged executable or retaining a token obtained during an earlier invocation is outside the managed invocation contract.
 
+Managed `git` and `gh` also ignore a `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` that the caller sets, for example `GH_TOKEN=<token> gh api user`. For each command that asks the broker for a credential, the launcher writes one stderr line that names each ignored variable that is not empty. It never writes the value. Local Git commands stay quiet.
+
 ## Legacy hosts and networking
 
 When no managed GitHub connection is installed for an agent, standard-trust
