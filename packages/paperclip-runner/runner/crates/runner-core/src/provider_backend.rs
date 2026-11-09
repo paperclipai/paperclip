@@ -6773,6 +6773,7 @@ done
         frames: usize,
         retained_results: usize,
         tool: &str,
+        wait_for_stream: bool,
     ) -> (PathBuf, CodexCommandExecutor) {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-streamed-frames-{}",
@@ -6851,7 +6852,7 @@ done
         executor.restore_checked = true;
         executor.save_state().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !streamed.exists() {
+        while wait_for_stream && !streamed.exists() {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -6882,7 +6883,7 @@ done
         let mut saves = Vec::new();
         for frames in [8, 48] {
             let (directory, mut executor) =
-                streamed_turn_before_tool_call(frames, 4, "get_task_context");
+                streamed_turn_before_tool_call(frames, 4, "get_task_context", true);
             let before = executor.persist_count.get();
             let observed = poll_until_semantic_tool_call(&mut executor);
             saves.push(executor.persist_count.get() - before);
@@ -6910,7 +6911,8 @@ done
     #[cfg(unix)]
     #[test]
     fn batched_frame_state_is_saved_before_events_leave_and_survives_a_restart() {
-        let (directory, mut executor) = streamed_turn_before_tool_call(300, 4, "get_task_context");
+        let (directory, mut executor) =
+            streamed_turn_before_tool_call(300, 4, "get_task_context", false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             assert!(std::time::Instant::now() < deadline);
@@ -6956,7 +6958,8 @@ done
     #[cfg(unix)]
     #[test]
     fn batched_frame_state_is_saved_when_a_later_frame_fails() {
-        let (directory, mut executor) = streamed_turn_before_tool_call(20, 0, "unauthorized_tool");
+        let (directory, mut executor) =
+            streamed_turn_before_tool_call(20, 0, "unauthorized_tool", true);
         assert!(executor.poll_events().is_err());
         assert!(!executor.unsaved_frame_state.get());
         let saved = saved_provider_state(&executor);
@@ -7037,7 +7040,7 @@ done
         for retained in [0, 20, 80] {
             for frames in [50, 200] {
                 let (directory, mut executor) =
-                    streamed_turn_before_tool_call(frames, retained, "get_task_context");
+                    streamed_turn_before_tool_call(frames, retained, "get_task_context", false);
                 let state_bytes = fs::metadata(executor.state_path()).unwrap().len();
                 let before = executor.persist_count.get();
                 let started = std::time::Instant::now();
