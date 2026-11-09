@@ -73,6 +73,8 @@ class CommandJournalLimitError extends Error {
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
+const EVENT_DELIVERY_STALL_FAILURES = 20;
+const EVENT_DELIVERY_STALL_MS = 45_000;
 const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -868,6 +870,19 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
   } catch {
     return false;
   }
+}
+
+function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined): string {
+  const paths = [...new Set((issues ?? []).map(issue => typeof issue.path === "string" ? issue.path : "")
+    .map(path => path.replace(/[^A-Za-z0-9_./-]/g, "_").slice(0, 80)).filter(Boolean))];
+  return paths.length ? paths.slice(0, 3).join(",") : "unknown";
+}
+
+function eventCommitFailureCause(error: unknown): string {
+  const code = isRecord(error) ? error.code : undefined;
+  if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
+  const name = error instanceof Error ? error.name : typeof error;
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(name) ? name : "unknown_error";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2040,6 +2055,7 @@ export class DurablePrpControlPlane {
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
+  #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
@@ -2211,10 +2227,15 @@ export class DurablePrpControlPlane {
     }
     const checkpoint = this.flushCheckpoint();
     const frame = structuredClone(value);
+    let checkpointFailure: unknown = null;
     const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
-      .then(() => checkpoint)
+      .then(() => checkpoint.catch(error => { checkpointFailure = error ?? new Error("checkpoint_failed"); throw error; }))
       .then(() => connection.sendJson(frame))
-      .catch(() => connection.close());
+      .catch(() => {
+        if (checkpointFailure !== null && this.#protocolIntegrityError === null) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(checkpointFailure)}`);
+        } else connection.close();
+      });
     this.#sendQueues.set(connection, sending);
     void sending.finally(() => {
       if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
@@ -2262,7 +2283,20 @@ export class DurablePrpControlPlane {
     this.#semanticInputSourceRunId = null;
   }
 
-  async recoverPendingSemanticInputs(): Promise<void> {
+  #semanticRecoveryPass: Promise<void> | null = null;
+
+  recoverPendingSemanticInputs(): Promise<void> {
+    const pass = (this.#semanticRecoveryPass ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.#recoverPendingSemanticInputsOnce());
+    this.#semanticRecoveryPass = pass;
+    void pass.finally(() => {
+      if (this.#semanticRecoveryPass === pass) this.#semanticRecoveryPass = null;
+    }).catch(() => undefined);
+    return pass;
+  }
+
+  async #recoverPendingSemanticInputsOnce(): Promise<void> {
     if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
@@ -3793,7 +3827,12 @@ export class DurablePrpControlPlane {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
-    this.#store.save();
+    try {
+      this.#store.save();
+    } catch (error) {
+      this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`);
+      return;
+    }
     this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
@@ -4111,6 +4150,27 @@ export class DurablePrpControlPlane {
     );
   }
 
+  #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
+    const acked = this.#store.state.ackedSourceSeq;
+    const runId = this.#identity.runId;
+    const stall = this.#eventDeliveryStall;
+    if (stall === null || stall.ackedSourceSeq !== acked || stall.runId !== runId) {
+      this.#eventDeliveryStall = { runId, ackedSourceSeq: acked, since: now, failures: 1 };
+    } else {
+      stall.failures += 1;
+      if (stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS) {
+        this.#failEventCommit(connection, cause, sourceSeq);
+        return;
+      }
+    }
+    connection.close();
+  }
+
+  #failEventCommit(connection: AuthorityConnection, cause: string, sourceSeq?: number): void {
+    this.#failProtocolIntegrity(connection, new NativeSessionProtocolIntegrityError("runner_event_commit_stalled",
+      `${cause} at source seq ${sourceSeq ?? this.#store.state.ackedSourceSeq + 1}`));
+  }
+
   #failProtocolIntegrity(
     connection: AuthorityConnection,
     error: NativeSessionProtocolIntegrityError,
@@ -4151,7 +4211,7 @@ export class DurablePrpControlPlane {
     }
     const validated = validatePrpEvent(envelope.payload);
     if (!validated.ok) {
-      connection.close();
+      this.#eventCommitFailed(connection, `event_schema_invalid:${eventSchemaIssuePaths(validated.issues)}`);
       return;
     }
     const event = validated.event;
@@ -4205,7 +4265,7 @@ export class DurablePrpControlPlane {
         ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
         : sourceSeq !== existing.sourceSeq
     ) {
-      connection.close();
+      this.#eventCommitFailed(connection, "event_sequence_mismatch", sourceSeq);
       return;
     }
     if (
@@ -4264,7 +4324,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        connection.close();
+        this.#eventCommitFailed(connection, eventCommitFailureCause(error), sourceSeq);
       }
       return;
     }
@@ -4311,13 +4371,28 @@ export class DurablePrpControlPlane {
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
       if (candidate === null) {
-        connection.close();
+        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous", sourceSeq);
         return;
       }
-      this.#store.commit(candidate, !isStreamingEvent(event));
-    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
-      if (isCurrentOwner()) connection.close();
-      return;
+      try {
+        this.#store.commit(candidate, !isStreamingEvent(event));
+      } catch (error) {
+        this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        return;
+      }
+    } else {
+      let committed: boolean;
+      try {
+        committed = await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event));
+      } catch (error) {
+        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        else connection.close();
+        return;
+      }
+      if (!committed) {
+        if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused", sourceSeq);
+        return;
+      }
     }
     if (!isCurrentOwner()) return;
 
@@ -4337,7 +4412,14 @@ export class DurablePrpControlPlane {
     if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
     let dispatched = false;
     try {
-      await this.flushCheckpoint();
+      try {
+        await this.flushCheckpoint();
+      } catch (error) {
+        if (this.#eventOwner === connection && this.#identity === identity) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        }
+        return;
+      }
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
       if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;

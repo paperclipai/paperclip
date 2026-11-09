@@ -33,6 +33,7 @@ import {
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { workspaceOperationService } from "../services/workspace-operations.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 
@@ -144,7 +145,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "execution_workspace_runtime_lease", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "execution_workspace_runtime_lease", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -368,6 +369,55 @@ describe("report-only ownership reconciliation", () => {
     // The run's outcome never changes.
     const [doneRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runs.done));
     expect(doneRun.status).toBe("succeeded");
+  });
+
+  it("settles a workspace command whose process died mid-command, and keeps live or unprovable ones", async () => {
+    const run = (id: string, status: string) => ({ id, companyId, agentId, status, invocationSource: "manual",
+      ...(status === "running" ? {} : { finishedAt: minutesAgo(2) }) });
+    const runs = { interrupted: randomUUID(), live: randomUUID() };
+    await db.insert(heartbeatRuns).values([run(runs.interrupted, "failed"), run(runs.live, "running")]);
+    const dead = { bootId: "previous-boot", pid: 4_194_303, hostHash: currentProcessSpaceHash(),
+      processStartedAt: "2026-11-09T09:00:00.000Z" };
+    const ops = { dead: randomUUID(), live: randomUUID(), foreign: randomUUID(), legacyDone: randomUUID(),
+      legacyLive: randomUUID(), unowned: randomUUID(), runtimeControl: randomUUID() };
+    const op = (id: string, runId: string | null, phase: string, metadata: Record<string, unknown>) => ({ id, companyId,
+      heartbeatRunId: runId, phase, status: "running", metadata });
+    await db.insert(workspaceOperations).values([
+      op(ops.dead, runs.interrupted, "workspace_provision", { commandOwner: dead }),
+      op(ops.live, runs.live, "worktree_prepare", { commandOwner: { bootId: currentControllerBootId(), pid: process.pid,
+        hostHash: currentProcessSpaceHash(), processStartedAt: null } }),
+      op(ops.foreign, runs.interrupted, "workspace_provision", { commandOwner: { ...dead, hostHash: "another-pid-space" } }),
+      op(ops.legacyDone, runs.interrupted, "workspace_teardown", {}),
+      op(ops.legacyLive, runs.live, "workspace_provision", {}),
+      op(ops.unowned, null, "worktree_cleanup", {}),
+      op(ops.runtimeControl, null, "workspace_runtime_provision", { runtimeControlOwner: { pid: 1 } }),
+    ]);
+    const statuses = async () => Object.fromEntries((await db.select({ id: workspaceOperations.id, status: workspaceOperations.status })
+      .from(workspaceOperations)).map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(Object.values(await statuses()).every(status => status === "running")).toBe(true);
+
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(kindReport(first, "workspace_command_operation")).toMatchObject({ inProgress: 6, settled: 2 });
+    expect(await statuses()).toEqual({ dead: "failed", live: "running", foreign: "running", legacyDone: "failed",
+      legacyLive: "running", unowned: "running", runtimeControl: "running" });
+    const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ops.dead));
+    expect(settled.metadata).toMatchObject({ abandonedCommand: { reason: "abandoned_workspace_command", proof: "pid_dead" } });
+    expect(settled.finishedAt).not.toBeNull();
+  });
+
+  it("stamps a running workspace command with the process that runs it", async () => {
+    const [{ id: runId }] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running",
+      invocationSource: "manual" }).returning({ id: heartbeatRuns.id });
+    const recorder = workspaceOperationService(db).createRecorder({ companyId, heartbeatRunId: runId });
+    let stamped: unknown;
+    await recorder.recordOperation({ phase: "workspace_provision", command: "true", run: async () => {
+      const [row] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      stamped = row.metadata;
+      return { status: "succeeded", exitCode: 0 };
+    } });
+    expect(stamped).toMatchObject({ commandOwner: { bootId: currentControllerBootId(), pid: process.pid } });
   });
 
   it("writes nothing when recording is off", async () => {

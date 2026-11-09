@@ -24,6 +24,9 @@ export interface BaselineRun {
 export interface BaselineFault {
   kind: string;
   readyAt: number;
+  /** When the fault began. A recovery that a later fault interrupts before its
+   * next provider event is not a measurement of this fault's recovery. */
+  startedAt?: number;
   /** Runs that were in flight when the fault started. */
   runIds: string[];
 }
@@ -137,7 +140,11 @@ export interface RecoverySample { runId: string; adapter: string; kind: string; 
    * latency when nothing reloads. The judged row. */
   controlPlaneMs: number | null;
   /** The provider's share: session load start to the next provider event. Reported. */
-  providerLoadMs: number | null }
+  providerLoadMs: number | null;
+  /** A later fault began before this recovery reached its next provider event
+   * (back-to-back faults). Its latencies are null: the later fault's own sample
+   * measures that run. */
+  interruptedByFault?: true }
 
 /** Control plane ready → the recovered run's next provider event, keyed by runner disposition. */
 /** The run's trace start: every span records its offset from it. A span event is
@@ -180,6 +187,12 @@ export function recoverySamples(runs: readonly BaselineRun[], faults: readonly B
         && Date.parse(event.createdAt) >= fault.readyAt - 60_000);
       const next = run.events.find(event => PROVIDER_EVENT_TYPES.has(event.eventType) && Date.parse(event.createdAt) >= fault.readyAt);
       const nextAt = next ? Date.parse(next.createdAt) : null;
+      if (nextAt !== null && faults.some(other => other.startedAt !== undefined && other.startedAt > fault.readyAt && other.startedAt < nextAt)) {
+        samples.push({ runId, adapter: run.adapter, kind: fault.kind, readyAt: fault.readyAt,
+          disposition: String(transition?.payload?.runnerDisposition ?? "none"),
+          latencyMs: null, controlPlaneMs: null, providerLoadMs: null, interruptedByFault: true });
+        continue;
+      }
       const stamped = stampProviderLoadStarts(run);
       const loadStarts = nextAt === null ? [] : stamped.events.flatMap(event => {
         if (event.eventType !== "run.performance.span" || event.payload?.span !== "provider.session.load") return [];

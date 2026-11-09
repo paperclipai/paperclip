@@ -604,6 +604,16 @@ describe("openapi routes", () => {
     expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
   });
 
+  it("tells agents that creating or refreshing a status card only queues the summarizer, so they reply now with its link", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const create = res.body.paths["/api/companies/{companyId}/status-cards"].post;
+    expect(create.description).toContain("The response is returned before any summary exists");
+    expect(create.description).toContain("reply now with the returned href as a Markdown link");
+    const refresh = res.body.paths["/api/status-cards/{id}/refresh"].post;
+    expect(refresh.description).toContain("Queues a refresh; it does not return a new summary");
+    expect(refresh.description).toContain("Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href");
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;

@@ -22,6 +22,8 @@ export interface WaveSpeed {
   outageAdjustedSpans: number;
   outageRemovedMs: number;
   recoveryWithoutProviderEvent: number;
+  /** Recovery samples a later fault interrupted before their next provider event (not graded). */
+  recoveryInterruptedByFault: number;
   runBudgetExceeded: number;
   singleRunBreaches: number;
   breaches: number;
@@ -53,7 +55,7 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
 }
 
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!,
+  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!, startedAt: fault.startedAt,
     runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
       .map(run => run.id) }));
 }
@@ -211,7 +213,9 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
       || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
   }).length;
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + singleRunBreaches;
-  return { environment, rows, recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null).length,
+  return { environment, rows,
+    recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null && !sample.interruptedByFault).length,
+    recoveryInterruptedByFault: samples.filter(sample => sample.interruptedByFault).length,
     runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
 }
 
@@ -282,7 +286,7 @@ export function speedMarkdown(speed: WaveSpeed): string {
   const s = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
   const lines = [`## Speed (${speed.environment})`, "",
     `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.singleRunBreaches} runs over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
-    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}.`,
+    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}. Interrupted by a later fault (not graded): ${speed.recoveryInterruptedByFault}.`,
     `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];
   for (const row of speed.rows) {

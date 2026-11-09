@@ -64,6 +64,19 @@ describe("wave speed grade", () => {
     expect(speed.breaches).toBe(0);
   });
 
+  it("does not grade a recovery that a back-to-back fault interrupted before its next provider event", () => {
+    // f1 is ready at 10 s; f2 hits 0.4 s later and is ready at 30 s; the run resumes 1.5 s after f2.
+    const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
+      events: [{ eventType: "session.resumed", createdAt: new Date(31_500).toISOString() }] };
+    const faults = [{ kind: "K4", startedAt: 1_000, readyAt: 10_000, runIds: ["r"] },
+      { kind: "K6", startedAt: 10_400, readyAt: 30_000, runIds: ["r"] }];
+    const windows = outageWindows(faults.map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt }) as FaultReceipt));
+    const speed = gradeWaveSpeed("local", [recovered], faults, 0, [], { adjusted: 0, removedMs: 0, windows });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { n: 1, p50: 1_500 }, breaches: [] });
+    expect(speed.recoveryInterruptedByFault).toBe(1);
+    expect(speed.recoveryWithoutProviderEvent).toBe(0);
+  });
+
   it("removes a later outage from restart recovery", () => {
     const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
       events: [{ eventType: "turn.started", createdAt: new Date(10_000 + 302_000).toISOString() }] };
@@ -183,6 +196,6 @@ describe("wave speed grade", () => {
     const fault = { kind: "K2", startedAt: 1_000, readyAt: 2_000 } as FaultReceipt;
     expect(faultRuns([fault], [{ id: "before", createdAt: 0, finishedAt: 500 }, { id: "live", createdAt: 0, finishedAt: null },
       { id: "during", createdAt: 1_500, finishedAt: null }, { id: "after", createdAt: 2_500, finishedAt: null }]))
-      .toEqual([{ kind: "K2", readyAt: 2_000, runIds: ["live", "during"] }]);
+      .toEqual([{ kind: "K2", readyAt: 2_000, startedAt: 1_000, runIds: ["live", "during"] }]);
   });
 });

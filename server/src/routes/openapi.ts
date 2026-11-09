@@ -1429,6 +1429,14 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Budget changes are board-only (assertBoard in routes/costs.ts).
+  "POST /api/companies/{companyId}/budgets/policies",
+  "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
+  "PATCH /api/companies/{companyId}/budgets",
+  "PATCH /api/agents/{agentId}/budgets",
+  // Approval decisions are board-only (assertBoard in routes/approvals.ts).
+  "POST /api/approvals/{id}/approve",
+  "POST /api/approvals/{id}/reject",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -3127,6 +3135,14 @@ registry.registerPath({
 
 // ─── Teams Catalog ──────────────────────────────────────────────────────────
 
+/** Ready-made teams are found here, so these entries must match how people ask for them. */
+const TEAM_CATALOG_DESCRIPTIONS: Record<string, string> = {
+  "/api/teams/catalog":
+    "Lists Paperclip's ready-made teams: installable team packages, not agents already in a company. Each entry gives its name, description, roles (agentSlugs), project and routine counts, required skills (requiredSkills) and configuration inputs (envInputs). This catalog is the only source of ready-made teams; choose by description and roles rather than an exact name. Optional q filters by text in names, descriptions and tags. The web app has no teams catalog page; people browse it with the paperclipai teams browse CLI command.",
+  "/api/companies/{companyId}/teams/catalog/{catalogId}/preview":
+    "Shows what installing a catalog team would add to this company: planned agents, projects, routines and skills, and any name or slug conflicts with existing resources. Creates no resources, so it is also allowed in Ask and Plan modes. Company members and agents in the company can preview.",
+};
+
 for (const route of [
   ["get", "/api/teams/catalog", "List catalog teams"],
   ["get", "/api/teams/catalog/{catalogId}/files", "Get catalog team file"],
@@ -3152,8 +3168,16 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
+    ...(route[1] === "/api/teams/catalog" ? {
+      query: z.object({
+        q: z.string().optional().describe("Case-insensitive text matched against team names, descriptions and tags."),
+        kind: z.string().optional().describe("Catalog kind, such as bundled or optional."),
+        category: z.string().optional().describe("Catalog category, such as software-development."),
+      }),
+    } : {}),
+    ...(TEAM_CATALOG_DESCRIPTIONS[route[1]] ? { description: TEAM_CATALOG_DESCRIPTIONS[route[1]] } : {}),
     ...(route[1].endsWith("/install") ? {
-      description: "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
+      description: "Installs a catalog team into this company. Requires a board user with permission to create agents, or an agent with permission to create agents; without it, a board user can run paperclipai teams install <team id> --company-id <companyId>. Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
       responses: { 201: r.ok(z.object({ resourceLinks: z.array(z.object({
         kind: z.enum(["agent", "project", "routine"]), id: z.string(), name: z.string(), href: z.string(),
       })) }).passthrough()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
@@ -3420,6 +3444,10 @@ registry.registerPath({
   path: "/api/companies/{companyId}/status-cards",
   tags: ["status-cards"],
   summary: "Create a status card",
+  description: "Creates a saved status card on the company's Status page: a live summary of the tasks the interestPrompt describes. "
+    + "agentId names the agent that writes its summary; without it the built-in Summarizer is used when configured. "
+    + "The response is returned before any summary exists: the card's summarizer compiles its query and writes the first summary in its own run. "
+    + "Do not wait or poll for it; reply now with the returned href as a Markdown link, which opens the card at /<prefix>/status/<cardId>.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createStatusCardSchema),
@@ -3473,6 +3501,10 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}/refresh",
   tags: ["status-cards"],
   summary: "Refresh a status card",
+  description: "Queues a refresh; it does not return a new summary. The card's summarizer agent writes the update in its own generation run, after which the card's lastGeneratedAt and summary change. "
+    + "Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href as a Markdown link where the person sees the update. "
+    + "alreadyGenerating means an earlier refresh is still running. enqueued false without alreadyGenerating means this request started no run: "
+    + "if card.lastGeneratedAt is newer than before your request, a concurrent refresh already finished; otherwise the card's refresh policy deferred it, and card.state says why (such as paused_budget or paused_hours).",
   body: refreshStatusCardSchema,
 });
 
@@ -4123,11 +4155,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
   summary: "List models for an adapter type and runner provider",
+  description: "Answers which models an agent's runtime can select. For a paperclip_runner agent, pass its adapterConfig.provider, its adapterConfig.acpxAgent when the provider is acpx, and its defaultEnvironmentId; the response is that runtime's own list. An OpenCode agent whose model starts with openrouter/ uses an OpenRouter key: list those choices with type opencode_local and provider=openrouter. That list is OpenRouter's public catalog, so whether a model works depends on the key's account and is not a qualification. With those inputs, these calls answer the question: report the options with that caveat and reply, rather than enumerating providers through other routes, the shell or the web.",
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
     query: z.object({
       provider: z
-        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore"])
+        .enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore", "openrouter"])
         .optional(),
       environmentId: z.string().optional(),
       refresh: z.string().optional(),
@@ -6038,6 +6071,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
   tags: ["costs"],
   summary: "Resolve a budget incident",
+  description: "Board only: agent credentials get 403, so an agent cannot raise a limit or resume a budget-stopped agent. A board user chooses the new amount and resumes on the Budgets page: link [Open budgets](/<prefix>/activity/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ companyId: z.string(), incidentId: z.string() }),
     body: jsonBody(resolveBudgetIncidentSchema),
@@ -6076,6 +6110,7 @@ registry.registerPath({
   path: "/api/agents/{agentId}/budgets",
   tags: ["costs"],
   summary: "Update agent budget",
+  description: "Board only: agent credentials get 403. A board user changes the limit on the agent's budget tab: link [Open budget](/<prefix>/agents/<agentId>/budgets) with this conversation's company prefix as <prefix>, and reply.",
   request: {
     params: z.object({ agentId: z.string() }),
     body: jsonBody(updateBudgetSchema),
@@ -11829,7 +11864,8 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/connections",
   tags: ["tool-access"],
   summary: "Create a tool connection",
-  description: OWN_MCP_SERVER_KEY,
+  description: "Saves a connection as given without checking that its server answers. To connect an MCP server from its URL, use POST /api/companies/{companyId}/tools/apps/connect with link instead: it checks the server first, and a fresh setup saves no connection when the server cannot be reached. "
+    + OWN_MCP_SERVER_KEY,
   body: createToolConnectionSchema,
   responses: {
     201: r.ok(),
