@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 const clock = vi.hoisted(() => ({ now: 30_000, deadlines: [] as number[] }));
