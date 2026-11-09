@@ -211,6 +211,36 @@ describePostgres("heartbeat recovery module ownership", () => {
     return (await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, invocationSource: "automation", status: "running", runtimeMode: "legacy" }).returning())[0];
   }
 
+  it.each([false, true])("delivers scoped recovery to a preparation without a runner PID or checkpoint (locally tracked=%s)", async tracked => {
+    const run = await seedRun(), deps = callbacks(db);
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId,
+      nativePhase: "observed", runnerProfileJson: { nativePreparationFencingVersion: 1 },
+    }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "observed", leaseOwner: "old-preparation", leaseExpiresAt: new Date(0), controllerHostHash: "operator_attested" });
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: run.id, leaseOwner: "recovered-owner",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    native.claims.mockResolvedValue([claim]);
+    if (tracked) deps.activeRunExecutions.add(run.id);
+    try {
+      await createHeartbeatRecovery(db, deps).recoverActiveExecutions({ companyId: run.companyId, runId: run.id });
+      if (tracked) {
+        expect(native.claims).not.toHaveBeenCalled();
+        expect(deps.executeRun).not.toHaveBeenCalled();
+      } else {
+        expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [run.id] }));
+        expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id, { nativeLeaseOwner: claim.leaseOwner, nativeRestartRecovery: claim });
+      }
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
   it("routes an expired pre-capability startup to cleanup before generic orphan ownership holds", async () => {
     const run = await seedRun(), leaseId = randomUUID(), environmentId = randomUUID(), leaseOwner = randomUUID();
     const deadlineAtMs = Date.now() - 1_000, contextId = randomUUID();

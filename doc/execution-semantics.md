@@ -1933,10 +1933,29 @@ judged through that boot's row:
 - no row (a boot from before the lease): the record stays unprovable.
 
 A record with a recorded process group stays unprovable across hosts, because
-agent processes may outlive their server. The lease is off on a Railway
-deployment with an exclusive volume, which proves a replaced deployment from its
-own identity. A stateless Railway service keeps it.
-`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off` overrides this.
+agent processes may outlive their server. The lease is enabled on volume-backed
+Railway services too: a process can crash and restart inside the same deployment,
+and some saved ownership records do not contain a deployment identity.
+`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off` explicitly disables it.
+
+Native controller identity stamps register held preparation with this lease before
+a runner PID or checkpoint exists. Restart recovery uses the recorded controller
+boot and last write to prove its owner stopped or to fence it after the existing
+grace period. A live owner or a grace period keeps the preparation held, with a
+scheduled recovery check. Repeating the same evidence wait preserves its last-write
+timestamp so the recovery check cannot keep extending its own grace period.
+After owner proof, the normal launch, checkpoint, provider-evidence and admission
+checks still govern resumption; controller fencing alone does not prove an agent
+process stopped or authorize repeating its work.
+
+Older native controller records with no verifiable boot lease remain held. Recovery
+exposes the existing board stop-confirmation action for an unknown or foreign PID
+space. It requires `runtime:confirm_owner_stop` and confirmation of the exact run,
+boot, PID, process start and recorded host. A changed owner rejects the confirmation.
+The receipt only permits normal recovery to inspect and resume the saved work.
+Scoped recovery wakes also select fenced preparations with no runner process or
+checkpoint yet. They use the existing finite expired-run inventory and normal
+restart classifier; a missing checkpoint cannot silently discard that wake.
 
 A record saved before its owner was fully recorded (`no_owner_stamp`,
 `missing_identity`, `process_space_unrecorded`) stays unprovable and is never

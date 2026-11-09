@@ -103,7 +103,7 @@ export async function requestNativeAcceptedResultLeaseOperatorAction(db: Db, rec
   if (!held) return;
   await requestNativeControllerStopConfirmation(db, {
     runId: record.recordId, companyId: record.companyId, issueId: record.issueId,
-    controllerBootId: stamp.bootId, controllerPid: stamp.pid,
+    controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: null,
     controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null,
   });
 }
