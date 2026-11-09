@@ -229,6 +229,14 @@ export function selectedStatusCardReference(card: StatusCard, sources: Entity[],
 export function refreshedBlockerTaskInput() {
   return { title: "Mobile Safari checkout regression blocks launch", description: "Payment approval has been received. The remaining blocker is the mobile Safari checkout regression." };
 }
+/** refresh-card asks four questions, so its lead needs four runs; the shared chat fixture allows three a day. */
+export const REFRESH_CARD_LEAD_TURNS = 4;
+async function allowLeadTurns(ctx: ChatCatalogContext, turns: number) {
+  const leadPath = `/api/agents/${ctx.input.fixtures.agent.id}`;
+  const lead = await ctx.input.api.get<{ runtimeConfig: { heartbeat?: Record<string, unknown>; [key: string]: unknown } }>(leadPath);
+  await ctx.input.api.patch(leadPath, { runtimeConfig: { ...lead.runtimeConfig, heartbeat: { ...lead.runtimeConfig.heartbeat, maxDailyRuns: turns } } });
+  if ((await ctx.input.api.get<typeof lead>(leadPath)).runtimeConfig.heartbeat?.maxDailyRuns !== turns) throw new Error(`Card fixture requires its declared ${turns}-turn daily lead allowance`);
+}
 const experiments = new WeakMap<ChatCatalogContext, boolean>();
 function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<ChatCatalogCase> = {}): ChatCatalogCase {
   return integratorDefinition("status-cards", id, async ctx => {
@@ -242,6 +250,7 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
       // the ordinary shared flow applies the same policy before the human query.
       for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, { scopeType: "agent", scopeId: worker.id }])
         await ctx.input.api.post(`${root(ctx)}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
+      if (id === "status-cards.refresh-card") await allowLeadTurns(ctx, REFRESH_CARD_LEAD_TURNS);
       const cardRecipe = id === "status-cards.refresh-card" ? await prepareCardChecklist(ctx, worker.id, p.id, t) : undefined;
       const card = await seedCard(ctx, seed === "ceo" ? ctx.input.fixtures.agent.id : worker.id, worker.id, p.id, "Launch", cardRecipe?.interestPrompt);
       const initialComplete = await pollUntil({ label: "prerequisite summarizer native completion", deadlineAt: Math.min(Date.now() + 45_000, prerequisiteDeadline(ctx, Date.now() + 45_000)),
@@ -304,7 +313,7 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   }),
   define("status-cards.refresh-card", "ceo", { expectedRunCount: 7, expectedHumanMessageCount: 4, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 7 } },
-    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v3",
+    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v4",
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
 
     async act(ctx, state) {
