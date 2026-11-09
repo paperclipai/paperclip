@@ -44,6 +44,7 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   result: [0, 3_000],
   approval: [0, 3_000],
   paused: [0, 3_000],
+  stop: [0, 2_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
@@ -51,11 +52,12 @@ export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): b
   if (trigger === "tool") return workload === "B5";
   if (trigger === "approval") return workload === "G1";
   if (trigger === "paused") return workload === "H1";
+  if (trigger === "stop") return workload === "S1";
   return true;
 }
 
 /** The workload a trigger needs, for the error when none is selected. */
-const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1" };
+const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1", stop: "S1" };
 
 /** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
 const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];

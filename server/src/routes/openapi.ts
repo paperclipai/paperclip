@@ -7560,6 +7560,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/managed-agent-profiles",
   tags: ["agents"],
   summary: "Create or operator-attest a Claude Managed Agent profile",
+  description: "Board only: agent credentials get 403. A Claude Managed Agent runs on Anthropic's managed-agents beta. A board operator creates the company profile with an Anthropic API-key secret and a limited environment (no hosts, no packages), attests its qualification and explicitly acknowledges stateful retention before it can be enabled.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -8634,6 +8635,16 @@ registry.registerPath({
   summary: "Get skill update status",
   request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/update-diff",
+  tags: ["skills"],
+  summary: "Show what a pending skill source update changes (diff installed vs latest revision)",
+  description: "For a skill installed from a tracked GitHub source, compares the installed source revision (currentRef) with the latest tracked revision (latestRef) and returns each changed package file with a unified line diff: lines starting with \"-\" exist only in the installed revision and lines starting with \"+\" only in the latest one. hasUpdate is false and files is empty when the installed revision is already the latest. A file with change \"not_compared\" was left out of a revision's scan, and diffUnavailable says why a file has no diff. truncated is true when the response reached its size budget. Read-only; it does not apply the update. Use this to review an update before installing it.",
+  request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -9875,7 +9886,8 @@ registry.registerPath({
   path: "/api/instance/database-backups",
   tags: ["instance"],
   summary: "Trigger a database backup",
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  description: "Instance admins only: agent credentials receive 403, and cloud-managed instances run backups for you. Automatic gzip-compressed backups run about hourly by default; instance admins set how long they are kept in the Backup retention section of the company-prefixed /company/settings page. The web UI has no control that creates or restores a backup. For a backup now, an instance admin calls this endpoint, or an operator with shell access to the server runs `paperclipai db:backup` (add --json for metadata). The result names a gzip-compressed SQL file (backupFile) on the server host and its size. Paperclip has no restore endpoint or command: to check a backup, an operator restores the file with psql into a separate, empty PostgreSQL database, never over the live one, and then checks the restored data.",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
@@ -11505,6 +11517,11 @@ registerCurrentRoute({
 
 // --- Tool access -------------------------------------------------------------
 
+/** Where a person manages a company model service; agents relay this page instead of guessing a settings route. */
+function companyModelServiceSettingsPage(section: string, condition = "") {
+  return `People who manage connections configure, enable and test this in the ${section} section of the company-prefixed /company/settings/connections page; link it as a Markdown link to /<prefix>/company/settings/connections, not the general /company/settings page.${condition} Agent credentials cannot change or test it.`;
+}
+
 for (const [method, suffix, summary] of [
   ["get", "", "Get prompt injection settings and eligible shared OpenRouter connections; non-managers receive no settings or choices"],
   ["put", "", "Configure opt-in prompt injection model checks as a board connection manager"],
@@ -11512,7 +11529,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Classify two fixed billed samples using saved settings as a board connection manager; fallback is not a passing model test"],
 ] as const) registerCurrentRoute({
   method, path: `/api/companies/{companyId}/prompt-injection-prevention${suffix}`,
-  tags: ["prompt-injection-prevention"], summary,
+  tags: ["prompt-injection-prevention"], summary, description: companyModelServiceSettingsPage("Prompt Injection Prevention"),
   ...(method === "put" ? { body: updatePromptInjectionPreventionSchema } : {}),
   ...(method === "post" ? { body: z.object({}).strict() } : {}),
   ...(suffix === "/models" ? { query: z.object({ connectionId: z.string().uuid() }) } : {}),
@@ -11527,6 +11544,7 @@ for (const [method, suffix, summary] of [
   ["post", "/test", "Generate a fixed billed fast response sample"],
   ["get", "/history", "List fast response accounting and publication outcomes"],
 ] as const) registerCurrentRoute({ method, path: `/api/companies/{companyId}/fast-response${suffix}`, tags: ["fast-responses"], summary,
+  description: companyModelServiceSettingsPage("Fast response", " The section is shown only while an instance admin has fast responses turned on in /<prefix>/company/settings/instance/experimental."),
   ...(method === "put" ? { body: updateFastResponseSchema } : {}), responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable } });
 
 const observabilitySignalReceiptSchema = z.object({
@@ -11566,26 +11584,31 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Get decision settings, compatible connections, and manager capability",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "put", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Configure the company decision model as a connection manager", body: updateDecisionModelSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/availability", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Check local decision configuration and caller authorization without contacting a provider",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "post", path: "/api/companies/{companyId}/decision-model/test", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "Run the fixed billed three-question setup test as a connection manager",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/history", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
   summary: "List decision metadata and charges with authorized task links",
   query: costReportQuerySchema.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },

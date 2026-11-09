@@ -371,6 +371,59 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
   });
 
+  // H1 review: a budget resume continues only work its own budget stopped. The
+  // pause records the holds and the company's pause reason on each run it stops.
+  it("records what a pause stopped each active run for", async () => {
+    const agent = await hire();
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: ["company_paused"] }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    await createLifecycleDriver(db, {} as never).runHost(await current(agent.id) as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["company_paused"], companyPauseReason: "budget" } });
+  });
+
+  // H1 review: a resume that removed the holds before the pause's Stop ran must
+  // not erase why the pause stopped the run (the Stop itself stays owed).
+  it("records the pause's original cause on runs it stops after a resume removed the holds", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "pausing", lifecycleHolds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0,
+        pauseCause: { holds: ["budget"], companyPauseReason: null } } }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    await createLifecycleDriver(db, {} as never).runHost(await current(agent.id) as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["budget"], companyPauseReason: null } });
+  });
+
+  it("keeps a budget pause's cause when the budget is resumed before the pause's Stop runs", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle" }).where(eq(agents.id, agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    const { applyAgentBudgetHoldInTransaction } = await import("../../../services/agent-lifecycle.js");
+    // The budget hold pauses the agent, then the raise removes it before the
+    // lifecycle worker has run the pause's Stop.
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, true));
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, false));
+    const paused = await current(agent.id);
+    expect(paused).toMatchObject({ lifecycleState: "pausing", lifecycleHolds: [] });
+    await createLifecycleDriver(db, {} as never).runHost(paused as never);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.resultJson).toMatchObject({ pauseStop: { holds: ["budget"] } });
+  });
+
+  it("records why a budget pause started on its lifecycle operation", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle" }).where(eq(agents.id, agent.id));
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
+    const { applyAgentBudgetHoldInTransaction } = await import("../../../services/agent-lifecycle.js");
+    await db.transaction(tx => applyAgentBudgetHoldInTransaction(tx as never, companyId, agent.id, true));
+    expect((await current(agent.id)).lifecycleOperation).toMatchObject({
+      pauseCause: { holds: ["budget"], companyPauseReason: "budget" } });
+  });
+
   it("runs the saved harness test and keeps a failed configuration out of ready", async () => {
     const driver = createLifecycleDriver(db, {} as never);
     const work = worker(driver.runHost);

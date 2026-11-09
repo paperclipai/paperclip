@@ -7,13 +7,13 @@ export type FaultKind = (typeof FAULT_KINDS)[number];
 export type TaskFaultKind = FaultKind | "K13";
 
 /** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused"] as const;
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop"] as const;
 export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
@@ -221,6 +221,7 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
+  stop?: { runId: string; runStatus: string | null; runsStartedBeforeContinue: string[]; continuePosted: boolean };
   children?: Array<{ id: string; title?: string | null; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
   childStalls?: Array<{ childIssueId: string; recoveryActionId: string | null }>;
   stallWakes?: Array<{ stalledIssueId: string | null; recoveryActionId: string | null }>;
@@ -281,7 +282,8 @@ export interface TaskRecord {
   finalStatus: string | null;
   deadlineAt: number | null;
   timedOut: boolean;
-  followUp: { at: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
+  followUp: { at: number; sentAt?: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
+  stop?: { at: number; runId: string; httpStatus: number | null; error: string | null };
   faultIds: string[];
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */

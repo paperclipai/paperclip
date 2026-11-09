@@ -298,7 +298,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         expect(methods.filter(method => method === "turn/start")).toHaveLength(adopted ? 3 : 2);
       } else {
         const journal = methods.map(line => JSON.parse(line));
-        expect(journal.filter(entry => entry.processStart)).toHaveLength(adopted ? 3 : 2);
+        expect(journal.filter(entry => entry.processStart)).toHaveLength(adopted ? 4 : 3);
         expect(journal.filter(entry => entry.command === "turn.start")).toHaveLength(adopted ? 3 : 2);
       }
     } catch (error) {
