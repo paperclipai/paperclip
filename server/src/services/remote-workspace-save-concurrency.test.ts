@@ -498,17 +498,20 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
       execute: async input => { entered(); await gate; return f.target.runner!.execute(input); } } };
     const saving = saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
       target: paused, assertOwned: async () => undefined });
-    await started;
     const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
       eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
-    const running = await snapshotOperation();
-    const work = running.metadata!.saveWork as { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
-    expect(work.activeIds).toHaveLength(1);
-    expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
-    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(true);
-    release();
-    await saving;
+    let work: { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
+    try {
+      await started;
+      work = (await snapshotOperation()).metadata!.saveWork as typeof work;
+      expect(work.activeIds).toHaveLength(1);
+      expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
+      expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(true);
+    } finally {
+      release();
+      await saving;
+    }
     expect((await snapshotOperation()).metadata).toMatchObject({ saveWork: { activeIds: [], owners: {} } });
     expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
   }, 30_000);
