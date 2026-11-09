@@ -6,9 +6,9 @@ function valid() {
     state: { task: { id: "website", identifier: "COM-2" }, queryRecoveryRead: true, heldRecoveryRead: true, finalRecoveryRead: true, worker: { id: "morgan" }, failure: { id: "exhausted", status: "failed", nativePhase: "terminal_failure" },
       recoveryBefore: { id: "recovery", companyId: "company", sourceIssueId: "website", kind: "active_run_watchdog", cause: "native_session_retry_exhausted", ownerType: "board", ownerAgentId: null, returnOwnerAgentId: "morgan", recoveryIssueId: null,
         evidence: { runId: "exhausted", coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted" }, maxAttempts: 3, wakePolicy: null, nextAction: "Inspect provider trace and explicitly choose replacement." }, queryReply: "Use the Retry button on the original failed run; this requires your human board session and rechecks current gates.", retryVisible: true,
-      budgetHeldBeforeRetry: true, heldRetryStatus: 409, noAdmissionUnderBudget: true, failedRunVisibleWhileHeld: true, heldReplyAttributed: true,
+      budgetHeldBeforeRetry: true, heldRetryStatus: 202, noDuplicateRetryWhileHeld: true, noAdmissionUnderBudget: true, failedRunVisibleWhileHeld: true, heldReplyAttributed: true,
       heldReply: "The retry could not start because Morgan's current budget hold blocks admission. The previous native failure remains visible.",
-      budgetRestoredByHuman: true, eligibleRetryStatus: 202, retryBoundToOriginal: true, retryRunCount: 1, retryAdmissionAfterGateClear: true,
+      budgetRestoredByHuman: true, retryBoundToOriginal: true, retryRunCount: 1, retryAdmissionAfterGateClear: true,
       originalFailureRetained: true, actualRetryResult: true, finalReplyAttributed: true, finalReply: "Website is complete after the eligible retry. The original exhausted attempt remains inspectable." } };
 }
 it("accepts actual budget rejection, one eligible retry and retained failure", () => expect(gradeInfrastructureRetry(valid()).passed).toBe(true));
@@ -39,8 +39,13 @@ it("accepts the task's own Retry request as the human Retry, for this task and a
   expect(isHumanRetryRequest(request("GET", "/api/issues/website/retry"), "website", "morgan")).toBe(false);
   expect(isHumanRetryRequest(request("POST", "/api/issues/website/retry-workspace-export"), "website", "morgan")).toBe(false);
 });
-it("accepts a not-accepted task Retry under the hold, and still rejects a failed request", () => {
-  const held = valid(); held.state.heldRetryStatus = 200; expect(gradeInfrastructureRetry(held).passed).toBe(true);
-  const broken = valid(); broken.state.heldRetryStatus = 500; expect(gradeInfrastructureRetry(broken).passed).toBe(false);
-  const admitted = valid(); admitted.state.noAdmissionUnderBudget = false; expect(gradeInfrastructureRetry(admitted).passed).toBe(false);
+it("requires the one held Retry to have been accepted, not refused", () => {
+  for (const status of [200, 409, 500]) { const o = valid(); o.state.heldRetryStatus = status; expect(gradeInfrastructureRetry(o).passed).toBe(false); }
 });
+it("rejects a held Retry that dispatches before the gate clears", () => {
+  const early = valid(); early.state.noAdmissionUnderBudget = false; expect(gradeInfrastructureRetry(early).passed).toBe(false);
+  const predates = valid(); predates.state.retryAdmissionAfterGateClear = false; expect(gradeInfrastructureRetry(predates).passed).toBe(false);
+});
+it("rejects a held Retry that never dispatches after the gate clears", () => { const o = valid(); o.state.retryRunCount = 0; expect(gradeInfrastructureRetry(o).passed).toBe(false); });
+it("rejects a second Retry control offered while the saved Retry waits", () => { const o = valid(); o.state.noDuplicateRetryWhileHeld = false; expect(gradeInfrastructureRetry(o).passed).toBe(false); });
+
