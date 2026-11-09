@@ -89,6 +89,17 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).not.toContain(message);
   });
 
+  it("says why a chat message held in the outbox waits, without offering queue actions", () => {
+    const message = "CEO reached its daily run limit. Your message is saved and sends automatically when the limit resets at 00:00 UTC.";
+    render({ queue: { ...queue, queueId: null, targetRunId: null, steeringDisposition: "unsupported",
+      executionWait: { reason: "heartbeat.daily_run_limit", message },
+      entries: queue.entries.slice(0, 1).map(entry => ({ ...entry, canEdit: false, canDiscard: false })) } });
+    expect([...container.querySelectorAll('p[role="status"]')].map(node => node.textContent)).toEqual([message]);
+    expect(container.textContent).toContain("First queued message");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled ?? true).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')?.disabled).toBe(true);
+  });
+
   it("renders each queued message once as a compact one-line row", () => {
     render();
     const pane = container.querySelector(

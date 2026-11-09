@@ -19,6 +19,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
@@ -280,9 +281,11 @@ async function main() {
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
   let stopping: Promise<void> | null = null;
-  const shutdown = () => (stopping ??= supervisor.stop().catch(error => {
+  const shutdown = () => (stopping ??= supervisor.stop().then(() => false, error => {
     process.stderr.write(`supervisor stop: ${String(error)}\n`);
-  }));
+    return true;
+  }).then(stopFailed => releaseInstance(supervisor.paths.temporaryRoot, { keep: false, stopFailed, owner: "ttft-baseline" }))
+    .then(() => undefined, error => { process.stderr.write(`instance cleanup: ${String(error)}\n`); }));
   const onSignal = (signal: NodeJS.Signals) => {
     timeline.add("baseline_interrupted", { signal });
     void shutdown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));

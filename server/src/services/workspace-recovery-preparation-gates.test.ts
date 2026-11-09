@@ -416,6 +416,36 @@ describe("automatic retained workspace recovery", () => {
       .toEqual([{ id: settled.runId, previousRunId: f.runId }]);
   }, 60_000);
 
+  it("names a deterministic saved-files refusal behind Retry when no fallback can continue, and another Retry shows it again", async () => {
+    const f = await acceptedRemoteExport();
+    const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Earlier task" }).returning();
+    await db.insert(environmentLeases).values({ companyId: f.companyId, environmentId: lease.environmentId, issueId: other.id,
+      provider: "daytona", providerLeaseId: f.providerLeaseId, status: "expired", leasePolicy: "reuse_by_environment",
+      cleanupStatus: "success", releasedAt: new Date(), metadata: { remoteCwd: path.dirname(f.remote) } });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId,
+      issueId: f.issueId, phase: "remote_workspace_snapshot", status: "running", metadata: { boundary: "final" } });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
+    const app = boardRecoveryApp();
+    for (const click of [1, 2]) {
+      const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      await recoverRetainedWorkspace(f.input);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted", attempts: 1,
+        failure: { code: "allocation_ownership_ambiguous", retryClass: "service_required" } });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0], `click ${click}`)
+        .toMatchObject({ runId: null, payload: { executionWait: { reason: "saved_work_recovery_refused" } } });
+      const shown = await taskInterruptionPresentation(db, issue);
+      expect(shown).toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "saved_work_recovery_refused" } });
+      expect(shown?.retryWait?.message).toContain("Paperclip refused to recover the saved files");
+      expect(shown?.retryWait?.message).not.toMatch(/after automatic retries/);
+      expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.nextAction)
+        .toContain("Paperclip cannot prove which runs used the sandbox that holds the saved files");
+    }
+  }, 60_000);
+
   it("preserves an explicitly requested superseded remote export without applying its result over newer work", async () => {
     const f = await acceptedRemoteExport();
     const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId,

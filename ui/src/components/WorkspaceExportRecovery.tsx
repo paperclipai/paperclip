@@ -78,7 +78,7 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
         copy={{ waiting: "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Resuming the run…" }} /></>;
+          resuming: "Controller stop recorded. Checking recovery…" }} /></>;
   }
   // A resource held by a server recorded before Paperclip stored which server held it.
   if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {
@@ -154,14 +154,15 @@ function retainedOwnerStopToken(action: IssueRecoveryAction): string | null {
 
 /** A previous server that can no longer report cannot confirm its own stop.
  * The board confirms it once; the saved result then finishes without another agent turn. */
-function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className, confirmStop, copy }: {
-  action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
+export function PreviousServerStopConfirmation({ action, runId: givenRunId, formId: givenFormId, ownerToken, issueId, companyId, className, confirmStop, copy }: {
+  action?: IssueRecoveryAction; runId?: string; formId?: string; issueId: string; companyId: string; className?: string;
   /** Saved-work copyback owner; used when no custom confirmation is given. */
   ownerToken?: string;
   confirmStop?: (stopEvidence: string) => Promise<unknown>;
-  copy?: { waiting: string; question: string; placeholder: string; resuming: string };
+  copy?: { waiting: string; question: string; placeholder: string; resuming: string; confirm?: string };
 }) {
-  const runId = action.evidence.runId as string;
+  const runId = givenRunId ?? action!.evidence.runId as string;
+  const formId = givenFormId ?? action!.id;
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [evidence, setEvidence] = useState("");
@@ -171,7 +172,7 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
   const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardConfirmOwnerStop(companyId, access.data);
   const confirm = useMutation({ retry: false, // query-error-ok: an explicit board confirmation; the error is shown below.
     mutationFn: () => confirmStop ? confirmStop(evidence.trim())
-      : issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken: ownerToken!,
+      : issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action!.id, runId, ownerToken: ownerToken!,
         controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
     onSuccess: () => {
       setOpen(false);
@@ -187,11 +188,11 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
         ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
-        Confirm the previous server stopped</Button>
+        {copy?.confirm ?? "Confirm the previous server stopped"}</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
-        <label htmlFor={`previous-server-stop-${action.id}`} className="text-xs text-muted-foreground">
+        <label htmlFor={`previous-server-stop-${formId}`} className="text-xs text-muted-foreground">
           {copy?.question ?? "How did you confirm that the previous server and its file copy stopped?"}</label>
-        <Textarea id={`previous-server-stop-${action.id}`} value={evidence} onChange={event => setEvidence(event.target.value)}
+        <Textarea id={`previous-server-stop-${formId}`} value={evidence} onChange={event => setEvidence(event.target.value)}
           placeholder={copy?.placeholder ?? "For example: the old server process exited and was not restarted."} maxLength={12000} rows={3} />
         <div className="flex items-center justify-between gap-2">
           <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>Cancel</Button>

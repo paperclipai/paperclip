@@ -33,10 +33,10 @@ import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js
 import { OWNER_GONE_ATTESTATION_KEY, attestOwnerGoneByRecordVersion, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
-  settleNativeAcceptedResultLease,
+  settleNativeAcceptedResultLease, classifyNativeAcceptedResultLeaseOwners,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
-import { settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -656,6 +656,11 @@ const agentLifecycleLeaseKind: OwnableKind = {
   },
 };
 
+const acceptedNativeResultLease = nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
+  and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+    isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
+    sql`${nativeRunFinalizations.leaseExpiresAt} > now()`));
+
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
   nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
@@ -671,10 +676,13 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // exact lease so finalization runs now (RC-41).
     // Outstanding leases only: an expired lease no longer holds the result,
     // so it is not in progress for this kind (finalization reclaims it).
-    ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
-      and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
-        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`)),
+    ...acceptedNativeResultLease,
+    listInProgress: async (db, limit, offset) => {
+      const listed = await acceptedNativeResultLease.listInProgress!(db, limit, offset);
+      return { ...listed, records: await classifyNativeAcceptedResultLeaseOwners(db, listed.records) };
+    },
+    listForRuns: async (db, runIds) => classifyNativeAcceptedResultLeaseOwners(db,
+      await acceptedNativeResultLease.listForRuns!(db, runIds)),
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
@@ -866,9 +874,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     and(eq(workspaceOperations.phase, "remote_workspace_provision"), or(eq(workspaceOperations.status, "running"),
       sql`(${workspaceOperations.metadata}->>'uncertain')::boolean is true`)),
     row => runOwner(row.heartbeatRunId)),
-  operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
+  { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)),
+    row => runOwner(row.heartbeatRunId)), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),

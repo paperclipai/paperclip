@@ -512,7 +512,14 @@ export function TaskChatQueuedMessages({
     }
   }
 
-  if (entries.length === 0 && !visibleError && !deferredStatus) return null;
+  // A chat message held in the outbox (for example by the agent's daily
+  // limit) has no receipt or run whose task status could explain the wait,
+  // so the queue says why it waits. Receipt-backed waits keep the task status.
+  const statusMessage = deferredStatus?.message
+    ?? (queue.state === "deferred" && !queue.queueId && !queue.targetRunId && entries.length > 0
+      ? queue.executionWait?.message ?? null : null);
+
+  if (entries.length === 0 && !visibleError && !statusMessage) return null;
 
   return (
     <TaskChatComposerBar
@@ -564,7 +571,7 @@ export function TaskChatQueuedMessages({
           </div>
         </SortableContext>
       </DndContext>
-      {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message}</p> : null}
+      {statusMessage ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{statusMessage}</p> : null}
       {visibleError ? (
         <div
           role="status"

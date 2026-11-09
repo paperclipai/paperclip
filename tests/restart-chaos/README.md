@@ -26,6 +26,16 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 
+Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
+deleted when the wave ends, pass or fail, including after an interrupt. Evidence
+is already copied into `results/`. Use `--keep` to inspect the instance itself.
+A kept instance, or one whose processes could not be stopped, gets a
+`.paperclip-runner-e2e-kept.json` marker; creating the next runner E2E or chaos instance removes marked instances older
+than 6 hours whose Postgres is no longer running and that no live process still
+references. An instance whose Daytona cleanup is still pending keeps its database
+as the owner of that cleanup and never expires. Unmarked directories are never
+removed.
+
 `--rc06-masked` keeps the company budget amount but disables its hard stop on
 the isolated Chaos Lab company, so one stuck accounting row (RC-06) cannot
 wedge every later task. Masked tasks are marked `rc06-masked` in the ledger and

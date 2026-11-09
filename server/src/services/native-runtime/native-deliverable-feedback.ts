@@ -324,6 +324,20 @@ export async function publishedTaskDocuments(db: Db, binding: { companyId: strin
     href: `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueIdentifier ?? binding.issueId)}#document-${encodeURIComponent(key)}` }));
 }
 
+/** A parent that delegated a file to a child links the child's delivered file
+ * instead of publishing a copy, because native register_deliverable is bound to
+ * its current task. A completed direct child's attachment is a valid citation,
+ * but not this run's publication of a file that the parent itself requests.
+ */
+async function completedChildAttachment(db: Db, binding: { companyId: string; issueId: string; lockSources?: boolean }, id: string): Promise<boolean> {
+  const query = db.select({ id: issueAttachments.id }).from(issueAttachments)
+    .innerJoin(issues, and(eq(issues.id, issueAttachments.issueId), eq(issues.companyId, binding.companyId),
+      eq(issues.parentId, binding.issueId), eq(issues.status, "done")))
+    .where(and(eq(issueAttachments.id, id), eq(issueAttachments.companyId, binding.companyId))).limit(1);
+  const [attachment] = await (binding.lockSources ? query.for("share", { of: [issueAttachments, issues], noWait: true }) : query);
+  return attachment !== undefined;
+}
+
 /** Files cited as completed output must be reachable outside the agent workspace. */
 export async function validateNativeDeliverableEvidence(
   db: Db,
@@ -358,7 +372,8 @@ export async function validateNativeDeliverableEvidence(
       const [attachment] = uuid.test(id)
         ? await (binding.lockSources ? query.for("share", { of: [issueAttachments, assets], noWait: true }) : query) : [];
       if (!attachment) {
-        throw new NativeDeliverableEvidenceError("Completion cites no registered attachment on this task. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
+        if (uuid.test(id) && await completedChildAttachment(db, binding, id)) continue;
+        throw new NativeDeliverableEvidenceError("Completion cites no registered attachment on this task or its completed child tasks. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
       }
       // A prior output (or user input) can be useful context, but does not prove
       // this run published the newly requested output. The receipt survives a

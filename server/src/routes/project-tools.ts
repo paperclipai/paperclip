@@ -1,5 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { companies, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { callProjectTool, projectToolDefinitions } from "../services/project-tools.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -27,6 +28,8 @@ export function projectToolRoutes(db: Db) {
         token: req.header("authorization")!.replace(/^Bearer\s+/i, ""),
         companyId: context.run.companyId, issueId: context.issue.id, agentId: context.run.agentId,
         conversation: Boolean(context.issue.conversationAgentId),
+        companyPrefix: params.name === "list_projects" ? (await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+          .where(eq(companies.id, context.run.companyId)))[0]?.issuePrefix : null,
       });
       return send({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
     } catch (error) {

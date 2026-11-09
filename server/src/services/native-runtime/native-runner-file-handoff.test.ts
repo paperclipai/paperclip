@@ -32,6 +32,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
+  type Db,
 } from "@paperclipai/db";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -45,6 +46,7 @@ import {
   stageNativeRunnerAttachmentBytes,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
+import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 describe("native runner file handoff", () => {
@@ -461,7 +463,26 @@ describe("native runner file handoff", () => {
     try {
       await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
         .rejects.toThrow("registered attachment on this task");
+      // A parent links the file its completed child delivered. It cannot
+      // register that file again, because register_deliverable is task-bound.
+      await db.update(issues).set({ parentId: issueId }).where(eq(issues.id, otherIssueId));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .rejects.toThrow("registered attachment on this task");
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, otherIssueId));
+      await db.update(issues).set({ title: "Review the delegated work" }).where(eq(issues.id, issueId));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`/api/attachments/${first.entityRefs[0]}/content`])))
+        .resolves.toContain("Completion report accepted");
+      await expect(db.transaction(tx => validateNativeDeliverableEvidence(tx as unknown as Db, {
+        companyId, issueId, runId, objective: "Review the delegated work", semanticToolReceipts: {},
+        lockSources: true, authoritativeDone: true,
+      }, doneReport([`deliverable:${first.entityRefs[0]}`])))).resolves.toBeUndefined();
+      // The child's file is context, not this run's publication of a file the
+      // parent's own request names.
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .rejects.toThrow("no accessible delivery evidence");
     } finally {
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
       await db.update(issueAttachments).set({ issueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
       await db.delete(issues).where(eq(issues.id, otherIssueId));
     }

@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { reserveRunnerE2EServerPort } from "./ports.js";
+import { releaseInstance } from "./instance-retention.js";
 import { createRunnerE2ETemporaryRoot } from "./server-config.js";
 import { openRollingDeploymentBrowser } from "./rolling-deployment-browser.js";
 import { startRollingDeploymentProcess } from "./rolling-deployment-process.js";
@@ -305,7 +306,12 @@ try {
   report.cleanupConfirmed = cleanupErrors.length === 0;
   if (cleanupErrors.length) report.cleanupErrors = cleanupErrors;
   report.passed = !report.error && checks.length > 0 && checks.every(item => item.passed) && report.cleanupConfirmed;
-  await saveReport();
+  try {
+    await saveReport();
+  } finally {
+    await releaseInstance(root, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "rolling-deployment-smoke", retain: entry => entry === path.basename(reportPath) || /\.(log|png)$/.test(entry) })
+      .catch(error => console.warn(`Temporary root cleanup failed at ${root}: ${String(error)}`));
+  }
   console.info(JSON.stringify({ passed: report.passed, checks, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (!report.passed) process.exitCode = 1;

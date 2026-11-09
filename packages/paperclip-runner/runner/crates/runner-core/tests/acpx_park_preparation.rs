@@ -60,6 +60,10 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::configured(|_| {})
+    }
+
+    fn configured(adjust: impl FnOnce(&mut DurableRunnerConfig)) -> Self {
         let catalog: Value =
             serde_json::from_str(include_str!("../../../../acpx-profiles.json")).unwrap();
         let profile = &catalog["profiles"]["claude"];
@@ -84,7 +88,7 @@ impl Harness {
         .unwrap();
         fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
         let args = vec!["--profile-digest".to_owned(), digest.to_owned()];
-        let config = DurableRunnerConfig {
+        let mut config = DurableRunnerConfig {
             connect_url: "ws://127.0.0.1/runner".to_owned(),
             ca_bundle_path: None,
             state_dir: fixture.0.clone(),
@@ -114,6 +118,7 @@ impl Harness {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(30),
+            turn_scoped: false,
         };
         let descriptor = json!({
             "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -131,6 +136,7 @@ impl Harness {
                 "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "binding-run-1"},
             },
         });
+        adjust(&mut config);
         let mut executor = NativeProviderCommandExecutor::with_runner_config(&fixture.0, &config);
         executor
             .execute(&command(1, "run.prepare", json!({"provider": descriptor})))

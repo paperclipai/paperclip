@@ -30,6 +30,9 @@ describe("ordinary task interruption", () => {
     await render();
     expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
     expect(container.querySelectorAll("button")).toHaveLength(1);
+    // A stable handle for the task's own Retry, the supported path after
+    // automatic recovery stops.
+    expect(container.querySelector('[data-testid="task-execution-retry"]')?.textContent).toBe("Retry");
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(retry).toHaveBeenCalledOnce();
     expect(container.querySelector("a, details, input, textarea")).toBeNull();

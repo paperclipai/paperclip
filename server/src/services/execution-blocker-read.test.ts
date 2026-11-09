@@ -3,7 +3,7 @@ import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issue
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { getExecutionBlocker } from "./execution-blocker.js";
+import { EXECUTION_BLOCKER_PERSON_RETRY_ACTION, getExecutionBlocker } from "./execution-blocker.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("execution blocker PostgreSQL read projection", () => {
@@ -73,6 +73,15 @@ describe.skipIf(!support.supported)("execution blocker PostgreSQL read projectio
     expect(await compare(f)).toMatchObject({ runId: f.run.id, agentId: f.agentId, canRetry: true, canContinue: false });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toEqual(f.run);
     expect(await getExecutionBlocker(db, randomUUID(), f.issueId)).toBeNull();
+  });
+
+  it("names Retry as the person's control, so an agent reading the blocker does not re-run the work", async () => {
+    const f = await fixture();
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(blocker).toMatchObject({ canRetry: true });
+    expect(blocker!.nextAction).toBe(`Inspect the source run. ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`);
+    expect(EXECUTION_BLOCKER_PERSON_RETRY_ACTION).toMatch(/^A person can use Retry on this task/);
+    expect(EXECUTION_BLOCKER_PERSON_RETRY_ACTION).toContain("Agents cannot retry it for them.");
   });
 
   it("retains the claimed adapter and startup receipts for a cancelled pre-provider run", async () => {

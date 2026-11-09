@@ -418,7 +418,7 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
 function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction) {
   if (onlineSource?.kind !== "git") return undefined;
   const verifier = createNestedWorkspaceImportVerifier({ db: input.db, storage: input.storage, companyId: input.companyId,
-    sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal });
+    sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal, persistVerification: true });
   let pending = Promise.resolve();
   return {
     prepare(options: Parameters<typeof prepareNestedWorkspaceImports>[0]) {

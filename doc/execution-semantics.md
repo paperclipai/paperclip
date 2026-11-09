@@ -716,6 +716,28 @@ its task tree created: the task that created the workspace keeps it, and the
 relative bound to it (for example a parent that selected its child's workspace)
 moves to its own on its next admission.
 
+A legacy child can have no next admission: when another task's writer held the
+shared workspace, the child's run failed setup before any provider work, and
+stranded-work recovery blocked it with a board-owned escalation. The
+active recovery action sweep moves such a child without a person, in one
+transaction, when the escalation's latest run failed setup on that workspace
+hold, the child's Blocked status came from that escalation (no status decision
+at or after the block), the shared dependency-readiness rule allows work, and
+the binding release above is allowed. The child's binding is released, the
+escalation resolves with the outcome `legacy_shared_workspace_rehomed`
+(`issue.legacy_workspace_rehomed` system activity), the child returns to
+`todo`, and a pending wake is recorded. The assignee is then woken once with a
+fresh session. Only a created run settles the wake: a wake lost to a crash or
+refused by the heartbeat stays pending, backs off (5 minutes, doubling, at most
+an hour), and is retried at that deadline while the child is still an assigned
+`todo`. What the moved child
+sees is a fresh workspace from the project base: no parent changes, and none of
+its own earlier files from the shared workspace. The child that still holds the
+shared workspace with unsaved files is not moved; its save recovery owns the
+hold, its files stay in the shared workspace and its saved-work receipts, and it
+moves on its first admission after that recovery settles. The parent keeps its
+workspace throughout.
+
 ### Blockers (`blockedByIssueIds`)
 
 This is dependency semantics.
@@ -1580,6 +1602,24 @@ and any run saved by an older release without these facts, keeps verified
 reattachment. A reattachment that loses its runner still requests the user's
 Retry as described above.
 
+A local runnerd that dies (for example SIGKILL during a tool call) cannot
+suspend, and its provider and tool processes are re-parented, so they cannot be
+found from the controller's process records. Durable runnerd therefore journals
+each provider's process lineage to `<runner state>/process-lineage/` from the
+moment the provider is spawned: the provider, every descendant, and every
+process group or session a descendant leads, each named by PID and start time.
+When close finds that runnerd exited without suspending and without a signal
+from close, it runs `paperclip-runnerd reap-lineage` from the same executable.
+The reaper refuses while runnerd is alive or when runnerd never journalled. It
+signals only processes whose PID and start time still match the journal, and it
+reports `verified` only when none remain. The journal also records how far the
+process table was read. A same-user orphan that started after that point cannot
+be attributed, so the reaper refuses without signalling it. A failed journal write removes the writer marker, so a
+record that may be missing a member never verifies. A verified report ends the session as
+a crash stop with its durable record intact, and recovery continues within the
+normal attempt budget. Any other report keeps the cleanup quarantine below.
+Launcher-owned (remote) and adopted runners are not reaped this way.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
@@ -1881,8 +1921,13 @@ A native run can accept its result and then lose its server to a hard kill
 before finalization. Its result stays leased to the controller of the earlier
 boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
-different boot and its recorded controller process has exited or its PID now
-names another process. Only the executor's lease carries that controller
+different boot in the same known kernel and PID namespace, and its recorded
+controller process has exited or its PID now names another process. The
+executor saves that namespace with its claim. Linux uses its boot UUID and PID
+namespace; macOS uses its kernel boot-session UUID. An unreadable or unsupported
+identity, a different namespace, or an older claim without this proof keeps the
+original lease expiry and does not probe the recorded PID. Only the executor's
+lease carries that controller
 identity; a finalizer or cleanup lease is never released this way and expires
 on its own short lease. The stored result is then
 finalized without another
@@ -1890,22 +1935,59 @@ provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
 
+Before claiming an in-flight local native run, restart recovery also requires
+this same known process space. Expiry alone does not prove a local controller
+stopped. A missing, foreign or unreadable namespace creates one board-owned
+recovery action for the exact saved authority, without probing the recorded PID,
+spending retry attempts, or arming a polling loop. Renewed authority gets a new
+opaque fingerprint and preserves the previous action. Remote and plugin tasks
+retain their ordinary Stop/provider-cleanup path and do not offer the local
+containment confirmation.
+
+When automatic recovery cannot prove a local owner stopped, an operator can
+record containment through the task's recovery action after the original lease
+expires. The operator separately confirms the controller and provider/tools
+stopped on their original host, and records reviewed action outcomes and evidence.
+The server rechecks board `runtime:confirm_owner_stop` permission for a company
+owner, company administrator or instance administrator, plus company, assignee, source binding,
+opaque authority, exact expiry (including microseconds), pending Stop, accepted
+results and cleanup obligations under the normal ownership locks. A renewed or
+replaced owner invalidates the confirmation. This is explicit operator evidence,
+not a local process-stop observation.
+
+Containment uses normal failed-owner settlement and preserves usage uncertainty,
+workspaces and outcome evidence. Containment records the canonical `restored`
+outcome while keeping the task status unchanged, including when it is already
+`todo`. A separate ordinary Retry then consumes that committed evidence. It does not accept a provider result or queue a
+replacement. Only exact unadmitted Retry receipts for the contained source are
+closed with an inspectable reason; accepted or newer work stays intact. After
+cleanup and outcome review, the user makes a new ordinary Retry request under
+current authorization. Unknown outcomes keep the hold; reviewed completed or
+mixed effects remain in the continuation context and never authorize automatic
+replay. A later successful ordinary recovery claim resolves only its exact prior
+namespace attention.
+
 A recorded process is judged only in the PID space that recorded it. Native
 controller rows store `controller_host_hash` and run processes store
 `process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
 never proves that a process on another host, in another PID namespace, or in a
 sandbox is gone; such a record keeps its lease, fence or staleness TTL.
 
-Rows saved before those columns existed have no recorded host. For one release
-only, a single-host server keeps the previous local proof for them, and each use
+Rows saved before those columns existed have no recorded host. The legacy
+compatibility helper and run-process sweep retain one-release single-host local
+proof where their existing owners permit it. Each use
 writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
 removes this fallback can confirm that no rows still depend on it. An ephemeral
 server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
 controller rows with no recorded host wait as `controller_host_unrecorded`, with
 a board recovery action to confirm that the previous server stopped. Its run
 processes with no recorded host are left to the run's Stop control. The next
-release removes the fallback and treats every row with no recorded host as
-unprovable.
+release removes that compatibility fallback. The strict Native in-flight claim,
+early accepted-result release, and failed-owner guards above do not use it.
+A previous-server-only confirmation is not same-namespace proof and does not
+confirm that a provider or its tools stopped. It cannot override those guards.
+Its notification requests recovery inspection; unfinished ownership can still
+require the separate containment and ordinary Retry described above.
 
 A server boot that holds work keeps a controller instance lease
 (`controller_instances`): a row named by its boot id, with an epoch and a lease
@@ -2517,6 +2599,30 @@ times; new input, Retry or a new recovery generation reconsiders the hold. The
 recovery worker discovers these holds itself, so holds saved by earlier releases
 take the same path after deploy. An exhausted hold whose run's files a sibling
 recovery action already saved settles as recovered.
+
+An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
+refusal of the saved files: its recovery window ran out before the agent's stop
+could be proven. This applies to every workspace recovery the worker owns,
+export holds and restore holds alike. Once the source run is provably over (its
+run is terminal, no local execution remains, and neither its controller lease
+nor its finalizer lease is live), the recovery worker re-arms it with a new
+bounded system generation. A live lease defers the re-arm to that lease's
+expiry; the worker is not woken earlier. The new generation repeats the strict
+stop proof (a provider stop receipt for every allocation of the run) and the
+save, then settles the hold exactly like any completed recovery, so other tasks
+on the workspace can start. Re-arms are bounded: at most four, the first at once
+and the next ones 30 minutes, 2 hours and 8 hours after the previous re-arm,
+each recorded in the action's `stopProofRecovery` marker and as
+`issue.workspace_recovery_rearmed` system activity. When every re-arm of an
+export hold is spent and the stop still cannot be proven, the hold takes the
+retained-source fallback above: the unsaved files are attached to the task,
+unapplied, and the task continues from the last save. A fallback whose bounded
+checks are spent is reconsidered once whenever an allocation of the source run
+changes afterwards, for example when a late provider stop receipt arrives.
+While a re-arm remains, the hold names the wait and says that Paperclip tries
+again automatically; after that it names Retry. Holds exhausted by earlier
+releases carry no marker and are re-armed on the worker's first pass after
+deploy, with no migration.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
@@ -3379,7 +3485,8 @@ Recorded system recovery failures retain their original attempt and intent.
 When system workspace recovery exhausts its bounded attempts or deadline, the
 recovery action stays active and its owner changes from system to board. Its
 next action names the attempt count and last failure code and tells the board to
-use **Retry recovery**. The task blocker shows that same text. Retry starts one
+use **Retry recovery**. An unproven agent stop (`agent_stop_unconfirmed`) instead
+names the automatic re-arm described above; Retry remains available. The task blocker shows that same text. Retry starts one
 new bounded system generation and returns ownership to the system. A sweep that
 finds an action already exhausted and still system-owned applies the same handoff
 as bookkeeping only; it grants no attempt. Exhaustion never submits a provider
@@ -3996,6 +4103,9 @@ are retained during shutdown so recovery can replay a contiguous journal. They
 carry no permission to start work. Stream closure, stream failure or drain timeout
 after complete usage leaves the saved wait unfinalized until a provider terminal
 is retained; complete token counters alone cannot certify a stopped provider.
+Codex governed-wait settlement allows up to 30 seconds for its interruption
+terminal, matching the transport command window. The caller's execution deadline
+can shorten that window. An interrupt acknowledgement alone is not terminal proof.
 A timeout, missing accounting, or an unproven provider terminal remains a failure;
 the saved wait does not certify successful provider execution.
 

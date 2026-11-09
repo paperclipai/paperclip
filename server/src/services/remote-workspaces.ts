@@ -33,8 +33,10 @@ import {
   type RemoteWorkspaceSavePhaseTiming,
 } from "./remote-workspace-transport.js";
 import {
-  beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
+  beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
+  type WorkspaceSnapshotStorageTiming,
 } from "./remote-workspace-snapshot-storage.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 import { restoreRemoteWorkspaceArchive, readRemoteWorkspaceArchiveDirectories } from "./remote-workspace-snapshot-archive.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
@@ -62,10 +64,12 @@ type RemoteWorkspaceSaveTiming = RemoteWorkspaceSavePhaseTiming & {
   /** Read the archive manifest and commit the saved authority. */
   publishMs?: number;
   reusedUpload?: boolean;
+  /** Where the upload spent its time, and the storage requests it sent. */
+  storage?: WorkspaceSnapshotStorageTiming;
 };
 const RETIRED_SAVE_SCHEMA = "paperclip.remote-workspace-retired-save.v1";
 type SaveWork = { schema: typeof SAVE_WORK_SCHEMA; activeIds: string[]; unknown: boolean; quiescedAt: string | null };
-function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
+export function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
   const work = object(metadata?.saveWork);
   return work.schema === SAVE_WORK_SCHEMA && Array.isArray(work.activeIds)
     && work.activeIds.every(id => typeof id === "string") && new Set(work.activeIds).size === work.activeIds.length
@@ -429,6 +433,8 @@ export async function prepareRemoteWorkspace(input: {
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   let restoredExport: Awaited<ReturnType<typeof restoreRemoteWorkspaceDirectory>> | null = null;
+  // Where the restore spent its time and the storage requests it sent.
+  const restoreTiming = newWorkspaceSnapshotStorageTiming();
   if (sameAllocation && !await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: initial.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) })) throw new Error("remote_workspace_export_cleanup_pending");
@@ -444,12 +450,13 @@ export async function prepareRemoteWorkspace(input: {
         try {
           const archivePath = path.join(scratch, "workspace.pcws");
           step = "snapshot_download";
-          await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
+          await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath,
+            timing: restoreTiming });
           step = "sandbox_restore";
-          restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
+          restoredExport = await measureRunPhase("workspace.snapshot.sandbox_restore", () => restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
             restorationIdentity: preparationIdentity, restorationEpoch: initial.epoch, allowEmptyRoot: migration !== null,
             allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [],
-            replaceRetiredRoot });
+            replaceRetiredRoot }));
         } finally { await rm(scratch, { recursive: true, force: true }); }
       } catch (error) {
         // Cancellation keeps its own handling, as do lookup refusals.
@@ -590,7 +597,8 @@ export async function prepareRemoteWorkspace(input: {
         || existing.heartbeatRunId !== input.runId || existing.phase !== "remote_workspace_restore")) throw new Error("remote_workspace_restore_receipt_changed");
       const metadata = { epoch: authority.epoch, snapshotId: initial.snapshotId,
         exportCleanup: { ...authority.location, stagingRoot: restoredExport.stagingRoot,
-          state: restoredExport.cleanupPending ? "pending" : "cleaned" } };
+          state: restoredExport.cleanupPending ? "pending" : "cleaned" },
+        restoreTiming: { schema: "paperclip.remote-workspace-restore-timing.v1", ...restoreTiming } };
       if (existing) await tx.update(workspaceOperations).set({ status: "succeeded", metadata, finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(workspaceOperations.id, existing.id));
       else await tx.insert(workspaceOperations).values({ id: restoredExport.operationId, companyId: workspace.companyId,
@@ -865,7 +873,7 @@ export async function saveRemoteWorkspace(input: {
     const uploadStarted = performance.now();
     const saved = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage ?? getStorageService(), snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: timing.storage ??= newWorkspaceSnapshotStorageTiming() });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();

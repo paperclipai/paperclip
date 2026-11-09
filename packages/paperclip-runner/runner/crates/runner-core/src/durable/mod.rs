@@ -249,6 +249,10 @@ pub struct DurableRunnerConfig {
     pub reconnect_grace: Option<Duration>,
     /// Zero disables the total process lifetime limit.
     pub max_runtime: Duration,
+    /// The controller launched this Runner for one run (`--lifecycle-mode
+    /// per_turn`): the process exits with its run, so nothing reuses a provider
+    /// generation prepared after its turn settles.
+    pub turn_scoped: bool,
 }
 
 impl DurableRunnerConfig {
@@ -429,6 +433,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
+            turn_scoped: false,
         }
     }
 

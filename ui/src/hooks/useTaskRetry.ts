@@ -7,6 +7,16 @@ import { queryKeys } from "../lib/queryKeys";
 import { createUuid } from "../lib/uuid";
 
 type RetryRequest = { issueId: string; identifier?: string | null; idempotencyKey: string; observedRunId: string | null };
+type RetryResult = Awaited<ReturnType<typeof issuesApi.retryTask>>;
+
+export const STALE_TASK_RETRY_MESSAGE = "This attempt was already replaced, so Retry did not start new work. The task now shows its current state.";
+
+export function taskRetryNotStartedReason(result: RetryResult): string | null {
+  if (!result.accepted) return STALE_TASK_RETRY_MESSAGE;
+  const outcome = result.scheduledRetry?.outcome;
+  if (outcome && outcome !== "promoted" && outcome !== "already_promoted") return result.scheduledRetry!.message;
+  return null;
+}
 
 export function useTaskRetry(issue: Issue | undefined) {
   const queryClient = useQueryClient();
@@ -14,6 +24,7 @@ export function useTaskRetry(issue: Issue | undefined) {
   const [optimistic, setOptimistic] = useState(false);
   const [takingLonger, setTakingLonger] = useState(false);
   const [reconcile, setReconcile] = useState<{ refs: string[]; sourceRunId: string | null } | null>(null);
+  const [notStarted, setNotStarted] = useState<{ error: Error; state: string | null; observedRunId: string | null } | null>(null);
   const mutation = useMutation({
     mutationFn: ({ issueId, identifier: _identifier, ...body }: RetryRequest) =>
       issuesApi.retryTask(issueId, body),
@@ -22,6 +33,11 @@ export function useTaskRetry(issue: Issue | undefined) {
       if (isCurrent) request.current = null;
       const refs = [...new Set([variables.issueId, variables.identifier].filter((ref): ref is string => Boolean(ref)))];
       if (isCurrent && result.accepted) setReconcile({ refs, sourceRunId: variables.observedRunId });
+      if (isCurrent) {
+        const reason = taskRetryNotStartedReason(result);
+        setNotStarted(reason ? { error: new Error(reason), state: result.presentation?.state ?? null,
+          observedRunId: result.presentation?.observedRunId ?? null } : null);
+      }
       {
         for (const ref of refs) queryClient.setQueryData<Issue>(queryKeys.issues.detail(ref), current =>
           current ? { ...current, interruption: result.presentation } : current);
@@ -70,16 +86,20 @@ export function useTaskRetry(issue: Issue | undefined) {
     setOptimistic(false);
     setTakingLonger(false);
     setReconcile(null);
+    setNotStarted(null);
     mutation.reset();
   }, [issue?.id]);
   return { retry: () => {
     if (!issue) return;
     setReconcile(null);
+    setNotStarted(null);
     mutation.reset();
     request.current ??= { issueId: issue.id, identifier: issue.identifier, idempotencyKey: createUuid(),
       observedRunId: issue.interruption?.observedRunId ?? issue.executionBlocker?.runId ?? null };
     setOptimistic(true);
     setTakingLonger(false);
     mutation.mutate(request.current);
-  }, optimistic, takingLonger, error: mutation.error };
+  }, optimistic, takingLonger, error: mutation.error ?? (notStarted
+    && (issue?.interruption?.state ?? null) === notStarted.state
+    && (issue?.interruption?.observedRunId ?? null) === notStarted.observedRunId ? notStarted.error : null) };
 }

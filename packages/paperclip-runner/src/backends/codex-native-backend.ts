@@ -223,7 +223,10 @@ function createTransportBackedNativeSessionBackend(
       requireProviderSessionIdentity: options.transportFactory !== undefined,
     }),
     preparedContext ? constraints : undefined,
-    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS : undefined,
+    // Codex interruption uses a bounded 30-second transport command. Keep
+    // listening for its terminal through that window before quarantining a wait.
+    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS
+      : isCodex ? 30_000 : undefined,
   );
   if (input.provider.kind === "cursor_cloud") {
     backend.descriptor = async () => {

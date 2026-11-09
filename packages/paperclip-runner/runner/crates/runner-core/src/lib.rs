@@ -32,7 +32,7 @@ pub mod managed_provider_backend;
 pub mod native_provider_backend;
 pub mod oom_score;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod process_lineage;
+pub mod process_lineage;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;

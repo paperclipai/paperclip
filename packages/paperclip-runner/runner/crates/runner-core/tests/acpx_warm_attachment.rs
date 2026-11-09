@@ -79,6 +79,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -238,6 +239,7 @@ fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -355,6 +357,7 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -497,6 +500,7 @@ fn restores_a_turn_lost_to_a_runner_upgrade_under_the_new_launch_profile() {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",

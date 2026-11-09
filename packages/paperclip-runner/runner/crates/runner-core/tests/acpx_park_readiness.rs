@@ -85,6 +85,7 @@ fn fixture(
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",

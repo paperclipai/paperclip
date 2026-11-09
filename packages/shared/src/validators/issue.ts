@@ -599,6 +599,11 @@ export const confirmNativeControllerStoppedSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+export const confirmRunStoppedSchema = z.object({
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
 /** Board attestation that the owner of a record Paperclip cannot judge (saved
  * before owners were recorded) has stopped, so recovery may settle the record. */
 export const confirmOwnerGoneSchema = z.object({
@@ -647,6 +652,8 @@ export const resolveIssueRecoveryActionSchema = z
       .object({
         runId: z.string().guid(),
         providerStopped: z.literal(true),
+        controllerStopped: z.literal(true).optional(),
+        controllerAuthorityDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
         actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
         outcomeEvidence: z.string().trim().min(20).max(12000),
         workspaceRepairEvidence: z.string().trim().min(20).max(12000).optional(),
@@ -663,10 +670,20 @@ export const resolveIssueRecoveryActionSchema = z
     if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }
+    const reconciliation = value.executionReconciliation;
+    const controllerContainment = reconciliation?.controllerStopped !== undefined
+      || reconciliation?.controllerAuthorityDigest !== undefined;
+    if (controllerContainment && (!value.actionId || value.outcome !== "restored"
+      || reconciliation?.controllerStopped !== true || !reconciliation?.controllerAuthorityDigest)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["executionReconciliation"],
+        message: "Controller containment requires the exact recovery action, both stop confirmations, and its authority digest" });
+      return;
+    }
     if (value.outcome === "restored") {
-      // A retained-source repair records evidence without changing task state.
-      // The route verifies the exact server-owned source and unchanged status.
-      if (value.executionReconciliation?.workspaceRepairEvidence) return;
+      // Source repair and complete controller containment record evidence
+      // without changing task state. The route checks the exact locked source,
+      // unchanged status, board authority, lease expiry, and cleanup evidence.
+      if (value.executionReconciliation?.workspaceRepairEvidence || controllerContainment) return;
       if (
         value.sourceIssueStatus !== "todo" &&
         value.sourceIssueStatus !== "done" &&

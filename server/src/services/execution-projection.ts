@@ -334,6 +334,27 @@ export function projectExecution(
         "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
       return set("failed", "Continuation cancelled");
     }
+    const reconciliation = recoveryAction.evidence.executionReconciliation;
+    if (recoveryAction.cause === "native_restart_recovery_blocked"
+      && recoveryAction.evidence.reason === "controller_process_space_unverified"
+      && recoveryAction.evidence.continuationDelivery === "not_requested"
+      && reconciliation && typeof reconciliation === "object" && !Array.isArray(reconciliation)
+      && "runId" in reconciliation && reconciliation.runId === run.id
+      && "controllerStopped" in reconciliation && reconciliation.controllerStopped === true
+      && "providerStopped" in reconciliation && reconciliation.providerStopped === true
+      && "controllerAuthorityDigest" in reconciliation && typeof reconciliation.controllerAuthorityDigest === "string" && /^[0-9a-f]{64}$/.test(reconciliation.controllerAuthorityDigest)) {
+      const continuation = recoveryAction.evidence.explicitUserContinuation as
+        { previousRunId?: unknown; runId?: unknown } | undefined;
+      const explicitSuccessor = text(continuation?.runId);
+      if (continuation?.previousRunId === run.id && explicitSuccessor && explicitSuccessor !== run.id) {
+        projection.successorRunId = explicitSuccessor;
+        projection.nextAction = null;
+        return set("completed", "Continued in another run");
+      }
+      projection.cause = null;
+      projection.nextAction = "The original execution was contained and its action outcomes reviewed. Use Retry to request another attempt.";
+      return set("failed", "Execution contained");
+    }
     const deliveredRunId = text(recoveryAction.evidence.continuationRunId);
     projection.successorRunId = deliveredRunId;
     projection.cause = null;

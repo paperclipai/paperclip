@@ -111,6 +111,8 @@ Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a

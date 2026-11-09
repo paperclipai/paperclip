@@ -6,7 +6,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { and, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issueRecoveryActions, workspaceOperations } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import type {
   IssueRecoveryAction,
@@ -93,7 +93,7 @@ export type ResolveIssueRecoveryActionInput = {
 function readModelNextAction(row: IssueRecoveryActionRow): string {
   const system = readSystemRecovery(row.evidence);
   return system?.state === "exhausted" && row.evidence?.workspaceRecovery
-    ? exhaustedSystemRecoveryAction(system) : row.nextAction;
+    ? exhaustedSystemRecoveryAction(system, row.evidence) : row.nextAction;
 }
 
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
@@ -623,6 +623,15 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       const pending = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
         .where(and(...predicates)).limit(1);
       if (!pending.length) return [];
+      // Resolving another attention releases this issue's preserved Native
+      // waiter to one normal inspection. No recurring monitor or new turn.
+      const [waiter] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+        .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId)).where(and(
+          eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.sourceIssueId),
+          eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
+          isNotNull(nativeRunFinalizations.leaseOwner), inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted"]),
+        )).limit(1);
+      if (waiter) await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
       await notifyIssueRecovery(tx, { companyId: input.companyId });
       await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });

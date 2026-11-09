@@ -492,7 +492,7 @@ describe("governed retained-file recovery", () => {
       expect(api.confirmController).toHaveBeenCalledExactlyOnceWith("issue-1", { actionId: "action-1", runId: "run-1",
         stopEvidence: "The old server container was replaced and is not running." });
       expect(api.resume).not.toHaveBeenCalled();
-      expect(container.textContent).toContain("Resuming the run…");
+      expect(container.textContent).toContain("Controller stop recorded. Checking recovery…");
     });
 
     it("confirms the unrecorded server holding a stuck resource, for board owners only", async () => {

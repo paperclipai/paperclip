@@ -107,6 +107,7 @@ function assertPutFileInput(input: PutFileInput): void {
 export function createStorageService(provider: StorageProvider): StorageService {
   return {
     provider: provider.id,
+    ...(provider.immutableObjectNamespace ? { immutableObjectNamespace: provider.immutableObjectNamespace } : {}),
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);

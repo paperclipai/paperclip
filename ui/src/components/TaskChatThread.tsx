@@ -2907,7 +2907,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
-      } : undefined);
+      } : undefined, args[1]);
       const selectionVersion = ++inputSelectionVersionRef.current;
       explicitlyOpenedInputRef.current = null;
       setTakeoverMode("normal");

@@ -6,6 +6,7 @@ import {
   updateAgentInstructionsBundleSchema,
   updateAgentInstructionsPathSchema,
   updateAgentPermissionsSchema,
+  updateAgentPermissionGrantSchema,
   updateAgentSchema,
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
@@ -461,6 +462,24 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
   );
+
+  for (const [command, enabled] of [["permission:grant", true], ["permission:revoke", false]] as const) {
+    addCommonClientOptions(
+      agent.command(command)
+        .description(`${enabled ? "Grant" : "Revoke"} one agent permission (Board permission manager only)`)
+        .argument("<agentId>", "Agent UUID")
+        .argument("<permissionKey>", "Permission key, such as commentary:view")
+        .action(async (agentId: string, permissionKey: string, opts: BaseClientOptions) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            const payload = updateAgentPermissionGrantSchema.parse({ permissionKey, enabled });
+            printOutput(await ctx.api.patch(apiPath`/api/agents/${agentId}/permission-grants`, payload), { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+    );
+  }
 
   addCommonClientOptions(
     agent

@@ -412,6 +412,7 @@ export async function admitExplicitNativeContinuation(input: {
           ownerHold: sql<boolean>`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'
             and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
           recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
+          retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
         }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -423,7 +424,9 @@ export async function admitExplicitNativeContinuation(input: {
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
         if (live.length && live.every(row => row.recoveryState === "exhausted"))
-          return blocked("saved_work_recovery_failed", "Saving the agent's files failed after automatic retries. Retry to try again.");
+          return live.some(row => row.retryClass === "service_required")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       }
     }

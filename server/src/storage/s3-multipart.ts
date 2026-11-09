@@ -1,4 +1,5 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
+import { recordStorageBackoff, recordStoragePart, recordStorageThrottle, withStorageRequestStats } from "./request-stats.js";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
@@ -118,7 +119,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   } catch (error) {
     stop(error);
     await Promise.all(active);
-    if (uploadId) await cleanupStorageFailure(signal => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: signal }));
+    if (uploadId) await cleanupStorageFailure(signal => withStorageRequestStats(() => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: signal })));
     throw failure;
   } finally {
     input.signal?.removeEventListener("abort", onAbort);
@@ -144,6 +145,43 @@ function isRequestRateLimited(error: unknown) {
   if (!error || typeof error !== "object") return false;
   const { name, $metadata } = error as { name?: unknown; $metadata?: { httpStatusCode?: unknown } };
   return name === "SlowDown" || $metadata?.httpStatusCode === 503 || $metadata?.httpStatusCode === 429;
+}
+
+const TRANSIENT_FILE_REQUEST_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_FILE_REQUEST_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN",
+  "ENOTFOUND", "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+const TRANSIENT_FILE_REQUEST_NAMES = new Set(["RequestTimeout", "TimeoutError", "NetworkingError", "InternalError", "ServiceUnavailable"]);
+
+function isTransientFileRequestFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { name, code, $metadata } = error as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  const status = $metadata?.httpStatusCode;
+  if (typeof status === "number") return TRANSIENT_FILE_REQUEST_STATUS.has(status);
+  return (typeof code === "string" && TRANSIENT_FILE_REQUEST_CODES.has(code))
+    || (typeof name === "string" && TRANSIENT_FILE_REQUEST_NAMES.has(name));
+}
+
+export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  for (let failures = 0, throttles = 0; ;) {
+    signal?.throwIfAborted();
+    try {
+      return await send();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (isRequestRateLimited(error)) {
+        recordStorageThrottle();
+        if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
+        const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
+        const wait = Math.floor(Math.random() * ceiling);
+        recordStorageBackoff(wait);
+        await delay(wait, undefined, { signal });
+        continue;
+      }
+      if (!isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
+      recordStorageBackoff(failures * 500);
+      await delay(failures * 500, undefined, { signal });
+    }
+  }
 }
 
 /** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
@@ -201,18 +239,23 @@ export async function putS3MultipartFile(
           }), { abortSignal: controller.signal }));
           if (!result.ETag) throw new Error("S3 upload part is incomplete");
           parts[index] = { ETag: result.ETag, PartNumber: index + 1 };
+          recordStoragePart();
           return;
         } catch (error) {
           // A part read from disk can be resent; the stream path cannot.
           if (controller.signal.aborted) throw error;
           if (isRequestRateLimited(error)) {
+            recordStorageThrottle();
             if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
             if (sentAfter === reductions) { concurrency = Math.max(1, Math.floor(concurrency / 2)); reductions++; }
             const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
-            await delay(Math.floor(Math.random() * ceiling), undefined, { signal: controller.signal });
+            const wait = Math.floor(Math.random() * ceiling);
+            recordStorageBackoff(wait);
+            await delay(wait, undefined, { signal: controller.signal });
             continue;
           }
           if (++failures >= FILE_PART_ATTEMPTS) throw error;
+          recordStorageBackoff(failures * 500);
           await delay(failures * 500, undefined, { signal: controller.signal });
         } finally { body.destroy(); }
       }
@@ -235,7 +278,7 @@ export async function putS3MultipartFile(
     return { integrity: "server_verified_md5" };
   } catch (error) {
     const failedUpload = uploadId;
-    if (failedUpload) await cleanupStorageFailure(signal => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: failedUpload }), { abortSignal: signal }));
+    if (failedUpload) await cleanupStorageFailure(signal => withStorageRequestStats(() => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: failedUpload }), { abortSignal: signal })));
     throw error;
   } finally {
     input.signal?.removeEventListener("abort", onAbort);

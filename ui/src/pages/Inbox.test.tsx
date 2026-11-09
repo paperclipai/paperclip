@@ -118,8 +118,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const toastMocks = vi.hoisted(() => ({ pushToast: vi.fn() }));
+
 vi.mock("../context/ToastContext", () => ({
-  useToastActions: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: toastMocks.pushToast }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
@@ -1323,6 +1325,36 @@ describe("Inbox toolbar", () => {
       } }]));
       await vi.waitFor(() => expect(container.textContent).toContain(child.title));
       expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(indexed ? 2 : 1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it.each([
+    ["a replaced attempt", { accepted: false, stale: true, requestId: null }, "already replaced"],
+    ["a held scheduled retry", { accepted: true, stale: false, requestId: "retry",
+      scheduledRetry: { outcome: "gate_suppressed", message: "The company budget is paused." } }, "The company budget is paused."],
+  ])("shows why an Inbox Retry did not start work for %s and does not open the task as if it did", async (_label, result, reason) => {
+    routerMock.location.pathname = "/inbox/recent";
+    const task = createIssue({ id: "task-1", title: "Failed task" });
+    const failure = createFailedRun({ issueId: task.id, responsibleUserId: "local-board" });
+    setFailureRuns([failure]);
+    apiMocks.issuesList.mockResolvedValue([{ ...task, interruption: { intentId: "intent", responsibility: "system",
+      state: "failed", nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id } }]);
+    apiMocks.retryTask.mockResolvedValue({ ...result, presentation: null });
+    toastMocks.pushToast.mockClear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      const retry = await vi.waitFor(() => {
+        const button = Array.from(container.querySelectorAll("button")).find(candidate => candidate.textContent === "Retry");
+        expect(button).toBeTruthy();
+        return button!;
+      });
+      await act(async () => retry.click());
+      await vi.waitFor(() => expect(toastMocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error", body: expect.stringContaining(reason) })));
+      expect(apiMocks.retryTask).toHaveBeenCalledWith(task.id, expect.objectContaining({ observedRunId: failure.id }));
+      expect(routerMock.navigate).not.toHaveBeenCalled();
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 

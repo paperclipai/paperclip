@@ -11,17 +11,16 @@ type ControllerRow = Pick<typeof nativeRunFinalizations.$inferSelect, "controlle
   | "controllerProcessStartedAt"> & {
   controllerHostHash?: string | null;
   controllerGeneration?: number | null;
+  leaseOwner?: string | null;
 };
 
-/** NRF records the controller's boot, PID, start time and, since #19868, its
- * PID space (`controller_host_hash`). Rows saved before that keep the
- * one-release local proof on single-host servers (`processSpaceUnrecorded`,
- * recorded as `legacy_host_unknown_dead_pid_proof`, #19883). */
+/** Native controller ownership requires its recorded kernel/PID space before
+ * a local PID observation. Independent durable stop evidence remains valid. */
 export function nativeControllerOwnerStamp(row: ControllerRow, scope: string): LocalOwnerStamp {
   return {
-    kind: "local", scope, generation: row.controllerGeneration ?? null, host: null,
+    kind: "local", scope, generation: row.controllerGeneration ?? null, fenceToken: row.leaseOwner, host: null,
     processSpace: row.controllerHostHash ?? null,
-    processSpaceUnrecorded: row.controllerHostHash == null,
+    processSpaceUnrecorded: row.controllerHostHash == null, requireRecordedProcessSpace: true,
     bootId: row.controllerBootId, pid: row.controllerPid,
     processStartedAt: row.controllerProcessStartedAt?.toISOString() ?? null, processGroupId: null,
   };

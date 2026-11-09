@@ -100,6 +100,17 @@ Gaps: Component host test doesn't prove actual filesystem/provider repair.
 
 ## `bounded-continuation`
 
+Original-host Native controller containment requires board-only
+`runtime:confirm_owner_stop` authority on the existing recovery resolution route:
+a company owner, company administrator, or instance administrator. Agents cannot submit it.
+It requires separate controller/provider stop confirmations, reviewed outcomes,
+a server-bound exact authority digest, elapsed lease and unchanged locked
+source/assignee/cleanup fences. It records containment without queuing work; a
+separate ordinary task Retry is required. Unknown process space never authorizes
+a local PID probe or automatic physical takeover, even after expiry.
+Evidence: `source-only` — candidate authority, route, UI and real-owner controls;
+no deployed/original-host stop verification is claimed.
+
 Capability ID: `recovery/bounded-continuation`.
 
 Ordinary task Retry uses `POST /api/issues/{id}/retry`. This is authenticated

@@ -19,6 +19,8 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
 export async function callProjectTool(input: {
   name: string; arguments: Record<string, unknown>; apiUrl: string; token: string;
   companyId: string; issueId: string; agentId: string; conversation: boolean; receiptOnly?: boolean;
+  /** The company's issue prefix; list_projects rows then carry their page href. */
+  companyPrefix?: string | null;
 }) {
   if (input.receiptOnly && input.name !== "create_project") throw badRequest("Receipt recovery is only supported for project creation");
   const args = input.arguments;
@@ -71,5 +73,11 @@ export async function callProjectTool(input: {
   if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
+  // Chat replies link a project only when they know its real page; without an
+  // href the agent wrote the route as an unclickable path or omitted it.
+  if (page && input.companyPrefix && Array.isArray(result.projects)) {
+    return { ...result, projects: result.projects.map((project: { id: string }) => ({ ...project,
+      href: `/${encodeURIComponent(input.companyPrefix!)}/projects/${encodeURIComponent(project.id)}` })) };
+  }
   return result;
 }

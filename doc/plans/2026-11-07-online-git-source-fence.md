@@ -44,6 +44,18 @@ publication. Changed descriptors, allocations, owners, aliases, or Git metadata
 reject publication. Prepared sources and unresolved recovery warnings retain
 their original state and evidence. They are not marked finalized or cleared.
 
+A terminal failed run can hold recovery for a separate durable remote workspace
+on the same task. A strict remote-only proof lets the old local source import
+without resolving that recovery. The proof binds the exact run, finalizer,
+action, accepted result, task, remote authority, allocation and any committed
+baseline snapshot. It uses the canonical remote source inspector, takes the
+run's finalizer fence and is rechecked before publication. Mixed legacy/remote
+references, active owners and changed bindings remain blocked. The remote
+source never enters the legacy export list; its dirty state, files, result and
+recovery obligation remain intact. Previous-release prepared references keep
+their original epoch and prior snapshot identity; the baseline need not have
+been created by the held run.
+
 Present nested workspaces must import before their parent. The existing owning
 nested-import path downloads and restores each immutable child snapshot and
 compares it with a fresh source capture before excluding that child. Missing or
@@ -88,3 +100,20 @@ serialized remote function, compare archive bytes and digests, remove every
 original source, restore uncommitted/staged work, and run fsck. No hosted import,
 hold, cancellation, provider call, or shared-cache Git command is part of these
 local tests.
+
+The online migration owner can checkpoint completed immutable nested-snapshot
+verification in the child snapshot ledger. This optional versioned proof binds
+the complete encrypted reference, child lineage, source operation and a known
+S3 endpoint/region/bucket/prefix/style namespace. A new process can reuse it only
+after fresh strong-ETag/length, current ledger/source-fence checks and canonical
+metadata-only unwrapping of each child key under the current master key. This
+key check also runs for in-memory hits; it returns no secret or payload. The proof
+is published only after canonical decryption, manifest/file restore and a stable
+post-verification HEAD. Missing or unknown proof versions, implicit provider
+endpoints and weak or changed validators require full verification. Existing
+records need no migration. No plaintext scratch, parent journal CAS, authority,
+retention deadline or local/Git source proof is reused. Every resumed invocation
+reacquires the source locks and captures current local bytes again. Read-only
+verifier callers do not opt into checkpoint publication.
+A change that strengthens immutable archive verification must advance the proof
+version so earlier verification cannot bypass the new checks.

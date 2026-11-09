@@ -48,7 +48,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
     if(method==="environmentResumeLease") {if(outage) throw Error("unreachable");
      if(resumeGate){if(++resumes===2)releaseResume!();await resumeGate;}return {providerLeaseId:stopped||unavailable?null:p.providerLeaseId,expiresAt:taskExpiries.get(p.providerLeaseId),metadata:{runId:p.runId}};}
     if(method==="environmentReleaseLease") {if(releaseFails) throw Error("release unavailable");return {providerLeaseId:p.providerLeaseId,state:"stopped"};}
-    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped};
+    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped,preparationStopped:stopped};
     if(p.operation.kind==="read_state") return {kind:"state",taskId:p.taskId,state:{...p.operation.identity,lifecycle:"ready"}};
     if(p.operation.kind==="stop") stopped=true;
     if(p.operation.kind==="prepare") return {kind:"prepared",taskId:p.taskId,launch:{configurationId:"configuration",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}}};
@@ -113,8 +113,9 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   expect(f.calls).toContain("complete");
   await expect(resolvePluginTaskResume(db,{companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity})).resolves.toBe(f.first.lease.providerLeaseId);
  });
- it("retires a stopped retained task with one status and complete before allocating its replacement",async()=>{
+ it.each([false,true])("retires a stopped retained task with one status and complete after warm preparation (%s)",async prepared=>{
   const f=await fixture();f.stopped();await f.nextRun();
+  if(prepared) await db.update(environmentLeases).set({metadata:sql`${environmentLeases.metadata} || ${JSON.stringify({runnerTaskStartup:{contextId:"settled-startup",deadlineAtMs:1,runId:f.identity.runId}})}::jsonb`}).where(eq(environmentLeases.id,f.first.lease.id));
   const calls=f.calls.length,dispatched=f.dispatched.length;
   const next=await f.acquire();
   expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","complete","environmentAcquireLease"]);

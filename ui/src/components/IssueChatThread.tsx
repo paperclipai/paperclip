@@ -6226,7 +6226,7 @@ export function IssueChatThread({
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= crypto.randomUUID();
-      const attempt = beginSubmission(clientRequestId);
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)

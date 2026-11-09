@@ -33,6 +33,7 @@ export type LocalOwnerStamp = {
   /** Record kind or subsystem that wrote the stamp, for reports only. */
   scope: string;
   generation: number | null;
+  fenceToken?: string | null;
   /** Hostname at stamp time. Informational; `processSpace` is the proof key. */
   host: string | null;
   /** Hash of host, kernel boot and PID namespace (`currentProcessSpaceHash`). */
@@ -58,6 +59,7 @@ export type LocalOwnerStamp = {
    * An ephemeral (multi-host) server never judges them.
    */
   processSpaceUnrecorded?: boolean;
+  requireRecordedProcessSpace?: boolean;
   /** When the owned record was last written, if the caller knows (for the controller lease proof). */
   touchedAt?: string | null;
 };
@@ -247,7 +249,7 @@ export async function proveOwnerGone(
 
 async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe): Promise<OwnerProof> {
   const proof = await proveLocalProcessGone(stamp, probe);
-  if (proof.verdict !== "unprovable" || !CROSS_SPACE_REASONS.has(proof.reason) || !stamp.bootId || !probe.controllerInstance
+  if (proof.verdict !== "unprovable" || (!CROSS_SPACE_REASONS.has(proof.reason) && !(stamp.requireRecordedProcessSpace && proof.reason === "process_space_unrecorded")) || !stamp.bootId || !probe.controllerInstance
     || validPid(stamp.processGroupId ?? null)) return proof;
   // Another host or PID space: the owner's server boot answers through its lease. Only a record the
   // server process itself held qualifies; agent processes in a recorded group may outlive it.
@@ -272,7 +274,7 @@ async function proveLocalProcessGone(stamp: LocalOwnerStamp, probe: ProcessProbe
   // fallback on single-host servers; an ephemeral server cannot assume the
   // PID was recorded here, so a board operator decides.
   const legacy = !stamp.processSpace && stamp.processSpaceUnrecorded === true;
-  if (legacy && ephemeralServerEnabled()) return { verdict: "unprovable", reason: "process_space_unrecorded" };
+  if (legacy && (stamp.requireRecordedProcessSpace || ephemeralServerEnabled())) return { verdict: "unprovable", reason: "process_space_unrecorded" };
   if (!validPid(stamp.pid) || (!stamp.processSpace && !legacy)) return { verdict: "unprovable", reason: "missing_identity" };
   if (legacy) {
     const proof = await proveLocalOwnerGone({ ...stamp, processSpace: probe.processSpace, host: null,

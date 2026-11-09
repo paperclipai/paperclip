@@ -67,7 +67,7 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
  * described from its current state instead of the stored text. */
 export function blockedWorkspaceRecoveryMessage(evidence: Record<string, unknown> | null | undefined): string | null {
   const system = readSystemRecovery(evidence ?? undefined);
-  return system?.state === "exhausted" ? exhaustedSystemRecoveryAction(system) : null;
+  return system?.state === "exhausted" ? exhaustedSystemRecoveryAction(system, evidence ?? null) : null;
 }
 
 async function verifiedNativeCopybackReceipt(db: Db, input: {

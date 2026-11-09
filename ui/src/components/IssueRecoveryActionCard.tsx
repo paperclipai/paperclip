@@ -1,3 +1,9 @@
+import { useMutation } from "@tanstack/react-query";
+import { issuesApi } from "../api/issues";
+import { describeError } from "../api/errors";
+import { Checkbox } from "./ui/checkbox";
+import { NativeSelect } from "./ui/select";
+import type { Issue } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
@@ -1510,3 +1516,55 @@ export function IssueRecoveryActionCard({
 export type { IssueRecoveryActionStatus };
 
 export default IssueRecoveryActionCard;
+
+/** Separate original-host confirmations: the opaque authority is supplied by
+ * the server snapshot, never entered or edited by the operator. */
+export function NativeControllerContainmentRecovery({ issue, canManage, onRecorded }: {
+  issue: Pick<Issue, "id" | "status" | "activeRecoveryAction">; canManage: boolean; onRecorded: () => void;
+}) {
+  const action = issue.activeRecoveryAction;
+  const [controllerStopped, setControllerStopped] = useState(false);
+  const [providerStopped, setProviderStopped] = useState(false);
+  const [outcome, setOutcome] = useState<"" | "completed" | "not_performed" | "mixed">("");
+  const [evidence, setEvidence] = useState("");
+  const authority = action?.evidence?.controllerAuthority;
+  const digest = authority && typeof authority === "object" && !Array.isArray(authority)
+    ? (authority as Record<string, unknown>).digest : undefined;
+  const runId = action?.evidence?.runId;
+  const submit = useMutation({ mutationFn: async () => {
+    if (!action || typeof runId !== "string" || typeof digest !== "string" || !outcome
+      || !controllerStopped || !providerStopped) throw new Error("Confirm both original-host stops and review the action outcomes.");
+    return issuesApi.resolveRecoveryAction(issue.id, { actionId: action.id, outcome: "restored", sourceIssueStatus: issue.status,
+      executionReconciliation: { runId, controllerStopped: true, providerStopped: true,
+        controllerAuthorityDigest: digest, actionOutcome: outcome, outcomeEvidence: evidence.trim() } });
+  }, onSuccess: onRecorded });
+  if (!action || action.kind !== "active_run_watchdog" || action.ownerType !== "board"
+    || action.cause !== "native_restart_recovery_blocked" || action.evidence?.reason !== "controller_process_space_unverified"
+    || !["active", "escalated"].includes(action.status) || typeof digest !== "string") return null;
+  return <section aria-label="Original controller recovery">
+    <h3>Verify the original execution stopped</h3>
+    <p>Paperclip cannot compare process IDs across hosts or kernel sessions. Stop both the controller and provider on the original host before recording evidence. The saved lease must also expire and environment/workspace cleanup must finish. Recording containment does not retry the task.</p>
+    {canManage ? <>
+      <Label><Checkbox checked={controllerStopped} onCheckedChange={value => setControllerStopped(value === true)} /> I verified the original controller stopped on its original host.</Label>
+      <Label><Checkbox checked={providerStopped} onCheckedChange={value => setProviderStopped(value === true)} /> I verified the original provider and its tools stopped on their original host.</Label>
+      <Label>Reviewed external action outcomes
+        <NativeSelect value={outcome} onChange={event => {
+          const value = event.target.value;
+          if (value === "completed" || value === "not_performed" || value === "mixed" || value === "") setOutcome(value);
+        }}>
+          <option value="">Select only after reviewing the effects</option>
+          <option value="completed">All completed</option>
+          <option value="not_performed">None performed</option>
+          <option value="mixed">Some completed and some not performed</option>
+        </NativeSelect>
+      </Label>
+      <Label>Original-host containment evidence and actions that must not be repeated
+        <Textarea maxLength={12000} value={evidence} onChange={event => setEvidence(event.target.value)} />
+      </Label>
+      <p>If any action outcome is still unknown, keep this hold. After evidence and cleanup settle, use the task’s ordinary Retry action separately.</p>
+      <Button disabled={submit.isPending || !controllerStopped || !providerStopped || !outcome || evidence.trim().length < 20}
+        onClick={() => submit.mutate()}>{submit.isPending ? "Recording…" : "Record containment"}</Button>
+      {submit.error && <p role="alert">{describeError(submit.error).body}</p>}
+    </> : <p>A company owner, company administrator, or instance administrator must review this original-host execution.</p>}
+  </section>;
+}

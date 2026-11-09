@@ -17,6 +17,7 @@ import { prepareRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace } f
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates } from "./workspace-recovery.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 import { RETAINED_SOURCE_FALLBACK_OUTCOME, RETAINED_SOURCE_QUARANTINE_PHASE } from "./workspace-recovery-fallback.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { acceptedRemoteExport, action, connectionString, db, run, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
@@ -335,6 +336,30 @@ describe("retained source fallback", () => {
     await db.update(issueRecoveryActions).set({ evidence: { ...deferred.evidence, retainedSourceFallbackCheck: {
       ...(deferred.evidence.retainedSourceFallbackCheck as object), nextCheckAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, f.actionId));
     expect(await ids()).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+  }, 60_000);
+
+  it("continues once the reconciler settles a final save a restart left running after its run ended", async () => {
+    const f = await unverifiableRetainedSource();
+    const [save] = await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      heartbeatRunId: f.runId, issueId: f.issueId, phase: "remote_workspace_snapshot", status: "running",
+      metadata: { epoch: 8, boundary: "final", generation: 99, exportCleanup: { state: "pending" },
+        saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [], unknown: false, quiescedAt: new Date(Date.now() - 60_000).toISOString() } },
+    }).returning();
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+    const deferred = await action(f.actionId);
+    expect(deferred.status).toBe("active");
+    expect(deferred.evidence.retainedSourceFallbackCheck).toMatchObject({ reason: "workspace_operation_running" });
+    // Twelve refusals spend the check budget: no further check is scheduled.
+    await db.update(issueRecoveryActions).set({ evidence: { ...deferred.evidence, retainedSourceFallbackCheck: {
+      ...(deferred.evidence.retainedSourceFallbackCheck as object), checks: 12, nextCheckAt: null } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
+
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, save.id)))[0])
+      .toMatchObject({ status: "failed", metadata: { abandonedSave: { reason: "abandoned_remote_snapshot_save" } } });
+    expect((await action(f.actionId)).evidence.retainedSourceFallbackCheck).toBeUndefined();
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
     expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
   }, 60_000);
