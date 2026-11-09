@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { gradeInfrastructureRetry, isHumanRetryRequest } from "./runtime-infrastructure-retry.js";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { gradeInfrastructureRetry, isHumanRetryRequest, releasedRetryListener } from "./runtime-infrastructure-retry.js";
 function valid() {
   return { scenarioId: "recovery.retry-exhausted", origin: "http://paperclip.test", companyId: "company", leadId: "ceo", agents: [], links: ["/COM/issues/COM-2"], humanQueries: [], reply: "", tasks: [{ id: "website", status: "done" }], activity: [],
     runs: [{ id: "exhausted", status: "failed" }, ...["canonical", "held", "retry", "final"].map(id => ({ id, status: "succeeded" }))],
@@ -49,3 +52,21 @@ it("rejects a held Retry that dispatches before the gate clears", () => {
 it("rejects a held Retry that never dispatches after the gate clears", () => { const o = valid(); o.state.retryRunCount = 0; expect(gradeInfrastructureRetry(o).passed).toBe(false); });
 it("rejects a second Retry control offered while the saved Retry waits", () => { const o = valid(); o.state.noDuplicateRetryWhileHeld = false; expect(gradeInfrastructureRetry(o).passed).toBe(false); });
 
+
+it("binds the brief to the released Retry's own workspace, and only that one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "retry-listener-")), outside = await mkdtemp(path.join(tmpdir(), "retry-outside-"));
+  try {
+    const fresh = path.join(root, "isolated-workspace-attempts", "retry"); await mkdir(fresh, { recursive: true });
+    await writeFile(path.join(fresh, "brief.txt.waiting"), "waiting");
+    await writeFile(path.join(outside, "brief.txt.waiting"), "waiting");
+    const expected = { companyId: "company", workerId: "morgan", taskId: "website", originalRunId: "exhausted", gateName: "brief.txt" };
+    const run = (cwd: string, patch: Record<string, unknown> = {}) => ({ id: "retry", companyId: "company", agentId: "morgan", retryOfRunId: "exhausted",
+      contextSnapshot: { issueId: "website" }, runnerProfileJson: { nativeExecutionInput: { workspace: { cwd }, binding: { executionWorkspaceId: "fresh-ws" } } }, ...patch }) as never;
+    expect(await releasedRetryListener(run(fresh), expected, root)).toEqual({ gate: path.join(await import("node:fs/promises").then(fs => fs.realpath(fresh)), "brief.txt"), workspaceId: "fresh-ws" });
+    expect(await releasedRetryListener(run(fresh, { retryOfRunId: "other" }), expected, root)).toBeNull();
+    expect(await releasedRetryListener(run(fresh, { agentId: "ceo" }), expected, root)).toBeNull();
+    expect(await releasedRetryListener(run(fresh, { contextSnapshot: { issueId: "other" } }), expected, root)).toBeNull();
+    expect(await releasedRetryListener(run(outside), expected, root)).toBeNull();
+    expect(await releasedRetryListener(run(fresh), { ...expected, gateName: "missing.txt" }, root)).toBeNull();
+  } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
