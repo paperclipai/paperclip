@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childrenPending, listWorkspaceFiles } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -136,6 +136,28 @@ describe("TaskObserver", () => {
     now += CHILD_WAKE_GRACE_MS;
     await restWindow();
     expect(childRetries).toHaveLength(1);
+  });
+
+  it("S1: stops the running run as the board would, then posts the continue comment only after it settles", async () => {
+    let runStatus = "running";
+    const base = fakeApi({ "/runs": () => [{ id: "r1", status: runStatus, createdAt: new Date(0).toISOString(), finishedAt: null }] }, "in_progress");
+    const posted: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      posted.push(route);
+      if (route === "/api/heartbeat-runs/r1/cancel") { runStatus = "cancelled"; return { id: "r1", status: "cancelled" }; }
+      return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "comment-1" };
+    } } as unknown as ChaosApi;
+    const observer = new TaskObserver({ ...plan, workload: "S1", followUpAfterMs: 1_000 }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 2_000);
+    expect(posted).toContain("/api/heartbeat-runs/r1/cancel");
+    expect(observer.record.stop).toMatchObject({ runId: "r1", httpStatus: 200, error: null });
+    await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS - 1);
+    expect(observer.record.followUp).toBeNull();
+    await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS + 1);
+    expect(observer.record.followUp).toMatchObject({ commentId: "comment-1", duringRun: false });
+    expect(posted.filter(route => route.endsWith("/cancel"))).toHaveLength(1);
   });
 
   it("closes an open task as unfinished at interrupt, so the wave grades it as a failure", async () => {
