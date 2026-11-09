@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { BENCH_EXPECTED, parseBenchRecord, workloadDefinitions } from "./workloads.js";
+import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-06T12:00:00Z");
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
@@ -221,12 +221,61 @@ describe("T-oracles", () => {
     expect(workloadDefinitions.C1.grade("abcd1234", { ...passingBrief, documents: { brief: `${passingBrief.documents.brief}FOLLOWUP-abcd1234\n` } }).verdict).toBe("pass");
   });
 
+  it("fails M1 when a subtask needed a board Retry, and checks the parent got one stall wake per stall", () => {
+    const done = record([sample(1_000, "done", [run("r1", "succeeded", 0, 900)])], { finalStatus: "done" });
+    const withChildRetry = { ...done, childRetries: [{ childIssueId: "c2", at: 1, observedRunId: "r", httpStatus: 200, accepted: true, error: null }] };
+    expect(gradeR3(done)).toMatchObject({ verdict: "n/a" });
+    expect(gradeR3(withChildRetry)).toMatchObject({ verdict: "fail", detail: "retry_needed_on_subtask_1 (c2)" });
+    const stalled = { issueStatus: "done", documents: {}, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      childStalls: [{ childIssueId: "c2", recoveryActionId: "a1" }] };
+    const wakeA1 = { stalledIssueId: "c2", recoveryActionId: "a1" };
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=1 wakes=0 unwoken=c2:a1" });
+    expect(stallWakeChecks({ ...stalled, stallWakes: [wakeA1, wakeA1] } as never)[0]).toMatchObject({ ok: false });
+    const twoStalls = { ...stalled, childStalls: [...stalled.childStalls, { childIssueId: "c2", recoveryActionId: "a2" }] };
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1] } as never)[0]).toMatchObject({ ok: false, detail: "stalls=2 wakes=1 unwoken=c2:a2" });
+    expect(stallWakeChecks({ ...twoStalls, stallWakes: [wakeA1, { stalledIssueId: "c2", recoveryActionId: "a2" }] } as never)[0]).toMatchObject({ ok: true });
+    expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
+  });
+
+  it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: { brief: "CHAOS-abcd1234\nCONTINUE-abcd1234\n- one\n- two\n- three\n" },
+      agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stop: { runId: "r1", runStatus: "cancelled", runsStartedBeforeContinue: [], continuePosted: true } };
+    expect(workloadDefinitions.S1.grade("abcd1234", base).verdict).toBe("pass");
+    const restarted = workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runsStartedBeforeContinue: ["r2"] } });
+    expect(restarted.checks.find(check => check.name === "nothing_ran_after_stop")).toMatchObject({ ok: false, detail: "continue=true runs=r2" });
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runStatus: "succeeded" } }).verdict).toBe("fail");
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: undefined }).verdict).toBe("fail");
+  });
+
   it("grades B1 by running the tests and the CLI", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
       files: { "NOTES-abcd1234.md": "B1-abcd1234\n" },
       commands: { unittest: { exitCode: 0, stdout: "", stderr: "OK" }, slugify: { exitCode: 0, stdout: "hello-chaos-world\n", stderr: "" } } };
     expect(workloadDefinitions.B1.grade("abcd1234", base).verdict).toBe("pass");
     expect(workloadDefinitions.B1.grade("abcd1234", { ...base, commands: { ...base.commands, unittest: { exitCode: 1, stdout: "", stderr: "FAILED" } } }).verdict).toBe("fail");
+  });
+
+  it("grades R1 by running the agent's node test and a hidden case against its module", () => {
+    const base: OracleArtifacts = { issueStatus: "done", documents: {}, agentComments: [], workspacePath: "/tmp/ws",
+      files: { "packages/shared/src/chaos/slug-abcd1234.ts": "export function chaosSlug() {}",
+        "packages/shared/src/chaos/slug-abcd1234.test.ts": [
+          "import test from \"node:test\";", "import assert from \"node:assert/strict\";", "import { chaosSlug } from \"./slug-abcd1234.ts\";",
+          "test(\"slug\", () => {", "  assert.equal(chaosSlug(\"Hello Chaos World\"), \"hello-chaos-world\");",
+          "  assert.equal(chaosSlug(\"a  b\"), \"a-b\");", "  assert.equal(chaosSlug(\"--x--\"), \"x\");", "});"].join("\n") },
+      commands: { node_test: { exitCode: 0, stdout: "", stderr: "" },
+        slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"r1-paperclip-chaos-2026\"]\n", stderr: "" } } };
+    expect(workloadDefinitions.R1.grade("abcd1234", base).verdict).toBe("pass");
+    expect(workloadDefinitions.R1.grade("abcd1234", { ...base, commands: { ...base.commands,
+      slug: { exitCode: 0, stdout: "[\"hello-chaos-world\",\"-r1-paperclip-chaos-2026-\"]\n", stderr: "" } } }).verdict).toBe("fail");
+    expect(r1TestChecksSlug("import test from \"node:test\";")).toBe(false);
+    expect(r1TestChecksSlug("import test from \"node:test\"; import assert from \"node:assert\"; assert.ok(chaosSlug(\"x\"));")).toBe(false);
+    expect(r1TestChecksSlug([ "import test from \"node:test\";", "import assert from \"node:assert/strict\";",
+      "for (const [input, want] of [[\"Hello Chaos World\", \"hello-chaos-world\"], [\"a b\", \"a-b\"], [\"-x-\", \"x\"]])",
+      "  test(input, () => assert.equal(chaosSlug(input), want));"].join("\n"))).toBe(true);
+    const argv = workloadDefinitions.R1.collect.commands.find(command => command.name === "node_test")!.argv;
+    expect(typeof argv === "function" ? argv("abcd1234") : argv).toEqual([process.execPath, "--test", "packages/shared/src/chaos/slug-abcd1234.test.ts"]);
   });
 
   it("grades B5 against the deterministic bench result", () => {

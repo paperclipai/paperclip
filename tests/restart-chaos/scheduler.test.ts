@@ -46,6 +46,35 @@ describe("scheduler determinism", () => {
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
   });
 
+  it("pairs R1 with --workspace-repo, locally, without the chaoscli fixture workloads", () => {
+    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "."]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.workspaceRepo).toBe(process.cwd());
+    expect(command.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(() => parseCommand(["--workloads", "R1"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "A1", "--workspace-repo", "x"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "R1,B1", "--workspace-repo", "x"])).toThrow(/chaoscli fixture/);
+    const defaults = parseCommand([]);
+    if (defaults.mode !== "wave") throw new Error("expected a wave");
+    expect(defaults.options.workloads).not.toContain("R1");
+  });
+
+  it("pairs K14 (upgrade mid-run) with --upgrade-from, locally, with no hold and outside storm defaults", () => {
+    const command = parseCommand(["--faults", "K14", "--upgrade-from", "../older-checkout", "--seed", "5"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.upgradeFrom).toMatch(/older-checkout$/);
+    expect(command.options.upgradeFrom!.startsWith("/")).toBe(true);
+    expect(planTasks(command.options).every(task => task.fault === "K14" && task.holdMs === 0)).toBe(true);
+    expect(() => parseCommand(["--faults", "K14"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K1", "--upgrade-from", "../older-checkout"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K14", "--upgrade-from", "x", "--env", "daytona",
+      "--daytona-image", `ghcr.io/x/y@sha256:${"a".repeat(64)}`])).toThrow(/only with --env local/);
+    const storm = parseCommand(["--storm-minutes", "30"]);
+    if (storm.mode !== "wave") throw new Error("expected a wave");
+    expect(storm.options.faults).not.toContain("K14");
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--upgrade-from", "x"])).toThrow(/do not combine/);
+  });
+
   it("covers every workload × adapter × fault cell once per cycle", () => {
     const cells = options.workloads.length * options.adapters.length * options.faults.length;
     const tasks = planTasks({ ...options, tasks: cells });

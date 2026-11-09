@@ -1,4 +1,4 @@
-import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -295,6 +295,14 @@ describe("native controller takeover fencing", () => {
       now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
     await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: "operator_attested" },
       now, isProcessAlive: () => true })).resolves.toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+  });
+
+  it("preserves same-space process proof when boot metadata is present", async () => {
+    const local = { ...owner(), controllerBootId: currentControllerBootId(), controllerHostHash: currentProcessSpaceHash() };
+    expect(await evaluateNativeControllerTakeover({ owner: local, now, isProcessAlive: () => false }))
+      .toEqual({ allowed: true, reason: "controller_process_dead" });
+    expect(await evaluateNativeControllerTakeover({ owner: local, now, isProcessAlive: () => true,
+      readProcessStartedAt: async () => recordedStart })).toEqual({ allowed: false, reason: "controller_still_alive" });
   });
 
   it.each([

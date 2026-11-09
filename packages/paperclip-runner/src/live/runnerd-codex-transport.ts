@@ -105,7 +105,7 @@ import {
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
-import { isTerminalOperation, staleTerminalCallResult, unseenReturnedToolCalls } from "./terminal-call-freshness.js";
+import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -800,6 +800,14 @@ async function awaitProviderDrainBarrier(input: {
     }
   }
   return false;
+}
+
+export function committedEventWindowComplete(state: { committedEvents: readonly { sourceSeq: number }[]; ackedSourceSeq: number } | undefined): boolean {
+  if (!state || state.committedEvents.length !== state.ackedSourceSeq) return false;
+  const seen = new Set(state.committedEvents.map(event => event.sourceSeq));
+  if (seen.size !== state.ackedSourceSeq) return false;
+  for (let seq = 1; seq <= state.ackedSourceSeq; seq += 1) if (!seen.has(seq)) return false;
+  return true;
 }
 
 function providerTurnIsActiveFromCommittedEvents(
@@ -3992,6 +4000,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #detachPromise: Promise<void> | null = null;
   #startupOperation: Promise<unknown> | null = null;
   #attachmentOperation: Promise<void> | null = null;
+  #earlyClaim: { runId: string; operation: Promise<void> } | null = null;
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
@@ -4319,7 +4328,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const item = record(rehydrateRunnerdItemNotification(payload, this.#threadId, observedTurn).item);
           if (typeof item.id === "string") items.set(item.id, { turnId: observedTurn, item });
         }
-        if (!observedStart) throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        if (!observedStart && !committedEventWindowComplete(this.#core?.store.state)) {
+          throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        }
         data = [...items.values()];
         // Runner authority wins over schema-shaped prose in an assistant item.
         if (semanticResultItem) data.push(semanticResultItem);
@@ -4711,6 +4722,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.options.adoptExistingRunner && this.#adoptedRunnerMonitor === null) this.#watchAdoptedRunner(this.options.adoptExistingRunner);
   }
 
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.#attachmentOperation !== null || !this.#releaseEpisode?.confirmed || this.#releaseEpisode.claimed || !input.runId) return false;
+    try {
+      this.#assertStartupOpen();
+      this.#assertRunAttachmentAdmission();
+    } catch {
+      return false;
+    }
+    const operation = this.#claimReleasedRunner(input.runId);
+    void operation.catch(() => undefined);
+    this.#attachmentOperation = operation;
+    this.#earlyClaim = { runId: input.runId, operation };
+    return true;
+  }
+
   attachRun(input: {
     runId: string;
     turnId: string;
@@ -4718,12 +4744,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
-    if (this.#attachmentOperation !== null) {
+    const earlyClaim = this.#earlyClaim?.runId === input.runId ? this.#earlyClaim.operation : undefined;
+    if (this.#attachmentOperation !== null && earlyClaim === undefined) {
       return Promise.reject(new Error("native_runner_run_attachment_in_progress"));
     }
+    this.#earlyClaim = null;
     const operation = Promise.resolve().then(() => {
       this.#assertStartupOpen();
-      return this.#attachRun(input);
+      return this.#attachRun(input, earlyClaim);
     }).finally(() => { this.#attachmentOperation = null; });
     this.#attachmentOperation = operation;
     return operation;
@@ -4735,20 +4763,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
     completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  }, earlyClaim?: Promise<void>): Promise<void> {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input);
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
+      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
-  async #attachRunWork(input: {
-    runId: string;
-    turnId: string;
-    itemId: string;
-    currentRunGrant?: NativeRunRuntimeGrant;
-    completionContract?: { revision: string; criterionIds: readonly string[] };
-  }): Promise<void> {
+  #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
     if (this.#pendingWarmRecoveryCompletion !== null) {
       throw new Error("native_runner_warm_transition_completion_pending");
     }
@@ -4759,6 +4781,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (retainingSource && this.#bridgedRuntimeInputs.size > 0) {
       throw new NativeRunnerSourceReconciliationRequiredError("runtime");
+    }
+    return { core, retainingSource };
+  }
+
+  async #attachRunWork(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+    currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
+  }, earlyClaim?: Promise<void>): Promise<void> {
+    const { core, retainingSource } = this.#assertRunAttachmentAdmission();
+    if (earlyClaim) {
+      await earlyClaim;
+      if (this.#releaseEpisode && Date.now() >= this.#releaseEpisode.deadline!) {
+        throw new Error("native_runner_resume_reconciliation_expired");
+      }
     }
     if (this.#releaseEpisode) await this.#resumeReleasedRunner(input.runId);
     await this.#awaitWarmRunAttachmentReady();
@@ -7115,9 +7154,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // had returned but not yet reached the agent (it was held across a
       // controller restart) is stale: refuse it so the agent continues with
       // those results instead of ending the task on a wait that is over.
-      const unseen = unseenReturnedToolCalls(core.store.state.committedEvents, core.store.state.commands,
-        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId });
-      if (unseen.length) return staleTerminalCallResult(call.operationId, unseen);
+      // After a reattach the held calls are recovered while this call is
+      // delivered, so wait for earlier calls that have not returned yet
+      // (restart chaos t05) before judging what the agent had seen.
+      const settled = await settleEarlierToolCalls(
+        () => this.#closed || core !== this.#core ? null : { events: core.store.state.committedEvents, commands: core.store.state.commands },
+        { terminalSourceEventId: call.sourceEventId, turnId: call.correlation.turnId },
+      );
+      if (!settled || this.#closed || core !== this.#core || epoch !== this.#turnStartResponseEpoch || threadId !== this.#threadId) {
+        throw new SemanticToolNotDispatchedError();
+      }
+      if (settled.unseen.length || settled.pending.length) {
+        return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
+      }
     }
     const outcome = unwrapToolResponse(
       await this.#handler({

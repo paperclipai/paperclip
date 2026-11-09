@@ -17,6 +17,7 @@ import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/exe
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
+import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import type { Db } from "@paperclipai/db";
 import { deliveredQueuedCommentIds } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -124,6 +125,9 @@ export function isOperatorStoppedRunRow(row: Pick<HeartbeatRunRow, "status" | "e
   const cancellation = readRunCancellation(row.resultJson);
   if (cancellation?.source === "queued_message") return false;
   if (cancellation?.source === "operator" && cancellation.expected) return true;
+  // A pause's stop (budget, agent or lifecycle pause) is intentional too: the
+  // release must not treat the paused agent's task as stranded work.
+  if (isGovernancePauseStop(row)) return true;
   if (row.errorCode && OPERATOR_STOP_ERROR_CODES.has(row.errorCode)) return true;
   const actorType = parseObject(row.resultJson).cancelledByActorType;
   return actorType === "user" || actorType === "board";
@@ -780,6 +784,15 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
   if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
+  // A pause's stop is intentional: the task keeps its status and resuming
+  // continues it. It is never a reconciliation incident with no control. A
+  // termination that replaced the pause shares its stop reason, so the agent
+  // must still be pausable, not terminating or terminated.
+  if (isGovernancePauseStop(run)) {
+    const [agent] = await tx.select({ lifecycleState: agents.lifecycleState }).from(agents)
+      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, issue.companyId)));
+    if (agent && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState)) return false;
+  }
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })

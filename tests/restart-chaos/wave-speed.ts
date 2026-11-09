@@ -11,7 +11,7 @@ type Json = Record<string, unknown>;
 export interface WaveSpeedTask { issueId: string | null; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }
 
 export interface SpeedRow {
-  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "restart_recovery"; start: "cold" | "warm" | "restart";
+  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "workspace_provision" | "restart_recovery"; start: "cold" | "warm" | "restart";
   measured: Distribution; budget: SpeedBudget | null; breaches: Array<"p50" | "p95">;
 }
 
@@ -33,7 +33,7 @@ export function budgetFor(environment: EnvironmentKind, adapter: string, metric:
   start: SpeedRow["start"]): SpeedBudget | null {
   const key = BUDGET_ADAPTER[adapter as AdapterId];
   if (environment !== "local" || !key) return null;
-  if (metric === "ttft") return null;
+  if (metric === "ttft" || metric === "workspace_provision") return null;
   const budgets = LOCAL_SPEED_BUDGETS[key] as unknown as Record<string, Record<"cold" | "warm", SpeedBudget> | SpeedBudget>;
   if (metric === "restart_recovery") return budgets.restart_recovery as SpeedBudget;
   const byStart = (metric === "time_to_first_activity" ? budgets.time_to_first_activity ?? budgets.ttft : budgets[metric]) as
@@ -51,7 +51,7 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
 
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!,
-    runIds: runs.filter(run => run.createdAt <= fault.startedAt && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
+    runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
       .map(run => run.id) }));
 }
 
@@ -100,11 +100,55 @@ export function withoutOutage(run: BaselineRun, windows: readonly OutageWindow[]
   return { run: { ...run, events }, adjusted, removedMs, anchored: true };
 }
 
+export function faultBeforeFirstActivity(run: BaselineRun, windows: readonly OutageWindow[], runCreatedAt: number): boolean {
+  const traceStart = traceStartMs(run);
+  if (traceStart === null) return false;
+  const spans = runSpans(run);
+  const first = spans.find(span => span.name === "task.time_to_first_agent_activity")
+    ?? spans.find(span => span.name === "task.time_to_first_token");
+  const end = first ? traceStart + first.startOffsetMs + first.durationMs : Number.POSITIVE_INFINITY;
+  return windows.some(window => window.startedAt <= end && window.readyAt >= runCreatedAt);
+}
+
 export function firstActivityMs(run: BaselineRun): number | null {
   const metrics = runMetrics(run);
-  const span = runSpans(run).find(candidate => candidate.name === "task.time_to_first_agent_activity");
-  if (!span) return metrics.ttftAfterRunCreatedMs;
-  return Math.max(0, span.durationMs - (metrics.inputWaitMs ?? 0));
+  return metrics.firstActivityAfterRunCreatedMs ?? metrics.ttftAfterRunCreatedMs;
+}
+
+export function provisionMs(run: BaselineRun): number | null {
+  if (!run.workspaceCreated) return null;
+  return runSpans(run).find(span => span.name === "heartbeat.prepare.workspace_provision")?.durationMs ?? null;
+}
+
+async function workspaceCreated(api: ChaosApi, runId: string, attempts = 3): Promise<boolean> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const rows = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/workspace-operations`, 15_000);
+      return (rows ?? []).some(row => row.phase === "workspace_provision" && (row.metadata as Json | null)?.created === true);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw new Error(`workspace operations unread: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+}
+
+export function bootWithoutProvisionMs(run: BaselineRun): number | null {
+  const boot = runMetrics(run).bootMs;
+  return boot === null ? null : Math.max(0, boot - (provisionMs(run) ?? 0));
+}
+
+function byGroup(runs: readonly BaselineRun[], value: (run: BaselineRun) => number | null): Map<string, number[]> {
+  const groups = new Map<string, number[]>();
+  for (const run of runs) {
+    if (run.phase === "restart" || run.phase === "verify") continue;
+    const measured = value(run);
+    if (measured === null) continue;
+    const key = `${run.adapter}|${runWarmth(run)}`;
+    groups.set(key, [...(groups.get(key) ?? []), measured]);
+  }
+  return groups;
 }
 
 function firstActivityByGroup(runs: readonly BaselineRun[]): Map<string, number[]> {
@@ -124,10 +168,13 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
   outage: { adjusted: number; removedMs: number; windows?: readonly OutageWindow[] } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
   const rows: SpeedRow[] = [];
   const activity = firstActivityByGroup(runs);
+  const boots = byGroup(runs, bootWithoutProvisionMs), provisions = byGroup(runs, provisionMs);
   for (const row of baselineRows(runs)) {
-    const firstActivity = activity.get(`${row.adapter}|${row.warmth}`) ?? [];
+    const key = `${row.adapter}|${row.warmth}`;
+    const firstActivity = activity.get(key) ?? [];
     for (const [metric, measured] of [["time_to_first_activity", distribution(firstActivity)], ["ttft", row.ttftAfterRunCreated],
-      ["agent_boot", row.boot]] as const) {
+      ["agent_boot", distribution(boots.get(key) ?? [])], ["workspace_provision", distribution(provisions.get(key) ?? [])]] as const) {
+      if (metric === "workspace_provision" && !measured.n) continue;
       const budget = budgetFor(environment, row.adapter, metric, row.warmth);
       rows.push({ adapter: row.adapter, metric, start: row.warmth, measured, budget, breaches: breachesOf(measured, budget) });
     }
@@ -142,7 +189,7 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
   }
   const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
     const start = runWarmth(run);
-    const activity = firstActivityMs(run), boot = runMetrics(run).bootMs;
+    const activity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
     const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
     const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
     return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
@@ -182,14 +229,25 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const errors: string[] = [];
   const windows = outageWindows(faults);
   const outage = { adjusted: 0, removedMs: 0, windows };
-  for (const task of tasks) {
+  const perTask = tasks.map(task => {
     const seen = new Map<string, RunSample>();
     for (const sample of task.samples) for (const run of sample.runs ?? []) if (run.createdAt) seen.set(run.id, run);
-    const ordered = [...seen.values()].sort((a, b) => Date.parse(a.createdAt!) - Date.parse(b.createdAt!));
+    return { task, ordered: [...seen.values()].sort((a, b) => Date.parse(a.createdAt!) - Date.parse(b.createdAt!)) };
+  });
+  const faultHit = new Set(faultRuns(faults, perTask.flatMap(({ ordered }) => ordered.map(run => ({ id: run.id,
+    createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null })))).flatMap(fault => fault.runIds));
+  for (const { task, ordered } of perTask) {
     for (const [index, run] of ordered.entries()) {
       try {
         const raw: BaselineRun = { runId: run.id, adapter: task.adapter, environment, phase: index === 0 ? "cold" : "warm",
           events: await runEventsWithRetry(api, run.id) };
+        try {
+          raw.workspaceCreated = await workspaceCreated(api, run.id);
+        } catch (error) {
+          errors.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
+        if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
         const trimmed = withoutOutage(raw, windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
         runs.push(trimmed.run);

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions,
+  issueRelations, issues,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -94,6 +95,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .where(eq(nativeRunFinalizations.runId, runId));
     expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
       .toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("explains a saved Retry held by unfinished blockers instead of offering Retry again (restart chaos t05)", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Waiting parent", issuePrefix: `W${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Parent agent", adapterType: "paperclip_runner" });
+    const [parent] = await db.insert(issues).values({ companyId, title: "Write the brief", identifier: "CHA-5",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    const [child] = await db.insert(issues).values({ companyId, title: "Part 2", identifier: "CHA-10", parentId: parent.id,
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: parent.id, type: "blocks" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: parent.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date(Date.now() - 60_000) });
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 30_000),
+      payload: { issueId: parent.id, taskRetry: { sourceRunId: runId } } }).returning();
+    const presentation = await taskInterruptionPresentation(db, parent);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: retry.id,
+      retryWait: { reason: "dependency_blocked" } });
+    expect(presentation?.retryWait?.message).toContain("blocked task this one depends on");
+    expect(JSON.stringify(presentation)).not.toContain("Part 2");
+    expect(JSON.stringify(presentation)).not.toContain("CHA-10");
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, child.id));
+    expect((await taskInterruptionPresentations(db, companyId, [parent])).get(parent.id)?.retryWait?.message)
+      .toContain("Remove or replace that dependency");
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, child.id));
+    expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
 
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {

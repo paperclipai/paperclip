@@ -36,6 +36,7 @@ import { hasQueuedInteractionResponse } from "../services/queued-interaction-res
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { claimFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -898,6 +899,107 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
       await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
       expect(await db.select().from(heartbeatRuns)).toHaveLength(3);
+    },
+  );
+
+  async function seedFirstTurnQueue(runtime: "preparing" | "native") {
+    const seeded = await seedQueue();
+    // A user's follow-ups, as the comment route saves them behind that user's run.
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agentWakeupRequests).set({ payload: { ...wake!.payload,
+      _paperclipWakeContext: { ...(wake!.payload?._paperclipWakeContext as Record<string, unknown>),
+        issueId: seeded.issueId, wakeReason: "issue_commented" } } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(heartbeatRuns).set(runtime === "preparing"
+      ? { responsibleUserId: "queue-owner", runtimeMode: "legacy", runtimeModeResolvedAt: null, executionStage: "preparing",
+          runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } }
+      : { responsibleUserId: "queue-owner", nativeIssueId: seeded.issueId }).where(eq(heartbeatRuns.id, seeded.runId));
+    if (runtime === "native") {
+      await db.insert(nativeRunFinalizations).values({ companyId: seeded.companyId,
+        issueId: seeded.issueId, runId: seeded.runId, phase: "observed" });
+    }
+    // Hold any successor in the ordinary queue without launching a provider.
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, seeded.agentId));
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() } });
+    return seeded;
+  }
+
+  it.each(["preparing", "native"] as const)(
+    "keeps a %s run that has not started its first turn and gives it the queued messages",
+    async (runtime) => {
+      const seeded = await seedFirstTurnQueue(runtime);
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.executionWait).toMatchObject({ reason: "first_turn_pending" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(run!.status).toBe("running");
+      expect(run!.errorCode).toBeNull();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(wake!.status).toBe("deferred_issue_execution");
+      expect(wake!.payload?.queuedCommentInterrupt).toBeUndefined();
+
+      // Preparation finishes and the runner seals its first turn's input.
+      if (runtime === "preparing") {
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", runtimeModeResolvedAt: new Date(),
+          nativeIssueId: seeded.issueId }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const firstTurn = await claimFirstTurnQueuedInput(db, { companyId: seeded.companyId, runId: seeded.runId,
+        issueId: seeded.issueId, agentId: seeded.agentId });
+      expect(firstTurn).toContain("First queued message");
+      expect(firstTurn!.indexOf("First queued message")).toBeLessThan(firstTurn!.indexOf("Second queued message"));
+      // The taken messages leave the visible queue; nothing else can claim them.
+      const after = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(after.body.entries).toEqual([]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId)))
+        .filter(row => row.status === "queued")).toEqual([]);
+    },
+  );
+
+  it("still interrupts a preparing run when its queue holds another user's message", async () => {
+    const seeded = await seedFirstTurnQueue("native");
+    // Ordinary comments from two users merge into one wake that keeps the
+    // first author as its requester; the first turn would take only that user's.
+    await db.update(issueComments).set({ authorUserId: "other-operator" }).where(eq(issueComments.id, seeded.commentIds[1]!));
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.executionWait?.reason).not.toBe("first_turn_pending");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run!.status).toBe("cancelled");
+    expect(run!.errorCode).toBe("operator_interrupted");
+  });
+
+  it.each(["accepted turn", "sealed first turn"] as const)(
+    "still interrupts a run whose %s already started",
+    async (state) => {
+      const seeded = await seedFirstTurnQueue("native");
+      if (state === "accepted turn") {
+        // A run saved by the previous release carries no seal; its accepted turn decides.
+        await appendHeartbeatRunEvent(db, { companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+          eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
+      } else {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: seeded.issueId, firstTurnQueuedInput: {
+          schema: "paperclip.first-turn-queued-input.v1", runId: seeded.runId, wakeupRequestIds: [], commentIds: [],
+          claimedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(queue.body.entries).toHaveLength(2);
+      const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(run!.status).toBe("cancelled");
+      expect(run!.errorCode).toBe("operator_interrupted");
     },
   );
 

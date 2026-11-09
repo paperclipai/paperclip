@@ -1,4 +1,6 @@
+import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -1320,6 +1322,7 @@ export function heartbeatService(
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
+    isRunAdmissionClosed: () => shutdownInProgress || isProcessRunAdmissionClosed(),
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
@@ -1530,6 +1533,12 @@ export function heartbeatService(
   function resumeRemoteStopComments(...args: Parameters<typeof runControl.resumeRemoteStopComments>) {
     return runControl.resumeRemoteStopComments(...args);
   }
+  // The interrupted-preparation ownership kind settles a hold, then replays the
+  // preparation through this same resume path (bounded, uncharged retry).
+  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+    const run = await getRun(runId);
+    if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
+  });
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
