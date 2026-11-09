@@ -309,6 +309,26 @@ function concurrencyLimit(max: number) {
   };
 }
 
+// Wait for a shared operation, but stop waiting when this caller's signal aborts.
+function untilAborted<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export interface ObjectByteJournalOptions {
   provider: StorageProvider;
   prefix: string;
@@ -516,13 +536,15 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   }
   async function load(ref: Reference, signal?: AbortSignal) {
     validateReference(ref);
+    signal?.throwIfAborted();
     const cached = cachedObject(ref.key);
     if (cached) return cached;
     const pending = readsInFlight.get(ref.key);
     if (pending) {
       // Share a concurrent fetch, but do not inherit another reader's abort.
+      // This reader stops waiting on its own abort; the shared fetch continues.
       try {
-        return await pending;
+        return await untilAborted(pending, signal);
       } catch (error) {
         signal?.throwIfAborted();
         const shared = cachedObject(ref.key);

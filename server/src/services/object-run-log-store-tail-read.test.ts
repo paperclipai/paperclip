@@ -10,9 +10,9 @@ import { createObjectRunLogStore } from "./object-run-log-store.js";
 // read (the last 32 KB, aligned to a record) crosses many objects. Each object
 // GET costs a storage round trip, so the number of GETs that must run one after
 // another decides how long the chat waits for the run's latest output.
-function countingStorage(getLatencyMs = 0) {
+function countingStorage(getLatencyMs: number | ((objectKey: string) => number) = 0) {
   const objects = new Map<string, Buffer>();
-  const stats = { gets: 0, inFlight: 0, maxInFlight: 0 };
+  const stats = { gets: 0, inFlight: 0, maxInFlight: 0, completed: 0 };
   const etag = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   const provider: StorageProvider = {
     id: "s3",
@@ -35,12 +35,13 @@ function countingStorage(getLatencyMs = 0) {
       stats.inFlight++;
       stats.maxInFlight = Math.max(stats.maxInFlight, stats.inFlight);
       try {
-        await delay(getLatencyMs);
+        await delay(typeof getLatencyMs === "number" ? getLatencyMs : getLatencyMs(objectKey));
         const bytes = objects.get(objectKey);
         if (!bytes) throw Object.assign(new Error("missing"), { name: "NoSuchKey" });
         return { stream: Readable.from([bytes]), etag: etag(bytes), contentLength: bytes.length };
       } finally {
         stats.inFlight--;
+        stats.completed++;
       }
     },
     async headObject({ objectKey }) {
@@ -149,6 +150,33 @@ describe("object run log tail reads", () => {
     setTimeout(() => leaving.abort(new Error("navigated away")), 8);
 
     await expect(abandoned).rejects.toThrow();
+    const tail = await staying;
+    const recordStart = full.lastIndexOf(10, offset - 1) + 1;
+    expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
+  });
+
+  it("stops a reader that navigates away while it waits on another reader's fetch", async () => {
+    clearObjectJournalReadCache();
+    // Content-addressed objects (segments and index nodes) are slow; the
+    // mutable head is fast, so the second reader joins the first one's fetch.
+    const { provider, stats } = countingStorage((key) => (/[0-9a-f]{64}/.test(key) ? 60 : 0));
+    const { store, handle, full } = await writeManySegmentLog(provider, 60);
+    clearObjectJournalReadCache();
+    const offset = full.length - TAIL_BYTES / 2;
+    const leaving = new AbortController();
+
+    const staying = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true });
+    await delay(10);
+    const completedBeforeJoin = stats.completed;
+    let completedWhenAborted = -1;
+    const joining = store.read(handle, { offset, limitBytes: TAIL_BYTES, alignStartToRecord: true, signal: leaving.signal })
+      .catch((error: unknown) => { completedWhenAborted = stats.completed; throw error; });
+    setTimeout(() => leaving.abort(new Error("navigated away")), 10);
+
+    await expect(joining).rejects.toThrow("navigated away");
+    // The joining reader stops on its own abort. It does not wait for the
+    // shared fetch: only the fast head read finished since it joined.
+    expect(completedWhenAborted - completedBeforeJoin).toBeLessThanOrEqual(1);
     const tail = await staying;
     const recordStart = full.lastIndexOf(10, offset - 1) + 1;
     expect(Buffer.from(tail.content)).toEqual(full.subarray(recordStart));
