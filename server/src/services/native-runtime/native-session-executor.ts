@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
@@ -9902,6 +9903,7 @@ async function executePaperclipNativeSessionAttempt(
   const leaseOwner =
     input.leaseOwner ?? `${effectiveRunnerInstanceId}:${randomUUID()}`;
   const controller = await currentNativeControllerIdentity();
+  const controllerHostHash = (await currentControllerProcess()).hostHash;
   const executionLeaseTtlMs = input.runnerExecutionTarget?.kind === "remote"
     ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   let attempt: number;
@@ -10087,8 +10089,8 @@ async function executePaperclipNativeSessionAttempt(
               // Start the full lease after claim locks and lineage reads finish.
               leaseExpiresAt: sql`clock_timestamp() + ${executionLeaseTtlMs} * interval '1 millisecond'`,
               controllerBootId: controller.bootId,
+              controllerHostHash,
               controllerPid: controller.pid,
-              controllerHostHash: controller.hostHash ?? null,
               controllerProcessStartedAt: controller.processStartedAt,
               controllerGeneration: nextControllerGeneration,
               failureCode: null,

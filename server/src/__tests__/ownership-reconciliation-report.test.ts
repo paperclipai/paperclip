@@ -207,7 +207,7 @@ describe("report-only ownership reconciliation", () => {
     });
   });
 
-  it("proves a foreign-boot coordinator gone when its PID-space stamp matches and its PID is dead", async () => {
+  it("proves a recorded same-space Native controller gone while keeping a legacy NULL controller unprovable", async () => {
     const issueId = randomUUID(); const runId = randomUUID(); const legacyRunId = randomUUID(); const legacyIssueId = randomUUID();
     await db.insert(issues).values([{ id: issueId, companyId, title: "Dead owner" }, { id: legacyIssueId, companyId, title: "Legacy" }]);
     await db.insert(heartbeatRuns).values([
@@ -220,13 +220,11 @@ describe("report-only ownership reconciliation", () => {
       controllerProcessStartedAt: new Date("2026-11-07T09:00:00.000Z"), controllerGeneration: 1 };
     await db.insert(nativeRunFinalizations).values([
       { ...claim, runId, issueId, controllerHostHash: currentProcessSpaceHash() },
-      // Written before the PID space was stamped: the one-release local proof
-      // on a single-host server (#19883), never on an ephemeral one.
       { ...claim, runId: legacyRunId, issueId: legacyIssueId, controllerHostHash: null },
     ]);
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(kindReport(report, "native_executor_claim")).toMatchObject({ inProgress: 2,
-      verdicts: { gone: 2, unprovable: 0 }, reasons: { pid_dead: 2 } });
+      verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, process_space_unrecorded: 1 } });
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     try {
       const ephemeral = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });

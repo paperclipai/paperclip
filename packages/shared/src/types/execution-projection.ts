@@ -85,6 +85,9 @@ export function requiresExecutionReconciliation(
 export interface ExecutionReconciliation {
   runId: string;
   providerStopped: true;
+  /** Only the exact namespace-unverified Native ownership hold accepts these. */
+  controllerStopped?: true;
+  controllerAuthorityDigest?: string;
   actionOutcome: "completed" | "not_performed" | "mixed";
   outcomeEvidence: string;
   /** Operator evidence bound to this failed run; required after workspace restore failure. */

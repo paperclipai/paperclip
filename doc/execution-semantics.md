@@ -1899,8 +1899,13 @@ A native run can accept its result and then lose its server to a hard kill
 before finalization. Its result stays leased to the controller of the earlier
 boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
-different boot and its recorded controller process has exited or its PID now
-names another process. Only the executor's lease carries that controller
+different boot in the same known kernel and PID namespace, and its recorded
+controller process has exited or its PID now names another process. The
+executor saves that namespace with its claim. Linux uses its boot UUID and PID
+namespace; macOS uses its kernel boot-session UUID. An unreadable or unsupported
+identity, a different namespace, or an older claim without this proof keeps the
+original lease expiry and does not probe the recorded PID. Only the executor's
+lease carries that controller
 identity; a finalizer or cleanup lease is never released this way and expires
 on its own short lease. The stored result is then
 finalized without another
@@ -1908,22 +1913,59 @@ provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
 
+Before claiming an in-flight local native run, restart recovery also requires
+this same known process space. Expiry alone does not prove a local controller
+stopped. A missing, foreign or unreadable namespace creates one board-owned
+recovery action for the exact saved authority, without probing the recorded PID,
+spending retry attempts, or arming a polling loop. Renewed authority gets a new
+opaque fingerprint and preserves the previous action. Remote and plugin tasks
+retain their ordinary Stop/provider-cleanup path and do not offer the local
+containment confirmation.
+
+When automatic recovery cannot prove a local owner stopped, an operator can
+record containment through the task's recovery action after the original lease
+expires. The operator separately confirms the controller and provider/tools
+stopped on their original host, and records reviewed action outcomes and evidence.
+The server rechecks board `runtime:confirm_owner_stop` permission for a company
+owner, company administrator or instance administrator, plus company, assignee, source binding,
+opaque authority, exact expiry (including microseconds), pending Stop, accepted
+results and cleanup obligations under the normal ownership locks. A renewed or
+replaced owner invalidates the confirmation. This is explicit operator evidence,
+not a local process-stop observation.
+
+Containment uses normal failed-owner settlement and preserves usage uncertainty,
+workspaces and outcome evidence. Containment records the canonical `restored`
+outcome while keeping the task status unchanged, including when it is already
+`todo`. A separate ordinary Retry then consumes that committed evidence. It does not accept a provider result or queue a
+replacement. Only exact unadmitted Retry receipts for the contained source are
+closed with an inspectable reason; accepted or newer work stays intact. After
+cleanup and outcome review, the user makes a new ordinary Retry request under
+current authorization. Unknown outcomes keep the hold; reviewed completed or
+mixed effects remain in the continuation context and never authorize automatic
+replay. A later successful ordinary recovery claim resolves only its exact prior
+namespace attention.
+
 A recorded process is judged only in the PID space that recorded it. Native
 controller rows store `controller_host_hash` and run processes store
 `process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
 never proves that a process on another host, in another PID namespace, or in a
 sandbox is gone; such a record keeps its lease, fence or staleness TTL.
 
-Rows saved before those columns existed have no recorded host. For one release
-only, a single-host server keeps the previous local proof for them, and each use
+Rows saved before those columns existed have no recorded host. The legacy
+compatibility helper and run-process sweep retain one-release single-host local
+proof where their existing owners permit it. Each use
 writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
 removes this fallback can confirm that no rows still depend on it. An ephemeral
 server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
 controller rows with no recorded host wait as `controller_host_unrecorded`, with
 a board recovery action to confirm that the previous server stopped. Its run
 processes with no recorded host are left to the run's Stop control. The next
-release removes the fallback and treats every row with no recorded host as
-unprovable.
+release removes that compatibility fallback. The strict Native in-flight claim,
+early accepted-result release, and failed-owner guards above do not use it.
+A previous-server-only confirmation is not same-namespace proof and does not
+confirm that a provider or its tools stopped. It cannot override those guards.
+Its notification requests recovery inspection; unfinished ownership can still
+require the separate containment and ordinary Retry described above.
 
 A server boot that holds work keeps a controller instance lease
 (`controller_instances`): a row named by its boot id, with an epoch and a lease

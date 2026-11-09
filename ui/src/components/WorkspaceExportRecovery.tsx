@@ -78,7 +78,7 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
         copy={{ waiting: "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Resuming the run…" }} /></>;
+          resuming: "Controller stop recorded. Checking recovery…" }} /></>;
   }
   // A resource held by a server recorded before Paperclip stored which server held it.
   if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {

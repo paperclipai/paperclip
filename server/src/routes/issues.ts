@@ -10297,6 +10297,12 @@ export function issueRoutes(
         const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
+      if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
+        assertBoard(req);
+        const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+          resource: { type: "company", companyId: existing.companyId } });
+        if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
+      }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
       const postCommitActivityPublications: ActivityPublication[] = [];
@@ -10419,6 +10425,11 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        if (activeRecoveryAction.kind === "active_run_watchdog" && activeRecoveryAction.ownerType === "board"
+          && activeRecoveryAction.cause === "native_restart_recovery_blocked"
+          && activeRecoveryAction.evidence.reason === "controller_process_space_unverified"
+          && (!executionReconciliation?.controllerStopped || !executionReconciliation.controllerAuthorityDigest))
+          throw conflict("Confirm the original controller and provider stopped and review their action outcomes before resolving this hold.");
         const workspaceRetry = outcome === "restored" && sourceIssueStatus === "todo"
           ? await prepareRestrictedWorkspaceRetry(tx as unknown as Db, lockedIssue, activeRecoveryAction)
           : null;
@@ -10548,7 +10559,21 @@ export function issueRoutes(
           }
         }
 
-        if (
+        const controllerContainment = executionReconciliation?.controllerStopped === true
+          || executionReconciliation?.controllerAuthorityDigest !== undefined;
+        if (controllerContainment) {
+          assertBoard(req);
+          const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
+            resource: { type: "company", companyId: lockedIssue.companyId } });
+          if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
+          if (outcome !== "restored" || sourceIssueStatus !== lockedIssue.status || !actionId
+            || activeRecoveryAction.id !== actionId || workspaceBaseRef || workspaceRetry)
+            throw conflict("Containment only records the original execution. Keep the task unchanged, then use Retry separately.");
+          await validateExecutionReconciliation({ db: tx as unknown as Db, companyId: lockedIssue.companyId,
+            issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+            sourceRunId: activeRecoveryAction.evidence.runId, decision: executionReconciliation,
+            controllerContainment: { actionId, actorId: actor.actorId } });
+        } else if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
@@ -10570,7 +10595,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
-        if (outcome === "restored" && sourceIssueStatus === "todo") {
+        if (!controllerContainment && outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
@@ -10625,6 +10650,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            controllerContainment ? { controllerContainmentOnly: true } : undefined,
           );
         }
         let issue = lockedIssue;
@@ -10780,7 +10806,7 @@ export function issueRoutes(
           issue = updatedIssue;
         }
 
-        const recordedOutcome =
+        const recordedOutcome = controllerContainment ? "restored" :
           outcome === "restored" &&
           issue.status === "todo" &&
           activeRecoveryAction.returnOwnerAgentId != null &&
