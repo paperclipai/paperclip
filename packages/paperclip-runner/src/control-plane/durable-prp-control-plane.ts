@@ -4265,7 +4265,7 @@ export class DurablePrpControlPlane {
         ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
         : sourceSeq !== existing.sourceSeq
     ) {
-      connection.close();
+      this.#eventCommitFailed(connection, "event_sequence_mismatch", sourceSeq);
       return;
     }
     if (
@@ -4478,7 +4478,6 @@ export class DurablePrpControlPlane {
           })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
-      this.#eventDeliveryStall = null;
       this.#sendJson(connection,
         this.#controlEnvelope(
           connection,

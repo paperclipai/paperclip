@@ -1451,6 +1451,52 @@ it("fails closed when checkpoint storage keeps failing before a reconnect authen
   }
 });
 
+it.each([
+  { label: "an out-of-order event", seq: 5, failCommit: false, stepMs: 3_000, failsClosed: true,
+    detail: "event_sequence_mismatch at source seq 5" },
+  { label: "20 failures inside 45 s", seq: 1, failCommit: true, stepMs: 1_000, failsClosed: false, detail: null },
+])("bounds commit-stall reconnects for $label", async ({ seq, failCommit, stepMs, failsClosed, detail }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-stall-bound-"));
+  const commits = vi.fn(async () => {
+    if (failCommit) throw Object.assign(new Error("transient"), { code: "ECONNRESET" });
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(seq);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = `stall-bound-${seq}`;
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      if (failCommit) await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setTimeout(resolveTurn, 20));
+      clock += stepMs;
+      client.socket.destroy();
+    }
+    if (failsClosed) {
+      expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_commit_stalled", detail });
+    } else {
+      expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+    }
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("fails closed when runner events keep failing to commit without progress", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
   const commits = vi.fn(async () => {
