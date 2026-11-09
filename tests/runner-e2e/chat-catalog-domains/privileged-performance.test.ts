@@ -26,12 +26,13 @@ it("rejects wrong data size, unrelated phase and unmeasured production throughpu
   expect(gradeLongThreadPerformance(o).passed).toBe(false);
   const wrong = valid(); wrong.state.interpretation.reply = wrong.state.interpretation.reply.replace("487 rows", "900 rows");
   expect(gradeLongThreadPerformance(wrong).passed).toBe(false);
+  const commits = valid(); commits.state.interpretation.reply = "The fixture took 5 profiler commits."; expect(gradeLongThreadPerformance(commits).passed).toBe(false);
   const phase = valid(); phase.state.interpretation.attributed = false; expect(gradeLongThreadPerformance(phase).passed).toBe(false);
   expect(gradeLongThreadPerformance(null).passed).toBe(false);
 });
-it("rejects generic fixture advice that describes no observed measurement", () => {
-  const o = valid(); o.state.interpretation.reply = "This synthetic render fixture cannot establish production throughput or model latency.";
-  expect(gradeLongThreadPerformance(o).passed).toBe(false);
-  o.state.interpretation.reply = "The synthetic fixture shows 2 profiler commits. This render observation does not establish production throughput.";
-  expect(gradeLongThreadPerformance(o).passed).toBe(true);
+it("does not grade the interpretation's wording", () => {
+  for (const text of ["Rendering the big thread took about half a second to mount and stayed smooth after that. That is one local page load, so it says nothing about live traffic or how fast the model answers.",
+    "Mount 12.3 ms, total 20.4 ms over 2 commits: fine for a single page load in this lab."]) {
+    const o = valid(); o.state.interpretation.reply = text; expect(gradeLongThreadPerformance(o).passed).toBe(true);
+  }
 });

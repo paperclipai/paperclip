@@ -2740,7 +2740,7 @@
       "../../ui/src/pages/IssueChatLongThreadPerf.tsx",
       "../../ui/src/fixtures/issueChatLongThreadFixture.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.long-thread-performance.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
