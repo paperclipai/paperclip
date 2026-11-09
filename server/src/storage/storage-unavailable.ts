@@ -70,7 +70,9 @@ export async function retryThroughStorageOutage<T>(send: () => Promise<T>, signa
     } catch (error) {
       if (signal?.aborted || !isStorageUnavailableError(error) || Date.now() - startedAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
-      await delay(wait, undefined, { signal });
+      await delay(wait, undefined, { signal }).catch((interrupted: unknown) => {
+        throw signal?.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
+      });
     }
   }
 }

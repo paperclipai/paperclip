@@ -106,6 +106,17 @@ describe("the shared storage outage wait", () => {
     expect(calls).toBeGreaterThan(1);
   });
 
+  it("keeps the storage failure when a deadline ends the wait, but not when a Stop does", async () => {
+    const slow = { budgetMs: 60_000, firstDelayMs: 1_000, maxDelayMs: 1_000 };
+    await expect(retryThroughStorageOutage(outage, AbortSignal.timeout(50), slow))
+      .rejects.toSatisfy(isStorageUnavailableError);
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(new Error("Stopped by a board operator")), 50);
+    const stopped = await retryThroughStorageOutage(outage, stop.signal, slow).catch((error: unknown) => error);
+    expect(stopped).toMatchObject({ name: "AbortError" });
+    expect(isStorageUnavailableError(stopped)).toBe(false);
+  });
+
   it("never retries a failure that is not an outage", async () => {
     let calls = 0;
     await expect(retryThroughStorageOutage(async () => { calls++; throw new Error("object_journal_conflict"); }, undefined, policy))
