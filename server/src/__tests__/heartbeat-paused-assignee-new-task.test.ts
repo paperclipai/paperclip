@@ -12,11 +12,6 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recove
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
 if (!recoveryPostgresSupport.supported) console.warn(`Skipping paused assignee new task tests: ${recoveryPostgresSupport.reason}`);
 
-/**
- * A person paused an agent, then created a task for it. The task has no run:
- * it waits for the resumed agent. Recovery must not move it to `blocked` with
- * "the board must choose the next action", and it starts once the agent resumes.
- */
 describePostgres("new task for a manually paused assignee", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
