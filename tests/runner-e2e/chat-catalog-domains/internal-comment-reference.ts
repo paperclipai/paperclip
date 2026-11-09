@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect } from "@playwright/test";
 import { parseIssueReferenceFromHref } from "../../../ui/src/lib/issue-reference.js";
-import type { ChatCatalogCase } from "../chat-catalog-contract.js";
+import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { internalResultLink, entity, hasLink, observeInternal, type Entity, type InternalObservation } from "./internal-support.js";
 
@@ -49,16 +49,40 @@ export function validRenderedCommentReference(o: InternalObservation, comment: E
     && proof.bodySha256 === digest(comment.body ?? "") && proof.visible === true && proof.destinationMatched === true && proof.publicReadMatched === true
     && hasLink({ ...o, links: [proof.href] }, "issues", design);
 }
+export const RENDERED_REPLY_WAIT_MS = 60_000;
+/** Waits for every saved agent reply of the conversation to render; throws a named error otherwise. */
+export async function waitForRenderedReply(ctx: Pick<ChatCatalogContext, "issue" | "input">, o: Pick<InternalObservation, "leadId" | "runs">,
+  timeoutMs = RENDERED_REPLY_WAIT_MS, intervalMs = 500) {
+  const source = ctx.issue();
+  if (!source) throw new Error("Rendered reply wait: missing source conversation");
+  const chat = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`);
+  const replies = chat.filter(row => row.authorAgentId === o.leadId && o.runs.some(run => run.id === row.createdByRunId));
+  if (!replies.length) throw new Error("Rendered reply wait: the settled source run saved no reply");
+  const deadlineAt = Date.now() + timeoutMs;
+  for (const reply of replies) {
+    const rendered = ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}]`).filter({ visible: true });
+    try {
+      await pollUntil({ label: `rendered reply ${reply.id}`, deadlineAt, intervalMs, load: async () => await rendered.count() > 0, accept: Boolean });
+    } catch (error) {
+      throw new Error(`Rendered reply wait: saved reply ${reply.id} did not render in the open conversation within ${timeoutMs}ms`, { cause: error });
+    }
+  }
+}
 export function withRenderedCommentReference(base: ChatCatalogCase): ChatCatalogCase {
-  return { ...base, sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-comment-reference.ts", "../../ui/src/lib/issue-reference.ts", "../../ui/src/components/MarkdownBody.tsx"],
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.comment-with-reference.v2",
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-comment-reference.ts", "../../ui/src/lib/issue-reference.ts", "../../ui/src/components/MarkdownBody.tsx"],
     async act(ctx, state) {
       await pollUntil({ label: "Saved comment source turn", deadlineAt: Date.now() + 150000,
         load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
         accept: runs => runs.length === 1 && runs[0]!.status === "succeeded" && ctx.issue()?.conversationState === "waiting",
         reject: runs => runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Source run failed" : undefined });
-      const o = await observeInternal(ctx, state), target = entity(state, "task"), design = entity(state, "design");
-      const added = o.comments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId && o.runs.some(run => run.id === row.createdByRunId));
-      if (added.length !== 1 || !savedDesignInstruction(o, added[0]!.body ?? "", design)) return;
+      const saved = await observeInternal(ctx, state), target = entity(state, "task"), design = entity(state, "design");
+      const added = saved.comments.filter(row => row.authorAgentId === saved.leadId && row.createdByRunId && saved.runs.some(run => run.id === row.createdByRunId));
+      if (added.length !== 1 || !savedDesignInstruction(saved, added[0]!.body ?? "", design)) return;
+      // Run settle precedes the reply's render in the open conversation; read
+      // rendered links only after the saved reply itself is on the page.
+      await waitForRenderedReply(ctx, saved);
+      const o = await observeInternal(ctx, state);
       const taskHref = o.links.find(href => hasLink({ ...o, links: [href] }, "issues", target));
       if (!taskHref) return;
       const page = ctx.input.page, source = page.url();

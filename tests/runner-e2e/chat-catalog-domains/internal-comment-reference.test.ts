@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { expect, it } from "vitest";
-import { savedDesignInstruction, validRenderedCommentReference } from "./internal-comment-reference.js";
+import { describe, expect, it } from "vitest";
+import { savedDesignInstruction, validRenderedCommentReference, waitForRenderedReply } from "./internal-comment-reference.js";
 import { grade_tasks } from "./internal-tasks.js";
 import type { InternalObservation } from "./internal-support.js";
 function valid(body = "Follow the approved design task RUN-1 as the source of truth for this landing page build."): InternalObservation {
@@ -40,3 +40,22 @@ for (const body of ["Follow [the approved design](/ACO/issues/design).", "Please
 for (const body of ["Do not follow [the design](/ACO/issues/design).", "Never use [the design](/ACO/issues/design).", "Ignore [the design](/ACO/issues/design), but follow [the design](/ACO/issues/design).", "Follow [the design](/ACO/issues/design) but ignore it.", "Follow [the wrong task](/ACO/issues/other); the intended design ID is design.", "Follow [the design](https://foreign.test/ACO/issues/design).", "Follow [the design](/ACO/issues/design), but do not follow it.", "Here is [the design](/ACO/issues/design).", "Follow [another task](/ACO/issues/other). Reference [the design](/ACO/issues/design)."])
   it(`rejects negated, unrelated or merely mentioned reference: ${body}`, () => expect(grade_tasks(observation(body)).passed).toBe(false));
 it("preserves exact note authorship and duplicate rejection", () => { const o = observation("Follow [the design](/ACO/issues/design)."); o.comments[0]!.authorAgentId = "other"; expect(grade_tasks(o).passed).toBe(false); o.comments[0]!.authorAgentId = "ceo"; o.comments.push(structuredClone(o.comments[0]!)); expect(grade_tasks(o).passed).toBe(false); });
+
+describe("waitForRenderedReply", () => {
+  const fixture = (renderAfterChecks: number, comments = [{ id: "reply", authorAgentId: "ceo", createdByRunId: "run" }]) => {
+    let checks = 0;
+    const locator = { filter: () => locator, count: async () => (++checks > renderAfterChecks ? 1 : 0) };
+    const ctx = { issue: () => ({ id: "chat" }), input: { api: { get: async () => comments }, page: { locator: () => locator } } };
+    return { ctx: ctx as unknown as Parameters<typeof waitForRenderedReply>[0], checks: () => checks };
+  };
+  const o = { leadId: "ceo", runs: [{ id: "run", agentId: "ceo", companyId: "company", status: "succeeded" }] } as Parameters<typeof waitForRenderedReply>[1];
+  it("waits until the saved reply is on the page instead of reading links at run settle", async () => {
+    const f = fixture(3); await waitForRenderedReply(f.ctx, o, 2_000, 1); expect(f.checks()).toBe(4);
+  });
+  it("names the unrendered reply on timeout instead of returning silently", async () => {
+    await expect(waitForRenderedReply(fixture(Number.POSITIVE_INFINITY).ctx, o, 20, 1)).rejects.toThrow(/Rendered reply wait: saved reply reply did not render/);
+  });
+  it("fails by name when the settled run saved no reply", async () => {
+    await expect(waitForRenderedReply(fixture(0, [{ id: "other", authorAgentId: "ceo", createdByRunId: "unrelated" }]).ctx, o, 20, 1)).rejects.toThrow(/saved no reply/);
+  });
+});

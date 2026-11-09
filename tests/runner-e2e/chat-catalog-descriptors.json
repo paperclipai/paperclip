@@ -5824,7 +5824,7 @@
       "../../ui/src/lib/issue-reference.ts",
       "../../ui/src/components/MarkdownBody.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.comment-with-reference.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
