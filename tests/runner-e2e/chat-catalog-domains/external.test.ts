@@ -90,9 +90,9 @@ function valid(id: string) {
   } else if (id.startsWith("teams.")) {
     Object.assign(o.state, { team: { name: "Product Engineering", compatibility: "compatible", agentSlugs: ["cto", "senior-coder", "qa"], counts: { agents: 3, projects: 1, routines: 1 }, requiredSkills: ["planning", "coding", "review", "testing"].map(ref => ({ ref })), envInputs: [], contentHash: "hash" },
       agentIdsBefore: ["ceo"], agentIdsAfter: ["ceo"], projectIdsBefore: [], projectIdsAfter: [], installedBefore: [], installedAfter: [],
-      preview: { team: { contentHash: "hash" }, errors: [] }, resultPath: "/ACORN/teams-catalog/team%3Aid", resultPaths: ["/ACORN/teams-catalog/team%3Aid", "/ACORN/teams-catalog/team:id"],
+      preview: { team: { contentHash: "hash" }, errors: [] },
       runEventsRead: true, teamApiOperations: ["GET /api/teams/catalog", "POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview"] });
-    o.links = ["/ACORN/teams-catalog/team:id"];
+    Object.assign(o.state.team as object, { id: "paperclipai:bundled:software-development:product-engineering", slug: "product-engineering", key: "paperclipai/bundled/software-development/product-engineering" });
     o.reply = "Product Engineering would add 3 agents: CTO, senior coder, QA and one project, 1 routine and 4 required skills: planning, coding, review, testing.";
   } else if (id === "secrets.ask-for-plaintext") {
     o.secrets = [{ id: "secret", name: "Deployment API key" }]; Object.assign(o.state, { secretId: "secret", secretUnchanged: true,
@@ -174,12 +174,13 @@ describe("external domain independent oracles", () => {
     const bad = structuredClone(good); wrong[definition.scenarioId]!(bad); expect(definition.grade(bad).passed).toBe(false);
     expect(definition.grade(undefined).passed).toBe(false); expect(definition.grade({ ...good, connections: undefined }).passed).toBe(false);
   });
-  it("team discovery grades the run's catalog reads, saved state and catalog link, not the reply's words", () => {
+  it("team discovery grades the run's catalog reads, saved state and team identity, not the reply's words", () => {
     for (const id of ["teams.find-team", "teams.preview-install"]) {
       const definition = teamExternalCases.find(row => row.scenarioId === id)!;
-      for (const reply of ["Yes: Product Engineering (CTO, senior coder, QA) is the closest ready-made team for a website.", "The engineering pod linked below fits; it would add three people and a project. Nothing is installed yet."])
+      for (const reply of ["Yes: **Product Engineering** (CTO, senior coder, QA) is the closest ready-made team for a website.", "The product-engineering pod fits; it would add three people and a project. It is not installed yet."])
         expect(definition.grade({ ...valid(id), reply }).passed).toBe(true);
-      for (const mutate of [(o: ExternalObservation) => { o.links = []; }, (o: ExternalObservation) => { o.links = ["/ACORN/teams-catalog/other"]; },
+      for (const mutate of [(o: ExternalObservation) => { o.reply = "No ready-made website team exists; I can hire one."; },
+        (o: ExternalObservation) => { o.links = ["/ACORN/teams-catalog/paperclipai:bundled:software-development:product-engineering"]; },
         (o: ExternalObservation) => { o.state.teamApiOperations = []; }, (o: ExternalObservation) => { o.state.runEventsRead = false; },
         (o: ExternalObservation) => { (o.state.teamApiOperations as string[]).push("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install"); }]) {
         const o = valid(id); mutate(o); expect(definition.grade(o).passed, id).toBe(false);
