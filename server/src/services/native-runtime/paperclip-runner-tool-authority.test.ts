@@ -38,6 +38,7 @@ import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from ".
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
@@ -618,6 +619,33 @@ describe("PaperclipRunnerToolAuthority", () => {
     } finally {
       await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
       await db.delete(companies).where(eq(companies.id, otherCompanyId));
+    }
+  });
+
+  it("bounds child task context below its native delivery budget without losing task identities", async () => {
+    const ids = Array.from({ length: 21 }, () => randomUUID());
+    const description = '💊"\\\n'.repeat(4500);
+    const [original] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issueId));
+    const activeDescription = "Keep the complete business scope and its approval gates.";
+    await db.update(issues).set({ description: activeDescription }).where(eq(issues.id, issueId));
+    await db.insert(issues).values(ids.map((id, index) => ({ id, companyId, parentId: issueId,
+      title: `Existing deliverable ${index}`, description, status: "done", assigneeAgentId: agentId })));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "large-child-context", arguments: {} }) as {
+        activeTask: { description: string }; childTasks: Array<{ id: string; description: string; descriptionTruncated?: boolean }>;
+        childTasksTruncated: boolean; delegationGuidance: string;
+      };
+      expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
+      expect(context.activeTask.description).toBe(activeDescription);
+      expect(new Set(context.childTasks.map(task => task.id))).toEqual(new Set(ids));
+      expect(context.childTasks.every(task => task.descriptionTruncated === true && !task.description.includes("�"))).toBe(true);
+      expect(context.delegationGuidance).toContain("get_task");
+      const [saved] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, ids[0]!));
+      expect(saved.description).toBe(description);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, ids));
+      await db.update(issues).set({ description: original.description }).where(eq(issues.id, issueId));
     }
   });
 

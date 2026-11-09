@@ -1,4 +1,5 @@
 import { budgetServiceInTransaction } from "../budgets.js";
+import { fitNativeTaskContext, nativeChildTaskContext } from "./native-task-context.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
@@ -894,7 +895,8 @@ export class PaperclipRunnerToolAuthority {
         const readableChildren = this.binding.museRuntime
           ? await this.#readableMuseTaskIds(context.run, childTasks.map(task => task.id)) : null;
         const visibleChildTasks = readableChildren ? childTasks.filter(task => readableChildren.has(task.id)) : childTasks;
-        return {
+        const children = nativeChildTaskContext(visibleChildTasks.map(redactedTask));
+        const taskContext = {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
           taskQuestionContext: await readTaskQuestionContext(this.db, {
@@ -910,9 +912,9 @@ export class PaperclipRunnerToolAuthority {
                 runId: this.binding.runId, workspaceId: context.issue.executionWorkspaceId })
               ?? await readPublishedGitHubReviewCompletionContinuation({ db: this.db, binding: this.binding })
             : null,
-          childTasks: visibleChildTasks.slice(0, 100).map(redactedTask),
-          childTasksTruncated: childTasks.length > 100,
-          delegationGuidance: "Reuse existing child tasks for delegated work. Inspect a completed child's comments and documents before creating another task for the same deliverable. Use search_tasks if the child task list is truncated.",
+          childTasks: children.tasks,
+          childTasksTruncated: children.truncated || childTasks.length > 100,
+          delegationGuidance: "Reuse existing child tasks for delegated work. Inspect a completed child's comments and documents before creating another task for the same deliverable. Child titles and descriptions can be excerpts, marked with titleTruncated or descriptionTruncated. Use get_task with the child's id for its complete details, and search_tasks with a narrow query if the child task list is truncated.",
           run: {
             id: this.binding.runId,
             status: context.run.status,
@@ -929,6 +931,7 @@ export class PaperclipRunnerToolAuthority {
             }))?.interaction,
           } : {}),
         };
+        return fitNativeTaskContext(taskContext);
       }
       case "get_task_history": {
         const readerSourceTrust = await resolveActorSourceTrustForIssue({ db: this.db, issue: context.issue,

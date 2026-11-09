@@ -2,6 +2,24 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Native task context delivery
+
+`get_task_context` includes a bounded child-task overview. Child titles and
+descriptions can be excerpts, marked by `titleTruncated` or
+`descriptionTruncated`. Use `get_task` with the child ID to read its complete
+details. `childTasksTruncated` also reports when the count or encoded-byte
+budget omits rows; use a narrow `search_tasks` query for those rows.
+The overview does not rewrite the source tasks or shorten the active task's
+scope and approval context.
+
+The complete response must fit the native tool-result delivery budget. If the
+remaining active-task or approval context is too large, the tool returns
+`paperclip_runner_task_context_too_large` with scoped follow-up reads instead
+of leaving a result that the Runner cannot deliver. This is an incomplete read,
+not evidence that omitted requirements or approval gates are absent. Existing
+saved session and journal identities are unchanged; pending reads from an older
+release still require the normal verified recovery path.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.
