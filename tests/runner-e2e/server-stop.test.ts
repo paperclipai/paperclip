@@ -434,7 +434,7 @@ it.skipIf(process.platform === "win32")("still fails safely when a group stays u
 function eperm() {
   return Object.assign(new Error("kill EPERM"), { code: "EPERM" });
 }
-function crashStopper(signalError: () => Error) {
+function crashStopper(signalError: () => Error, refusedGroup: () => number | undefined = () => undefined) {
   const logs: string[] = [];
   let thrown = false;
   const stop = createRunnerE2EServerStopper({
@@ -443,7 +443,15 @@ function crashStopper(signalError: () => Error) {
     createOwner: candidate => {
       const owner = createProcessTreeOwner(candidate);
       return { ...owner, signal: async (signal, selected) => {
-        if (signal === "SIGKILL" && !thrown) { thrown = true; await owner.observe(); throw signalError(); }
+        if (signal === "SIGKILL" && !thrown) {
+          thrown = true;
+          await owner.observe();
+          const refused = refusedGroup();
+          if (refused !== undefined) {
+            await owner.signal("SIGKILL", new Set(owner.liveGroups().map(group => group.processGroupId).filter(pid => pid !== refused)));
+          }
+          throw signalError();
+        }
         return await owner.signal(signal, selected);
       } };
     },
@@ -492,7 +500,7 @@ it.skipIf(process.platform === "win32")("fails a crash restart on a group kill e
   } finally { await stop.stopAll().catch(() => {}); }
 });
 
-it.skipIf(process.platform === "win32")("still SIGKILLs a detached descendant without a graceful drain when the first group kill reports EPERM", async () => {
+it.skipIf(process.platform === "win32")("still SIGKILLs a detached descendant without a graceful drain when its group refuses the bulk kill after the server's", async () => {
   const { root } = await fixture();
   const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
   await writeFile(descendantEntry, `
@@ -505,10 +513,12 @@ it.skipIf(process.platform === "win32")("still SIGKILLs a detached descendant wi
     setInterval(() => {}, 1000);
   `);
   const controller = start(entry), controllerReady = once(controller, "message");
-  const { stop, logs } = crashStopper(eperm);
+  let descendantGroup: number | undefined;
+  const { stop, logs } = crashStopper(eperm, () => descendantGroup);
   await stop.watch(controller);
   try {
     const [ready] = await controllerReady;
+    descendantGroup = ready.descendantPid;
     await stop.crashForRestart(controller);
     expect(controller.signalCode).toBe("SIGKILL");
     await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
