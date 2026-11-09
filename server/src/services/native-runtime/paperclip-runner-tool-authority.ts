@@ -176,6 +176,14 @@ const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
   "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
 ]);
+const idSimilarity = (left: string, right: string) => {
+  const a = left.toLowerCase(), b = right.toLowerCase();
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix += 1;
+  return Math.max(prefix, suffix);
+};
 const readOnlyApiMethod = (method: string) => ["GET", "HEAD", "OPTIONS"].includes(method);
 const toolCallKey = (callId: string) => createHash("sha256").update(callId).digest("hex");
 const toolInputDigest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -291,11 +299,11 @@ const TASK_API_PATHS: Readonly<Record<string, readonly [string, string]>> = {
   write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"],
 };
 
-function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
+export function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
   const [method, path] = TASK_API_PATHS[tool]!;
   const operation = runnerApiCatalog().find(operation => operation.method === method && operation.path === path);
   if (!operation) throw new Error("runner_task_api_operation_unavailable");
-  const body = tool === "comment_on_task" ? { body: input.body } : tool === "write_task_document"
+  const body = tool === "comment_on_task" ? { body: input.body, ...(input.resume === true ? { resume: true } : {}) } : tool === "write_task_document"
     ? { title: input.title, format: "markdown", body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
   return { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) };
 }
@@ -519,13 +527,25 @@ export class PaperclipRunnerToolAuthority {
     return null;
   }
 
+  async #agentNotFound(actorId: string): Promise<Error> {
+    const actors = await this.db.select({ id: agents.id, name: agents.name }).from(agents)
+      .where(and(eq(agents.companyId, this.binding.companyId), sql`${agents.status} <> 'terminated'`));
+    const closest = actors.map(actor => ({ actor, score: idSimilarity(actorId, actor.id) }))
+      .filter(candidate => candidate.score >= 8)
+      .sort((left, right) => right.score - left.score).slice(0, 3)
+      .map(({ actor }) => `${actor.name} (${actor.id})`);
+    return new Error(`paperclip_runner_agent_not_found: no agent in this company has id ${JSON.stringify(actorId.slice(0, 80))}.`
+      + (closest.length ? ` Closest ids: ${closest.join(", ")}.` : "")
+      + " Call list_agents and copy a valid id exactly; nothing was created or changed.");
+  }
+
   async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     try {
       return { result: await this.execute(call) };
     } catch (error) {
       // A known read failure is a tool outcome, not a failed transport. Keep
       // authorization, uncertain effects, and unexpected storage errors fatal.
-      if (!(error instanceof Error && (RECOVERABLE_READ_ERRORS.has(error.message)
+      if (!(error instanceof Error && (RECOVERABLE_READ_ERRORS.has(error.message.split(":")[0]!)
         || (error instanceof HttpError && [400, 404, 422].includes(error.status))))) throw error;
       await this.binding.assertBridgeAuthority?.();
       await this.#boundContext();
@@ -981,8 +1001,9 @@ export class PaperclipRunnerToolAuthority {
       case "list_agents":
         return { actors: (await agentService(this.db).list(this.binding.companyId)).map(redactedActor) };
       case "get_agent": {
-        const actor = await agentService(this.db).getById(requiredString(input.actorId));
-        if (!actor || actor.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");
+        const actorId = requiredString(input.actorId);
+        const actor = await agentService(this.db).getById(actorId);
+        if (!actor || actor.companyId !== this.binding.companyId) throw await this.#agentNotFound(actorId);
         return { actor: redactedActor(actor) };
       }
       case "list_approvals":
@@ -1880,7 +1901,7 @@ export class PaperclipRunnerToolAuthority {
     const assigneeAgentId = assigneeUserId ? null : input.assigneeActorId == null ? this.binding.agentId : requiredString(input.assigneeActorId);
     if (assigneeAgentId) {
       const assignee = await agentService(this.db).getById(assigneeAgentId);
-      if (!assignee || assignee.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");
+      if (!assignee || assignee.companyId !== this.binding.companyId) throw await this.#agentNotFound(assigneeAgentId);
     }
     const priority = input.priority === "critical" || input.priority === "high"
       || input.priority === "medium" || input.priority === "low"

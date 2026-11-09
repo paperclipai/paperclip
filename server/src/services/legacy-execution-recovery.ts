@@ -328,7 +328,11 @@ export async function terminalizeLegacyExecution(input: {
 }
 
 export async function settleInterruptedNativeBootstrap(
-  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+  db: Db, input: { run: Run; providerDispatchStarted: boolean;
+    /** Owner proof that authorized this settle, recorded in the activity log. */
+    proof?: string;
+    /** Called inside the transaction with the number of holds this call resolved. */
+    onHoldsResolved?: (count: number) => void },
 ): Promise<Run | null> {
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
@@ -386,8 +390,10 @@ export async function settleInterruptedNativeBootstrap(
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
-      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
+      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id),
+        ...(input.proof ? { ownerProof: input.proof } : {}) },
     });
+    input.onHoldsResolved?.(resolved.length);
     return settled;
   });
 }

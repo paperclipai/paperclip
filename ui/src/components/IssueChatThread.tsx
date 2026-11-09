@@ -48,6 +48,7 @@ import type {
   IssueAttachment,
   IssueDocumentSummary,
   IssueBlockerAttention,
+  IssueBlockerStalledWakeContext,
   IssueRecoveryAction,
   IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
@@ -267,6 +268,7 @@ import {
   X,
 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { StalledDependencyNotice } from "./StalledDependencyNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
   IssueRecoveryActionCard,
@@ -585,6 +587,8 @@ interface IssueChatThreadProps {
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  /** Children and blockers stalled on the board (`stalledDependencies` on the issue). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
@@ -696,6 +700,8 @@ interface IssueChatThreadProps {
     revision: string,
   ) => Promise<void>;
   onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  /** Delay before an eligible queued message is steered automatically; null keeps every message queued. */
+  queuedMessageAutoSteerDelayMs?: number | null;
   onDiscardQueuedComment?: (
     commentId: string,
     revision: string,
@@ -5872,6 +5878,7 @@ export function IssueChatThread({
   blockedBy = [],
   liveIssueIds,
   blockerAttention = null,
+  stalledDependencies,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
@@ -6846,6 +6853,7 @@ export function IssueChatThread({
                           : null
                       }
                     />
+                    <StalledDependencyNotice stalled={stalledDependencies} />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
                       issueStatus={issueStatus}

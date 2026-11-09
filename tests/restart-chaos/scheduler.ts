@@ -29,19 +29,35 @@ export function createRng(seed: number) {
 
 export const K4_HOLD_RANGE_MS: readonly [number, number] = [120_000, 300_000];
 
+/** The seeded K4 hold range; `--k4-hold-max-seconds` raises its upper end
+ * (up to the 600 s controller-outage cap) to reach the 7-minute reconnect
+ * grace and longer outages. The default range is unchanged. */
+export function k4HoldRange(maxMs?: number): readonly [number, number] {
+  return maxMs === undefined ? K4_HOLD_RANGE_MS : [K4_HOLD_RANGE_MS[0], Math.max(K4_HOLD_RANGE_MS[0], maxMs)];
+}
+
 export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly [number, number]> = {
   comment: [0, 5_000],
   retry: [0, 2_000],
   queued: [0, 0],
   tool: [15_000, 60_000],
   result: [0, 3_000],
+  approval: [0, 3_000],
+  paused: [0, 3_000],
+  stop: [0, 2_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
   if (trigger === "comment" || trigger === "result") return workload === "C1";
   if (trigger === "tool") return workload === "B5";
+  if (trigger === "approval") return workload === "G1";
+  if (trigger === "paused") return workload === "H1";
+  if (trigger === "stop") return workload === "S1";
   return true;
 }
+
+/** The workload a trigger needs, for the error when none is selected. */
+const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1", stop: "S1" };
 
 /** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
 const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
@@ -64,12 +80,12 @@ function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes">, 
  * Pairwise-friendly sampling: cycle a seeded shuffle of the full
  * workload × adapter × fault product so small waves still spread across cells.
  */
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
     if (!options.workloads.some(workload => triggerFitsWorkload(trigger, workload))) {
-      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" || trigger === "result" ? "C1" : "B5"} in --workloads`);
+      throw new Error(`Trigger "${trigger}" needs workload ${TRIGGER_WORKLOAD[trigger] ?? "?"} in --workloads`);
     }
   }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
@@ -95,7 +111,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
       fireAfterMs: cell.fault === "K13" ? 0 : rng.int(fireMin, fireMax),
-      holdMs: cell.fault === "K4" ? rng.int(K4_HOLD_RANGE_MS[0], K4_HOLD_RANGE_MS[1]) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
     });
@@ -117,7 +133,7 @@ function replayMasks(source: readonly string[] | undefined, added: readonly stri
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
     createdAt: createdAt.toISOString(), options, tasks: planTasks(options),
-    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults) } : {}) };
+    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs) } : {}) };
 }
 
 /** K13: the gap between one storm fault settling and the next one firing. */
@@ -128,7 +144,7 @@ export const STORM_GAP_RANGE_MS: readonly [number, number] = [120_000, 240_000];
  * after a 2-4 minute gap, long enough to fill `minutes`. It uses its own RNG
  * stream so adding a storm does not change the task cells for a seed.
  */
-export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[]): StormPlan {
+export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[], k4HoldMaxMs?: number): StormPlan {
   if (!faults.length) throw new Error("A K13 storm needs at least one fault kind");
   const rng = createRng((seed ^ 0x6b313353) >>> 0);
   const durationMs = minutes * 60_000;
@@ -136,7 +152,7 @@ export function planStorm(seed: number, minutes: number, faults: readonly FaultK
   for (let planned = 0; planned < durationMs;) {
     const gapMs = rng.int(...STORM_GAP_RANGE_MS);
     const kind = faults[rng.int(0, faults.length - 1)]!;
-    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...K4_HOLD_RANGE_MS) : 0 });
+    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...k4HoldRange(k4HoldMaxMs)) : 0 });
     planned += gapMs;
   }
   return { durationMs, faults: sequence };
@@ -217,7 +233,19 @@ export function stormFaultDue(storm: StormPlan, state: StormState, now: number):
 
 /** Written after every fault: each task's launch time and the faults that crossed it so far. */
 export const TASK_FAULT_LOG = "task-faults.json";
-export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[] }>;
+export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[]; serverBuildAtLaunch?: "upgrade_from" | "current" }>;
+
+/**
+ * A replay of a K14 wave task that launched on the current build: it starts on the current build
+ * too (no `--upgrade-from`), and its recorded K14 restarts were current-build restarts (K2).
+ */
+export function replayOnCurrentBuild(plan: WavePlan): WavePlan {
+  const asK2 = <T extends { kind?: FaultKind; fault?: TaskFaultKind }>(item: T): T => ({ ...item,
+    ...(item.kind === "K14" ? { kind: "K2" as const } : {}), ...(item.fault === "K14" ? { fault: "K2" as const } : {}) });
+  const { upgradeFrom: _upgradeFrom, ...options } = plan.options;
+  return { ...plan, options: { ...options, faults: options.faults.map(kind => kind === "K14" ? "K2" : kind) },
+    tasks: plan.tasks.map(task => ({ ...asK2(task), ...(task.replayFaults ? { replayFaults: task.replayFaults.map(asK2) } : {}) })) };
+}
 
 /** The crossing record for a replay: the graded record, else the live fault log (interrupted or wedged waves). */
 export function replayRecordFor(taskId: string, graded: { createdAt: number | null; faultIds: string[] } | null,

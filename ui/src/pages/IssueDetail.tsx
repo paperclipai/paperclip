@@ -1207,6 +1207,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   liveIssueIds: ReadonlySet<string>;
   blockerAttention: Issue["blockerAttention"] | null;
+  stalledDependencies?: Issue["stalledDependencies"];
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
@@ -1373,6 +1374,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   liveIssueIds,
   blockerAttention,
+  stalledDependencies,
   successfulRunHandoff,
   scheduledRetry,
   recoveryAction,
@@ -2688,6 +2690,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             blockedBy={blockedBy ?? []}
             liveIssueIds={liveIssueIds}
             blockerAttention={blockerAttention}
+            stalledDependencies={stalledDependencies}
             successfulRunHandoff={successfulRunHandoff}
             scheduledRetry={scheduledRetry}
             recoveryAction={isPreviousServerStopCause(recoveryAction?.cause) ? null : recoveryAction ?? null}
@@ -8188,7 +8191,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
-            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
+            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
                 && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
@@ -8562,6 +8565,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockedBy={issue.blockedBy ?? []}
                   liveIssueIds={liveIssueIds}
                   blockerAttention={issue.blockerAttention ?? null}
+                  stalledDependencies={issue.stalledDependencies}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
                   recoveryAction={issue.interruption?.responsibility === "system" || isPreviousServerStopCause(issue.activeRecoveryAction?.cause) ? null : issue.activeRecoveryAction ?? null}

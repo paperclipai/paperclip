@@ -772,6 +772,18 @@ queueing, preparation and execution; do not add its duration to those phases.
 No text or provider event identifiers are exported. The existing duration attribute
 is `paperclip.native.span.duration_ms`.
 
+`task.time_to_first_agent_activity` uses the same start and `anchor` as
+`task.time_to_first_token`, and ends when Core commits the first event that
+`provider.time_to_first_agent_event` counts: a text delta, a tool-call start, or
+a reasoning item, whichever comes first. That is when the user sees the agent
+respond, so the native speed budgets judge this span (metric
+`time_to_first_activity`, measured from run creation). Its `eventKind` is
+`agentMessage`, `reasoning`, `toolCall` or `dynamicToolCall`. Time to first text
+stays a reported metric without a budget: tool-first adapters (for example
+Claude) often call tools before they write any text, so first text includes
+model tool work rather than control-plane latency. Like TTFT, it is a cumulative
+child of `task.provider_session`; do not add it to the phases it overlaps.
+
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
 the tool complete. It can include provider buffering and transport. It is not

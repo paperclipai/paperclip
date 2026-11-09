@@ -5,6 +5,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
 import type { IssueRecoveryScope } from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
 
 type Entry = { id: string; companyId: string; dueAt: number };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
@@ -16,7 +17,7 @@ export function registerIssueRecoveryWork(
   owner: {
     stranded(scope: Scope): Promise<unknown>;
     orphanBlockers(scope: { companyId: string }): Promise<unknown>;
-    recoveryActions(scope: { companyId: string }): Promise<unknown>;
+    recoveryActions(scope: { companyId: string }): Promise<{ blockerStallWakeFailures?: number; blockerStallRetryAt?: number | null } | unknown>;
     dependencies(scope: Scope): Promise<{ enqueueFailed: number }>;
     locks(scope: Scope): Promise<unknown>;
     watchdogs(scope: { companyId: string; watchdogId: string; onDeferredDeadline: (at: number) => void }): Promise<{ incomplete: number }>;
@@ -59,7 +60,7 @@ export function registerIssueRecoveryWork(
       },
     }, canRun);
   }
-  function registerCompany(queue: DeliveryQueue, kind: "blockers" | "actions", check: (scope: { companyId: string }) => Promise<unknown>) {
+  function registerCompany(queue: DeliveryQueue, kind: "blockers" | "actions", check: (scope: { companyId: string }) => Promise<number | null | void>) {
     const cursors = new Map<string, string>();
     let enabled = false;
     return registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
@@ -74,7 +75,7 @@ export function registerIssueRecoveryWork(
         const cursor = cursors.get(key);
         const rows = kind === "actions"
           ? await db.selectDistinct({ id: issueRecoveryActions.companyId, companyId: issueRecoveryActions.companyId })
-            .from(issueRecoveryActions).where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            .from(issueRecoveryActions).where(and(recoveryActionSweepCondition(),
               scope ? eq(issueRecoveryActions.companyId, scope.companyId) : undefined,
               cursor ? gt(issueRecoveryActions.companyId, cursor) : undefined))
             .orderBy(asc(issueRecoveryActions.companyId)).limit(PAGE_SIZE)
@@ -92,12 +93,25 @@ export function registerIssueRecoveryWork(
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         return { rows: rows.map(row => ({ ...row, dueAt: Date.now() })), complete };
       },
-      check: async entry => { if (enabled) await check({ companyId: entry.companyId }); return null; },
+      check: async entry => {
+        if (!enabled) return null;
+        const next = await check({ companyId: entry.companyId });
+        return typeof next === "number" ? { ...entry, dueAt: next } : null;
+      },
     }, canRun);
   }
   const assignments = register(DELIVERY_QUEUES.strandedAssignments, ["todo", "in_progress", "in_review"], owner.stranded);
-  const orphanBlockers = registerCompany(DELIVERY_QUEUES.orphanBlockers, "blockers", owner.orphanBlockers);
-  const recoveryActions = registerCompany(DELIVERY_QUEUES.activeRecoveryActions, "actions", owner.recoveryActions);
+  const orphanBlockers = registerCompany(DELIVERY_QUEUES.orphanBlockers, "blockers", async scope => { await owner.orphanBlockers(scope); });
+  const recoveryActions = registerCompany(DELIVERY_QUEUES.activeRecoveryActions, "actions", async scope => {
+    const result = await owner.recoveryActions(scope);
+    // A stall wake that failed to enqueue must be retried, not dropped with the entry.
+    const failures = result && typeof result === "object" && "blockerStallWakeFailures" in result
+      ? Number(result.blockerStallWakeFailures) : 0;
+    if (failures > 0) throw new Error("Blocker stall wake remains undelivered");
+    // A stall held back because the agent takes no wakes is checked again later.
+    const retryAt = result && typeof result === "object" && "blockerStallRetryAt" in result ? result.blockerStallRetryAt : null;
+    return typeof retryAt === "number" ? retryAt : null;
+  });
   const dependencies = register(DELIVERY_QUEUES.resolvedDependencies, ["blocked"], async scope => {
     const result = await owner.dependencies(scope);
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");

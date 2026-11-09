@@ -39,6 +39,41 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
   }),
 });
 
+describe("capped list pagination", () => {
+  const listIssues = "GET /api/companies/{companyId}/issues";
+  const page = (headers: Record<string, string>, rows = [{ id: "a" }, { id: "b" }]) =>
+    vi.fn(async () => new Response(JSON.stringify(rows), { headers: { "content-type": "application/json", ...headers } }));
+
+  it("tells the agent a capped list is incomplete and how to fetch the next page", async () => {
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "2", "x-paperclip-next-offset": "2" });
+    const result = await executeRunnerApi({ operationId: listIssues, query: { limit: 2 } }, context, io(fetcher));
+    expect(result).toMatchObject({
+      ok: true,
+      data: [{ id: "a" }, { id: "b" }],
+      pagination: { hasMore: true, truncated: true, limit: 2, nextOffset: 2 },
+    });
+    expect((result as unknown as { pagination: { guidance: string } }).pagination.guidance).toContain("offset=2");
+  });
+
+  it("carries the cursor and the signal when the capped body is saved as an artifact", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) => ({ id: `row-${index}`, title: "x".repeat(80) }));
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "600", "x-paperclip-next-offset": "600", "x-paperclip-next-after-id": "row-599" }, rows);
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(fetcher));
+    expect(result).toMatchObject({ ok: true, artifact: { artifactId: "artifact-a" }, pagination: { hasMore: true, nextOffset: 600, nextAfterId: "row-599" } });
+  });
+
+  it("reports a complete list as complete", async () => {
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(page({ "x-paperclip-has-more": "false", "x-paperclip-limit": "500" })));
+    expect(result).toMatchObject({ ok: true, pagination: { hasMore: false, truncated: false, nextOffset: null } });
+    expect((result as unknown as { pagination: object }).pagination).not.toHaveProperty("guidance");
+  });
+
+  it("adds nothing for routes that do not page", async () => {
+    const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
+    expect(result).not.toHaveProperty("pagination");
+  });
+});
+
 describe("bounded response capture receipts", () => {
   it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
     const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
@@ -186,6 +221,22 @@ describe("runner API catalog", () => {
     expect(operation.description).toMatch(/authenticated.*board/i);
     expect(operation.description).toMatch(/agent credential/i);
     expect(operation.description).toMatch(/supervisor/i);
+  });
+  it("finds the teams catalog when asked for a ready-made team", () => {
+    const operation = searchRunnerApi({ query: "ready-made team", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("GET /api/teams/catalog");
+    expect(operation.description).toMatch(/only source of ready-made teams/i);
+    expect(operation.description).toContain("no teams catalog page");
+    expect(operation.parameters.map(parameter => parameter.name)).toContain("q");
+    const preview = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    expect(preview.description).toMatch(/creates no resources/i);
+    expect(preview.allowedModes).toEqual(expect.arrayContaining(["standard", "ask", "planning"]));
+    expect(runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!.allowedModes).not.toContain("ask");
+    const askContext = { ...context, workMode: "ask" };
+    expect(validateRunnerApiCall({ operationId: preview.operationId, pathParams: { catalogId: "team" }, body: {} }, askContext).operation.operationId).toBe(preview.operationId);
+    expect(() => validateRunnerApiCall({ operationId: "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install", pathParams: { catalogId: "team" }, body: {} }, askContext)).toThrow();
+    const install = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    expect(install.description).toMatch(/permission to create agents/i);
   });
   it("discovers where to save project defaults without rewriting existing tasks", () => {
     const operation = searchRunnerApi({ query: "save project defaults", limit: 1 }).results[0]!;
