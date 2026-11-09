@@ -47,6 +47,14 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
+  it("does not report a failed attempt for a task the budget held before its first run", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false,
+      sourceRunIds: [], observedRunId: null });
+    const notice = container.querySelector('[data-testid="task-execution-waiting"]');
+    expect(notice?.textContent).toContain("This task has not started.");
+    expect(notice?.textContent).not.toContain("Couldn’t finish this attempt");
+  });
+
   it("shows persisted backoff with a usable Retry", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
     await render({ ...failed, state: "retry_scheduled", nextRetryAt: "2026-10-20T00:00:30Z" });
@@ -151,6 +159,14 @@ describe("ordinary task interruption", () => {
     expect(retry).toHaveBeenCalledOnce();
     await render({ ...failed, retryWait }, { canRetry: false });
     expect(container.textContent).toContain(retryWait.message);
+    expect(container.querySelector("button")).toBeNull();
+  });
+  it("names the budget wait alongside a provider failure while a saved Retry is held", async () => {
+    const providerFailure = { schema: "paperclip.provider-failure.v1" as const, provider: "openai", phase: "startup" as const,
+      category: "overloaded" as const, retryability: "transient" as const, message: "Provider overloaded" };
+    await render({ ...failed, providerFailure, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
+    expect(container.textContent).toContain("Provider overloaded");
+    expect(container.querySelector('[data-testid="task-execution-waiting"]')?.textContent).toContain("waiting for the budget to allow new work");
     expect(container.querySelector("button")).toBeNull();
   });
   it("shows an unknown provider's original explanation as text and preserves read-only access", async () => {
