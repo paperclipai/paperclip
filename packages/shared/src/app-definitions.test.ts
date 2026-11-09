@@ -294,7 +294,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(65);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(66);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -460,15 +460,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 69 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 70 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(69);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(70);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 69);
+    ).toHaveProperty("size", 70);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -476,6 +476,34 @@ describe("AppDefinition catalog", () => {
       expect(entry.prerequisite.length).toBeGreaterThan(10);
       expect(["S1", "S2", "S3", "S4"]).toContain(entry.riskTier);
     }
+  });
+  it("offers GitLab.com DCR sign-in and a host-templated fine-grained token for self-managed instances", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "gitlab")!;
+    expect(getAppDefinitionForUrl("https://gitlab.com/api/v4/mcp")?.slug).toBe("gitlab");
+    expect(app.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-access-token"]);
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote", auth: "oauth", oauthClientRegistration: "dcr", ownershipModes: ["dcr"],
+      defaults: { serverUrl: "https://gitlab.com/api/v4/mcp", scopesHint: ["mcp"] },
+      riskTier: "S3",
+    });
+    const token = app.methods[1]!;
+    expect(token).toMatchObject({
+      transport: "mcp_remote", auth: "api_key", ownershipModes: ["customer"],
+      defaults: { serverUrlTemplate: "https://{host}/api/v4/mcp" },
+      credentialFields: [{ key: "authorization", secret: true, type: "password", required: true }],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+      riskTier: "S3",
+    });
+    expect(resolveConnectionMethodServerUrl(token, { host: "gitlab.example.com" })).toBe(
+      "https://gitlab.example.com/api/v4/mcp",
+    );
+    expect(resolveConnectionMethodServerUrl(token, {})).toBeNull();
+    const host = new RegExp(token.tenantFields![0]!.validation!.pattern!);
+    expect(host.test("gitlab.com")).toBe(true);
+    expect(host.test("git.internal.example.org")).toBe(true);
+    expect(host.test("https://gitlab.com")).toBe(false);
+    expect(host.test("gitlab.example.com:8443")).toBe(false);
+    expect(host.test("gitlab.example.com/group")).toBe(false);
   });
   it("offers Fireflies browser sign-in and a vaulted bearer key on the same official MCP endpoint", () => {
     const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "fireflies")!;
@@ -896,7 +924,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1444,6 +1472,7 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "gitlab:mcp-access-token:host",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",
       "shopify:storefront-mcp:storeDomain",

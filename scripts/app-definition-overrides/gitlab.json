@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "slug": "gitlab",
+  "name": "GitLab",
+  "description": "Work with GitLab projects, merge requests, work items, repositories, and CI pipelines.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/gitlab.svg"
+  },
+  "urlPatterns": [
+    "https://gitlab.com/api/v4/mcp"
+  ],
+  "docsUrl": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthClientRegistration": "dcr",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for GitLab.com.",
+      "defaults": {
+        "serverUrl": "https://gitlab.com/api/v4/mcp"
+      },
+      "guidanceMd": "Connect GitLab.com in the browser. Paperclip registers its own OAuth client with GitLab and requests only the `mcp` scope; no developer-console setup is needed. A top-level group owner must allow the GitLab MCP server for the group.",
+      "riskTier": "S3",
+      "label": "Sign in with GitLab",
+      "consoleLinks": {
+        "docs": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+      },
+      "warnings": [
+        "The GitLab MCP server must be allowed for your top-level group before sign-in works.",
+        "Default toolsets include write tools that create merge requests, push commits, run pipelines, and merge. Review the discovered catalog and Paperclip action policies."
+      ]
+    },
+    {
+      "key": "mcp-access-token",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a fine-grained personal access token for GitLab Self-Managed, GitLab Dedicated, or when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrlTemplate": "https://{host}/api/v4/mcp"
+      },
+      "guidanceMd": "Enter your GitLab host and a fine-grained personal access token with the MCP tool resource and the Execute permission. Legacy personal, project, and group access tokens are rejected by GitLab. An administrator must allow the GitLab MCP server for the instance.",
+      "riskTier": "S3",
+      "label": "Use an access token",
+      "tenantFields": [
+        {
+          "key": "host",
+          "label": "GitLab host",
+          "type": "text",
+          "required": true,
+          "placeholder": "gitlab.example.com",
+          "defaultValue": "gitlab.com",
+          "helperMd": "Enter the hostname of your GitLab instance without https:// or a path. Use gitlab.com for GitLab.com. The server URL is https://<host>/api/v4/mcp. Custom ports are not supported.",
+          "validation": {
+            "pattern": "^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$",
+            "maxLength": 253
+          }
+        }
+      ],
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "GitLab fine-grained personal access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "placeholder": "Paste your fine-grained personal access token",
+          "helperMd": "Create a fine-grained personal access token with the MCP tool resource and the Execute permission."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/#mcp-tool",
+        "keys": "https://gitlab.com/-/user_settings/personal_access_tokens"
+      },
+      "warnings": [
+        "A token is a secret; do not place it in the server URL. The token cannot exceed its owner's GitLab project and group access.",
+        "Default toolsets include write tools that create merge requests, push commits, run pipelines, and merge. Review the discovered catalog and Paperclip action policies."
+      ]
+    }
+  ]
+}
