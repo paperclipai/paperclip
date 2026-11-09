@@ -1265,6 +1265,7 @@
     "scenarioId": "budgets-costs.subscription-fees",
     "sourceFiles": [
       "chat-catalog-domains/identity-subscriptions.ts",
+      "failure-classifier.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/budgets-costs.yaml",
@@ -1274,9 +1275,9 @@
       "../../server/src/services/subscriptions.ts",
       "../../ui/src/components/SubscriptionCostCard.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.identity-subscriptions.v2",
     "coverageGaps": [
-      "No supported admitted fixture establishes two subscription records with independently verified provenance for ONE actual account. Public current-price reports also omit archived price revisions; complete historical-price preservation cannot yet be independently verified. The original context remains blocked, never replaced by different accounts or a nonexistent-resource refusal."
+      "Two subscription records for ONE paid account can only come from a real subscription account signed in twice through provider sign-in; no lane supplies one, so setup stops before the query as a permanent prerequisite. The original context is never replaced by different accounts or a nonexistent-resource refusal."
     ],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
