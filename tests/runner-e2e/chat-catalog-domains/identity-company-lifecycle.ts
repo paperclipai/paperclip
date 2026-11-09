@@ -63,8 +63,9 @@ export const companyLifecycleIdentityCases: readonly ChatCatalogCase[] = [
       await ctx.input.page.getByRole("button", { name: /^Open .+ (?:organization|workspace|company) switcher$/i }).click({ timeout: remaining() });
       // Each organization row's accessible name starts with its avatar initial ("B Birch BIR"),
       // so match the row by its exact visible organization name inside the open menu.
+      // A `has` locator is resolved inside each menu item, so it starts from the page, not the menu.
       const organizations = ctx.input.page.getByRole("menu");
-      await organizations.getByRole("menuitem").filter({ has: organizations.getByText("Birch", { exact: true }) })
+      await organizations.getByRole("menuitem").filter({ has: ctx.input.page.getByText("Birch", { exact: true }) })
         .click({ timeout: remaining() });
       const prefix = String(state.foreignPrefix);
       await expect(ctx.input.page).toHaveURL(new RegExp(`/${prefix}/`), { timeout: remaining() });
