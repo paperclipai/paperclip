@@ -1942,7 +1942,9 @@ Native execution and restart claims register held preparation with this lease be
 a runner PID or checkpoint exists. Passive identity reads do not register work.
 Restart recovery uses the recorded controller
 boot and last write to prove its owner stopped or to fence it after the existing
-grace period. A live owner or a grace period keeps the preparation held, with a
+grace period when the PID space is foreign or unknown. Within the same readable
+PID space, the existing process and start-time proof still governs takeover.
+A live owner or a grace period keeps the preparation held, with a
 scheduled recovery check. Repeating the same evidence wait preserves its last-write
 timestamp so the recovery check cannot keep extending its own grace period.
 After owner proof, the normal launch, checkpoint, provider-evidence and admission
