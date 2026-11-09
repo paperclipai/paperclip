@@ -33,7 +33,7 @@ const ROUND_TRIP_DELAY_MS = 150;
 function startDelayProxy(target: URL, delayMs: number) {
   const sockets = new Set<net.Socket>();
   const server = net.createServer((client) => {
-    const upstream = net.connect(Number(target.port), target.hostname);
+    const upstream = net.connect(Number(target.port || 5432), target.hostname);
     sockets.add(client);
     sockets.add(upstream);
     let releaseAt = 0;
@@ -111,6 +111,16 @@ describeEmbeddedPostgres("cloud tenant actor round trips", () => {
     // Open enough pooled connections that connection setup is not measured.
     await Promise.all(Array.from({ length: 4 }, () => slowDb.execute(sql`select 1`)));
 
+    // Measure one statement through the same proxy as the baseline, so a slow
+    // runner scales both sides of the comparison.
+    const statementMs: number[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const statementStarted = performance.now();
+      await slowDb.execute(sql`select 1`);
+      statementMs.push(performance.now() - statementStarted);
+    }
+    const oneStatementMs = statementMs.sort((a, b) => a - b)[1]!;
+
     const started = performance.now();
     const actor = await resolveCloudTenantActor(slowDb, headers);
     const elapsedMs = performance.now() - started;
@@ -122,9 +132,9 @@ describeEmbeddedPostgres("cloud tenant actor round trips", () => {
       isInstanceAdmin: false,
     });
     expect(actor?.type === "board" ? actor.companyIds : []).toHaveLength(1);
-    // The driver sends each statement in two delayed writes. Three sequential
-    // statements (purge, memberships, owner elevation) take about 6 × the
-    // delay; concurrent statements take about 2 ×.
-    expect(elapsedMs).toBeLessThan(ROUND_TRIP_DELAY_MS * 4);
+    // `select 1` is one delayed write; a parameterized statement is two. Three
+    // sequential statements (purge, memberships, owner elevation) take about
+    // 6 × the baseline; concurrent statements take about 2 ×.
+    expect(elapsedMs).toBeLessThan(oneStatementMs * 4);
   }, 30_000);
 });

@@ -736,11 +736,19 @@ async function resolveCloudTenantActorOnce(
   // there is no role row to clean up.
   const ownerInstanceAdminRead = resolveOwnerInstanceAdmin(db, stackRole);
 
-  const [, additionalMemberships, isInstanceAdmin] = await Promise.all([
+  // Settle every started statement before an error leaves: the caller stops
+  // counting authentication work for idle and drain checks when this throws,
+  // and the owner-settings read can insert the missing settings row.
+  const [synced, membershipsRead, ownerRead] = await Promise.allSettled([
     purgeAndSync,
     additionalMembershipsRead,
     ownerInstanceAdminRead,
   ]);
+  if (synced.status === "rejected") throw synced.reason;
+  if (membershipsRead.status === "rejected") throw membershipsRead.reason;
+  if (ownerRead.status === "rejected") throw ownerRead.reason;
+  const additionalMemberships = membershipsRead.value;
+  const isInstanceAdmin = ownerRead.value;
 
   return {
     type: "board",
