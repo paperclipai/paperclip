@@ -281,6 +281,8 @@ describeEmbeddedPostgres("status card routes", () => {
     // The person's restore route travels with the archive receipt, so an agent can link it.
     expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null, href: `/${company.issuePrefix}/status/${created.body.id}` });
     expect((await request(app).get(`/api/status-cards/${created.body.id}`)).body.href).toBe(`/${company.issuePrefix}/status/${created.body.id}`);
+    // A card found by listing carries the same link, so an agent reusing it can reply with it.
+    expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body[0]?.href).toBe(`/${company.issuePrefix}/status/${created.body.id}`);
     expect(await db.select().from(issues).where(eq(issues.id, created.body.generatingIssueId)).then((rows) => rows[0]?.status)).toBe("cancelled");
     expect((await request(app).get(`/api/companies/${company.id}/status-cards`)).body).toEqual([]);
     expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body).toHaveLength(1);
