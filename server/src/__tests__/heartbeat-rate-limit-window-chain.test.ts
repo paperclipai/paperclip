@@ -46,6 +46,7 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const received: Array<{ sessionId: unknown; sessionParams: unknown }> = [];
+  let leavesBackgroundTask = false;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-rate-limit-window-chain-");
@@ -72,6 +73,7 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
             rateLimitWindow: true,
             retryNotBefore,
             providerQuotaRetryNotBefore: retryNotBefore,
+            ...(leavesBackgroundTask ? { unmanagedBackgroundTask: { stopped: true } } : {}),
           },
         };
       },
@@ -85,7 +87,7 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
     await tempDb?.cleanup();
   });
 
-  it("runs the original and every retry on one session, then hands the issue to the board", async () => {
+  async function seedIssue() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -107,6 +109,11 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
       id: issueId, companyId, title: "Hit the limit", status: "in_progress", priority: "medium",
       responsibleUserId: "responsible-user", assigneeAgentId: agentId, issueNumber: 1, identifier: `${prefix}-1`,
     });
+    return { companyId, agentId, issueId };
+  }
+
+  it("runs the original and every retry on one session, then hands the issue to the board", async () => {
+    const { companyId, agentId, issueId } = await seedIssue();
 
     let run = await heartbeat.invoke(agentId, "assignment", { issueId }, "system");
     expect(run).not.toBeNull();
@@ -177,4 +184,35 @@ describeEmbeddedPostgres("a Databricks rate-limit window through run completion 
     })]);
 
   }, 90_000);
+
+  it("holds a rate-limit window that left a background task behind at once, without the exhaustion notice", async () => {
+    leavesBackgroundTask = true;
+    try {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const run = await heartbeat.invoke(agentId, "assignment", { issueId }, "system");
+      expect(run).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, run!.id);
+      expect(finished).toMatchObject({ status: "failed", errorCode: "provider_quota" });
+      expect(finished.resultJson).toMatchObject({ rateLimitWindow: true, unmanagedBackgroundTask: { stopped: true } });
+
+      await heartbeat.reconcileStrandedAssignedIssues();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(actions).toEqual([
+        expect.objectContaining({
+          status: "active",
+          cause: "legacy_execution_requires_reconciliation",
+          nextAction: expect.stringContaining("background task"),
+        }),
+      ]);
+      expect(actions[0]!.nextAction).not.toContain("every scheduled retry");
+      const notices = await db.select().from(issueComments)
+        .where(and(eq(issueComments.issueId, issueId), eq(issueComments.authorType, "system")));
+      expect(notices.filter((notice) => (notice.presentation as { title?: string } | null)?.title === "Error: model rate limit reached"))
+        .toEqual([]);
+    } finally {
+      leavesBackgroundTask = false;
+    }
+  }, 30_000);
 });

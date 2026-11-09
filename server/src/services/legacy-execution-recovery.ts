@@ -337,14 +337,16 @@ export async function terminalizeLegacyExecution(input: {
           ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
           : hasWorkspaceRestoreFailure(updated.resultJson)
           ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
-          : isProviderRateLimitWindowRun(updated)
+          : providerRateLimitWindowRetriesSpent(updated)
           ? "The provider's rate limit rejected this run again on every scheduled retry. Wait for the limit to reopen, or have it raised, then resume the issue; its saved session is kept."
+          : updated.resultJson?.unmanagedBackgroundTask
+          ? "This run left a background task behind that its saved session does not hold. Inspect the stopped background task and the recorded actions, then reconcile their outcomes before continuing."
           : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
         maxAttempts: 3,
         wakePolicy: null,
         supersedeOnIdentityChange: true,
       });
-      if (isProviderRateLimitWindowRun(updated)) {
+      if (providerRateLimitWindowRetriesSpent(updated)) {
         await postRateLimitWindowNotice(tx as unknown as Db, { issueId: task.id, run: updated, recoveryActionId: action.id });
       }
     }
