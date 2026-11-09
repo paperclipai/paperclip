@@ -3160,8 +3160,14 @@ export function agentRoutes(
         await assertCanUpdateAgent(req, modelAgent);
       }
       const service = aiConnectionService(db);
-      const selected = await service.select({ companyId, userId, agentId: modelAgentId ?? "00000000-0000-0000-0000-000000000000", adapterType: type, binding,
-        allowUninstalledPersonal: !modelAgentId, allowUninstalledShared: !modelAgentId });
+      const catalogAgentId = modelAgentId ?? (req.actor.type === "agent" ? req.actor.agentId : undefined);
+      const allowUninstalledShared = !modelAgentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+      const selected = await service.select({ companyId, userId, agentId: catalogAgentId ?? "00000000-0000-0000-0000-000000000000", adapterType: type, binding,
+        allowUninstalledPersonal: !modelAgentId, allowUninstalledShared });
+      if (req.actor.type === "agent") await connectionManagementService(db).authorize(req.actor, "connections:read", {
+        type: "connection_management", companyId, connectionId: selected.connection.id, purpose: "ai",
+        operation: "GET /companies/:companyId/adapters/:type/models", readOnly: true,
+      }, { mutation: false });
       if (selected.connection.config.ai && aiConnectionMetadataSchema.parse(selected.connection.config.ai).routing) throw unprocessable("Use the configured gateway model catalog");
       const credential = await service.runtimeCredential(selected);
       res.setHeader("Cache-Control", "no-store");

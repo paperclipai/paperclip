@@ -35,6 +35,7 @@ const mockAiSelect = vi.hoisted(() => vi.fn());
 const mockAiCredential = vi.hoisted(() => vi.fn());
 const mockAiRefreshCredential = vi.hoisted(() => vi.fn());
 const mockAccountModels = vi.hoisted(() => vi.fn());
+const mockCanInstallShared = vi.hoisted(() => vi.fn(async () => true));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -71,6 +72,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../routes/ai-connections.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../routes/ai-connections.js")>(),
+    canInstallSharedAiConnectionForNewAgent: mockCanInstallShared,
+  }));
   vi.doMock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ select: mockAiSelect, runtimeCredential: mockAiCredential, refreshQuotaCredential: mockAiRefreshCredential }) }));
   vi.doMock("../services/account-model-catalog.js", () => ({ fetchAccountModels: mockAccountModels }));
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {

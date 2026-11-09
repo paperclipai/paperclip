@@ -1819,6 +1819,55 @@ describe("connection management with production default agents", () => {
     } finally { provider = null; }
   });
 
+  it.each([
+    { provider: "openai" as const, method: "api_key" as const },
+    { provider: "anthropic" as const, method: "api_key" as const },
+    { provider: "openai" as const, method: "subscription" as const },
+  ])("guards $provider/$method model catalogs with requesting agent authority", async ({ provider: modelProvider, method }) => {
+    const f = await fixture();
+    const credential = method === "subscription" ? JSON.stringify({ tokens: { access_token: "catalog-access", refresh_token: "catalog-refresh", account_id: "catalog-account" } }) : "catalog-key";
+    const account = await aiConnectionService(server.db).save(f.companyId, f.userId, {
+      provider: modelProvider, method, ownership: "shared", name: "Scoped catalog", agentIds: [], allAgents: false,
+      ...(method === "api_key" ? { apiKey: credential } : { loginSessionId: "fixture" }),
+    }, credential);
+    let calls = 0;
+    provider = async url => {
+      calls++;
+      if (url.startsWith("https://chatgpt.com/backend-api/codex/models")) return Response.json({ models: [{ slug: "catalog-model", display_name: "Catalog model", visibility: "list" }] });
+      if (url === "https://api.openai.com/v1/models" || url === "https://api.anthropic.com/v1/models?limit=1000") return Response.json({ data: [{ id: "catalog-model", display_name: "Catalog model" }] });
+      throw new Error("Unexpected credential refresh or provider request");
+    };
+    const binding = { mode: "shared", provider: modelProvider, method, ...account };
+    const path = `/companies/${f.companyId}/adapters/${modelProvider === "openai" ? "codex_local" : "claude_local"}/models?aiConnection=${encodeURIComponent(JSON.stringify(binding))}`;
+    const permission = (key: "tools:manage_connections" | "tools:manage_profiles") => and(eq(principalPermissionGrants.companyId, f.companyId), eq(principalPermissionGrants.principalType, "agent"), eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, key));
+    try {
+      await server.db.update(principalPermissionGrants).set({ scope: { connectionIds: [randomUUID()] } }).where(permission("tools:manage_connections"));
+      const cookie = await server.humanSession(f.userId);
+      const board = await fetch(`${server.apiUrl}/api${path}`, { headers: { cookie } });
+      expect(board.status).toBe(200);
+      expect(await board.json()).toEqual([{ id: "catalog-model", label: "Catalog model" }]);
+      calls = 0;
+      for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 403 });
+      expect(calls).toBe(0);
+      await server.db.update(principalPermissionGrants).set({ scope: { connectionIds: [account.connectionId] } }).where(permission("tools:manage_connections"));
+      await server.db.delete(principalPermissionGrants).where(permission("tools:manage_profiles"));
+      for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 403 });
+      expect(calls).toBe(0);
+      await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
+        permissionKey: "tools:manage_profiles", scope: { connectionIds: [account.connectionId] } });
+      for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 200, body: [{ id: "catalog-model", label: "Catalog model" }] });
+      expect(calls).toBe(2);
+      await server.db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: account.connectionId, targetType: "agent", targetId: f.agentId });
+      await server.db.delete(principalPermissionGrants).where(permission("tools:manage_profiles"));
+      for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 200 });
+      expect(calls).toBe(4);
+      await server.db.update(principalPermissionGrants).set({ scope: { connectionIds: [randomUUID()] } }).where(permission("tools:manage_connections"));
+      for (const token of [f.key.token, f.jwt]) expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 403 });
+      expect(calls).toBe(4);
+      expect(await f.request("GET", path.replace(f.companyId, f.foreignCompanyId))).toMatchObject({ status: 403 });
+      expect(calls).toBe(4);
+    } finally { provider = null; }
+  });
   it("filters AI account and pool listings by the agent's resolved connection scope", async () => {
     const f = await fixture();
     provider = async url => {
