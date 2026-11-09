@@ -3426,6 +3426,15 @@ export async function verifyStoppedNativeSessionForReplacement(
   } catch { return null; }
 }
 
+export async function verifyStoppedNativeSessionForAutomaticReplacement(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
+  const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
+  if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
+  return verifyStoppedNativeSessionForContinuation(db, run);
+}
+
 /** Exact local cleanup only: the accepted result and original quarantine are
  * never rewritten. A failed/interrupted maintenance attempt is retained for
  * inspection, not retried from an older snapshot with unknown process owners. */
