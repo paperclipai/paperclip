@@ -1327,7 +1327,9 @@ export async function claimNativeRestartRecoveries(input: {
 
       const admissionCheckpointOnly = !hasCheckpoint || (checkpointIdentityMatches && checkpointRecord.cursor == null
         && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
-        && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null);
+        && checkpointRecord.activeTurnId == null && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null
+        && (checkpointRecord.pendingRuntimeRequests == null
+          || (Array.isArray(checkpointRecord.pendingRuntimeRequests) && checkpointRecord.pendingRuntimeRequests.length === 0)));
       const inheritedCheckpointOnly = hasCheckpoint && admissionCheckpointOnly && remoteSandbox && !pluginTask
         && !durableAuthority && stagedAttachment === null && providerEvents.length === 0;
       const inheritedRunnerIdentity = inheritedCheckpointOnly && Boolean(row.run.processPid || row.run.processGroupId)
