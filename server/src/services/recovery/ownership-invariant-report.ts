@@ -472,8 +472,9 @@ export async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: num
   // A run belongs to the task by its legacy context or its native column. Each
   // binding is a separate indexed probe per comment: one OR across both lets
   // PostgreSQL hash every run of the company and read each run's context.
-  // `offset 0` keeps each probe a per-comment index lookup; without it
-  // PostgreSQL can also build a hashed subplan over all runs.
+  // `offset 0` keeps each probe, and the steer check's event lookup, a
+  // per-row index lookup; without it PostgreSQL can also build a hashed
+  // subplan or a hash join over all runs or all events of the company.
   const taskRuns = (alias: string, condition: SQL) => {
     const run = sql.raw(alias);
     return sql`(exists (select 1 from heartbeat_runs ${run} where ${run}.company_id = c.company_id
@@ -512,7 +513,7 @@ export async function checkUserCommentsWithoutWake(db: Db, now: Date, limit: num
         where steer_event.company_id = steered.company_id and steer_event.run_id = steered.id
           and steer_event.event_type in ('item.started', 'item.completed')
           and steer_event.created_at >= c.created_at
-          and strpos(steer_event.payload::text, c.id::text) > 0)`)}
+          and strpos(steer_event.payload::text, c.id::text) > 0 offset 0)`)}
     order by c.created_at limit ${Math.min(limit, MAX_RECORDS_PER_KIND)}`);
   // A comment inside the grace may still get its normal wake: check it again
   // when the grace ends (a saved deadline), and report only older ones. This
