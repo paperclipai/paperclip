@@ -8683,7 +8683,7 @@ export function issueRoutes(
         ),
       })),
       activitySvc.forIssue(issue.id, 50),
-      activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2),
+      activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, { skipLivenessBackfill: true }),
       issueThreadInteractionService(db).listForIssue(issue.id),
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
       issueRunPresence.liveRuns(issue),

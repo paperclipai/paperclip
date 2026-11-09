@@ -272,4 +272,30 @@ describeEmbeddedPostgres("task chat bootstrap", () => {
     expect(await ctx.db.select({ id: activityLog.id }).from(activityLog).where(eq(activityLog.companyId, f.companyId))).toHaveLength(activityBefore.length);
     expect(await ctx.db.select({ id: issueComments.id }).from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(commentsBefore.length);
   });
+
+  it("does not start the run liveness backfill for finished runs", async () => {
+    const f = await seedCompanyWithBoardAccess(ctx.db, "Backfill");
+    const task = await seedTask(f.companyId, { userId: f.userId });
+    const [run] = await ctx.db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(eq(heartbeatRuns.issueId, task.issueId));
+    // A finished run without a liveness state is what `/runs` backfills in the background.
+    const finishedRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: finishedRunId, companyId: f.companyId, agentId: run!.agentId, issueId: task.issueId, status: "succeeded", runtimeMode: "native",
+      contextSnapshot: { issueId: task.issueId }, startedAt: new Date("2026-11-09T11:00:00.000Z"), finishedAt: new Date("2026-11-09T11:05:00.000Z"),
+    });
+    const server = app(f.actor);
+
+    expect((await request(server).get(url(f.companyId)).query({ ids: task.issueId })).status).toBe(200);
+    expect((await request(server).get(`/api/issues/${task.issueId}/chat-bootstrap`)).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const [after] = await ctx.db.select({ livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns).where(eq(heartbeatRuns.id, finishedRunId));
+    expect(after!.livenessState).toBeNull();
+
+    // Control: the task page's own runs read still schedules it.
+    expect((await request(server).get(`/api/issues/${task.issueId}/runs`).query({ view: "recent" })).status).toBe(200);
+    await expect.poll(async () => {
+      const [row] = await ctx.db.select({ livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns).where(eq(heartbeatRuns.id, finishedRunId));
+      return row!.livenessState;
+    }, { timeout: 5_000 }).not.toBeNull();
+  });
 });
