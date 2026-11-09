@@ -144,6 +144,13 @@ describe("board-only denial", () => {
     expect(AGENT_CHAT_DIRECTIVE).not.toContain("Complete other permitted work");
   });
 
+  it("chat guidance sends a task whose automatic recovery stopped to the person's Retry", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("its supported next step is the person's Retry on that task");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Retry rechecks the task's current gates (budget, pause, holds) and keeps the failed attempt's evidence");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not reassign it, change its status, comment on it to resume it, or create a replacement task to re-run the work");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Take the work over only when the person explicitly asks you to take it over or reassign it.");
+  });
+
   it("says in the API catalog who sets up a Claude Managed Agent profile", () => {
     const post = buildOpenApiDocument().paths["/api/companies/{companyId}/managed-agent-profiles"].post;
     expect(post["x-paperclip-authorization"]).toEqual({ actor: "board" });

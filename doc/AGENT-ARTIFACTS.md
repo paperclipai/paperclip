@@ -27,6 +27,12 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
 
+`register_deliverable` stores the file on its current task. A completion report
+can also cite a file on a direct child task that is done, because the child's
+own completion verified that file. A parent that delegated a file to a child
+links the child's file and does not register a copy. The child's file does not
+count as delivery of a file that the parent's own request names.
+
 Named JSON file outputs and explicit publication requests require the same
 verified delivery evidence as other file outputs. A saved summary document does
 not replace a requested downloadable JSON file. Reading JSON inputs or discussing

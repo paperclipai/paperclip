@@ -594,6 +594,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         reconnect_delay: std::time::Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
+        turn_scoped: false,
     }
 }
 

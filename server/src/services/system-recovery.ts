@@ -5,7 +5,8 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createSystemRecovery, exhaustedSystemRecoveryAction, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import { workspaceRecoverySourceEligible, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
-import { retainedSourceFallbackDueAt, retainedSourceFallbackPendingCondition } from "./workspace-recovery-fallback-discovery.js";
+import { retainedSourceFallbackDueAt, retainedSourceFallbackPendingCondition, stopProofRearmDueAt,
+  stopProofRearmPendingCondition } from "./workspace-recovery-fallback-discovery.js";
 
 export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   return db.transaction(async tx => {
@@ -59,7 +60,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
   // A spent budget is not system work any more. Hand it to the board with the
   // one action that can progress it, instead of leaving an inert system owner.
   const exhausted = next.state === "exhausted";
-  const handoff = exhausted ? exhaustedSystemRecoveryAction(next) : null;
+  const handoff = exhausted ? exhaustedSystemRecoveryAction(next, await loadActionEvidence(db, source)) : null;
   const compatibility = {
     schema: "paperclip.workspace-recovery.v1", runId: source.runId, status,
     stage: next.phase === "verify_execution" ? "verifying_stop" : next.phase === "preserve_files" ? "restoring_files" : "saving_receipts",
@@ -90,7 +91,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
 export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
   state: SystemRecoveryState) {
   if (state.state !== "exhausted") return false;
-  const handoff = exhaustedSystemRecoveryAction(state);
+  const handoff = exhaustedSystemRecoveryAction(state, await loadActionEvidence(db, source));
   const [updated] = await db.update(issueRecoveryActions).set({
     ownerType: "board", ownerAgentId: null, ownerUserId: null, nextAction: handoff,
     evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{workspaceRecovery,message}', ${JSON.stringify(handoff)}::jsonb)`,
@@ -105,6 +106,12 @@ export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRe
   return Boolean(updated);
 }
 
+async function loadActionEvidence(db: Db, source: WorkspaceRecoverySourceIdentity) {
+  const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId)));
+  return row?.evidence ?? null;
+}
+
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.sourceIssueId, source.issueId),
@@ -115,6 +122,7 @@ export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySource
 export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
   const rows = await db.select({ at: sql<number>`case
     when ${retainedSourceFallbackPendingCondition()} then ${retainedSourceFallbackDueAt()}
+    when ${stopProofRearmPendingCondition()} then ${stopProofRearmDueAt()}
     when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}') = 'number'
     then (${issueRecoveryActions.evidence}#>>'{systemRecovery,nextAttemptAt}')::bigint else 0 end` })
     .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
@@ -126,6 +134,7 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
       workspaceRecoverySourceEligible(true),
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or ${retainedSourceFallbackPendingCondition()}
+        or ${stopProofRearmPendingCondition()}
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
           and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'

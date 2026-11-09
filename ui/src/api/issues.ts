@@ -420,6 +420,9 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmRunStopped: (id: string, data: { runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; alreadyStopped: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(
+      `/issues/${id}/recovery-actions/confirm-run-stopped`, data),
   confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
     api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
   confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>
@@ -429,7 +432,9 @@ export const issuesApi = {
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
   retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
-    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean;
+      scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
+      presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
     api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];

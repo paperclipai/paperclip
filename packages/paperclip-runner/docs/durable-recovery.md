@@ -83,6 +83,13 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
+## Warm Runner release
+
+Before parking a settled Runner, the controller waits for its durable drain
+receipt within the same 30-second budget used for warm admission. A Claude
+turn-end provider restart can delay that receipt beyond one second. The wait
+returns as soon as the drain is proved; it adds no fixed delay to a ready Runner.
+
 ## ACPX checkpoints after a rejected turn start
 
 A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
