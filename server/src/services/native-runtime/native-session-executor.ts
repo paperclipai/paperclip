@@ -3306,6 +3306,15 @@ export async function verifyStoppedNativeSessionForContinuation(
 /** Prove that a crashed local Codex turn ended without external effects. No provider
  * is launched and no retained state is rewritten. The successor must use a fresh
  * normalized session; the old directory remains available for investigation. */
+export async function verifyStoppedNativeSessionForAutomaticReplacement(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
+  const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
+  if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
+  return verifyStoppedNativeSessionForContinuation(db, run);
+}
+
 export async function verifyStoppedNativeSessionForReplacement(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,

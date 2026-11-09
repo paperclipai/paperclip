@@ -19,7 +19,8 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
-import { verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import { registerNativeCleanupReleaseWake } from "./native-runtime/native-cleanup-release-wake.js";
@@ -267,6 +268,44 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       const proof = await verifyStoppedNativeSessionForContinuation(db, source);
       if (mode === "stopped") expect(proof).not.toBeNull();
       else expect(proof).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["stopped", "owner_running"])(
+    "recovers a quarantined source that never launched with no click once its owner is proven stopped (%s)", async mode => {
+    const base = await mkdtemp(join(tmpdir(), "quarantined-auto-continuation-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base);
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, f.sourceId));
+      if (mode === "owner_running") await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.ownerId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined", attempt: 1,
+        failureDetail: { recoverable: false, recoveryMode: "exact_checkpoint_resume", originalFailureCode: "native_session_cleanup_quarantined",
+          providerEventsExist: false, checkpointExists: true, providerSessionEstablished: true } })
+        .where(eq(nativeRunFinalizations.runId, f.sourceId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      await db.update(issueRecoveryActions).set({ evidence: { ...hold!.evidence,
+        nativeFailureBlock: { runId: f.sourceId, statusVersion: task!.statusVersion } } })
+        .where(eq(issueRecoveryActions.id, hold!.id));
+      const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceId));
+      await reconcileSafeNativeReplacements(db, new Date(), {
+        verifyStoppedSession: run => verifyStoppedNativeSessionForAutomaticReplacement(db, run) });
+      const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceId));
+      const successorRunId = after?.failureDetail?.successorRunId;
+      if (mode === "owner_running") {
+        expect(successorRunId).toBeUndefined();
+        return;
+      }
+      expect(typeof successorRunId).toBe("string");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, String(successorRunId)));
+      expect(successor?.contextSnapshot).toMatchObject({ forceFreshSession: true });
+      expect(successor?.scheduledRetryAttempt).toBe(before!.attempt);
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });
