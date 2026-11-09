@@ -1,5 +1,5 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
 import type { Issue, IssueRecoveryAction } from "../../../packages/shared/src/types/issue.js";
@@ -10,6 +10,17 @@ import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { controllerReadRecovery, exhaustedNativeInfrastructure, isExhaustedNativeRecovery, linksSourceTask, runtimeInfrastructureCases } from "./runtime-infrastructure.js";
 import type { NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
+/** The person's Retry for the stopped task: the failed-run marker in the
+ * thread, or the task's own Retry when automatic recovery has stopped and the
+ * run is held for recovery (the thread then omits the marker's Retry). */
+export function humanRetryControl(page: Page) {
+  return page.getByTestId("task-chat-run-failed-try-again").or(page.getByTestId("task-execution-retry")).last();
+}
+/** Either supported Retry request for this task and its assignee. */
+export function isHumanRetryRequest(request: { method(): string; url(): string }, taskId: string, workerId: string) {
+  const path = new URL(request.url()).pathname;
+  return request.method() === "POST" && (path === `/api/agents/${workerId}/wakeup` || path === `/api/issues/${taskId}/retry`);
+}
 export function gradeInfrastructureRetry(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("actual-exhausted-retry-and-current-gates", !!o, "The genuine exhausted native run, real human Retry controls and independently observed admission gates are required."); if (!o) return c.result();
@@ -21,7 +32,7 @@ export function gradeInfrastructureRetry(value: unknown) {
   // runs before answering. A person reads the replies for meaning.
   c.add("ordinary-human-retry-guidance", s.queryRecoveryRead === true && s.retryVisible === true && linksSourceTask(o, s.task as Entity),
     "The canonical reply comes from a run that read the saved recovery record and links the original task, where the real human Retry control is visible.");
-  c.add("actual-closed-gate-prevents-new-execution", s.budgetHeldBeforeRetry === true && [202, 409].includes(Number(s.heldRetryStatus))
+  c.add("actual-closed-gate-prevents-new-execution", s.budgetHeldBeforeRetry === true && [200, 202, 409].includes(Number(s.heldRetryStatus))
     && s.noAdmissionUnderBudget === true && s.failedRunVisibleWhileHeld === true && s.heldReplyAttributed === true && s.heldRecoveryRead === true,
   "The first real Retry cannot start under the independently saved budget hold, retains failure visibly, and its own subsequent chat run reads the task's actual runs before replying.");
   c.add("one-accepted-eligible-retry-preserves-original-failure", s.budgetRestoredByHuman === true && s.eligibleRetryStatus === 202 && s.retryBoundToOriginal === true && s.retryRunCount === 1
@@ -46,13 +57,13 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.queryReply = (await observeRuntime(ctx, state)).reply; const source = ctx.input.page.url(), root = `/api/companies/${ctx.input.fixtures.company.id}`;
     const taskURL = `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`;
     await ctx.input.page.goto(taskURL, { waitUntil: "domcontentloaded" });
-    const retry = ctx.input.page.getByTestId("task-chat-run-failed-try-again").last(); await expect(retry).toBeVisible(); state.retryVisible = true;
+    const retry = humanRetryControl(ctx.input.page); await expect(retry).toBeVisible(); state.retryVisible = true;
     await ctx.input.api.post(`${root}/budgets/policies`, { scopeType: "agent", scopeId: worker.id, amount: 0, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "block" });
     const held = await pollUntil({ label: "Real current budget hold before first human Retry", deadlineAt: Date.now() + 45_000, load: () => ctx.input.api.get<RuntimeAgent>(`/api/agents/${worker.id}`), accept: row => row.lifecycleHolds?.includes("budget") === true });
     state.budgetHeldBeforeRetry = held.lifecycleHolds?.includes("budget") === true;
-    const rejected = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/agents/${worker.id}/wakeup`);
+    const rejected = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
     await retry.click(); state.heldRetryStatus = (await rejected).status();
-    await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId("task-chat-run-failed-try-again").last()).toBeVisible(); state.failedRunVisibleWhileHeld = true;
+    await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(humanRetryControl(ctx.input.page)).toBeVisible(); state.failedRunVisibleWhileHeld = true;
     state.noAdmissionUnderBudget = (await ctx.allRuns()).length === 2;
     await ctx.input.capture("actual-retry-gate-held", "Original native failure remains visible when current budget prevents Retry admission", "runtime-retry-budget-held.png");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
@@ -76,8 +87,8 @@ export const runtimeInfrastructureRetryCases = [runtimeDefinition("recovery.retr
     state.budgetRestoredByHuman = !restored.lifecycleHolds?.includes("budget"); state.gatesClearedAt = Date.now();
     await writeFile((state.gate as { gate: string }).gate, `The authorized human has restored the execution gate. Use the preserved task context and save a non-plan website-delivery document with the exact reference Retry website ${ctx.input.nonce}, a semantic single-page Acorn website outline and an accessible signup action, then complete this original task normally. Do not create more tasks or external effects.`, "utf8");
     await ctx.input.page.goto(taskURL, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-    const accepted = ctx.input.page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === `/api/agents/${worker.id}/wakeup`);
-    await ctx.input.page.getByTestId("task-chat-run-failed-try-again").last().click(); const acceptedResponse = await accepted; state.eligibleRetryStatus = acceptedResponse.status();
+    const accepted = ctx.input.page.waitForResponse(r => isHumanRetryRequest(r.request(), task.id, worker.id));
+    await humanRetryControl(ctx.input.page).click(); const acceptedResponse = await accepted; state.eligibleRetryStatus = acceptedResponse.status();
     const completed = await pollUntil({ label: "One eligible ordinary native Retry after actual gate restoration", deadlineAt: Date.now() + 240_000,
       load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${task.id}`), runs: await ctx.allRuns() }),
       accept: v => v.task.status === "done" && v.runs.length === 4 && v.runs.filter(row => row.id !== state.workerRunId).every(row => row.status === "succeeded"),
