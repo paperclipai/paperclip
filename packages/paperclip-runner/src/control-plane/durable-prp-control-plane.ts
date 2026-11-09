@@ -2389,11 +2389,6 @@ export class DurablePrpControlPlane {
     return Math.max(0, now - this.#runnerDisconnectedAt);
   }
 
-  semanticToolResultsInFlight(): boolean {
-    return this.#pendingSemanticCalls.size > 0 || this.#store.state.commands.some(
-      (command) => command.type === "semantic_tool.result" && command.status === "pending");
-  }
-
   /** A reusable close requires every admitted callback's exact durable result. */
   semanticToolResultsSettled(): boolean {
     return (

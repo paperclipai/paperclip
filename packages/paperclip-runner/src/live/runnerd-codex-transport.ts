@@ -7269,13 +7269,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
         .finally(() => { recovering = false; });
-      while ((recovering || heldCalls.semanticToolResultsInFlight()) && Date.now() < commandDeadline) {
+      while (recovering && Date.now() < commandDeadline) {
         this.#assertStartupOpen();
         this.#throwIfFailed();
         await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
       }
       this.#assertStartupOpen();
       this.#throwIfFailed();
+      if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
       commandDeadline = Date.now() + turnStartTimeoutMs;
     }
     const compactionTurn = params[COMPACTION_TURN] === true;
