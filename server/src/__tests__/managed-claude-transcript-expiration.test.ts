@@ -69,7 +69,7 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     if (input.withAgent !== false) await db.insert(agents).values({ id: agentId, companyId, name: "Coder" });
     const issueStatus = input.issueStatus ?? "done";
     const closedAt = new Date(now.getTime() - (input.closedDaysAgo ?? 10) * DAY_MS);
-    let taskKey = randomUUID();
+    let taskKey: string = randomUUID();
     if (input.withIssue !== false) {
       const [issue] = await db.insert(issues).values({
         companyId,
