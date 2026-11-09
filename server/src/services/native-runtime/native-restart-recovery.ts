@@ -417,6 +417,7 @@ export async function evaluateNativeControllerTakeover(input: {
   isProcessAlive?: (pid: number) => boolean;
   readProcessStartedAt?: (pid: number) => Promise<Date | null>;
   requireStoppedController?: boolean;
+  requireRecordedProcessSpace?: boolean;
   remoteLeaseFenced?: boolean;
 }): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
@@ -476,12 +477,13 @@ export async function evaluateNativeControllerTakeover(input: {
     pidExists: input.isProcessAlive ?? base.pidExists,
     readStartedAt: input.readProcessStartedAt ?? base.readStartedAt,
   };
-  const needsBootProof = owner.controllerHostHash != null
-    && (owner.controllerHostHash !== probe.processSpace || owner.controllerHostHash === UNKNOWN_PROCESS_SPACE);
+  const needsBootProof = input.requireRecordedProcessSpace || (owner.controllerHostHash != null
+    && (owner.controllerHostHash !== probe.processSpace || owner.controllerHostHash === UNKNOWN_PROCESS_SPACE));
   const proof = await proveOwnerGone({
     kind: "local", scope: "native_controller", generation: null, host: null,
     processSpace: recordsHost ? owner.controllerHostHash ?? null : probe.processSpace,
     processSpaceUnrecorded: recordsHost && owner.controllerHostHash == null,
+    ...(input.requireRecordedProcessSpace ? { requireRecordedProcessSpace: true } : {}),
     bootId: needsBootProof ? owner.controllerBootId ?? null : null, touchedAt: owner.updatedAt?.toISOString() ?? null,
     pid: priorPid, processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
     processGroupId: null,
@@ -1254,23 +1256,29 @@ export async function claimNativeRestartRecoveries(input: {
         && (controllerHostHash === "unknown" || row.coordinator.controllerHostHash !== controllerHostHash);
       const nonExecutionOwner = row.coordinator.leaseOwner?.startsWith("native-finalizer:")
         || row.coordinator.leaseOwner?.startsWith("native-cleanup:");
-      const takeover = nonExecutionOwner
+      const evaluatedTakeover = nonExecutionOwner
         ? { allowed: false, reason: "native_finalization_or_cleanup_owner" }
-        : processSpaceUnverified
-        ? { allowed: false, reason: remoteProcess ? "remote_controller_process_space_unverified" : "controller_process_space_unverified" }
         : await evaluateNativeControllerTakeover({
           owner: row.coordinator,
           now,
+          requireRecordedProcessSpace: processSpaceUnverified,
           remoteLeaseFenced: Boolean(durableAuthority),
           coordinatedPreviousController:
             input.coordinatedPreviousController ?? null,
         });
+      const independentControllerEvidence = evaluatedTakeover.allowed
+        ? ["controller_stopped", "controller_fenced"].includes(evaluatedTakeover.reason)
+        : ["controller_lease_held", "controller_lease_grace"].includes(evaluatedTakeover.reason);
+      const namespaceAttentionNeeded = processSpaceUnverified && !nonExecutionOwner && !independentControllerEvidence;
+      const takeover = namespaceAttentionNeeded
+        ? { allowed: false, reason: remoteProcess ? "remote_controller_process_space_unverified" : "controller_process_space_unverified" }
+        : evaluatedTakeover;
       await recordLegacyHostFallbackProof(tx as unknown as Db, row.run, takeover, "native_restart_recovery");
       if (!takeover.allowed && ["controller_host_unrecorded", "controller_host_unprovable"].includes(takeover.reason)) {
         await requestNativeControllerStopConfirmation(tx as unknown as Db, row.coordinator);
       }
       if (!takeover.allowed) {
-        if (processSpaceUnverified && !nonExecutionOwner) {
+        if (namespaceAttentionNeeded) {
           await surfaceNativeControllerNamespaceAttention(tx as unknown as Db, {
             run: row.run, coordinator: row.coordinator, expiryEpoch: row.controllerLeaseExpiryEpoch, remoteProcess,
           });
