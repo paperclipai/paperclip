@@ -32,18 +32,35 @@ function scope(ref: WorkspaceSnapshotRef) {
     eq(executionWorkspaceSnapshots.id, ref.id));
 }
 
+function transientCheckpointFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as { code?: unknown; cause?: { code?: unknown } };
+  const code = typeof failure.code === "string" ? failure.code : failure.cause?.code;
+  return typeof code === "string" && ["55P03", "57014", "40P01", "40001"].includes(code);
+}
+
 export function nestedWorkspaceVerificationCheckpoint(db: Db, namespace: string | undefined, signal?: AbortSignal) {
   if (!namespace || !/^[a-f0-9]{64}$/.test(namespace)) return undefined;
   return {
     async read(input: Binding): Promise<boolean> {
-      const [row] = await db.select().from(executionWorkspaceSnapshots).where(scope(input.reference));
-      if (!matches(row, input)) return false;
-      const raw = row.metadata?.[KEY];
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
-      const proof = raw as Record<string, unknown>;
-      return Object.keys(proof).every(key => ["schema", "namespace", "fingerprint", "etag", "completedAt"].includes(key))
-        && proof.schema === SCHEMA && proof.namespace === namespace && proof.fingerprint === fingerprint(namespace, input)
-        && proof.etag === input.etag && typeof proof.completedAt === "string" && Number.isFinite(Date.parse(proof.completedAt));
+      signal?.throwIfAborted();
+      try { return await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout='1s'`);
+        await tx.execute(sql`set local statement_timeout='8s'`);
+        const [row] = await tx.select().from(executionWorkspaceSnapshots).where(scope(input.reference));
+        signal?.throwIfAborted();
+        if (!matches(row, input)) return false;
+        const raw = row.metadata?.[KEY];
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+        const proof = raw as Record<string, unknown>;
+        return Object.keys(proof).every(key => ["schema", "namespace", "fingerprint", "etag", "completedAt"].includes(key))
+          && proof.schema === SCHEMA && proof.namespace === namespace && proof.fingerprint === fingerprint(namespace, input)
+          && proof.etag === input.etag && typeof proof.completedAt === "string" && Number.isFinite(Date.parse(proof.completedAt));
+      }, { accessMode: "read only" }); } catch (error) {
+        signal?.throwIfAborted();
+        if (!transientCheckpointFailure(error)) throw error;
+        return false;
+      }
     },
     async save(input: Binding): Promise<void> {
       signal?.throwIfAborted();
@@ -59,8 +76,7 @@ export function nestedWorkspaceVerificationCheckpoint(db: Db, namespace: string 
         signal?.throwIfAborted();
       }); } catch (error) {
         signal?.throwIfAborted();
-        const cause = error as { code?: string; cause?: { code?: string } };
-        if ((cause.cause?.code ?? cause.code) !== "55P03") throw error;
+        if (!transientCheckpointFailure(error)) throw error;
       }
     },
   };

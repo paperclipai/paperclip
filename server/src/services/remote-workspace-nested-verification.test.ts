@@ -19,6 +19,7 @@ import type { StorageService } from "../storage/types.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { getWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 import { nestedWorkspaceVerificationCheckpoint } from "./remote-workspace-verification-checkpoint.js";
+import * as checkpointOwner from "./remote-workspace-verification-checkpoint.js";
 import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
 import { createNestedWorkspaceImportVerifier } from "./remote-workspace-migration-tree.js";
 import { inspectOnlineWorkspaceSource } from "./online-workspace-source.js";
@@ -118,6 +119,72 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
   }
   const parent = (f: Awaited<ReturnType<typeof imported>>, signal = AbortSignal.timeout(50_000)) =>
     migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.parent.id, apply: true, signal });
+  function checkpointFailure(phase: "read" | "save", failure: Error, beforeFailure?: () => void) {
+    const original = checkpointOwner.nestedWorkspaceVerificationCheckpoint;
+    let faults = 0;
+    const decorate = (target: Db): Db => new Proxy(target, { get(object, key) {
+      if (key === (phase === "read" ? "select" : "update")) return () => { faults++; beforeFailure?.(); throw failure; };
+      if (key === "transaction") return (callback: (tx: Db) => Promise<unknown>, options: unknown) =>
+        object.transaction(tx => callback(decorate(tx as unknown as Db)), options as never);
+      const value = Reflect.get(object, key, object); return typeof value === "function" ? value.bind(object) : value;
+    } });
+    vi.spyOn(checkpointOwner, "nestedWorkspaceVerificationCheckpoint").mockImplementation((source, namespace, signal) =>
+      original(decorate(source), namespace, signal));
+    return () => faults;
+  }
+  it.each([{ phase: "read", code: "57014" }, { phase: "save", code: "57014" },
+    { phase: "save", code: "40P01" }, { phase: "read", code: "40001" }])(
+    "keeps import resumable after checkpoint $phase $code failure", async ({ phase, code }) => {
+      const f = await imported(), get = storage.getObject.bind(storage), counts = new Map<string, number>();
+      storage = { ...storage, immutableObjectNamespace: storageNamespace };
+      vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+        if (f.keys.has(args[1])) counts.set(args[1], (counts.get(args[1]) ?? 0) + 1);
+        return get(...args);
+      });
+      if (phase === "read") {
+        const capture = workspaceArchive.captureRemoteWorkspaceDirectory;
+        const stop = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory").mockImplementation(async input => {
+          if (input.cwd === f.root) throw new Error("simulated_container_restart");
+          return capture(input);
+        });
+        await expect(parent(f)).rejects.toThrow("simulated_container_restart"); stop.mockRestore();
+        expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => row.metadata?.nestedImportVerification)).toHaveLength(f.keys.size);
+        counts.clear();
+      }
+      const pgError = Object.assign(new Error("injected_checkpoint_database_failure"), { code });
+      const failure = code === "40001" ? new Error("checkpoint_query_failed", { cause: pgError }) : pgError;
+      const faults = checkpointFailure(phase as "read" | "save", failure);
+      await expect(parent(f)).resolves.toMatchObject({ applied: true });
+      expect(faults()).toBeGreaterThan(0); expect([...counts.values()]).toEqual([1, 1]);
+      if (phase === "save") expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => row.metadata?.nestedImportVerification)).toEqual([]);
+      const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.parent.id));
+      expect(operations).toHaveLength(1); expect(operations[0].status).toBe("succeeded");
+      expect((await db.select().from(activityLog)).filter(row => row.action === "workspace.remote_storage_migrated" && row.entityId === f.parent.id)).toHaveLength(1);
+      for (const child of f.leaves) expect(await fs.readFile(path.join(child.cwd!, "untracked.txt"), "utf8")).toBe(`${child.name} untracked work\n`);
+    }, 60_000);
+  it.each([{ phase: "read", code: "42P01", message: "checkpoint_table_missing" },
+    { phase: "save", code: "08006", message: "checkpoint_connection_lost" },
+    { phase: "save", code: null, message: "nested_workspace_snapshot_changed" },
+    { phase: "read", code: null, message: "unexpected_checkpoint_state" }])(
+    "refuses checkpoint $phase failure $code without hiding the cause", async ({ phase, code, message }) => {
+      const f = await imported(); storage = { ...storage, immutableObjectNamespace: storageNamespace };
+      const failure = Object.assign(message === "unexpected_checkpoint_state" ? new TypeError(message) : new Error(message), code ? { code } : {});
+      const faults = checkpointFailure(phase as "read" | "save", failure);
+      await expect(parent(f)).rejects.toBe(failure); expect(faults()).toBeGreaterThan(0);
+      expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.parent.id)))[0].metadata)).toBeNull();
+      expect((await db.select().from(activityLog)).filter(row => row.action === "workspace.remote_storage_migrated" && row.entityId === f.parent.id)).toHaveLength(0);
+      for (const child of f.leaves) expect(await fs.readFile(path.join(child.cwd!, "untracked.txt"), "utf8")).toBe(`${child.name} untracked work\n`);
+    }, 60_000);
+  it("preserves cancellation over a retryable checkpoint database error", async () => {
+    const f = await imported(), controller = new AbortController(), stopped = new Error("cancelled_during_checkpoint_read");
+    storage = { ...storage, immutableObjectNamespace: storageNamespace };
+    const reference = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: f.snapshots[0].executionWorkspaceId, snapshotId: f.snapshots[0].id }))!;
+    const original = checkpointOwner.nestedWorkspaceVerificationCheckpoint;
+    checkpointFailure("read", Object.assign(new Error("query_cancelled"), { code: "57014" }), () => controller.abort(stopped));
+    const checkpoint = checkpointOwner.nestedWorkspaceVerificationCheckpoint(db, storageNamespace, controller.signal)!;
+    await expect(checkpoint.read({ reference, children: [], operationId: f.snapshots[0].sourceOperationId, etag: '"fixture"' })).rejects.toBe(stopped);
+    expect(original(db, storageNamespace, controller.signal)).toBeDefined();
+  }, 60_000);
   it("treats checkpoint row contention as a bounded optional cache miss", async () => {
     const f = await imported(), snapshot = f.snapshots[0];
     const reference = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id }))!;
