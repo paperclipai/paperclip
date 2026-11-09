@@ -21,11 +21,11 @@ function fixture(failAt?: number) {
   const versions = () => missingHistory ? [] : [{ id: "old", fileInventory: [{ path: "SKILL.md", content: old }] }, ...(installed() ? [{ id: "new", fileInventory: [{ path: "SKILL.md", content: next }] }] : [])];
   port.versions = id => id === "up" ? versions() : [{ id: "local" }];
   const source = () => ({ id: "source", companyId: "company", fullName: foreignRepo ? "foreign/repository" : "KreerC/ACCESSIBILITY.md", revision: changed, lastScanCommit: installed() ? pins.newCommit : pins.oldCommit, trackingRef: mutable ? "main" : pins.newCommit, automaticUpdates: false });
-  const preview = "The currently installed version is 0.4. The new revision adds continuous accessibility regression tests and splits long forms into smaller steps. I have not applied it.";
-  const state: Record<string, unknown> = { upstream: upstream(), localFork: local, source: source(), localVersions: [{ id: "local" }] };
+  const preview = ["Installed `1339489`; tracked `4cffe22`.", "```diff", "-  version: \"0.4\"", "+  version: \"0.5\"", "-…so every build or release runs them.", "+…so every new build runs them.", "+## Accessibility knowledge", "```", "Not applied."].join("\n");
+  const state: Record<string, unknown> = { upstream: upstream(), localFork: local, source: source(), localVersions: [{ id: "local" }], pinnedSkillText: { old, next } };
   const runs = () => Array.from({ length: phase ? 2 : 1 }, (_, i) => ({ id: "native-" + i, status: i === phase && !ready() ? "running" : "succeeded" }));
   port.observe = () => ({ scenarioId: "skills.review-update", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state, runs: runs(),
-    reply: installed() ? preview + "\nI updated the accessibility skill; the local copy is unchanged." : preview,
+    reply: installed() ? preview + "\nI updated the accessibility skill to 4cffe22; the local copy is unchanged." : preview,
     tasks: [], projects: [], goals: [], documents: [], revisions: [], comments: [], humanQueries: [], links: [],
     activity: installed() ? [{ agentId: "ceo", action: "company.skill_source_refreshed", entityId: "source" }] : [] });
   port.send = () => { phase = 1; };

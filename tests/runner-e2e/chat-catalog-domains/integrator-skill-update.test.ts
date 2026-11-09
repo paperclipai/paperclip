@@ -11,17 +11,20 @@ vi.mock("./integrator-skill-source.js", () => ({ editableLocalNotes: async () =>
 vi.mock("./integrator-skill-versions.js", () => ({ readSkillVersionHistory: async () => [] }));
 
 const bytes = { old: readFileSync(new URL("../fixtures/accessibility-source/0.4.SKILL.md", import.meta.url), "utf8"), next: readFileSync(new URL("../fixtures/accessibility-source/0.5.SKILL.md", import.meta.url), "utf8") };
+const review = ["Installed revision `1339489` compared with tracked `4cffe22`:", "```diff", "-  version: \"0.4\"", "+  version: \"0.5\"", "```", "```diff",
+  "-…so every build or release runs them.", "+…so every new build runs them.", "```", "New section:",
+  "> Breathable layouts and texts are key. Design long forms in a way that they can be broken up into small, indivudal steps.", "No update applied yet."].join("\n");
 function valid(old: string, next: string) {
   const upstream = { id: "up", companyId: "company", name: "accessibility", editable: false, sourceRef: pins.oldCommit, currentVersionId: "old", markdown: old };
   const local = { id: "fork", editable: true, forkedFromSkillId: "up", currentVersionId: "local", markdown: `${old}\nORCHID customer notes` };
   const versions = [{ id: "old", fileInventory: [{ path: "SKILL.md", content: old }] }]; const localVersions = [{ id: "local" }];
-  const base = { scenarioId: "skills.review-update", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { upstream: structuredClone(upstream), localFork: structuredClone(local), localVersions: structuredClone(localVersions) }, upstream, localFork: local, upstreamVersions: versions, forkVersions: localVersions,
+  const base = { scenarioId: "skills.review-update", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { upstream: structuredClone(upstream), localFork: structuredClone(local), localVersions: structuredClone(localVersions), pinnedSkillText: { old, next } }, upstream, localFork: local, upstreamVersions: versions, forkVersions: localVersions,
     source: { id: "source", lastScanCommit: pins.oldCommit, trackingRef: pins.newCommit, automaticUpdates: false }, updateStatus: { supported: true, hasUpdate: true, currentRef: pins.oldCommit, latestRef: pins.newCommit },
     tasks: [], projects: [], goals: [], documents: [], revisions: [], comments: [], humanQueries: [], links: [], runs: [], activity: [],
-    reply: "The currently installed version is 0.4. The new revision adds continuous accessibility regression tests and splits long forms into smaller steps; it also discourages crowded interface patterns. I have not applied it." };
+    reply: review };
   return { ...base, upstream: { ...upstream, sourceRef: pins.newCommit, currentVersionId: "new", markdown: next }, source: { ...base.source, lastScanCommit: pins.newCommit },
     upstreamVersions: [...versions, { id: "new", fileInventory: [{ path: "SKILL.md", content: next }] }], activity: [{ agentId: "ceo", action: "company.skill_source_refreshed", entityId: "source" }], state: { ...base.state, reviewCheckpoint: structuredClone(base) },
-    reply: `${base.reply}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.` };
+    reply: `${base.reply}\nI updated the accessibility skill to the reviewed source version \`4cffe22\`. The local copy is unchanged.` };
 }
 describe("genuine immutable public skill update qualification", () => {
   it("retains two independently qualified distinct public hashes without credential prerequisites", () => {
@@ -31,19 +34,35 @@ describe("genuine immutable public skill update qualification", () => {
   it("accepts substantive review, normal saved version update and preserved fork using actual source bytes", () => {
     expect(createHash("sha256").update(bytes.old).digest("hex")).toBe(pins.oldSha256); expect(createHash("sha256").update(bytes.next).digest("hex")).toBe(pins.newSha256);
     expect(gradeIntegratorSkillUpdate(valid(bytes.old, bytes.next)).passed).toBe(true); expect(gradeIntegratorSkillUpdate(undefined).passed).toBe(false);
-    const natural = valid(bytes.old, bytes.next); natural.reply = `${natural.state.reviewCheckpoint.reply}\nThe accessibility skill is now on revision 0.5; our local fork is preserved.`; expect(gradeIntegratorSkillUpdate(natural).passed).toBe(true);
+    const natural = valid(bytes.old, bytes.next); natural.reply = `${natural.state.reviewCheckpoint.reply}\nDone: the accessibility skill now sits at commit 4cffe22e837a; our local fork is preserved.`; expect(gradeIntegratorSkillUpdate(natural).passed).toBe(true);
   });
-  it("accepts a truthful not-applied review but rejects a later positive claim or changed saved version", () => {
-    const truthful = valid(bytes.old, bytes.next);
-    truthful.state.reviewCheckpoint.reply = truthful.state.reviewCheckpoint.reply.replace("I have not applied it.", "No update applied yet.");
-    truthful.reply = `${truthful.state.reviewCheckpoint.reply}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.`;
-    expect(gradeIntegratorSkillUpdate(truthful).passed).toBe(true);
-    const contradictory = structuredClone(truthful);
-    contradictory.state.reviewCheckpoint.reply += " The update is applied.";
-    expect(gradeIntegratorSkillUpdate(contradictory).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
-    const changed = structuredClone(truthful);
+  it("grades quoted hunks against the real pinned diff, not wording", () => {
+    const reworded = valid(bytes.old, bytes.next);
+    reworded.state.reviewCheckpoint.reply = review.replace("Installed revision", "What you run today is").replace("New section:", "Added text reads:");
+    reworded.reply = `${reworded.state.reviewCheckpoint.reply}\nInstalled 4cffe22.`;
+    expect(gradeIntegratorSkillUpdate(reworded).passed).toBe(true);
+    const check = (value: ReturnType<typeof valid>, id: string) => gradeIntegratorSkillUpdate(value).checks.find(row => row.id === id)?.passed;
+    // The retained run's reversal: the old wording quoted as added and the new one as removed.
+    const reversed = valid(bytes.old, bytes.next);
+    reversed.state.reviewCheckpoint.reply = review.replace("-…so every build or release runs them.\n+…so every new build runs them.", "-…so every new build runs them.\n+…so every new build or release runs them.");
+    reversed.reply = `${reversed.state.reviewCheckpoint.reply}\nInstalled 4cffe22.`;
+    expect(check(reversed, "review-diff-before-update")).toBe(false);
+    const fabricated = valid(bytes.old, bytes.next);
+    fabricated.state.reviewCheckpoint.reply = review.replace("texts are key", "generous spacing is key");
+    expect(check(fabricated, "review-diff-before-update")).toBe(false);
+    const thin = valid(bytes.old, bytes.next);
+    thin.state.reviewCheckpoint.reply = "Installed `1339489`.\n> Breathable layouts and texts are key.";
+    expect(check(thin, "review-diff-before-update")).toBe(false);
+    const unpinned = valid(bytes.old, bytes.next);
+    unpinned.state.reviewCheckpoint.state.pinnedSkillText = { old: bytes.old, next: bytes.old };
+    expect(check(unpinned, "review-diff-before-update")).toBe(false);
+    // A later false retraction that re-quotes a real change on the wrong side fails.
+    const retracted = valid(bytes.old, bytes.next);
+    retracted.reply += "\nCorrection:\n```diff\n-so every new build runs them.\n+so every build or release runs them.\n```";
+    expect(check(retracted, "actual-installed-result-not-fetch-only")).toBe(false);
+    const changed = valid(bytes.old, bytes.next);
     changed.state.reviewCheckpoint.upstream.currentVersionId = "premature";
-    expect(gradeIntegratorSkillUpdate(changed).checks.find(check => check.id === "review-diff-before-update")?.passed).toBe(false);
+    expect(check(changed, "review-diff-before-update")).toBe(false);
   });
 
   it("keeps a complete persisted preview on the original path without any DOM read", async () => {
@@ -65,7 +84,7 @@ describe("genuine immutable public skill update qualification", () => {
         finalizationReasonCode: "conversation_turn_finished", prpRunTerminalState: "succeeded", prpTurnTerminalState: "completed",
         nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } } };
     Object.assign(first, { runs: [run], reply: "The complete diff is shown above. No update applied yet." });
-    value.reply = `${first.reply}\nI updated the accessibility skill to the reviewed source version. The local copy is unchanged.`;
+    value.reply = `${first.reply}\nI updated the accessibility skill to the reviewed source version 4cffe22. The local copy is unchanged.`;
     const check = () => gradeIntegratorSkillUpdate(value).checks.find(row => row.id === "review-diff-before-update")?.passed;
     expect(check()).toBe(false); // An API-only summary never substitutes for visible review.
     first.visibleReview = { runId: run.id, issueId: "source", humanCommentId: "human", summary, visibleText: summary };
@@ -89,7 +108,7 @@ describe("genuine immutable public skill update qualification", () => {
     const listing = valid(bytes.old, bytes.next); listing.state.reviewCheckpoint.reply = "Current installed 0.4. Latest 0.5 is available."; expect(gradeIntegratorSkillUpdate(listing).passed).toBe(false);
     const stale = valid(bytes.old, bytes.next); stale.upstream.markdown = bytes.old; expect(gradeIntegratorSkillUpdate(stale).passed).toBe(false);
     const overwritten = valid(bytes.old, bytes.next); overwritten.localFork.markdown = bytes.next; expect(gradeIntegratorSkillUpdate(overwritten).passed).toBe(false);
-    const lying = valid(bytes.old, bytes.next); lying.reply = `${lying.state.reviewCheckpoint.reply}\nI haven't updated the accessibility skill, only fetched its source.`; expect(gradeIntegratorSkillUpdate(lying).passed).toBe(false);
+    const unnamed = valid(bytes.old, bytes.next); unnamed.reply = `${unnamed.state.reviewCheckpoint.reply}\nDone; the local copy is unchanged.`; expect(gradeIntegratorSkillUpdate(unnamed).passed).toBe(false);
   });
 });
 
@@ -130,7 +149,8 @@ it("actual review-update setup keeps the real prerequisite and then prepares the
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
   try {
     const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
-    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v3");
+    expect(integratorSkillUpdateCases[0]!.oracleVersion).toBe("paperclip.chat-catalog.skill-update.diff-hunks.v1");
+    expect(result.pinnedSkillText).toEqual({ old: bytes.old, next: bytes.next });
     expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
   } finally { vi.unstubAllGlobals(); }
 });
