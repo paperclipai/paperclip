@@ -543,6 +543,21 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
+    if (!settings.enableChatConnectors) for (const app of APP_STORE_DEFINITIONS) {
+      if (!isConnectorFeatureEnabled(app, settings) || discoveryMethods(app).length || findAggregatorService(app.slug) || findAggregatorService(app.name)
+        || !getAvailableConnectionMethods(app).some(method => method.purpose === "channel" && method.provider !== "github")) continue;
+      const channelMethods = getAvailableConnectionMethods(app).filter(method => method.purpose === "channel");
+      const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
+        `${app.description ?? ""} ${channelMethods.map(method => `${method.whenToUse} ${method.label ?? ""}`).join(" ")}`);
+      if (!score) continue;
+      candidates.push({ score, nameScore, item: {
+        service: app.slug, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
+        methods: [], source: "catalog", state: "unavailable", connectionId: null,
+        reason: `${app.name} chat is turned off on this instance. An instance admin turns it on with Chat connectors on [Experimental settings](/${company.prefix}/company/settings/instance/experimental); `
+          + "then a person who manages connections can set it up. Agents cannot change instance settings. "
+          + "Tell the person this, link that page and reply; do not create a chat endpoint, substitute another channel or search for another route.",
+      }});
+    }
     // A yielded native service is not offered for new setup when an aggregator
     // route can serve it; its routes take its place in ranked results, so broad
     // and capability-only searches still find the app. Without a route the
@@ -588,7 +603,7 @@ export function connectionIntentService(db: Db) {
     // Aggregator routes need a recorded provider choice before connection_request.
     const rankedResult = (suggestions = false) => {
       const results = ranked();
-      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, suggestions);
+      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, company.prefix, suggestions);
     };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
@@ -696,13 +711,15 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  function directSearchResult(query: string, results: ConnectionSearchResultItem[], suggestions = false): ConnectionsSearchResult {
+  function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false): ConnectionsSearchResult {
+    const ownServer = `the person adds it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo): they enter the URL and type any API key into that page's secure field themselves. `
+      + "An agent cannot enter the key. Do not create the connection yourself, ask for the key in chat or search for another route; link that page and reply.";
     return { version: 1, query, results, instruction: !results.length
-      ? "No verified connection route was found. Explain that support could not be verified; do not invent a provider route or request unsupported services."
+      ? `No verified connection route was found. If the person gave the service's own server URL, ${ownServer} Otherwise explain that support could not be verified; do not invent a provider route or request unsupported services.`
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"
         ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "Call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
-      : !suggestions && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For user-requested configuration, inspect method.management and use search_api/call_api with nextApiOperation when allowed. Hand off only required authentication, consent, credentials, or decisions at the saved setupPath destination. Use connection_request when human setup or access is required. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
+      : (!suggestions || results.length === 1) && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
+      : suggestions || results.length > 1 ? `These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For user-requested configuration, inspect method.management and use search_api/call_api with nextApiOperation when allowed. Hand off only required authentication, consent, credentials, or decisions at the saved setupPath destination. Use connection_request when human setup or access is required. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support. If none of these is the service the person named and they gave that service's own server URL, ${ownServer}`
       : results[0]!.state === "ready" && results[0]!.methods.every(method => method.purpose === "ai")
         ? "AI authentication is available for this agent's next execution. Do not create another connection request or ask the user to reconnect."
       : results[0]!.service === "agentmail"
@@ -712,7 +729,6 @@ export function connectionIntentService(db: Db) {
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
         ? "Choose the method relevant to the task using its purpose and label. If method.management.allowed, configure through search_api/call_api using nextApiOperation. Hand off only required human authentication or consent at the saved setupPath. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
-      : results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
       : "The user asked to connect. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call." };
   }
 

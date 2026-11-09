@@ -38,7 +38,7 @@ async function verifyLiveRunnerAdoption(
     evidence: [], verification: [], attentionRequests: [], artifacts: [],
   }));
   const server = createServer();
-  let authority: DurablePrpControlPlane | null = null;
+  let authority = null as DurablePrpControlPlane | null;
   const checkpoint = vi.fn(async () => undefined);
   server.on("upgrade", (request, socket, head) => {
     if (!authority) {
@@ -136,7 +136,7 @@ async function verifyLiveRunnerAdoption(
       );
     }
     runnerPid = first.evidence().runnerPid;
-    runnerStartedAt = first.transport.processInfo().startedAt;
+    runnerStartedAt = first.transport.processInfo!().startedAt;
     expect(runnerPid).toEqual(expect.any(Number));
 
     if (goalMidTurn) {
@@ -404,7 +404,7 @@ async function verifyLiveRunnerAdoption(
       } else expect(redispatchedTool).not.toHaveBeenCalled();
     }
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
-    expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+    expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
@@ -448,7 +448,7 @@ async function verifyLiveRunnerAdoption(
         expect(await Promise.race([notificationsClosed, new Promise<boolean>(resolve => { queueDeadline = setTimeout(() => resolve(false), 250); })])).toBe(true);
       } finally { clearTimeout(queueDeadline); }
       await expect(adopted.transport.close()).rejects.toBe(probeError);
-      expect(adopted.transport.processInfo()).toMatchObject({ exited: false });
+      expect(adopted.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
       expect(signal).not.toHaveBeenCalled();
       expect(checkpoint).not.toHaveBeenCalled();

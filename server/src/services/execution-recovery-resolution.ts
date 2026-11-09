@@ -36,6 +36,23 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
+/**
+ * The user-facing note for a settled recovery hold. A restart-recovery hold
+ * names its own cause: a workspace export retried after that hold does not
+ * mean the user must repair the workspace.
+ */
+export function executionRecoverySettlementNote(input: {
+  current: boolean; cause: string; workspaceRestoreFailed: boolean;
+}): string {
+  if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked") {
+    return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
+  return input.workspaceRestoreFailed
+    ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
+    : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.";
+}
+
 export async function validateExecutionReconciliation(input: {
   db: Db;
   companyId: string;
@@ -626,11 +643,8 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
-        const note = current
-          ? hasWorkspaceRestoreFailure(run.resultJson)
-            ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
-            : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
-          : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+        const note = executionRecoverySettlementNote({ current, cause: action.cause,
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson) });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;

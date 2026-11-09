@@ -11,6 +11,10 @@ use crate::stable_identity::{
 };
 
 const MAX_TEXT_CHARS: usize = 4_000;
+/// A completed final answer is the reply the person receives, not a run-log
+/// preview. It keeps its complete (redacted) text up to this transport-safe
+/// bound; the durable outbox applies its own frame check.
+pub(crate) const MAX_FINAL_AGENT_MESSAGE_CHARS: usize = 32_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NormalizedProviderEvent {
@@ -373,7 +377,7 @@ pub fn project_acpx_state_event(
                     "kind": "agentMessage",
                     "status": "completed",
                     "channel": "final",
-                    "text": bounded_text(text, MAX_TEXT_CHARS),
+                    "text": final_agent_message_text(text),
                 }),
             )
         }
@@ -614,6 +618,19 @@ fn plan_proposal_markdown(value: &str) -> String {
         .chars()
         .take(MAX_PLAN_PROPOSAL_CHARS)
         .collect()
+}
+
+/// Redacts a completed final answer without the run-log display preview cap.
+fn final_agent_message_text(value: &str) -> String {
+    let redacted = redact_sensitive_text_values(value);
+    if redacted.chars().count() <= MAX_FINAL_AGENT_MESSAGE_CHARS {
+        return redacted;
+    }
+    let marker = "…[truncated]";
+    let retained_chars = MAX_FINAL_AGENT_MESSAGE_CHARS.saturating_sub(marker.chars().count());
+    let mut bounded: String = redacted.chars().take(retained_chars).collect();
+    bounded.push_str(marker);
+    bounded
 }
 
 fn bounded_text(value: &str, max_chars: usize) -> String {
@@ -1458,6 +1475,10 @@ pub fn normalize_codex_notification_in(
                     "itemId": item_id,
                     "kind": bounded_text(item_type, 160),
                     "status": provider_status(string(provider_item.get("status")), completed),
+                    // Only an explicit `final_answer` phase marks the reply. Legacy
+                    // builds omit `phase` on every agentMessage, commentary included,
+                    // so an empty phase stays a progress preview. (The plan-proposal
+                    // branch above accepts an empty phase because it matches content.)
                     "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
                         "final"
                     } else if item_type == "agentMessage" {
@@ -1465,7 +1486,13 @@ pub fn normalize_codex_notification_in(
                     } else {
                         "detail"
                     },
-                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS))
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| {
+                        if completed && item_type == "agentMessage" && provider_phase == "final_answer" {
+                            final_agent_message_text(value)
+                        } else {
+                            bounded_text(value, MAX_TEXT_CHARS)
+                        }
+                    })
                         .or_else(|| (item_type == "reasoning").then(|| reasoning_summary_text(provider_item)).flatten()),
                 });
                 // Preserve only actual terminal invocation identity in the compatibility
@@ -2322,7 +2349,7 @@ fn safe_acpx_location(value: Option<&Value>, allow_create_target: bool) -> Value
         .unwrap_or_default();
     if raw_path.is_empty()
         || raw_path.starts_with('/')
-        || raw_path.contains('\0')
+        || !crate::tool_file_changes::is_single_line_path(raw_path)
         || raw_path.split('/').any(|segment| segment == "..")
     {
         return Value::Null;
@@ -2842,6 +2869,48 @@ mod tests {
     }
 
     #[test]
+    fn drops_a_location_whose_path_breaks_a_line() {
+        for location in [
+            "packages/shared/src/chaos/slug.ts\n<parameter name=\"content\">export function chaosSlug() {}",
+            "src/a.ts\rsrc/b.ts",
+            "src/a.ts\u{2028}tail",
+            "src/a.ts\u{2029}tail",
+            "src/a\tb.ts",
+        ] {
+            assert_eq!(
+                safe_acpx_location(
+                    Some(&json!({
+                        "path": location,
+                        "pathBoundary": "paperclip.workspace_relative_display.v2",
+                        "pathAttestation": "paperclip.workspace_create_target.v1"
+                    })),
+                    true,
+                ),
+                Value::Null,
+                "location {location:?}",
+            );
+        }
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_write", "tag": "tool_call_update",
+                "status": "in_progress", "title": "Write",
+                "locations": [{
+                    "path": "packages/shared/src/chaos/slug.ts\n<parameter name=\"content\">export function chaosSlug() {}",
+                    "pathBoundary": "paperclip.workspace_relative_display.v2"
+                }],
+                "fileChanges": [{"path": "src/a.ts\nsrc/b.ts", "operation": "modify"}],
+            }),
+            Some("edit"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events[0].payload["target"], Value::Null);
+        assert!(events[0].payload.get("fileChanges").is_none());
+    }
+
+    #[test]
     fn preserves_valid_posix_display_characters() {
         for location in [
             "src:main.rs",
@@ -2930,6 +2999,50 @@ mod tests {
             }
             assert!(!events[0].payload.to_string().contains("secret"));
         }
+    }
+
+    #[test]
+    fn keeps_a_complete_final_answer_longer_than_the_display_preview() {
+        let answer = format!(
+            "**Open work — 501 tasks**\n\n{}",
+            (1..=501)
+                .map(|n| format!("RUN-{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert!(answer.chars().count() > MAX_TEXT_CHARS);
+        let completed = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-1", "type": "agentMessage", "phase": "final_answer", "text": answer}}),
+        );
+        assert_eq!(completed[0].payload["channel"], "final");
+        assert_eq!(completed[0].payload["text"].as_str(), Some(answer.as_str()));
+        // Progress prose and in-flight items stay display previews.
+        for (method, phase) in [
+            ("item/completed", "commentary"),
+            ("item/started", "final_answer"),
+        ] {
+            let events = normalize_codex_notification(
+                method,
+                &json!({"item": {"id": "msg-2", "type": "agentMessage", "phase": phase, "text": answer}}),
+            );
+            let text = events[0].payload["text"].as_str().unwrap();
+            assert_eq!(text.chars().count(), MAX_TEXT_CHARS, "{method} {phase}");
+            assert!(text.ends_with("…[truncated]"));
+        }
+        // A legacy agentMessage without a phase is never treated as the final answer.
+        let legacy = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-3", "type": "agentMessage", "text": answer}}),
+        );
+        assert_eq!(legacy[0].payload["channel"], "progress");
+        let text = legacy[0].payload["text"].as_str().unwrap();
+        assert_eq!(text.chars().count(), MAX_TEXT_CHARS);
+        assert!(text.ends_with("…[truncated]"));
+        let oversized = "x".repeat(MAX_FINAL_AGENT_MESSAGE_CHARS + 1);
+        let bounded = final_agent_message_text(&oversized);
+        assert_eq!(bounded.chars().count(), MAX_FINAL_AGENT_MESSAGE_CHARS);
+        assert!(bounded.ends_with("…[truncated]"));
     }
 
     #[test]

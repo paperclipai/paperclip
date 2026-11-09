@@ -190,3 +190,25 @@ retain their existing effects.
 
 
 Every reactive summary writeback records one immediate card-owned refresh deadline in the same transaction that clears its generation. This preserves changes whose committed source hint was consumed while the old generation still owned the card, including changes after the summary's final watched-source read. The existing card commit hint restores that one deadline; it does not fan out to other companies or force generation. A fresh unchanged search disarms it. A relevant diff follows the existing policy, assignment, result and quiet path. Manual and interval writeback cadence stays unchanged. Rollback removes both the summary and its recheck obligation. Real PostgreSQL controls hold the actual summary search, commit an ordinary issue write, observe the worker consume that hint while generation is still owned, then verify exactly one needed generation or one unchanged recheck followed by SQL quiet.
+
+
+### Read-only idle deadline inspection
+
+The actual evaluation service exposes `readIdleSchedule(tx, now, owner)` for an
+owned sleep inspection. The supplied owner is the registered deadline worker's
+synchronous reconciliation snapshot. Startup, a running sweep, dirty source
+hints, failure and stopped ownership cannot certify settled work. A busy card
+advisory lock can leave a company-scoped retry only in service memory even after
+the helper sweep succeeds; retained reconstruction/change/retry state therefore
+also blocks inspection until evaluated. Disabled features retain this state for
+reenablement without owing an automatic evaluation while disabled.
+
+The bounded reader leaves policy and membership deadlines unchanged, includes
+row revisions in its generation state, and blocks active generation pointers,
+unfinished update ledgers, due work and unsupported states. It rechecks the owner
+revision after reading. The feature gate comes from successful owner
+reconciliation, preserving settings overlays without creating a settings row
+inside a read-only inspection. This domain result is not stop authorization:
+the shared exact-hold proof and durable Cloud alarm must compose and revalidate
+it before replacing a conservative blocker. Independent SQL writers and other
+active server processes still need explicit wake ingress.

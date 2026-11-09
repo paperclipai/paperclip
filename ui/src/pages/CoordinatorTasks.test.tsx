@@ -45,8 +45,8 @@ vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, vi
 </> }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
-  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
-    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
+  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string }; assignee?: string | null }[]; emptyState: React.ReactNode }) =>
+    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id} data-assignee={item.assignee}>{item.issue.title}</p>) : emptyState}</div>,
 }));
 
 describe("Coordinator tasks using the proposed table", () => {
@@ -150,6 +150,15 @@ describe("Coordinator tasks using the proposed table", () => {
     await mount("/issues?view=all");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
     expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["local-board", "Board"],
+    ["missing-user", "missi"],
+  ])("keeps the shared human identity label when %s is absent from the directory", async (assigneeUserId, label) => {
+    mocks.list.mockResolvedValue([createIssue({ id: "human-task", companyId: "company", parentId: null, assigneeAgentId: null, assigneeUserId })]);
+    await mount("/issues");
+    expect(host.querySelector('[data-task-id="human-task"]')?.getAttribute("data-assignee")).toBe(label);
   });
 
   it("opens routine task links, filters before paging, and lets the checkbox change the collection", async () => {

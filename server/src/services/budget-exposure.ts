@@ -1,6 +1,6 @@
 import { addCents, normalizeCents, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
 
 export interface BudgetExposure {
@@ -16,7 +16,9 @@ export interface BudgetExposure {
 export type SpendPolicy = Pick<typeof budgetPolicies.$inferSelect, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">;
 export type ObservedSpend = BudgetExposure & {
   windowStart: Date; windowEnd: Date; total: number; totalExact: string;
-  pendingRunCount: number; recoveringRunCount: number;
+  /** Terminal runs whose accounting is unfinished. Display only: each one
+   * contributes its bounded estimate to exposure and never gates admission. */
+  pendingRunCount: number;
 };
 
 export function budgetWindow(kind: string, now = new Date()) {
@@ -123,20 +125,58 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
-    const recovering = sql`not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
-      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
-        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} <> 'terminal_failure')`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`;
+    // "Usage with no reliable price" means observed usage that could not be
+    // priced. These unpriced charges are not that, so they never trip the
+    // blocking policy (they stay visible in Costs):
+    // - a receipt lost with its stopped provider (restart-derived, any usage);
+    // - a charge that carries a known partial cost;
+    // - metered API or subscription billing with no observed tokens.
+    // Unknown billing with no tokens (for example Cursor Cloud) still counts.
+    // The lost-receipt exemption covers only that run's settled final charge;
+    // later growth from a complete receipt is ordinary usage.
+    // A final charge settled only because closure evidence never arrived is
+    // genuinely unknown spend (its provider may still have run), so none of
+    // these exemptions apply to it, unless a control-plane restart caused it.
+    // A restart-derived receipt never trips the blocking policy, whatever its
+    // token count: the run replaced its receipt source, recovered from the
+    // restart, or lost a provider turn on restore. Its activity entry and
+    // provenance remain the board's notice.
+    const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
+    // Every usage recorder binds an empty fence map; only a replaced receipt
+    // source (a non-empty map) is restart evidence.
+    const restartDerived = (alias: string) => sql.raw(`(coalesce(${alias}.usage_json->'accountingReceiptSourceFences', '{}'::jsonb) <> '{}'::jsonb
+        or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
+        or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
+          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'
+          and restart_event.payload->>'trigger' is distinct from 'same_run_retry'))`);
+    const closureTimedOutCharge = sql`(${finalCharge}
+      and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
+        and timed_out_run.company_id = ${costEvents.companyId}
+        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true'
+        -- A failed capture is unknown spend whatever its source history.
+        and (timed_out_run.usage_json->>'accountingCaptureFailed' = 'true' or not ${restartDerived("timed_out_run")})))`;
+    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${finalCharge}
+        and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
+          and lost_receipt_run.company_id = ${costEvents.companyId}
+          and (lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'
+            or coalesce(lost_receipt_run.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%')))
+      or ${costEvents.costCents} > 0
+      or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
+        and ${costEvents.outputTokens} = 0)))`;
+    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
+      and not ${exemptFromUnpricedBlock})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
     // observation describe one operation, so count their maximum, not both.
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
-    runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
+    // Unfinished accounting is exposure, not a gate (SPEC 11.6, invariant 3).
+    // Its bounded estimate is the larger of the run's held reservation and its
+    // observed cost, counted above; a hard stop reads the ledger plus observed
+    // cost. No terminal run's cleanup or accounting state refuses new work.
   }
   // A single statement preserves hold-to-ledger atomicity even when a caller
   // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
@@ -168,7 +208,7 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     return { windowStart: windows[index].start, windowEnd: windows[index].end,
       ledgerCents, liveObservedCents, effectiveHeldCents: addCents(String(held[`held${index}`] ?? 0), String(runs[`unreserved${index}`] ?? 0), String(browser[`held${index}`] ?? 0)),
       total: Number(totalExact), totalExact, pendingRunCount, pendingTerminalRunCount: pendingRunCount,
-      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0) };
+      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0) };
   });
 }
 

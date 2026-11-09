@@ -18,6 +18,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
@@ -173,6 +174,8 @@ export function errorHandler(
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
     const workspaceRepairPreconditionFailure =
       details?.code === "workspace_repair_precondition_failed";
+    // Its code and remediation are already top-level; repeating them only lengthens agent context.
+    const boardAccessDenial = details?.code === "board_access_required";
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "organization_authorization_required",
@@ -254,6 +257,7 @@ export function errorHandler(
               : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&
+            !boardAccessDenial &&
             responseDetailsValue
               ? { details: responseDetailsValue }
               : {}),
@@ -298,6 +302,16 @@ export function errorHandler(
     return;
   }
 
+  // A route that cancels its work when the response closes (for example a
+  // storage read) rejects with AbortError after the client has gone. That
+  // rejection is the cancellation, not a server fault. An AbortError while
+  // the client is still connected is still reported.
+  if (rootError.name === "AbortError" && res.destroyed && !res.writableFinished) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
   // Shutdown drains the HTTP listener before it ends the pool, but a handler
   // whose client already disconnected (or whose socket the drain timeout
   // closed) keeps running. Its next query then fails with CONNECTION_ENDED
@@ -307,6 +321,16 @@ export function errorHandler(
   if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
     if (!res.headersSent) {
       res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
     } else {
       res.end();
     }

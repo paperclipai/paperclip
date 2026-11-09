@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, type Issue, type IssueSummary } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -81,7 +81,13 @@ export function useRecentTasks({
   }), [queryClient, scope]);
   const summaryQuery = useQuery({
     queryKey: summaryKey,
-    queryFn: ({ signal }) => issuesApi.summaries(companyId!, queryIds, { signal }),
+    queryFn: async ({ signal }) => {
+      const summaries: IssueSummary[] = [];
+      for (let offset = 0; offset < queryIds.length; offset += ISSUE_SUMMARIES_MAX_IDS) {
+        summaries.push(...await issuesApi.summaries(companyId!, queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS), { signal }));
+      }
+      return summaries;
+    },
     enabled: Boolean(companyId && queryIds.length),
     staleTime: 30_000,
   });
@@ -117,7 +123,8 @@ export function useRecentTasks({
 
   useEffect(() => {
     if (!storageKey || !companyId || !summaries) return;
-    const authorizedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    const summaryById = new Map(summaries.filter((issue) => issue.companyId === companyId).map((issue) => [issue.id, issue]));
+    const authorizedIds = new Set(summaryById.keys());
     const mergeCached = (value: unknown) => {
       if (!value || typeof value !== "object") return;
       const issue = value as Issue;
@@ -126,7 +133,7 @@ export function useRecentTasks({
         || !issue.updatedAt || !Object.hasOwn(issue, "projectId")) return;
       // At equal task versions, the summary's independently computed readiness
       // is newer than an already-cached full detail response.
-      const summary = summaries.find((item) => item.id === issue.id);
+      const summary = summaryById.get(issue.id);
       if (!summary || new Date(issue.updatedAt).getTime() <= new Date(summary.updatedAt).getTime()) return;
       updateRecentTaskSnapshots(storageKey, companyId, [issue]);
     };

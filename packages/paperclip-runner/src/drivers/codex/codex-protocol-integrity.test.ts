@@ -16,8 +16,8 @@ import { NativeSessionProtocolIntegrityError } from "../../contracts/native-sess
 import {
   DurablePrpControlPlane,
   durableRecoveryInternals,
-  type DurableRecoveryIdentity,
 } from "../../control-plane/durable-prp-control-plane.js";
+import type { DurableRecoveryIdentity } from "../../control-plane/prp-transport-types.js";
 import { createCapabilityRunnerdCodexTransport } from "../../live/runnerd-codex-transport.js";
 import { executeNativeSession } from "../../native-session-runtime.js";
 import { CodexAppServerDriver } from "./codex-app-server-driver.js";
@@ -44,7 +44,7 @@ async function authenticatedRunner(
   runnerBinary: string,
 ) {
   const framed = (domain: string, parts: Buffer[]) => {
-    const values = [Buffer.from(domain), Buffer.from([0])];
+    const values: Buffer[] = [Buffer.from(domain), Buffer.from([0])];
     for (const part of parts) {
       const length = Buffer.alloc(8);
       length.writeBigUInt64BE(BigInt(part.length));
@@ -476,6 +476,7 @@ describe("Codex protocol integrity propagation", () => {
           normalizedSessionId: identity.normalizedSessionId,
           driverKind: "codex_app_server",
           protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         },
         provider: { kind: "codex", model: null },
         completionContract: {

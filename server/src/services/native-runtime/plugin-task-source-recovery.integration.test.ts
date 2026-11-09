@@ -3,10 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
+import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunResults, nativeRunnerCheckpoints, plugins } from "@paperclipai/db";
-import { DurablePrpControlPlane, type DurablePrpCheckpoint, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { parseNativeExecutionInput, runnerProviderLaunchRequirements, DurablePrpControlPlane, type DurablePrpCheckpoint, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
@@ -36,7 +37,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     if (originalHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = originalHome;
   });
 
-  async function fixture() {
+  async function fixture(provider: "codex" | "claude" | "acpx_codex" = "codex", currentModel?: string) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceRunId = randomUUID(), runId = randomUUID();
     const sourceLeaseId = randomUUID(), leaseId = randomUUID(), environmentId = randomUUID(), pluginId = randomUUID();
     const controller = await currentNativeControllerIdentity(), oldOwner = { bootId: controller.bootId, generation: 1, leaseOwner: randomUUID() };
@@ -48,13 +49,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const native = await prepareNativeHeartbeatRun({ db, run: sourceRun, issue: { id: issueId, title: "Continue once", description: null }, environmentLeaseId: sourceLeaseId });
     const [prepared] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId));
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.id, prepared.completionContractId!));
-    const build = (id: string) => buildNativeExecutionInput({ companyId, agentId, runId: id, normalizedSessionId: native.normalizedSessionId,
-      provider: "codex", issue: { id: issueId, identifier: "SOURCE-1", title: "Continue once", description: null, workMode: "standard" },
+    const build = (id: string, selected = provider) => buildNativeExecutionInput({ companyId, agentId, runId: id, normalizedSessionId: native.normalizedSessionId,
+      provider: selected === "codex" ? "codex" : "acpx", acpxAgent: selected === "claude" ? "claude" : "codex",
+      ...(selected === "codex" ? {} : { model: selected === "claude" ? "claude-sonnet-4-6" : "gpt-6" }), issue: { id: issueId, identifier: "SOURCE-1", title: "Continue once", description: null, workMode: "standard" },
       taskPrompt: "Continue once", workspace: { id, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
       completionContract: { id: prepared.completionContractId!, sha256: prepared.completionContractSha256!, schemaVersion: "paperclip.run-result.v1", contract: contract.contractJson as never },
       runtimeContext: nativeRuntimeContextFixture() });
     const sourceExecution = build(sourceRunId), execution = build(runId);
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...prepared.runnerProfileJson, nativeExecutionInput: sourceExecution } }).where(eq(heartbeatRuns.id, sourceRunId));
+    if (currentModel !== undefined) execution.provider.model = currentModel;
+    await db.update(heartbeatRuns).set({ driverKind: sourceExecution.session.driverKind,
+      runnerProfileJson: { ...prepared.runnerProfileJson, provider: sourceExecution.provider.kind, nativeExecutionInput: sourceExecution } }).where(eq(heartbeatRuns.id, sourceRunId));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: sourceRunId, phase: "observed", controllerBootId: oldOwner.bootId,
       controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt, controllerGeneration: oldOwner.generation,
       leaseOwner: oldOwner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
@@ -91,25 +95,38 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId, heartbeatRunId: runId,
       provider: sourceLease.provider, providerLeaseId: "replacement-task", leasePolicy: "reuse_by_environment", status: "active", metadata });
     const context = new NativeExecutionContext(execution, 60_000); context.bindNativeLease(owner); contexts.push(context);
-    const input = { companyId, leaseId, context, identity, resumeFrom: "source-task", selectedSourceRecoveryVersion: 1 as const,
+    const input = { companyId, leaseId, context, identity, resumeFrom: "source-task",
+      ...(provider === "codex" ? { codexSourceRecoveryVersion: 1 as const } : { acpxSourceRecoveryVersion: 1 as const }),
       accountIdentity: "current-selected-account", matchesExecution: (previous: typeof sourceExecution) => previous.provider.kind === execution.provider.kind && previous.workspace.cwd === execution.workspace.cwd };
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call: vi.fn(async (_id: string, _method: string, p: any) => {
       if (p.operation.kind === "prepare") return { kind: "prepared", taskId: p.taskId,
         launch: { configurationId: "source-configuration", requirementsDigest: `sha256:${"a".repeat(64)}`, provider: {} } };
-      if (p.operation.kind === "check_project_auth") return { kind: "project_auth", taskId: p.taskId, provider: "openai", configurationId: p.operation.configurationId, allowed: true };
+      if (p.operation.kind === "check_project_auth") return { kind: "project_auth", taskId: p.taskId, provider: p.operation.provider, configurationId: p.operation.configurationId, allowed: true };
       return { kind: "accepted", taskId: p.taskId };
     }) };
-    const operation = { kind: "prepare" as const, resumeFrom: input.resumeFrom,
-      accountIdentity: input.accountIdentity, projectIds: [], requirements: { schema: "paperclip.runner.launch-requirements.v1" as const,
+    const operation = environmentTaskOperationSchema.parse({ kind: "prepare" as const, resumeFrom: input.resumeFrom,
+      accountIdentity: input.accountIdentity, projectIds: [], requirements: provider === "codex" ? { schema: "paperclip.runner.launch-requirements.v1" as const,
         identity, provider: "codex" as const, model: null, instructions: "Source policy", runtimeContext: null, settings: {}, approvalPolicy: "never" as const,
-        readOnly: false, preparedConversation: false, includeCollaborationModeInstructions: false } };
+        readOnly: false, preparedConversation: false, includeCollaborationModeInstructions: false } : runnerProviderLaunchRequirements({
+          provider: "acpx", acpxAgent: provider === "claude" ? "claude" : "codex",
+        }, identity, { model: sourceExecution.provider.model, config: { include_collaboration_mode_instructions: false } },
+          "runtimeContext" in sourceExecution ? sourceExecution.runtimeContext : null, "Source policy") });
+    if (operation.kind !== "prepare") throw new Error("invalid source preparation fixture");
+    const submit = { kind: "submit" as const, resumeFrom: input.resumeFrom, accountIdentity: input.accountIdentity,
+      preparedLaunchId: "source-configuration", projectIds: [], bootstrapTicket: "synthetic-test-ticket",
+      runner: { runnerId: identity.runnerInstanceId, leaseId: identity.environmentLeaseId, runId: sourceRunId,
+        sessionId: identity.normalizedSessionId, turnId: identity.turnId, itemId: identity.itemId,
+        harness: provider === "claude" ? "claude" : "codex", protocolMin: 1, protocolMax: 1 },
+      launch: { runnerVersion: "source-fixture", runnerDigest: `sha256:${"a".repeat(64)}`, maxOutboxBytes: 262144,
+        p0ReserveBytes: 65536, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } };
     const task = (op: Parameters<typeof executeEnvironmentTask>[2]["operation"] = operation) => executeEnvironmentTask(db, workers as unknown as PluginWorkerManager,
       { companyId, leaseId, executionContext: context, operation: op });
-    return { ...input, runId, sourceRunId, sourceLeaseId, environmentId, agentId, issueId, owner, oldOwner, oldWriter, checkpoint, execution, operation, workers, task };
+    return { ...input, runId, sourceRunId, sourceLeaseId, environmentId, agentId, issueId, owner, oldOwner, oldWriter, checkpoint, execution, sourceExecution, build, operation, submit, workers, task,
+      harness: provider === "claude" ? "claude" as const : "codex" as const, authProvider: provider === "claude" ? "anthropic" : "openai" };
   }
 
-  it("authorizes only the claimed predecessor identity while preserving A's accepted outcome", async () => {
-    const f = await fixture();
+  it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {
+    const f = await fixture(provider);
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     await expect(f.task()).rejects.toThrow("execution identity mismatch");
     await claimPluginTaskSourceRecovery(db, f);
@@ -119,14 +136,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call).not.toHaveBeenCalled();
     await expect(f.task()).resolves.toMatchObject({ kind: "prepared" });
     expect(f.workers.call.mock.calls[0][2]).toMatchObject({ runId: f.runId, operation: { requirements: { identity: f.identity } } });
-    await f.task({ kind: "check_project_auth", configurationId: "source-configuration", provider: "openai", projectIds: [] });
-    await expect(f.task({ kind: "submit", resumeFrom: f.resumeFrom,
-      accountIdentity: f.accountIdentity, preparedLaunchId: "source-configuration", projectIds: [], bootstrapTicket: "synthetic-test-ticket",
-      runner: { runnerId: f.identity.runnerInstanceId, leaseId: f.identity.environmentLeaseId, runId: f.sourceRunId,
-        sessionId: f.identity.normalizedSessionId, turnId: f.identity.turnId, itemId: f.identity.itemId, harness: "codex", protocolMin: 1, protocolMax: 1 },
-      launch: { runnerVersion: "source-fixture", runnerDigest: `sha256:${"a".repeat(64)}`,
-        maxOutboxBytes: 262144, p0ReserveBytes: 65536, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
-    })).resolves.toMatchObject({ kind: "accepted" });
+    await f.task({ kind: "check_project_auth", configurationId: "source-configuration", provider: f.authProvider, projectIds: [] });
+    await expect(f.task(f.submit)).resolves.toMatchObject({ kind: "accepted" });
     expect(f.workers.call.mock.calls.at(-1)![2]).toMatchObject({ runId: f.runId, operation: {
       kind: "submit", runner: { runId: f.sourceRunId },
     } });
@@ -145,6 +156,135 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(after).toEqual(before);
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(JSON.stringify(lease.metadata)).not.toContain(f.owner.leaseOwner);
+  });
+
+  function launchRequirements(execution: NativeExecutionInput, identity: Awaited<ReturnType<typeof fixture>>["identity"]) {
+    return environmentTaskOperationSchema.parse({ kind: "prepare", projectIds: [], requirements: runnerProviderLaunchRequirements({
+      provider: execution.provider.kind === "acpx" ? "acpx" : "codex",
+      ...(execution.provider.kind === "acpx" ? { acpxAgent: execution.provider.agent } : {}),
+    }, identity, { model: execution.provider.model, config: { include_collaboration_mode_instructions: false } },
+      "runtimeContext" in execution ? execution.runtimeContext : null, "Source policy") });
+  }
+
+  async function saveExecution(runId: string, execution: NativeExecutionInput) {
+    await db.update(heartbeatRuns).set({ runnerProfileJson:
+      sql`jsonb_set(${heartbeatRuns.runnerProfileJson}, '{nativeExecutionInput}', ${JSON.stringify(execution)}::jsonb)` }).where(eq(heartbeatRuns.id, runId));
+  }
+
+  function replacementContext(f: Awaited<ReturnType<typeof fixture>>, execution: NativeExecutionInput) {
+    const context = new NativeExecutionContext(execution, 60_000); context.bindNativeLease(f.owner); contexts.push(context); return context;
+  }
+
+  it("binds Claude source preparation to A and attachment to current B's different policy", async () => {
+    const f = await fixture("claude", "claude-opus-4-6"); await claimPluginTaskSourceRecovery(db, f);
+    expect(f.sourceExecution.provider.model).not.toBe(f.execution.provider.model);
+    const target = { ...f.identity, runId: f.runId, turnId: `turn-${f.runId}`, itemId: `item-${f.runId}` };
+    const prepared = launchRequirements(f.execution, target);
+    if (prepared.kind !== "prepare") throw new Error("invalid requirements fixture");
+    await expect(f.task({ ...f.operation, requirements: { ...prepared.requirements, identity: f.identity } })).rejects.toThrow("ownership_unverified");
+    await expect(f.task()).resolves.toMatchObject({ kind: "prepared" });
+    await f.task({ kind: "check_project_auth", configurationId: "source-configuration", provider: f.authProvider, projectIds: [] });
+    await expect(f.task(f.submit)).resolves.toMatchObject({ kind: "accepted" });
+    const attachment = { ...f.operation, resumeFrom: undefined, priorIdentity: f.identity, requirements: prepared.requirements };
+    await expect(f.task({ ...attachment, requirements: { ...f.operation.requirements, identity: target } })).rejects.toThrow("ownership_unverified");
+    await expect(f.task(attachment)).resolves.toMatchObject({ kind: "prepared" });
+    expect(f.workers.call).toHaveBeenCalledTimes(4);
+    expect(f.workers.call.mock.calls[0][2].operation.requirements.model).toBe(f.sourceExecution.provider.model);
+    expect(f.workers.call.mock.calls.at(-1)![2].operation.requirements.model).toBe(f.execution.provider.model);
+  });
+
+  it.each(["codex", "claude"] as const)("requires the distinct %s capability", async provider => {
+    const f = await fixture(provider);
+    await expect(claimPluginTaskSourceRecovery(db, { ...f,
+      codexSourceRecoveryVersion: provider === "claude" ? 1 : undefined,
+      acpxSourceRecoveryVersion: provider === "codex" ? 1 : undefined,
+    })).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).not.toHaveBeenCalled();
+  });
+
+  it.each(["codex", "claude"] as const)("binds prepare, submit and attachment to the claimed %s provider", async provider => {
+    const f = await fixture(provider); await claimPluginTaskSourceRecovery(db, f);
+    const other = provider === "codex" ? "claude" : "codex";
+    const relabelled = launchRequirements(f.build(f.sourceRunId, other), f.identity);
+    if (relabelled.kind !== "prepare") throw new Error("invalid requirements fixture");
+    await expect(f.task({ ...f.operation, requirements: relabelled.requirements })).rejects.toThrow("ownership_unverified");
+    await expect(f.task({ kind: "submit", resumeFrom: f.resumeFrom, accountIdentity: f.accountIdentity,
+      preparedLaunchId: "source-configuration", projectIds: [], bootstrapTicket: "synthetic-test-ticket",
+      runner: { runnerId: f.identity.runnerInstanceId, leaseId: f.identity.environmentLeaseId, runId: f.identity.runId,
+        sessionId: f.identity.normalizedSessionId, turnId: f.identity.turnId, itemId: f.identity.itemId,
+        harness: other === "claude" ? "claude" : "codex", protocolMin: 1, protocolMax: 1 },
+      launch: { runnerVersion: "source-fixture", runnerDigest: `sha256:${"a".repeat(64)}`, maxOutboxBytes: 262144,
+        p0ReserveBytes: 65536, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+    })).rejects.toThrow("ownership_unverified");
+    await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"runnerTaskDispatched":true}'::jsonb` }).where(eq(environmentLeases.id, f.leaseId));
+    await expect(f.task({ ...f.operation, resumeFrom: undefined, priorIdentity: f.identity,
+      requirements: { ...relabelled.requirements, identity: { ...f.identity, runId: f.runId, turnId: `turn-${f.runId}`, itemId: `item-${f.runId}` } },
+    })).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).not.toHaveBeenCalled();
+  });
+
+  it.each(["codex", "claude"] as const)("rejects a different current provider behind the %s source", async provider => {
+    const f = await fixture(provider), execution = f.build(f.runId, provider === "codex" ? "claude" : "codex");
+    await saveExecution(f.runId, execution);
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, context: replacementContext(f, execution),
+      codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1, matchesExecution: () => true,
+    })).rejects.toThrow("ownership_unverified");
+  });
+
+  it("does not treat the ACPX Codex profile as native Codex or Claude", async () => {
+    const f = await fixture("acpx_codex");
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1 })).rejects.toThrow("ownership_unverified");
+  });
+
+  it.each(["driverKind", "protocolVersion", "acpxVersion", "agent", "agentProfileVersion", "agentServerPackage", "agentServerVersion", "agentRuntimePackage", "agentRuntimeVersion", "commandDigest"] as const)("checks the qualified Claude profile field %s", async key => {
+    const f = await fixture("claude"), execution = structuredClone(f.sourceExecution);
+    if (execution.provider.kind !== "acpx") throw new Error("invalid Claude fixture");
+    const profile = execution.provider.profile as unknown as Record<string, unknown>;
+    profile[key] = typeof profile[key] === "number" ? Number(profile[key]) + 1 : key === "commandDigest" ? `sha256:${"0".repeat(64)}` : `${profile[key]}-other`;
+    await saveExecution(f.sourceRunId, execution);
+    await expect(claimPluginTaskSourceRecovery(db, f)).rejects.toThrow();
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
+    expect(source.metadata?.runnerTaskSourceConsumer).toBeUndefined();
+  });
+
+  it("rejects equally stale saved and current Claude profiles despite decodable history", async () => {
+    const f = await fixture("claude"), source = structuredClone(f.sourceExecution), current = structuredClone(f.execution);
+    for (const execution of [source, current]) {
+      if (execution.provider.kind !== "acpx") throw new Error("invalid Claude fixture");
+      execution.provider.profile.commandDigest = `sha256:${"0".repeat(64)}`;
+      expect(parseNativeExecutionInput(execution)).toEqual(execution);
+    }
+    await saveExecution(f.sourceRunId, source); await saveExecution(f.runId, current);
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, context: replacementContext(f, current) })).rejects.toThrow("ownership_unverified");
+  });
+
+  it.each(["source", "current"] as const)("revalidates the %s Claude profile after the worker reply", async changed => {
+    const f = await fixture("claude"); await claimPluginTaskSourceRecovery(db, f);
+    const perform = f.workers.call.getMockImplementation()!;
+    f.workers.call.mockImplementation(async (...args) => {
+      const result = await perform(...args), execution = structuredClone(changed === "source" ? f.sourceExecution : f.execution);
+      if (execution.provider.kind !== "acpx") throw new Error("invalid Claude fixture");
+      execution.provider.profile.commandDigest = `sha256:${"0".repeat(64)}`;
+      await saveExecution(changed === "source" ? f.sourceRunId : f.runId, execution); return result;
+    });
+    await expect(f.task()).rejects.toThrow("reconcile the same task");
+    await expect(f.task()).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["model", "permission", "pinned", "effort", "readOnly", "context", "mode", "agent"] as const)("checks factory-normalized Claude launch policy: %s", async changed => {
+    const f = await fixture("claude"); await claimPluginTaskSourceRecovery(db, f);
+    const requirements = structuredClone(f.operation.requirements);
+    if (changed === "model") requirements.model = "claude-opus-4-6";
+    if (changed === "permission") requirements.settings.acpxPermissionMode = "deny-all";
+    if (changed === "pinned") requirements.settings.acpxPermissionModePinned = false;
+    if (changed === "effort") requirements.settings.claudeEffort = "high";
+    if (changed === "readOnly") requirements.readOnly = true;
+    if (changed === "context") requirements.runtimeContext = null;
+    if (changed === "mode") requirements.settings.acpxMode = "agent";
+    if (changed === "agent") requirements.settings.acpxAgent = "codex";
+    await expect(f.task({ ...f.operation, requirements })).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).not.toHaveBeenCalled();
   });
 
   it("keeps naked mismatches ordinary and malformed claims fail closed", async () => {
@@ -184,8 +324,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call).not.toHaveBeenCalled();
   });
 
-  it.each(["before-claim", "after-claim"])("rejects a stale same-boot coordinator context: %s", async point => {
-    const f = await fixture(); if (point === "after-claim") await claimPluginTaskSourceRecovery(db, f);
+  it.each([["codex", "before-claim"], ["codex", "after-claim"], ["claude", "before-claim"], ["claude", "after-claim"]] as const)("rejects a stale same-boot %s coordinator context: %s", async (provider, point) => {
+    const f = await fixture(provider); if (point === "after-claim") await claimPluginTaskSourceRecovery(db, f);
     await db.update(nativeRunFinalizations).set({ controllerGeneration: f.owner.generation + 1, leaseOwner: randomUUID() }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (point === "before-claim") await expect(claimPluginTaskSourceRecovery(db, f)).rejects.toThrow("context_owner_changed");
     else await expect(f.task()).rejects.toThrow("context_owner_changed");
@@ -223,13 +363,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     if (mode === "legacy-settlement") await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ legacyShutdownWorkspaceSettlement: {
       schema: "paperclip.legacy-shutdown-workspace-settlement.v1", state: "pending", runId: f.sourceRunId, deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     } })}::jsonb` }).where(eq(environmentLeases.id, f.sourceLeaseId));
-    await expect(claimPluginTaskSourceRecovery(db, { ...f, ...(mode === "capability" ? { selectedSourceRecoveryVersion: undefined } : {}) })).rejects.toThrow();
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, ...(mode === "capability" ? { codexSourceRecoveryVersion: undefined } : {}) })).rejects.toThrow();
     const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
     expect(source.metadata?.runnerTaskSourceConsumer).toBeUndefined(); expect(f.workers.call).not.toHaveBeenCalled();
   });
 
-  it("pins the consumer and current account across retries", async () => {
-    const f = await fixture(), claim = await claimPluginTaskSourceRecovery(db, f);
+  it.each(["codex", "claude"] as const)("pins the %s consumer and current account across retries", async provider => {
+    const f = await fixture(provider), claim = await claimPluginTaskSourceRecovery(db, f);
     expect(await claimPluginTaskSourceRecovery(db, f)).toEqual(claim);
     await expect(claimPluginTaskSourceRecovery(db, { ...f, accountIdentity: "different-account" })).rejects.toThrow();
     await expect(f.task({ ...f.operation, accountIdentity: "different-account" })).rejects.toThrow();

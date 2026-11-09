@@ -28,6 +28,7 @@ import {
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
   readManagedWorkspaceRepositories,
+  listProjectRepositoryStagingPaths,
   copyCloneTree,
   disposeGitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
@@ -469,8 +470,17 @@ export interface SandboxSyncFileMapping {
   targetPath: string;
   kind: "file" | "directory";
   mode?: number;
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   followSymlinks?: boolean;
+  /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
   /**
    * Advisory read-write intent for the sandbox target. `"rw"` marks a target the
    * agent may change and keep; `"ro"` marks a read-only tree. An absent value
@@ -1390,6 +1400,7 @@ export async function prepareSandboxManagedRuntime(input: {
     return [`${relative}/.git`, ...repositoryGitPaths(repo.snapshot.repositories ?? [], relative)];
   });
   const repositoryMetadataExcludes = repositoryGitPaths(repositories);
+  const repositoryStagingExcludes = syncWorkspace ? await listProjectRepositoryStagingPaths(input.workspaceLocalDir) : [];
   let managedIgnored: Awaited<ReturnType<typeof createWorkspaceManifest>> | null = null;
   let ignoredPaths = input.workspaceFileMode === "all" ? undefined : gitSnapshot?.ignoredPaths;
   if (!gitSnapshot && repositories.length) {
@@ -1426,6 +1437,7 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceArchiveExclude = mergeExcludes(
     [".paperclip-runtime"],
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
@@ -1433,6 +1445,7 @@ export async function prepareSandboxManagedRuntime(input: {
   );
   const restoreExclude = mergeExcludes(
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
@@ -2214,8 +2227,11 @@ export async function prepareSandboxManagedRuntime(input: {
                       }
                       if (captured) {
                         const output = path.join(tempDir, "checkpoint");
+                        // The checkpoint output is an exact copy that the host validates entry
+                        // by entry. Ordinary export applies the host umask and drops `._*` names,
+                        // which turns a legitimate workspace file into a permanent mismatch.
                         const outbound: SandboxSyncOperation[] = [{ operationId: nextSyncOperationId(), files: [
-                          { sourcePath: remoteOutput, targetPath: output, kind: "directory" },
+                          { sourcePath: remoteOutput, targetPath: output, kind: "directory", preserveSourceEntries: true },
                         ] }];
                         assertSyncOperationsConfined(outbound, { sourceRoots: [runtimeRootDir], targetRoots: [tempDir] });
                         await withWorkspaceRestoreStep("workspace_transfer", () => input.client.syncOut!(outbound));

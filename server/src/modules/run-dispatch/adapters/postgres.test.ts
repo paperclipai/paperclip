@@ -20,6 +20,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueApprovals,
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
@@ -377,6 +378,33 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       .toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
     expect(dispatch).not.toHaveBeenCalled();
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
+  });
+
+  it("keeps recovered preparation behind approvals added after scheduling", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const retryReason = "interrupted_preparation";
+    const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry",
+      contextSnapshot: { issueId, wakeReason: retryReason, retryReason, forceFreshSession: true } });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
+      .toMatchObject({ allowed: true });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId, approvalId });
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
+      .toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
+    const reservation = await reserveRunBudget(db, companyId, replacementId, null);
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, replacementId));
+    const dispatch = vi.fn(async () => undefined);
+    expect(await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId: replacementId,
+      reservationId: reservation.id, expectedStatus: "running", now: new Date(), dispatch }))
+      .toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it.each(["queued", "final", "resolved"] as const)("rechecks late native replacement dependencies at %s dispatch", async mode => {

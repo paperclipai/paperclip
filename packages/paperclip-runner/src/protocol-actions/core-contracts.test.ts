@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_CORE_PROTOCOL_ACTIONS } from "./core.js";
@@ -21,6 +21,18 @@ describe("core Paperclip protocol action contracts", () => {
       expect(ajv.validate(schema, { ...input, payload: { version: 1, questionSet: { ...payload.questionSet, questions: [{ ...payload.questionSet.questions[0], options: [{ id: "a", label: "A" }] }] } } })).toBe(false);
     }
     expect(action.documentation.description).not.toContain("questions for choices");
+  });
+
+  it("tells agents to batch independent questions into one card instead of asking them one by one", () => {
+    const action = PAPERCLIP_CORE_PROTOCOL_ACTIONS.find(action => action.id === "request_human_input")!;
+    const description = action.live!.descriptor.description;
+    // Execution agents read "For one question at a time, ask only the next unanswered
+    // question" as a rule and posted five sequential cards for five independent inputs.
+    expect(description).not.toContain("For one question at a time");
+    expect(description).toContain("ask them together in one questions card");
+    expect(description).toContain("only when it depends on an earlier answer");
+    // A user who explicitly asks for one question at a time is still honored.
+    expect(description).toContain("If the user asks for one question at a time, ask only the next unanswered question");
   });
 
   it("keeps the live input tool's guidance consistent with conversational confirmation recording", () => {

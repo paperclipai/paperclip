@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { usageSchema } from "./generated/schema-bundle.js";
 import { readFile } from "node:fs/promises";
 
@@ -77,7 +77,7 @@ describe("PRP v1 JSON Schema contract", () => {
       expect(result.fixture.futureFixtureHint).toEqual({
         producerVersion: "1.1-preview",
       });
-      expect(result.fixture.events[0]?.futureEnvelopeField).toBe(42);
+      expect((result.fixture.events[0] as unknown as Record<string, unknown>).futureEnvelopeField).toBe(42);
     }
   });
 
@@ -269,7 +269,7 @@ describe("PRP v1 JSON Schema contract", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(
-      result.fixture.events[0]?.payload.semantic_tool?.futureEnvelopeHint,
+      (result.fixture.events[0]?.payload.semantic_tool as { futureEnvelopeHint?: unknown } | undefined)?.futureEnvelopeHint,
     ).toEqual({ version: "1.1-preview" });
 
     const withoutEnvelope = structuredClone(result.fixture);
@@ -384,6 +384,19 @@ it("accepts marked whole-run usage through the runtime standalone event validato
     payload: { provider: "codex", model: "gpt-6.1-sol", cumulative: measurement, runDelta: measurement,
       runDeltaAvailable: true, runDeltaBasis: "run" } });
   expect(result).toMatchObject({ ok: true });
+});
+
+it("rejects an event without normalizedSessionId, which the schemas leave optional", async () => {
+  const fixture = await readFixture();
+  const event = (fixture.events as Array<Record<string, unknown>>)[0]!;
+  expect(validatePrpEvent(event)).toMatchObject({ ok: true });
+
+  const { normalizedSessionId: _omitted, ...withoutSession } = event;
+  expect(validatePrpEvent(withoutSession)).toEqual({
+    ok: false,
+    event: null,
+    issues: [{ code: "schema_validation", path: "/normalizedSessionId", message: "event normalizedSessionId is required" }],
+  });
 });
 
 it("declares required incomplete reconciliation evidence in the strict usage contract", () => {

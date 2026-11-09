@@ -1328,6 +1328,7 @@ export function TaskChatComposer({
         </TaskChatComposerBar>
       ) : null}
       <div
+        data-editor-autocomplete-anchor=""
         className={taskChatComposerSurfaceClasses(mobile, streamlined)}
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich

@@ -103,17 +103,25 @@ export function ownsNativeTaskCompletion(
   return issue.assigneeAgentId === agentId && !issue.assigneeUserId;
 }
 
+export function heldByAnotherRun(issue: { executionRunId?: string | null }, runId: string) {
+  return Boolean(issue.executionRunId && issue.executionRunId !== runId);
+}
+
 export function supersedeStaleOwnerCompletion(
   decision: NativeStatusDecision,
-  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null;
+    executionRunId?: string | null },
   agentId: string,
+  runId?: string,
 ): NativeStatusDecision {
-  if (decision.statusAction !== "done" || ownsNativeTaskCompletion(issue, agentId)) return decision;
+  if (decision.statusAction !== "done") return decision;
+  const ownerSuperseded = !ownsNativeTaskCompletion(issue, agentId);
+  if (!ownerSuperseded && !(runId && heldByAnotherRun(issue, runId))) return decision;
   return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
     statusAction: "preserve",
     toStatus: issue.status as NativeAuthoritativeIssueStatus,
-    reasonCode: "completion_owner_superseded",
+    reasonCode: ownerSuperseded ? "completion_owner_superseded" : "completion_run_superseded",
     unblockDescriptor: null,
     effects: [],
   };
@@ -150,6 +158,7 @@ export function arbitrateNativeStatus(input: {
   /** The saved timer already admitted another run and this run no longer owns checkout. */
   monitorWaitDispatched?: boolean;
   monitorWaitPreserved?: boolean;
+  monitorWaitSuperseded?: boolean;
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   isConversation?: boolean;
@@ -536,6 +545,11 @@ export function arbitrateNativeStatus(input: {
         effects: [],
       };
     }
+    if (input.monitorWaitSuperseded) return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: "scheduled_monitor_superseded", unblockDescriptor: null, effects: [],
+    };
     if (input.monitorWaitPreserved) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

@@ -98,6 +98,36 @@ export function createInvalidationBatcher(
 
 let uniqueFilterCounter = 0;
 
+const EXCLUDED_QUERY_KEYS = Symbol("excludedQueryKeys");
+type QueryKeyPrefix = readonly unknown[];
+type ExclusionPredicate = ((query: { queryKey: readonly unknown[] }) => boolean) & {
+  [EXCLUDED_QUERY_KEYS]: readonly QueryKeyPrefix[];
+};
+
+function startsWithKey(key: readonly unknown[], prefix: QueryKeyPrefix): boolean {
+  if (prefix.length > key.length) return false;
+  return prefix.every((part, index) => JSON.stringify(part) === JSON.stringify(key[index]));
+}
+
+/**
+ * A `predicate` that skips queries under the given key prefixes. Unlike an
+ * arbitrary predicate, the batcher can read its exclusions, so repeated
+ * invalidations with the same key and exclusions still coalesce into one, and
+ * the filter still covers its non-excluded children in the same batch.
+ */
+export function excludingQueryKeys(...excluded: QueryKeyPrefix[]): ExclusionPredicate {
+  const predicate = ((query: { queryKey: readonly unknown[] }) =>
+    !excluded.some((prefix) => startsWithKey(query.queryKey, prefix))) as ExclusionPredicate;
+  predicate[EXCLUDED_QUERY_KEYS] = excluded;
+  return predicate;
+}
+
+function readExclusions(filters: InvalidateQueryFilters): readonly QueryKeyPrefix[] | null {
+  const predicate = filters.predicate as Partial<ExclusionPredicate> | undefined;
+  if (typeof predicate !== "function") return [];
+  return predicate[EXCLUDED_QUERY_KEYS] ?? null;
+}
+
 function filterBehaviorKey(filters: InvalidateQueryFilters): string {
   return JSON.stringify([
     filters.type ?? "all",
@@ -109,26 +139,39 @@ function filterBehaviorKey(filters: InvalidateQueryFilters): string {
 
 /** A collection prefix already refreshes its children in the same batch. */
 function removeCoveredFilters(filters: InvalidateQueryFilters[]): InvalidateQueryFilters[] {
-  const prefixesByBehavior = new Map<string, Set<string>>();
+  // Each prefix keeps the exclusions of every filter that names it; a plain
+  // prefix has none.
+  const prefixesByBehavior = new Map<string, Map<string, Array<readonly QueryKeyPrefix[]>>>();
   const isScalar = (value: unknown) => value === null || typeof value === "string"
     || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
   for (const filter of filters) {
-    if (filter.predicate || filter.exact || !filter.queryKey?.every(isScalar)) continue;
+    const exclusions = readExclusions(filter);
+    if (!exclusions || filter.exact || !filter.queryKey?.every(isScalar)) continue;
     const behavior = filterBehaviorKey(filter);
-    const prefixes = prefixesByBehavior.get(behavior) ?? new Set<string>();
-    prefixes.add(JSON.stringify(filter.queryKey));
+    const prefixes = prefixesByBehavior.get(behavior) ?? new Map<string, Array<readonly QueryKeyPrefix[]>>();
+    const keyJson = JSON.stringify(filter.queryKey);
+    prefixes.set(keyJson, [...(prefixes.get(keyJson) ?? []), exclusions]);
     prefixesByBehavior.set(behavior, prefixes);
   }
   return filters.filter(filter => {
-    if (filter.predicate || !filter.queryKey) return true;
+    const ownExclusions = readExclusions(filter);
+    if (!ownExclusions || !filter.queryKey) return true;
     const prefixes = prefixesByBehavior.get(filterBehaviorKey(filter));
     if (!prefixes) return true;
     const key = filter.queryKey;
+    // An excluded subtree overlapping this filter's subtree is not refreshed by
+    // the covering prefix, so that prefix does not cover this filter.
+    const coveredBy = (exclusions: readonly QueryKeyPrefix[]) =>
+      !exclusions.some((excluded) => startsWithKey(key, excluded) || (!filter.exact && startsWithKey(excluded, key)));
     // A non-exact filter covers itself, so only check its shorter prefixes.
-    const last = filter.exact ? key.length : key.length - 1;
+    // A filter with exclusions is also covered by a plain filter on its own key.
+    const hasExclusions = ownExclusions.length > 0;
+    const last = filter.exact || hasExclusions ? key.length : key.length - 1;
     for (let length = 0; length <= last; length += 1) {
       if (length > 0 && !isScalar(key[length - 1])) break;
-      if (prefixes.has(JSON.stringify(key.slice(0, length)))) return false;
+      const entries = prefixes.get(JSON.stringify(key.slice(0, length)));
+      const sameKeyNonExact = length === key.length && !filter.exact;
+      if (entries?.some((exclusions) => sameKeyNonExact ? exclusions.length === 0 : coveredBy(exclusions))) return false;
     }
     return true;
   });
@@ -138,7 +181,8 @@ function serializeFilters(filters: InvalidateQueryFilters): string {
   // A predicate is an opaque function — two predicate-based filters can never be
   // proven equal, so never coalesce them (that would silently drop one). Give
   // each its own key.
-  if (typeof filters.predicate === "function") {
+  const exclusions = readExclusions(filters);
+  if (exclusions === null) {
     return `__predicate__:${(uniqueFilterCounter += 1)}`;
   }
   // Query selection and refetch behavior both belong to the identity. In
@@ -149,6 +193,7 @@ function serializeFilters(filters: InvalidateQueryFilters): string {
       filters.queryKey ?? null,
       filterBehaviorKey(filters),
       filters.exact ?? false,
+      ...(exclusions.length > 0 ? [{ excluding: exclusions }] : []),
     ]);
   } catch {
     // Non-serializable filter (shouldn't happen for our query keys) — fall back

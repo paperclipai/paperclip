@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -12,7 +13,8 @@ vi.mock("./plugin.js", async () => {
 import { performSyncOut } from "./file-sync.js";
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
+const literalSocketCleanup: Array<() => Promise<void>> = [];
+afterEach(async () => { await Promise.all(literalSocketCleanup.splice(0).map(close => close())); vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 const executable = (names: string[], version: string) => names.map(name => {
   const resolved = spawnSync("/bin/sh", ["-c", 'command -v "$1"', "sh", name], { encoding: "utf8" }).stdout?.trim();
   return resolved && spawnSync(resolved, ["--version"], { encoding: "utf8" }).stdout?.includes(version) ? resolved : undefined;
@@ -49,7 +51,11 @@ while True:
             data = data[os.write(dst, data):]
 `;
 
-it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget", "preserve source entries", "preserve entries direct archive", "preserve entries GNU host archive", "preserve modes native host", "preserve modes GNU host", "preserve special file native host", "preserve special directory GNU host", "preserve literal direct archive", "preserve literal direct repair", "preserve literal capacity repair"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+  const preserveSourceEntries = scenario.startsWith("preserve");
+  const literal = scenario.startsWith("preserve literal");
+  const directArchive = scenario === "preserve entries direct archive" || scenario.startsWith("preserve literal direct");
+  const unsafeLink = scenario !== "preserve literal direct archive";
   const producerFails = scenario === "producer failure";
   const sparseOverBudget = scenario === "sparse archive over budget";
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-capacity-"));
@@ -63,28 +69,73 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     await fs.symlink(requiredTools[name]!, path.join(bin, name));
   }
   const tar = requiredTools.tar!;
+  const specialMode = scenario.startsWith("preserve special");
+  const modeRegression = scenario.startsWith("preserve modes") || specialMode;
   if (producerFails) {
     await fs.writeFile(path.join(bin, "tar"), `#!/bin/sh\n'${tar}' "$@"\nstatus=$?\ncase " $* " in *" -f - "*) exit 23 ;; esac\nexit "$status"\n`, { mode: 0o755 });
+  } else if (modeRegression) {
+    await fs.writeFile(path.join(bin, "tar"), `#!/bin/sh\nexec '${tar}' --owner=12345 --group=12345 "$@"\n`, { mode: 0o755 });
   } else {
     await fs.symlink(tar, path.join(bin, "tar"));
+  }
+  if (specialMode) {
+    await fs.mkdir(output);
+    await fs.writeFile(path.join(output, "retained.txt"), "existing host work");
   }
   if (producerFails || sparseOverBudget) {
     await fs.mkdir(output);
     await fs.writeFile(path.join(output, "result.bin"), "newer host work");
   }
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  if (scenario === "preserve entries GNU host archive") vi.stubEnv("PATH", env.PATH);
+  if (modeRegression) {
+    const hostBin = path.join(root, "host-bin");
+    await fs.mkdir(hostBin);
+    const hostTar = scenario.endsWith("GNU host") ? tar : executable(["tar"], "bsdtar") ?? tar;
+    await fs.writeFile(path.join(hostBin, "tar"), `#!/bin/sh\numask 077\nexec '${hostTar}' "$@"\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", `${hostBin}:${process.env.PATH}`);
+  }
   const bytes = Buffer.alloc(5 * 1024 * 1024, sparseOverBudget ? 0 : "saved work\n");
   await fs.writeFile(path.join(remote, "result.bin"), sparseOverBudget ? "" : bytes, { mode: 0o600 });
   if (sparseOverBudget) await fs.truncate(path.join(remote, "result.bin"), bytes.length);
-  await fs.symlink("/etc/passwd", path.join(remote, "unsafe-link"));
+  if (unsafeLink) await fs.symlink("/etc/passwd", path.join(remote, "unsafe-link"));
   await fs.symlink("result.bin", path.join(remote, "safe-link"));
+  if (preserveSourceEntries) {
+    await fs.writeFile(path.join(remote, "excluded.txt"), "excluded by caller");
+    await fs.mkdir(path.join(remote, "nested"));
+    if (modeRegression) await fs.chmod(path.join(remote, "nested"), 0o775);
+    for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
+      await fs.writeFile(path.join(remote, name), `user work: ${name}`);
+      if (modeRegression) await fs.chmod(path.join(remote, name), 0o664);
+    }
+  }
+  if (literal) {
+    const socket = createServer();
+    await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path.join(remote, "ipc"), resolve); });
+    // Closing unlinks the socket, so retain it throughout the actual export.
+    const close = () => new Promise<void>(resolve => socket.close(() => resolve()));
+    literalSocketCleanup.push(close);
+    for (const name of ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"]) {
+      await fs.mkdir(path.dirname(path.join(remote, name)), { recursive: true });
+      await fs.writeFile(path.join(remote, name), `literal work: ${name}`);
+    }
+    await fs.writeFile(path.join(remote, "omit[ab]*?"), "excluded literal file");
+    await fs.mkdir(path.join(remote, "skip[ab]*?"));
+    await fs.writeFile(path.join(remote, "skip[ab]*?/excluded.txt"), "excluded subtree");
+  }
+  if (specialMode) {
+    const specialPath = path.join(remote, scenario.includes("directory") ? "nested" : "._result.txt");
+    const specialBits = scenario.includes("directory") ? 0o1775 : 0o1664;
+    await fs.chmod(specialPath, specialBits);
+    expect((await fs.stat(specialPath)).mode & 0o7777).toBe(specialBits);
+  }
   const failures: string[] = [];
   const sandbox = {
     // A miniature provider-reported quota makes the sparse-file case bounded.
     disk: sparseOverBudget ? 1 / 4096 : 1,
     process: {
       executeCommand: async (command: string) => {
-        const result = spawnSync("bash", ["-c", 'ulimit -f 128; exec sh -c "$1"', "bash", command], { env, encoding: "utf8" });
+        const result = spawnSync("bash", ["-c", directArchive ? 'exec sh -c "$1"' : 'ulimit -f 128; exec sh -c "$1"', "bash", command], { env, encoding: "utf8" });
         if (result.status !== 0) failures.push(result.stderr);
         return { exitCode: result.status ?? 1, result: result.stdout + result.stderr };
       },
@@ -111,9 +162,18 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
       deleteFile: (file: string) => fs.rm(file, { force: true }),
     },
   };
-  const sync = performSyncOut({ sandbox: sandbox as never, remoteDir: remote, timeoutSeconds: 30,
-    operations: [{ operationId: "export", files: [{ sourcePath: remote, targetPath: output, kind: "directory" }] }],
+  const sync = performSyncOut({ sandbox: sandbox as never, remoteDir: directArchive ? root : remote, timeoutSeconds: 30,
+    operations: [{ operationId: "export", files: [{ sourcePath: remote, targetPath: output, kind: "directory", preserveSourceEntries, exclude: literal ? ["ipc", "omit[ab]*?", "skip[ab]*?"] : preserveSourceEntries && !directArchive ? ["excluded.txt"] : undefined }] }],
   });
+  if (specialMode) {
+    await expect(sync).rejects.toThrow("special mode bits");
+    expect(await fs.readdir(output)).toEqual(["retained.txt"]);
+    expect(await fs.readFile(path.join(output, "retained.txt"), "utf8")).toBe("existing host work");
+    expect((await fs.stat(path.join(remote, scenario.includes("directory") ? "nested" : "._result.txt"))).mode & 0o7777)
+      .toBe(scenario.includes("directory") ? 0o1775 : 0o1664);
+    expect((await fs.readFile(path.join(remote, "result.bin"))).equals(bytes)).toBe(true);
+    return;
+  }
   if (producerFails || sparseOverBudget) {
     await expect(sync).rejects.toThrow(sparseOverBudget ? "sandbox disk budget" : "without a successful archive receipt");
     expect(await fs.readFile(path.join(output, "result.bin"), "utf8")).toBe("newer host work");
@@ -121,15 +181,39 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
     expect((await fs.readFile(path.join(remote, "result.bin"))).equals(bytes)).toBe(true);
     return;
   }
-  await sync;
-  expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
+  const result = await sync;
+  if (literal) expect(result.operations[0].filesTransferred).toBe(11);
+  if (!directArchive) expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
   expect((await fs.readFile(path.join(output, "result.bin"))).equals(bytes)).toBe(true);
   expect((await fs.readFile(path.join(remote, "result.bin"))).equals(bytes)).toBe(true);
   expect((await fs.stat(path.join(output, "result.bin"))).mode & 0o777).toBe(0o600);
   expect(await fs.readlink(path.join(output, "safe-link"))).toBe("result.bin");
   expect(await fs.readdir(output)).not.toContain("unsafe-link");
-  expect(await fs.readlink(path.join(remote, "unsafe-link"))).toBe("/etc/passwd");
-  expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+  if (unsafeLink) expect(await fs.readlink(path.join(remote, "unsafe-link"))).toBe("/etc/passwd");
+  if (preserveSourceEntries) {
+    if (directArchive || literal) expect(await fs.readFile(path.join(output, "excluded.txt"), "utf8")).toBe("excluded by caller");
+    else await expect(fs.stat(path.join(output, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(remote, "excluded.txt"), "utf8")).toBe("excluded by caller");
+    for (const name of ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"]) {
+      expect(await fs.readFile(path.join(output, name), "utf8")).toBe(`user work: ${name}`);
+      expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(`user work: ${name}`);
+      if (modeRegression) {
+        const restored = await fs.stat(path.join(output, name));
+        expect(restored.mode & 0o777).toBe(0o664);
+        expect(restored.uid).toBe(process.getuid!());
+      }
+    }
+  }
+  if (literal) {
+    for (const name of ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"]) {
+      expect(await fs.readFile(path.join(output, name), "utf8")).toBe(`literal work: ${name}`);
+      expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(`literal work: ${name}`);
+    }
+    for (const name of ["ipc", "omit[ab]*?", "skip[ab]*?"]) await expect(fs.lstat(path.join(output, name))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.lstat(path.join(remote, "ipc"))).isSocket()).toBe(true);
+  }
+  if (modeRegression) expect((await fs.stat(path.join(output, "nested"))).mode & 0o777).toBe(0o775);
+  expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual(preserveSourceEntries ? [".paperclip-upload-result"] : []);
 }, 40_000);
 
 it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([

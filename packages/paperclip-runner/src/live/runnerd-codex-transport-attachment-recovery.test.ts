@@ -11,12 +11,22 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 import { createCapabilityRunnerdCodexTransport, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
-import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
+import { committableStore, defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
-it.each([
+type WarmAttachRecoveryCase = {
+  lossPoint: string;
+  routed: boolean;
+  recoveryFault: string;
+  executionPrepared?: boolean;
+  externalArtifact?: boolean;
+  ordinaryFollowup?: boolean | string;
+};
+
+it.each<WarmAttachRecoveryCase>([
   ...[
     "before-result",
     "after-result",
@@ -72,12 +82,12 @@ it.each([
     recoveryFault: "none",
     externalArtifact: true,
   },
-  {
-    lossPoint: "after-confirmation",
+  ...["before-result", "after-result", "after-confirmation"].map((lossPoint) => ({
+    lossPoint,
     routed: true,
     recoveryFault: "none",
     ordinaryFollowup: true,
-  },
+  })),
   ...[
     "missing_snapshot",
     "rejected_snapshot",
@@ -119,6 +129,8 @@ it.each([
     let recoveryClaimCurrent = true;
     let recoveryFenceActive = true;
     let recoveredOwner: string;
+    const accountingRoutes: Array<{ route: "ordinary" | "recovery"; runId: string; eventType: string }> = [];
+    let followupAttachStarted = false;
     const completionSnapshotIds: string[] = [];
     let rejectHeldCompletion: ((error: Error) => void) | undefined;
     let markHeldCompletionEntered!: () => void;
@@ -478,14 +490,15 @@ it.each([
           ).toBe(false);
         return;
       }
-      const commit = core.store.commit.bind(core.store);
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
       let lossObserved = false;
       let signalLoss!: () => void;
       const loss = new Promise<void>((resolveLoss) => {
         signalLoss = resolveLoss;
       });
       commitSpy = vi
-        .spyOn(core.store, "commit")
+        .spyOn(store, "commit")
         .mockImplementation((candidate) => {
           // The selected process-crash boundary stays unavailable until the
           // exact owned runner is joined. A later replay must not silently
@@ -721,6 +734,20 @@ it.each([
       resumed = createCapabilityRunnerdCodexTransport({
         ...options,
         get authorityRunId() { return ordinaryFollowup ? recoveredOwner : undefined; },
+        ...(ordinaryFollowup === true
+          ? {
+              onAccountingEvent: async (event: PrpEvent) => {
+                accountingRoutes.push({ route: "ordinary", runId: event.runId, eventType: event.eventType });
+              },
+              // After recovery, the recovered owner is this transport's own
+              // run. A later warm attachment must not report it as a source;
+              // the executor rejects source accounting without a source.
+              onRecoveryAccountingEvent: async (event: PrpEvent) => {
+                accountingRoutes.push({ route: "recovery", runId: event.runId, eventType: event.eventType });
+                if (followupAttachStarted) throw new Error("native_recovery_usage_source_unproven");
+              },
+            }
+          : {}),
         ...(externalArtifact ? {
           runnerBinary: "/controller-missing-runner",
           runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
@@ -1046,6 +1073,8 @@ it.each([
           (await within(resumed.transport.request("thread/read", {}))).thread,
         ).toMatchObject(thread);
         const thirdRunId = randomUUID();
+        const routesBeforeFollowup = accountingRoutes.length;
+        followupAttachStarted = true;
         recoveredOwner = thirdRunId;
         await within(
           resumed.transport.attachRun!({
@@ -1055,6 +1084,11 @@ it.each([
           }),
         );
         expect(resumedCore.store.state.identity.runId).toBe(thirdRunId);
+        if (ordinaryFollowup === true) {
+          const followupRoutes = accountingRoutes.slice(routesBeforeFollowup);
+          expect(followupRoutes.filter((entry) => entry.route === "recovery")).toEqual([]);
+          expect(followupRoutes).toContainEqual({ route: "ordinary", runId: desired.runId, eventType: "run.attached" });
+        }
         expect(
           (await readFile(callsPath, "utf8")).trim().split(/\r?\n/),
         ).toEqual([...calls, "thread/goal/get"]);

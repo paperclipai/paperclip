@@ -21,7 +21,7 @@ function preDispatchExecutionWaitPredicate() {
     AND ${noRetainedExecutionPredicate()}, false)`;
 }
 
-export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+export async function isPreDispatchExecutionWaitVerified(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "errorCode" | "runtimeMode">): Promise<boolean> {
   if (run.errorCode !== "execution_reconciliation_required" || run.runtimeMode !== "legacy") return false;
   const [verified] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), preDispatchExecutionWaitPredicate(),

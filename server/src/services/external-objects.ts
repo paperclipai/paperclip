@@ -1,3 +1,6 @@
+import { projectIdleExternalObjectSchedule } from "./external-object-idle-schedule.js";
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
+import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -405,6 +408,8 @@ export function externalObjectService(
     ...(githubProvider?.resolvers ?? []),
   ];
   const resolverRegistry = createExternalObjectResolverRegistry(resolvers);
+
+  let refreshWorkEnabled: boolean | null = null;
 
   function pluginRefreshWhere(database: Db, selectedPluginId?: string) {
     return exists(database.select({ id: plugins.id }).from(plugins).where(and(
@@ -1127,7 +1132,8 @@ export function externalObjectService(
     const cursors = new Map<string, string>();
     const scopeKey = (scope?: RefreshScope) => JSON.stringify(scope ?? null);
     async function load(scope?: RefreshScope) {
-      if (!(await isEnabled())) { cursors.clear(); return []; }
+      refreshWorkEnabled = await isEnabled();
+      if (!refreshWorkEnabled) { cursors.clear(); return []; }
       const key = scopeKey(scope);
       const cursor = cursors.get(key);
       const rows = await db.select({ id: externalObjects.id, companyId: externalObjects.companyId,
@@ -1185,7 +1191,26 @@ export function externalObjectService(
     }, canRun);
   }
 
+  async function readIdleSchedule(tx: Pick<Db, "select">, now: number,
+    owner: () => DeadlineReconciliationSnapshot): Promise<IdleDeadlineSnapshot> {
+    const before = owner();
+    if (!before.reconciled) return { blocked: true, state: before, deadlines: [] };
+    const rows = await tx.select({
+      id: externalObjects.id, companyId: externalObjects.companyId, companyStatus: companies.status,
+      revision: sql<string>`${externalObjects}.xmin::text`,
+      eligible: sql<boolean>`${companies.status} = 'active' AND ${automaticRefreshWhere(tx as Db)}`,
+      nextRefreshAt: externalObjects.nextRefreshAt, refreshStartedAt: externalObjects.refreshStartedAt,
+      refreshToken: externalObjects.refreshToken,
+    }).from(externalObjects).innerJoin(companies, eq(companies.id, externalObjects.companyId))
+      .orderBy(asc(externalObjects.id)).limit(idleDeadlineRowLimit + 1);
+    const snapshot = projectIdleExternalObjectSchedule(rows, now, refreshWorkEnabled);
+    const after = owner();
+    return { ...snapshot, blocked: snapshot.blocked || !after.reconciled || after.revision !== before.revision,
+      state: { owner: before, objects: snapshot.state } };
+  }
+
   return {
+    readIdleSchedule,
     syncIssue,
     syncComment,
     syncDocument,

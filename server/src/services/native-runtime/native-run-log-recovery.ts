@@ -73,7 +73,7 @@ export async function readRecoverableRunLog(
         );
       },
     );
-  return store.read(handle, options);
+  return store.read(handle, { priority: "interactive", ...options });
 }
 
 export async function recoverSettledNativeRunLog(

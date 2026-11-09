@@ -27,6 +27,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueTreeHolds,
   issues,
   nativeRunFinalizations,
   projects,
@@ -40,6 +41,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -49,10 +51,13 @@ import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../..
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  pauseSuppressionResult,
 } from "../../../services/issue-tree-control.js";
 import {
   continuationSummaryParksExecutor,
@@ -414,7 +419,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
-    if (input.conversationContinuation) {
+    if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
     }
@@ -475,8 +480,16 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    // A verified stall wake runs while its stalled dependency is unresolved,
+    // including after a resource wait replaced it with a scheduled retry.
+    const stallAdmitted = readiness && !readiness.isDependencyReady && input.contextSnapshot.blockerStall
+      ? await verifyBlockerStallWake(db, { companyId: input.companyId, issueId, contextSnapshot: input.contextSnapshot,
+          requestedByActorType: input.wakeupRequestId ? await db.select({ actor: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
+      : false;
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady
+      readiness && !readiness.isDependencyReady && !stallAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -642,9 +655,13 @@ export function createPostgresRunDispatchAdapter(
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const readiness = replacementReadiness && !replacementReadiness.isDependencyReady && context.blockerStall
+      && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
+        contextSnapshot: context, requestedByActorType: null })
+      ? null : replacementReadiness;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
@@ -654,7 +671,7 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
-      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+      pendingResponse: issue && (input.conversationContinuation || retryReason === "interrupted_preparation" || context.connectionIntentResolution === "existing_connection")
         ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
         : null,
       issueFound: issue !== null,
@@ -663,6 +680,8 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
+        await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
@@ -745,6 +764,17 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    // A retry a pause refused is owed one re-dispatch when that pause is released.
+    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
+    if (pauseHoldId) {
+      // Hold the pause against a concurrent release until this refusal commits,
+      // so release either sees the refused retry or the retry sees no pause.
+      // Under a released pause the retry stays parked for the next promotion.
+      const [active] = await tx.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(
+        eq(issueTreeHolds.companyId, input.companyId), eq(issueTreeHolds.id, pauseHoldId),
+        eq(issueTreeHolds.status, "active"))).for("share");
+      if (!active) return { applied: false };
+    }
     await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
@@ -752,6 +782,9 @@ export function createPostgresRunDispatchAdapter(
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined, runId: input.runId });
+    const pauseSuppression = pauseHoldId ? pauseSuppressionResult({
+      holdId: pauseHoldId, rootIssueId: readNonEmptyString(input.details.rootIssueId),
+    }) : null;
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -759,6 +792,9 @@ export function createPostgresRunDispatchAdapter(
         finishedAt: input.now,
         error: input.reason,
         errorCode: input.errorCode,
+        ...(pauseSuppression ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(
@@ -1481,7 +1517,8 @@ export function createPostgresRunDispatchAdapter(
         }
       }
       const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
-        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
+        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId,
+        admittedRecovery: Boolean(input.recoveryLeaseOwner) });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
       if (input.recoveryLeaseOwner) {
         const [owner] = run.runtimeMode === "native" ? await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(

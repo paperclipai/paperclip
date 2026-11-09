@@ -382,3 +382,20 @@ describe("delivery work coordinator", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it("invalidates owner reconciliation synchronously before awaiting an active stop", async () => {
+  const s = setup();
+  let finish!: () => void;
+  const onStop = vi.fn();
+  const worker = s.coordinator.register(DELIVERY_QUEUES.feedback, {
+    ...task(), onStop,
+    run: async () => { await new Promise<void>(resolve => { finish = resolve; }); },
+  });
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  let stopped = false;
+  const stopping = s.coordinator.stop().then(() => { stopped = true; });
+  expect(onStop).toHaveBeenCalledOnce();
+  expect(stopped).toBe(false);
+  finish(); await worker.ready; await stopping;
+  expect(stopped).toBe(true);
+});

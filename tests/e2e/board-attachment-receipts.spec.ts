@@ -3,6 +3,7 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type APIResponse,
   type Locator,
   type Page,
 } from "@playwright/test";
@@ -18,7 +19,7 @@ type Attachment = {
 type Comment = { id: string; body: string; clientRequestId?: string | null };
 
 async function body<T>(
-  response: Awaited<ReturnType<APIRequestContext["get"]>>,
+  response: Pick<APIResponse, "json" | "ok" | "status" | "text">,
 ): Promise<T> {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(
     true,
@@ -612,7 +613,7 @@ test("announcement dismissal handler tolerates detachment after its element snap
   const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
   const snapshot = await dismiss.elementHandles();
   expect(snapshot).toHaveLength(1);
-  await snapshot[0]!.evaluate(element => element.remove());
+  await snapshot[0]!.evaluate(element => (element as ChildNode).remove());
   dismiss.elementHandles = async () => snapshot;
   await dismissAnnouncement(page, dismiss);
   await expect(dismiss).toHaveCount(0);

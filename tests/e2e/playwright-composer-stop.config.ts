@@ -27,7 +27,7 @@ if (fixture) {
     { mode: 0o755 },
   );
 }
-const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
+const server = base.webServer as Exclude<typeof base.webServer, unknown[] | undefined>;
 export default defineConfig({
   ...base,
   testMatch: "composer-stop.spec.ts",

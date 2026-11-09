@@ -591,6 +591,24 @@ export const resumeWorkspaceFinalizationSchema = z.object({
   stopEvidence: z.string().trim().min(20).max(12000),
 }).strict();
 
+/** Board attestation that a native run's previous server stopped, for a
+ * controller row an ephemeral server cannot judge by PID. */
+export const confirmNativeControllerStoppedSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+}).strict();
+
+/** Board attestation that the owner of a record Paperclip cannot judge (saved
+ * before owners were recorded) has stopped, so recovery may settle the record. */
+export const confirmOwnerGoneSchema = z.object({
+  actionId: z.string().guid(),
+  recordId: z.string().guid(),
+  stopEvidence: z.string().trim().min(20).max(12000),
+  /** The record version the board saw (`evidence.recordUpdatedAt`); required when the request names one. */
+  recordVersion: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
 export const retryWorkspaceExportSchema = z.object({
   actionId: z.string().guid(),
   runId: z.string().guid(),
@@ -771,6 +789,10 @@ const createIssueBaseSchema = z.object({
     .strict()
     .optional()
     .nullable(),
+  /**
+   * Inherit the project and workspace strategy of this issue. The new task never
+   * shares the source issue's realized workspace; it gets its own from the project base.
+   */
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
@@ -1109,6 +1131,7 @@ export const issueCommentMetadataSchema = z
       contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().optional(),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
+    attachmentPreparation: z.object({ attachmentId: z.uuid() }).strict().optional(),
     sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z

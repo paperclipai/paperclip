@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, issueTreeHolds, issues, type Db } from "@paperclipai/db";
 import { isUniqueViolation } from "../db-errors.js";
 import { logActivity } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -123,11 +123,19 @@ async function dispatch(db: Db, input: {
  */
 export async function resumePauseInterruptedWork(
   db: Db,
-  input: { companyId: string; issueIds: string[]; actor: ResumeActor; wakeup: Wakeup; rootIssueId?: string | null },
+  input: {
+    companyId: string; issueIds: string[]; actor: ResumeActor; wakeup: Wakeup; rootIssueId?: string | null;
+    /** Also revisit tasks whose work a gate refused for this hold, wherever they are now. */
+    suppressedByHoldId?: string; excludeIssueIds?: string[];
+  },
 ) {
   const treeControl = issueTreeControlService(db);
   const failures: Array<{ issueId: string; message: string }> = [];
-  for (const issueId of [...new Set(input.issueIds)]) {
+  const suppressedIssueIds = input.suppressedByHoldId
+    ? await listPauseSuppressedIssueIds(db, input.companyId, input.suppressedByHoldId) : [];
+  const excluded = new Set(input.excludeIssueIds ?? []);
+  for (const issueId of new Set([...input.issueIds, ...suppressedIssueIds])) {
+    if (excluded.has(issueId)) continue;
     try {
       const target = await treeControl.findOwedPauseResume(input.companyId, issueId);
       if (!target) continue;
@@ -152,6 +160,39 @@ export async function resumePauseInterruptedWork(
     }
   }
   return failures;
+}
+
+/**
+ * Tasks with a run a dispatch gate refused for this hold. The gate also covers
+ * tasks created under the tree after the hold's snapshot, and a task can move
+ * out of the tree before release, so the refused runs name them.
+ */
+async function listPauseSuppressedIssueIds(db: Db, companyId: string, holdId: string) {
+  const rows = await db.selectDistinct({
+    issueId: sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "cancelled"),
+    // Matches the partial index heartbeat_runs_tree_hold_suppression_idx.
+    sql`${heartbeatRuns.resultJson} ? 'treeHoldSuppression'`,
+    sql`${heartbeatRuns.resultJson}->'treeHoldSuppression'->>'holdId' = ${holdId}`,
+  ));
+  return rows.flatMap((row) => row.issueId ? [row.issueId] : []);
+}
+
+/**
+ * A gate that refused work for a pause re-checks the hold after its refusal is
+ * saved. A release that committed in between did not see the refusal, so the
+ * gate resumes that task itself; the resume claim keeps it to one dispatch.
+ */
+export async function resumeIfPauseAlreadyReleased(db: Db, input: {
+  companyId: string; issueId: string; holdId: string; wakeup: Wakeup;
+}) {
+  const [hold] = await db.select({ status: issueTreeHolds.status }).from(issueTreeHolds)
+    .where(and(eq(issueTreeHolds.companyId, input.companyId), eq(issueTreeHolds.id, input.holdId)));
+  if (hold?.status === "active") return [];
+  return resumePauseInterruptedWork(db, {
+    companyId: input.companyId, issueIds: [input.issueId], actor: SYSTEM_ACTOR, wakeup: input.wakeup,
+  });
 }
 
 function pendingResumePredicate(staleBefore: Date) {

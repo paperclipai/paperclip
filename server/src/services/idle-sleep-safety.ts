@@ -1,10 +1,13 @@
-import { readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
-import type { DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
+import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
+import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
+import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
+import { createIdleDeadlineInspectionBudget, readIdleDeadlineOwners, deadlineOwnerWorkReplacement, readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
+import type { IdleDeadlineOwners, DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
 import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
 import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
-import { idleWorkSnapshot } from "./task-admission.js";
+import { beginIdleTrackedWork, idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
 import { combineIdleSchedules, readIdleIssueSchedule } from "./idle-issue-schedule.js";
@@ -51,6 +54,7 @@ export interface IdleSleepSafety {
   incomingWake?: IdleIncomingWakeCapability;
   deadlineProof?: IdleDeadlineReceipt;
   apiWakeAdmission?: ApiWakeAdmission;
+  mcpWakeAdmission?: McpWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -88,6 +92,7 @@ const WORK_CHECKS = [
     OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`),
   workCheck("sandbox_creation_operations", `SELECT 1 FROM sandbox_creation_operations WHERE state IN ('pending', 'needs_reconciliation')`),
   workCheck("budget_reservations", `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`),
+  workCheck("budget_evaluation_work", pendingBudgetEvaluationWorkQuery()),
   workCheck("budget_policies", `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`),
   workCheck("agents.lifecycle", `SELECT 1 FROM agents WHERE lifecycle_state IN
     ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
@@ -278,7 +283,8 @@ function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus
   return before.ownerId === after.ownerId && before.draining && after.draining && before.activeRuns === 0 && before.pendingWakes === 0
     && after.activeRuns === 0 && after.pendingWakes === 0
     && before.startedAt !== null && after.startedAt?.getTime() === before.startedAt.getTime()
-    && (after.expiresAt === null || after.expiresAt.getTime() > now);
+    && before.expiresAt !== null && before.expiresAt.getTime() > now
+    && after.expiresAt?.getTime() === before.expiresAt.getTime();
 }
 
 /** Inventory persisted work after the task-drain admission hold lands.
@@ -288,6 +294,8 @@ export interface IdleSleepSafetyOptions {
   incomingWake?: VerifiedIdleCapabilities;
   deadlineCapability?: VerifiedIdleCapabilities;
   collectDiagnostics?: true;
+  prepareLocalWork?: (input: { canPrepare: () => boolean }) => Promise<IdleLocalWork>;
+  deadlineOwners?: IdleDeadlineOwners;
 }
 
 export async function readIdleSleepSafety(
@@ -315,14 +323,15 @@ export async function readIdleSleepSafety(
     const wake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
     return { version: backgroundWork === "none" && (incomingProof || deadlineProof) ? 3 : backgroundWork === "none" && wake ? 2 : 1, backgroundWork,
       ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
-        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}),
+        ...(incomingProof.mcp ? { mcpWakeAdmission: incomingProof.mcp.ingress.admission } : {}) } : {}),
       ...(backgroundWork === "none" && deadlineProof?.generation ? { deadlineProof: {
         catalog: "domain_deadlines_v1" as const, generation: deadlineProof.generation } } : {}),
       ...(backgroundWork === "none" && wake ? { scheduledWake: wake } : {}),
       ...(diagnostics ? { diagnostics } : {}) };
   };
   const before = getDrainStatus();
-  const localBefore = idleWorkSnapshot();
+  let localBefore = idleWorkSnapshot();
   const owned = () => Boolean(ownerId && ownerId === before.ownerId && before.expiresAt !== null);
   if (!sameQuietHold(before, before, now()) || (diagnostic && !owned())) {
     diagnostic?.record("inspection.hold", "unknown");
@@ -332,6 +341,27 @@ export async function readIdleSleepSafety(
   diagnostic?.record("inspection.hold", "none");
   let failureReason = "local.inspection";
   try {
+    if (options.prepareLocalWork && !diagnostic) {
+      if (!owned() || localBefore.active !== 0) return report("unknown");
+      const finish = beginIdleTrackedWork();
+      const preparation = idleWorkSnapshot();
+      const canPrepare = () => {
+        const current = getDrainStatus();
+        const work = idleWorkSnapshot();
+        return sameQuietHold(before, current, now())
+          && work.active === 1 && work.generation === preparation.generation;
+      };
+      let prepared: IdleLocalWork;
+      let current: boolean;
+      try {
+        if (!canPrepare()) return report("unknown");
+        prepared = await options.prepareLocalWork({ canPrepare });
+        current = canPrepare();
+      } finally { finish(); }
+      if (!current) return report("unknown");
+      if (prepared !== "none") return report(prepared);
+      localBefore = idleWorkSnapshot();
+    }
     const localFirst = await inspectLocalWork(diagnostic?.record);
     diagnostic?.record("local.inspection", localFirst);
     if (localFirst !== "none" && !diagnostic) return report(localFirst);
@@ -370,12 +400,19 @@ export async function readIdleSleepSafety(
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
       if (options.incomingWake?.incomingWake) {
         if (!ownerId || ownerId !== before.ownerId) return undefined;
-        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db });
+        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
       }
       if (deadlines) {
         if (!owned() || !scheduledRoutines || !scheduledIssueMonitors) return undefined;
-        const routine = await readIdleRoutineSchedule(tx, ownerId!, now());
-        const issue = await readIdleIssueSchedule(tx, ownerId!, now());
+        const inspectionBudget = createIdleDeadlineInspectionBudget(now(), before.expiresAt!.getTime());
+        const reader = {
+          select: (...args: unknown[]) => { inspectionBudget.beforeQuery(); return Reflect.apply(tx.select, tx, args); },
+          execute: (...args: unknown[]) => { inspectionBudget.beforeQuery(); return Reflect.apply(tx.execute, tx, args); },
+        } as Pick<Db, "select" | "execute">;
+        const owners = await readIdleDeadlineOwners(reader, now(), options.deadlineOwners, inspectionBudget.check);
+        const issueWaits = Object.values(owners).flatMap(owner => owner.snapshot.blocked ? [] : [...(owner.issueWaits ?? [])]);
+        const routine = await readIdleRoutineSchedule(reader, ownerId!, now());
+        const issue = await readIdleIssueSchedule(reader, ownerId!, now(), issueWaits);
         diagnostic?.record("routines.schedule", routine.inspectionComplete === false ? "unknown" : routine.blocked ? "present" : "none");
         diagnostic?.record("issues.schedule", issue.inspectionComplete === false ? "unknown" : issue.blocked ? "present" : "none");
         diagnostic?.expect(["deadlines.catalog"]);
@@ -386,7 +423,7 @@ export async function readIdleSleepSafety(
           deadlineProof = await readIdleDeadlineProof(tx, { ownerId: ownerId!, expiresAt: before.expiresAt!.getTime() }, {
             now: now(), verifiedCapability: options.deadlineCapability,
             quietPluginIds: quietPlugins, quietPluginGeneration, quietPluginCatalog,
-            scheduledWake, passiveGeneration: issue.generation,
+            scheduledWake, passiveGeneration: issue.generation, owners, inspectionBudget, mcp: incomingProof?.mcp?.schedule,
           });
         }
         diagnostic?.record("deadlines.catalog", deadlineProof.blocked ? "present" : "none");
@@ -398,8 +435,11 @@ export async function readIdleSleepSafety(
         && (!scheduledIssueMonitors || check.reason !== "issues"))
         .map(check => {
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
-          return { ...check, query: incomingWakeWorkQuery(check.reason, incomingProof,
-            deadlineProof?.githubContinuity?.connectionIds) ?? (replacement ? sql.raw(replacement) : check.query) };
+          const mcp = incomingProof?.mcp;
+          const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
+            ? idleMcpWorkQuery(check.reason, { ingress: mcp.ingress, subscriptions: mcp.subscriptions, retries: mcp.retries }) : undefined;
+          return { ...check, query: mcpRetryQuery ?? incomingWakeWorkQuery(check.reason, incomingProof,
+            deadlineProof?.githubContinuity?.connectionIds) ?? deadlineOwnerWorkReplacement(deadlineProof, check.reason) ?? (replacement ? sql.raw(replacement) : check.query) };
         });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
@@ -449,6 +489,7 @@ export async function readIdleSleepSafety(
       diagnostic?.record("durable.snapshot", "unknown");
       return report("unknown");
     }
+    if (Object.values(deadlineProof?.owners ?? {}).some(owner => !owner.current())) return report("unknown");
     if (!sameQuietHold(before, getDrainStatus(), now())) {
       diagnostic?.record("inspection.hold", "unknown");
       return report("unknown");
@@ -472,6 +513,7 @@ export async function readIdleSleepSafety(
     failureReason = "local.inspection";
     const local = await inspectLocalWork(diagnostic?.record);
     diagnostic?.record("local.inspection", local);
+    if (Object.values(deadlineProof?.owners ?? {}).some(owner => !owner.current())) return report("unknown");
     const after = getDrainStatus();
     const localAfter = idleWorkSnapshot();
     if (!sameQuietHold(before, after, now()) || localAfter.active !== 0 ||
