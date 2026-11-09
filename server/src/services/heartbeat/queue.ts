@@ -3,6 +3,7 @@ import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompac
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -357,6 +358,14 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   );
 }
 
+/** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
+const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
+function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
+  // No receipt is written, so the person's message stays owed in the outbox
+  // until the limit resets (agent-conversations.ts conversationDeliveryHold).
+  return conflict("Agent reached its daily limit", { reason: cap.reason, observed: cap.observed, limit: cap.limit });
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -473,6 +482,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       finishedAt: now,
       error: reason,
     });
+    await releaseConversationCommentsForDailyCap(cancelled);
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -491,6 +501,34 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
 
     return cancelled;
+  }
+
+  /**
+   * A chat message accepted before the limit was reached must not be consumed
+   * when dispatch then cancels its run at the limit. Releasing the outbox key
+   * on its receipts (the run's own and any coalesced into it) makes the
+   * message owed again; the outbox holds it until the limit resets.
+   */
+  async function releaseConversationCommentsForDailyCap(run: typeof heartbeatRuns.$inferSelect) {
+    const owned = and(
+      eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId),
+      or(eq(agentWakeupRequests.runId, run.id),
+        run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
+      sql`${agentWakeupRequests.idempotencyKey} like ${CONVERSATION_COMMENT_KEY_PREFIX + "%"}`,
+    );
+    await db.transaction(async tx => {
+      const receipts = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(owned).for("update");
+      if (!receipts.length) return;
+      // Register the recovery signal before the write it announces.
+      await notifyIssueRecovery(tx, { companyId: run.companyId });
+      await tx.update(agentWakeupRequests).set({
+        idempotencyKey: null,
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
+          || jsonb_build_object('releasedConversationCommentKey', ${agentWakeupRequests.idempotencyKey})`,
+        updatedAt: new Date(),
+      }).where(and(owned, inArray(agentWakeupRequests.id, receipts.map(row => row.id))));
+    });
   }
 
   async function markTimerHeartbeatChecked(
@@ -4431,6 +4469,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
               return deferBlockedExecution(executionBlocker);
             }
+            if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
             const now = new Date();
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -4840,6 +4879,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         tx,
       );
       if (dailyCapBlock) {
+        if (opts.idempotencyKey?.startsWith(CONVERSATION_COMMENT_KEY_PREFIX)) throw dailyLimitConversationRefusal(dailyCapBlock);
         const now = new Date();
         await tx.insert(agentWakeupRequests).values({
           ...durableReceiptFields,

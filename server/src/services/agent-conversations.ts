@@ -26,6 +26,7 @@ import {
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { createHeartbeatTimerPolicy, parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 
@@ -124,6 +125,8 @@ A person's own display name and avatar belong to their account, and only they ca
 Some developer labs, including the task-chat interaction lab at /<prefix>/dev/task-chat-lab, are registered only in a development build of the UI. A production or hosted instance has no task-chat lab page and no setting turns one on, so do not probe its bundle or try to open the lab with a browser. Tell the person the task-chat lab is development-only and that they can open it by running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab on that dev server. Other lab pages, such as the design guide and the ux-lab pages, are registered in every build, so open those normally.
 
 Ready-made teams are installable packages in Paperclip's teams catalog, not agents already in this company. When the person asks whether a ready-made team exists, or refers to one, list the catalog with GET /api/teams/catalog and choose by its descriptions and roles, since teams are not named after every kind of project. When you recommend a team, name its roles (agentSlugs), every required skill (requiredSkills, by its ref) and every configuration input (envInputs), and say that a catalog listing does not mean the team's accounts are configured. The catalog is the only source of ready-made teams: do not look for others in package registries, repositories or the web. A team chosen earlier in this chat may be recorded in its task context (get_task_context). POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview shows what an install would add and creates no resources. Installing needs a board user or an agent with permission to create agents. The web app has no teams catalog page, so do not link one: name the team and its id, and when you cannot install, tell the person that a board user can run paperclipai teams install <team id> --company-id <companyId>. After an install, link the installed agents and projects at their own pages.
+
+When the person asks for a terminal or CLI command, or to do something from the terminal, they mean their own terminal: give them commands using the Paperclip CLI, npx paperclipai, instead of doing the work yourself, saving a file in your workspace or writing curl. Put them in one fenced shell block, one complete command per line in the order to run, with no shell conditionals or alternative versions; say in words when a later command depends on an earlier result. The CLI acts as whoever that terminal is signed in as, normally the person's own Board identity, not you, so a control your credential is denied can still be theirs: say which commands need a board user. When the person may not have signed that terminal in, say in a sentence to run npx paperclipai auth login --api-base <your Paperclip URL> first, because a command whose output is piped cannot open the sign-in prompt; a PAPERCLIP_API_KEY set in that terminal, such as an agent key, is used instead of their sign-in, and npx paperclipai auth whoami shows who the commands act as. Fill in values you can read here, such as this company's id and task, agent, project and run ids, instead of placeholders. Write the Paperclip address as <your Paperclip URL>, the address the person opens Paperclip at; do not look it up. Supported commands: npx paperclipai issue create --company-id <companyId> --title <title> --project-id <projectId> --assignee-agent-id <agentId> creates a task. npx paperclipai issue document:get <task id or identifier> <key> --json | jq -r .body > <file name> saves a task document, such as plan, as a file. npx paperclipai run get <runId> reads a run, and npx paperclipai run cancel <runId> stops a queued or running one (board users only). npx paperclipai context set --profile <name> --api-base <your Paperclip URL> --company-id <companyId> --use saves and selects a named profile without changing the person's other profiles, and npx paperclipai context show, npx paperclipai company current and npx paperclipai auth whoami confirm the selected company and identity before any write. Do not invent other flags.
 
 This conversation and your credentials belong to one company. A task identifier whose prefix differs from this conversation's prefix belongs to another company or to none, and you cannot read it here, even when the person can open it themselves: a lookup that is not found does not mean the task does not exist. Do not search for it further, guess its content or copy anything from it. Say that this chat can only work in this company, and that to use that task the person can switch to its company and open a chat there. Link the task at /<its prefix>/issues/<identifier>, taking the prefix from the identifier the person gave; this is the one link that does not use this conversation's prefix.
 
@@ -608,6 +611,45 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
   for (const publication of publications) publishActivity(publication);
 }
 
+/** Why the conversation outbox holds a person's message, and when the hold lifts. */
+export type ConversationDeliveryHold = { reason: string; message: string; retryAt: number };
+
+/**
+ * The agent's daily run or cost limit holds a chat message, as queue
+ * admission would. The message stays owed in the outbox (never a skipped
+ * receipt) and is sent when the limit resets at the next UTC day.
+ */
+export async function conversationDeliveryHold(
+  db: Pick<Db, "select">,
+  agent: typeof agents.$inferSelect,
+  now = new Date(),
+): Promise<ConversationDeliveryHold | null> {
+  const cap = await createHeartbeatTimerPolicy(db).getHeartbeatDailyCapBlock(agent, parseHeartbeatPolicy(agent), { now });
+  if (!cap) return null;
+  const limit = cap.reason === "heartbeat.daily_cost_limit" ? "daily cost limit" : "daily run limit";
+  return {
+    reason: cap.reason,
+    retryAt: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    message: `${agent.name} reached its ${limit}. Your message is saved and sends automatically when the limit resets at 00:00 UTC.`,
+  };
+}
+
+/** Owed chat messages held by a daily limit, so the chat can show them as saved and waiting. */
+export async function heldConversationComments(
+  db: Db,
+  issue: { id: string; companyId: string; conversationAgentId?: string | null },
+) {
+  if (!issue.conversationAgentId) return null;
+  const [agent] = await db.select().from(agents).where(and(
+    eq(agents.id, issue.conversationAgentId), eq(agents.companyId, issue.companyId),
+  ));
+  if (!agent) return null;
+  const hold = await conversationDeliveryHold(db, agent);
+  if (!hold) return null;
+  const comments = await undeliveredConversationComments(db, issue.companyId, issue.id);
+  return comments.length ? { hold, comments } : null;
+}
+
 /** Serialize durable outbox delivery across API servers; the normal wake queue owns execution. */
 export async function deliverConversationComments(
   db: Db,
@@ -625,16 +667,24 @@ export async function deliverConversationComments(
       contextSnapshot: Record<string, unknown>;
     },
   ) => Promise<unknown>,
+  options: { onDeferredDeadline?: (at: number) => void } = {},
 ) {
   if (!issue.conversationAgentId) return;
-  const canDeliver = async (connection: Db) => {
+  const canDeliver = async (connection: Db): Promise<{ invokable: true } | { invokable: false; reason: string }> => {
     const [agent] = await connection.select().from(agents).where(and(
       eq(agents.id, issue.conversationAgentId!), eq(agents.companyId, issue.companyId),
     ));
     // Match queue admission: setup may retain accepted work, but a pause or
     // invalid reporting chain must leave the durable comment outbox untouched.
-    return evaluateAgentInvokabilityFromDb(connection,
+    const invokability = await evaluateAgentInvokabilityFromDb(connection,
       agent && isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
+    if (!invokability.invokable || !agent) return invokability;
+    // A reached daily limit is a temporary hold, not a reason to consume the
+    // message: admission would record it as a terminal skip.
+    const hold = await conversationDeliveryHold(connection, agent);
+    if (!hold) return invokability;
+    options.onDeferredDeadline?.(hold.retryAt);
+    return { invokable: false, reason: hold.reason };
   };
   for (;;) {
     const delivered = await db.transaction(async (tx) => {

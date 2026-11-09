@@ -135,7 +135,26 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): strin
     return "Recovery of saved work is waiting for the previous server's file copy to stop. "
       + "Recovery resumes once Paperclip can confirm that it stopped. No provider turn is submitted.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  if (isDeterministicRecoveryRefusal(state)) {
+    const code = state.failure!.code;
+    return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"} `
+      + `(${code}${cause}). Automatic recovery does not repeat this check, because the same saved state gives the same result. `
+      + "Retry runs the check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.";
+  }
   const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
-  return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
+  const outcome = state.attempts > 1 ? `stopped after ${state.attempts} attempts` : "failed";
+  return `Automatic recovery of saved work ${outcome}${reason}. `
     + "Retry to try again; the agent will not repeat its work.";
 }
+
+export function isDeterministicRecoveryRefusal(state: Pick<SystemRecoveryState, "state" | "failure"> | null | undefined) {
+  return state?.state === "exhausted" && state.failure?.retryClass === "service_required";
+}
+
+const recoveryRefusalReasons: Partial<Record<RecoveryFailureCode, string>> = {
+  allocation_ownership_ambiguous: "Paperclip cannot prove which runs used the sandbox that holds the saved files",
+  source_binding_invalid: "the recorded source of the saved files does not match the run that saved them",
+  snapshot_verification_failed: "the saved snapshot of the files did not pass verification",
+  archive_unsafe: "the saved file archive contains entries that are not safe to apply",
+  source_unavailable: "the saved files are no longer available where the run recorded them",
+};

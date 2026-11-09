@@ -5185,8 +5185,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return false;
   }
 
+  // Release shares the warm admission budget: a turn-end restart can delay the drain receipt.
   async #drainSettledProviderEventsBeforeSuspend(
-    timeoutMs = 1_000,
+    timeoutMs = coldAdmissionTimeoutMs(this.options.provider, this.options.acpxAgent, false),
     providerStopConfirmed = false,
   ): Promise<boolean> {
     const core = this.#core;
