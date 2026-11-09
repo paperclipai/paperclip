@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gradeInfrastructureRetry, isHumanRetryRequest, releasedRetryListener } from "./runtime-infrastructure-retry.js";
+import { gradeInfrastructureRetry, isHumanRetryRequest, releasedRetryListener, retriesOriginalRun } from "./runtime-infrastructure-retry.js";
 function valid() {
   return { scenarioId: "recovery.retry-exhausted", origin: "http://paperclip.test", companyId: "company", leadId: "ceo", agents: [], links: ["/COM/issues/COM-2"], humanQueries: [], reply: "", tasks: [{ id: "website", status: "done" }], activity: [],
     runs: [{ id: "exhausted", status: "failed" }, ...["canonical", "held", "retry", "final"].map(id => ({ id, status: "succeeded" }))],
@@ -60,13 +60,23 @@ it("binds the brief to the released Retry's own workspace, and only that one", a
     await writeFile(path.join(fresh, "brief.txt.waiting"), "waiting");
     await writeFile(path.join(outside, "brief.txt.waiting"), "waiting");
     const expected = { companyId: "company", workerId: "morgan", taskId: "website", originalRunId: "exhausted", gateName: "brief.txt" };
-    const run = (cwd: string, patch: Record<string, unknown> = {}) => ({ id: "retry", companyId: "company", agentId: "morgan", retryOfRunId: "exhausted",
-      contextSnapshot: { issueId: "website" }, runnerProfileJson: { nativeExecutionInput: { workspace: { cwd }, binding: { executionWorkspaceId: "fresh-ws" } } }, ...patch }) as never;
+    const run = (cwd: string, patch: Record<string, unknown> = {}) => ({ id: "retry", companyId: "company", agentId: "morgan", retryOfRunId: null,
+      contextSnapshot: { issueId: "website", previousRunId: "exhausted", executionContinuation: { trigger: { reason: "task_retry", sourceRunId: "exhausted" } } }, runnerProfileJson: { nativeExecutionInput: { workspace: { cwd }, binding: { executionWorkspaceId: "fresh-ws" } } }, ...patch }) as never;
     expect(await releasedRetryListener(run(fresh), expected, root)).toEqual({ gate: path.join(await import("node:fs/promises").then(fs => fs.realpath(fresh)), "brief.txt"), workspaceId: "fresh-ws" });
-    expect(await releasedRetryListener(run(fresh, { retryOfRunId: "other" }), expected, root)).toBeNull();
+    expect(await releasedRetryListener(run(fresh, { contextSnapshot: { issueId: "website", previousRunId: "other",
+      executionContinuation: { trigger: { reason: "task_retry", sourceRunId: "other" } } } }), expected, root)).toBeNull();
     expect(await releasedRetryListener(run(fresh, { agentId: "ceo" }), expected, root)).toBeNull();
     expect(await releasedRetryListener(run(fresh, { contextSnapshot: { issueId: "other" } }), expected, root)).toBeNull();
     expect(await releasedRetryListener(run(outside), expected, root)).toBeNull();
     expect(await releasedRetryListener(run(fresh), { ...expected, gateName: "missing.txt" }, root)).toBeNull();
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+it("binds a Retry to the original run through its task-retry continuation or retryOfRunId only", () => {
+  const taskRetry = { retryOfRunId: null, contextSnapshot: { previousRunId: "exhausted", executionContinuation: { trigger: { reason: "task_retry", sourceRunId: "exhausted" } } } } as never;
+  expect(retriesOriginalRun(taskRetry, "exhausted")).toBe(true);
+  expect(retriesOriginalRun({ retryOfRunId: "exhausted", contextSnapshot: {} } as never, "exhausted")).toBe(true);
+  expect(retriesOriginalRun({ retryOfRunId: null, contextSnapshot: { previousRunId: "exhausted" } } as never, "exhausted")).toBe(false);
+  expect(retriesOriginalRun({ retryOfRunId: null, contextSnapshot: { previousRunId: "exhausted", executionContinuation: { trigger: { reason: "issue_commented", sourceRunId: "exhausted" } } } } as never, "exhausted")).toBe(false);
+  expect(retriesOriginalRun({ retryOfRunId: null, contextSnapshot: { previousRunId: "other", executionContinuation: { trigger: { reason: "task_retry", sourceRunId: "exhausted" } } } } as never, "exhausted")).toBe(false);
 });
