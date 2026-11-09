@@ -54,15 +54,24 @@ it("names only pages that the board UI mounts", () => {
   const appRoutes = readFileSync(path.join(repoRoot, "ui/src/App.tsx"), "utf8");
   const pages = new Set(
     runnerApiCatalog()
-      .filter(row => /^\/api\/(mcp\/(setup|requests\/\{id\}\/consent)$|connection-intents\/|tool-connections\/\{connectionId\}\/(catalog|review-counts)$|companies\/\{companyId\}\/(tools\/apps\/attention|chat-endpoints)$)/.test(row.path))
+      .filter(row => /^\/api\/(mcp\/(setup|requests\/\{id\}\/consent)$|connection-intents\/|tool-connections\/\{connectionId\}\/(catalog|review-counts)$|companies\/\{companyId\}\/(tools\/apps\/attention|tools\/apps\/connect|tools\/connections|chat-endpoints)$)/.test(row.path))
       .flatMap(row => [...(row.description ?? "").matchAll(/\/<prefix>\/([a-z0-9/<>-]+)/gi)].map(match => match[1]!)),
   );
-  expect([...pages].sort()).toEqual(["apps/<connectionId>/permissions", "apps/assistant-connection", "company/settings/instance/experimental", "issues/<identifier>"]);
+  expect([...pages].sort()).toEqual(["apps/<connectionId>/permissions", "apps/assistant-connection", "apps/byo", "company/settings/instance/experimental", "issues/<identifier>"]);
   const mounted = (page: string) => page
     .replace("apps/<connectionId>/permissions", "apps/:connectionId/:tab")
     .replace("issues/<identifier>", "issues/:issueId");
   for (const page of pages) expect(appRoutes, page).toContain(`<Route path="${mounted(page)}" element=`);
   expect(readFileSync(path.join(repoRoot, "ui/src/pages/apps/app-tabs.ts"), "utf8")).toContain("\"permissions\"");
+});
+
+it.each([
+  "connect custom MCP server with server URL and API key BYO connection",
+  "byo custom mcp server create tool app connection",
+])("search %j sends an own-server API key to the secure page", (query) => {
+  const found = searchRunnerApi({ query, limit: 10 }).results.filter(row => ["POST /api/companies/{companyId}/tools/apps/connect", "POST /api/companies/{companyId}/tools/connections"].includes(row.operationId));
+  expect(found.length, query).toBeGreaterThan(0);
+  for (const operation of found) expect(operation.description).toContain("[Connect your own MCP server](/<prefix>/apps/byo)");
 });
 
 it("links only mounted pages from connections_search", () => {
