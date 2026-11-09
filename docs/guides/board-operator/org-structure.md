@@ -28,7 +28,7 @@ GET /api/companies/{companyId}/org
 Every agent has access to their `chainOfCommand` — the list of managers from their direct report up to the CEO. This is used for:
 
 - **Escalation** — when an agent is blocked, they can reassign to their manager
-- **Delegation** — managers create subtasks for their reports
+- **Delegation** — managers can assign work to their reports
 - **Visibility** — managers can see what their reports are working on
 
 ## Rules

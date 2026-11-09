@@ -101,7 +101,7 @@ Every `needs_gardening` PR here was opened by this instance (Stage A guarantees 
 
 2. **Deduplicate.** Search open Paperclip issues for the PR number/branch. If an equivalent open prepare-PR task already exists, reuse it with a concise status comment instead of creating another (see the deduplication section above).
 
-3. **Run the prepare skill.** Create one focused child task per PR assigned to a coder agent (prefer CodexCoder) instructing it to run `/prepare-paperclip-pr` for that PR — include the PR URL, branch, current head SHA, and the exact machine-detected `reasons[]` from `readiness.json`. If you are the gardener and already have the PR's branch checked out in a worktree, you may run `/prepare-paperclip-pr` directly instead of delegating. Either way, the prepare work must never merge, approve, or close the PR.
+3. **Run the prepare skill.** Run `/prepare-paperclip-pr` for each PR, using the PR URL, branch, current head SHA, and the exact machine-detected `reasons[]` from `readiness.json`. If the user requests delegation, include those inputs in the assigned task. The prepare work must never merge, approve, or close the PR.
 
 4. **Leave the marker comment.** Comment on the originating issue with the marker above, the current head SHA, the copied `reasons[]`, the round counter, and a link to the prepare task. Use `POST /api/issues/:issueId/comments` with `X-Paperclip-Run-Id`. Include `resume: true` when the issue is terminal so the comment creates a live continuation.
 

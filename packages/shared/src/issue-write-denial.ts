@@ -117,15 +117,6 @@ function actorLabel(name: string | null | undefined): string {
   return trimmed && trimmed.length > 0 ? trimmed : "this agent";
 }
 
-/**
- * The escape hatch an earlier incident had to discover by trial and error. Naming it in
- * every boundary denial is the point of plan §6 — an agent that reads the error
- * should not need a detour to find the supported path.
- */
-const CHILD_ISSUE_PATH =
-  "create a child issue with the request in its description (issue creation is a " +
-  "separate, open write path) and let its assignee act";
-
 export function describeIssueWriteDenial(
   code: IssueWriteDenialCode,
   context: IssueWriteDenialContext = {},
@@ -150,7 +141,7 @@ export function describeIssueWriteDenial(
         whoCanAct:
           `${assignee}, and any agent or board member the task is visible to.`,
         sanctionedPath:
-          `Ask the board to widen visibility for ${actor}, or ${CHILD_ISSUE_PATH}.`,
+          `Ask the board to widen visibility for ${actor}.`,
       };
 
     case "issue_write_actor_class_excluded":
