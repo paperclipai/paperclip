@@ -33,6 +33,7 @@ import {
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { trackRemoteWorkspaceSaveInvocationForTests } from "../services/remote-workspaces.js";
 import { workspaceOperationService } from "../services/workspace-operations.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
@@ -395,7 +396,8 @@ describe("report-only ownership reconciliation", () => {
       .from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_snapshot")))
       .map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
 
-    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const untrack = trackRemoteWorkspaceSaveInvocationForTests(liveInvocation);
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() }).finally(untrack);
     expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 7, settled: 2 });
     expect(await statuses()).toEqual({ abandoned: "failed", pendingAbandoned: "failed", liveRun: "running", activeInvocation: "running",
       unknownWork: "running", notQuiesced: "running", invalidWork: "running" });
@@ -424,10 +426,10 @@ describe("report-only ownership reconciliation", () => {
         saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds, unknown: false, quiescedAt: null,
           ...(owners ? { owners: Object.fromEntries(activeIds.map((invocation, index) => [invocation, Object.values(owners)[index]])
             .filter(([, stamp]) => stamp !== undefined)) } : {}) } } });
-    const twoIds = [randomUUID(), randomUUID()];
+    const twoIds = [randomUUID(), randomUUID()], selfInvocation = randomUUID();
     await db.insert(workspaceOperations).values([
       op(ops.deadOwner, runs.live, { a: dead }),
-      op(ops.selfOwner, runs.lost, { a: self }),
+      op(ops.selfOwner, runs.lost, { a: self }, [selfInvocation]),
       op(ops.foreignOwner, runs.lost, { a: { ...dead, hostHash: "another-pid-space" } }),
       op(ops.legacyLost, runs.lost, undefined),
       op(ops.legacyLive, runs.live, undefined),
@@ -437,7 +439,8 @@ describe("report-only ownership reconciliation", () => {
       .from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_snapshot")))
       .map(row => [Object.keys(ops).find(name => ops[name as keyof typeof ops] === row.id), row.status]));
 
-    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    const untrack = trackRemoteWorkspaceSaveInvocationForTests(selfInvocation);
+    const first = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() }).finally(untrack);
     expect(kindReport(first, "remote_snapshot_save")).toMatchObject({ inProgress: 6, settled: 2 });
     expect(await statuses()).toEqual({ deadOwner: "failed", selfOwner: "running", foreignOwner: "running",
       legacyLost: "failed", legacyLive: "running", mixed: "running" });

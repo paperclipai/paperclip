@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import type { OwnerProof } from "../owner-proof.js";
+import { currentControllerBootId } from "../controller-process-identity.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { isRemoteWorkspaceSaveInvocationLive, readSaveWork } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
@@ -130,7 +131,10 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
         return { settled: false, reason: "owner_changed_since_proof" };
       }
     } else if (record.owner.kind === "run") {
-      if (work.activeIds.some(id => owners[id] !== undefined)) return { settled: false, reason: "owner_changed_since_proof" };
+      if (work.activeIds.some(id => owners[id] !== undefined
+        && (owners[id]!.bootId !== currentControllerBootId() || owners[id]!.pid !== process.pid))) {
+        return { settled: false, reason: "owner_changed_since_proof" };
+      }
       const [run] = operation.heartbeatRunId ? await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, operation.heartbeatRunId), inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES))) : [];
       if (!run) return { settled: false, reason: "owner_run_active" };

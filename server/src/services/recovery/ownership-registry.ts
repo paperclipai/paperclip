@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
@@ -529,6 +530,9 @@ function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
   if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
   const [first] = stamps;
   if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
   return controllerStamp(owners[active[0]!], "remote_snapshot_save");
 }
 

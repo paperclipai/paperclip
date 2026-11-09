@@ -21,6 +21,7 @@ import {
   isRemoteWorkspaceSaveInvocationLive, provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
 import { currentControllerBootId } from "./controller-process-identity.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 
@@ -516,7 +517,7 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
   }, 30_000);
 
-  it("keeps a save invocation live and retries its settlement when the settlement write fails", async () => {
+  it("lets the reconciler settle a save whose settlement write failed once its run has ended", async () => {
     const f = await preparedFailure();
     let failNextTransaction = false;
     const flaky = new Proxy(db, { get(target, property, receiver) {
@@ -535,14 +536,15 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
       eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
     const pending = await snapshotOperation();
-    const [invocation] = (pending.metadata!.saveWork as { activeIds: string[] }).activeIds;
+    const work = pending.metadata!.saveWork as { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
     expect(pending.status).toBe("running");
-    expect(invocation).toBeDefined();
-    expect(isRemoteWorkspaceSaveInvocationLive(invocation!)).toBe(true);
-    await vi.waitFor(async () => {
-      expect(await snapshotOperation()).toMatchObject({ status: "failed", metadata: { saveWork: { activeIds: [], owners: {} } } });
-      expect(isRemoteWorkspaceSaveInvocationLive(invocation!)).toBe(false);
-    }, { timeout: 10_000, interval: 200 });
+    expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
+    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
+
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await snapshotOperation()).toMatchObject({ status: "failed",
+      metadata: { saveWork: { activeIds: [], owners: {} }, abandonedSave: { reason: "abandoned_remote_snapshot_save" } } });
   }, 30_000);
 
   it("ends a failed save operation with its redacted cause and reopens it for the retry", async () => {

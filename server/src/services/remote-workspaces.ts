@@ -75,6 +75,10 @@ const liveSaveInvocationIds = new Set<string>();
 export function isRemoteWorkspaceSaveInvocationLive(invocationId: string) {
   return liveSaveInvocationIds.has(invocationId);
 }
+export function trackRemoteWorkspaceSaveInvocationForTests(invocationId: string) {
+  liveSaveInvocationIds.add(invocationId);
+  return () => { liveSaveInvocationIds.delete(invocationId); };
+}
 export function readSaveWork(metadata: Record<string, unknown> | null | undefined): SaveWork | null {
   const work = object(metadata?.saveWork);
   return work.schema === SAVE_WORK_SCHEMA && Array.isArray(work.activeIds)
@@ -953,35 +957,14 @@ export async function saveRemoteWorkspace(input: {
     const settle = () => settleSaveInvocation({ db: input.db, workspace: input.workspace, runId: input.runId, epoch: expected.epoch,
       location, operationId: operation.id, invocationId, failure,
       timing: replayedCommittedSave ? undefined : timing });
-    let settled: boolean | null = null;
-    try { settled = await settle(); }
-    catch {
-      logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace save settlement remains pending; retrying");
-      retrySaveSettlement(settle, invocationId, { runId: input.runId, operationId: operation.id });
-    }
-    if (settled !== null) {
-      liveSaveInvocationIds.delete(invocationId);
-      if (settled) {
-        try {
-          await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
-            location: expected.location, target, assertOwned: input.assertOwned });
-        } catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace export cleanup remains pending"); }
+    try {
+      if (await settle()) {
+        await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
+          location: expected.location, target, assertOwned: input.assertOwned });
       }
-    }
+    } catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace save settlement or export cleanup remains pending"); }
+    liveSaveInvocationIds.delete(invocationId);
   }
-}
-
-const SAVE_SETTLEMENT_RETRY_MAX_MS = 30_000;
-
-function retrySaveSettlement(settle: () => Promise<boolean>, invocationId: string,
-  context: { runId: string; operationId: string }, attempt = 1) {
-  const timer = setTimeout(() => {
-    settle().then(() => { liveSaveInvocationIds.delete(invocationId); }, () => {
-      logger.warn({ ...context, attempt }, "Remote workspace save settlement remains pending; retrying");
-      retrySaveSettlement(settle, invocationId, context, attempt + 1);
-    });
-  }, Math.min(SAVE_SETTLEMENT_RETRY_MAX_MS, 1_000 * 2 ** Math.min(attempt - 1, 5)));
-  timer.unref?.();
 }
 
 export async function prepareRemoteWorkspaceRepository(input: {
