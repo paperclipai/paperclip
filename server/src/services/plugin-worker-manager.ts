@@ -1,6 +1,7 @@
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { recordRefusedHostMethod } from "./plugin-host-refusal.js";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -569,6 +570,8 @@ interface ActiveInvocation {
   // when no startup span is active. The span host handler reads it to mint the
   // parentage, so a worker never supplies the parent itself.
   traceparent?: string;
+  /** The first registered host method whose handler threw for this invocation. */
+  refusedHostMethod?: string;
 }
 
 /**
@@ -2921,6 +2924,10 @@ export function createPluginWorkerHandle(
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.error({ method, err: errorMessage }, "host handler error");
+      // Recorded before the worker sees the error, so its reply to the outer call can name it.
+      const invocationId = readNonEmptyString((request as { paperclipInvocationId?: unknown }).paperclipInvocationId);
+      const invocation = invocationId ? activeInvocations.get(invocationId) : undefined;
+      if (invocation && !invocation.refusedHostMethod) invocation.refusedHostMethod = method;
       try {
         sendMessage(
           createErrorResponse(
@@ -3694,7 +3701,10 @@ export function createPluginWorkerHandle(
           if (isJsonRpcSuccessResponse(response)) {
             settle(resolve, response.result as HostToWorkerMethods[M][1]);
           } else if ("error" in response && response.error) {
-            settle(reject, new JsonRpcCallError(response.error));
+            const error = new JsonRpcCallError(response.error);
+            const refused = invocation ? activeInvocations.get(invocation.id)?.refusedHostMethod : undefined;
+            if (refused) recordRefusedHostMethod(error, refused);
+            settle(reject, error);
           } else {
             settle(reject, new Error(`Unexpected response format for "${method}"`));
           }

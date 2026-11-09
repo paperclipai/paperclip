@@ -17,6 +17,7 @@ import {
 import { HttpError } from "../errors.js";
 import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { findWorkspaceProviderFailure, workspaceProviderCallFailure } from "../services/workspace-provider-failure.js";
+import { recordRefusedHostMethod } from "../services/plugin-host-refusal.js";
 
 const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const params = {
@@ -101,6 +102,19 @@ describe("workspace provider call failures", () => {
       expect(failure.summary()).toEqual({ kind: "provider", reason: null, retryable: true });
       expect(failure.message).toBe("Workspace storage provider reported a failure; retry the same workspace");
     }
+  });
+
+  it("names a refused host request only when the provider gave no reason", () => {
+    const unexplained = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "private provider text" });
+    recordRefusedHostMethod(unexplained, "projects.getInstanceSecrets");
+    const failure = workspaceProviderCallFailure(unexplained);
+    expect(failure.summary()).toEqual({ kind: "provider", reason: null, retryable: true, refusedHostMethod: "projects.getInstanceSecrets" });
+    expect(failure.details).toMatchObject({ code: "workspace_provider_failed", refusedHostMethod: "projects.getInstanceSecrets" });
+    expect(failure.message).not.toContain("private");
+    const explained = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "private provider text",
+      data: { schema: "paperclip/workspace-operation-error/v1", reason: "storage_grant_unavailable" } });
+    recordRefusedHostMethod(explained, "projects.getInstanceSecrets");
+    expect(workspaceProviderCallFailure(explained).summary()).toEqual({ kind: "provider", reason: "storage_grant_unavailable", retryable: false });
   });
 
   it("is found through setup's error wrappers", () => {

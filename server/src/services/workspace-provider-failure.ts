@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { HttpError } from "../errors.js";
 import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { readRefusedHostMethod } from "./plugin-host-refusal.js";
 
 /**
  * How a `workspaceOperation` call failed.
@@ -49,21 +50,27 @@ export class WorkspaceProviderFailureError extends HttpError {
   readonly kind: WorkspaceProviderFailureKind;
   readonly reason: PluginWorkspaceOperationFailureReason | null;
   readonly retryable: boolean;
+  /** A Core host method that refused the provider during the call, when the provider gave no reason. */
+  readonly refusedHostMethod: string | null;
 
   constructor(input: { kind: WorkspaceProviderFailureKind; reason?: PluginWorkspaceOperationFailureReason | null;
-    retryable: boolean; message: string; cause?: unknown }) {
+    retryable: boolean; message: string; cause?: unknown; refusedHostMethod?: string | null }) {
     const reason = input.reason ?? null;
-    super(409, input.message, { code: "workspace_provider_failed", kind: input.kind, reason, retryable: input.retryable });
+    const refusedHostMethod = input.refusedHostMethod ?? null;
+    super(409, input.message, { code: "workspace_provider_failed", kind: input.kind, reason, retryable: input.retryable,
+      ...(refusedHostMethod ? { refusedHostMethod } : {}) });
     this.name = "WorkspaceProviderFailureError";
     this.kind = input.kind;
     this.reason = reason;
     this.retryable = input.retryable;
+    this.refusedHostMethod = refusedHostMethod;
     if (input.cause !== undefined) this.cause = input.cause;
   }
 
   /** Bounded fields for run results and logs. */
   summary() {
-    return { kind: this.kind, reason: this.reason, retryable: this.retryable };
+    return { kind: this.kind, reason: this.reason, retryable: this.retryable,
+      ...(this.refusedHostMethod ? { refusedHostMethod: this.refusedHostMethod } : {}) };
   }
 }
 
@@ -82,6 +89,10 @@ export function workspaceProviderCallFailure(error: unknown): WorkspaceProviderF
   if (error.code === PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE) return new WorkspaceProviderFailureError({ kind: "worker_exited", retryable: true,
     message: "Workspace storage provider stopped during the operation; retry the same workspace" });
   const reason = readWorkspaceOperationFailureReason(error);
+  // Without a reason, a host request Core refused during the call is the only bounded evidence of why.
+  const refusedHostMethod = reason ? null : readRefusedHostMethod(error);
+  if (refusedHostMethod) return new WorkspaceProviderFailureError({ kind: "provider", retryable: true, refusedHostMethod,
+    message: `Workspace storage provider failed after Paperclip refused its ${refusedHostMethod} request; retry the same workspace` });
   if (!reason) return new WorkspaceProviderFailureError({ kind: "provider", retryable: true,
     message: "Workspace storage provider reported a failure; retry the same workspace" });
   return new WorkspaceProviderFailureError({ kind: "provider", reason, ...REASONS[reason] });

@@ -29,6 +29,8 @@ vi.mock("../middleware/logger.js", () => {
 import { logger } from "../middleware/logger.js";
 import { PluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../services/plugin-worker-unavailable-error.js";
 import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
+import { readRefusedHostMethod } from "../services/plugin-host-refusal.js";
+import { workspaceProviderCallFailure } from "../services/workspace-provider-failure.js";
 import {
   appendStderrExcerpt,
   createDuplexRouteSlotController,
@@ -332,6 +334,35 @@ describe("plugin-worker-manager stderr failure context", () => {
         operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: "prepare" } });
       await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: "agent-a",
         operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a" });
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("names the host request Core refused when a workspace operation then fails", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: {
+        "projects.getInstanceSecrets": (async () => { throw new Error("private host detail"); }) as never,
+        "companies.get": (async () => ({ id: "company-a" })) as never,
+      },
+    });
+    const call = (hostMethod: string, mode = "echo") => handle.call("workspaceOperation", { companyId: "company-a", projectId: "project-a",
+      runId: null, agentId: null, operation: { kind: "prepare", source: { id: "workspace-a" } },
+      params: { mode, requestedCompanyId: "company-a", hostMethod } } as never);
+    try {
+      await handle.start();
+      const rejection = await call("projects.getInstanceSecrets").catch((error: unknown) => error);
+      expect(rejection).toBeInstanceOf(JsonRpcCallError);
+      expect(readRefusedHostMethod(rejection)).toBe("projects.getInstanceSecrets");
+      const failure = workspaceProviderCallFailure(rejection);
+      expect(failure.summary()).toEqual({ kind: "provider", reason: null, retryable: true, refusedHostMethod: "projects.getInstanceSecrets" });
+      expect(failure.message).toBe("Workspace storage provider failed after Paperclip refused its projects.getInstanceSecrets request; retry the same workspace");
+      expect(failure.message).not.toContain("private");
+      // A later call starts a new invocation: a successful host request leaves nothing behind.
+      await expect(call("companies.get")).resolves.toEqual({ id: "company-a" });
+      // A refusal the worker never tied to this invocation is not attributed to it.
+      const unscoped = await call("projects.getInstanceSecrets", "omit").catch((error: unknown) => error);
+      expect(readRefusedHostMethod(unscoped)).toBeNull();
     } finally { await handle.stop().catch(() => undefined); }
   });
 
