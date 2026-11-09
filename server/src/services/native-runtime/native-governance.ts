@@ -75,3 +75,22 @@ export async function pendingNativeGovernance(input: {
   return null;
 }
 
+
+/**
+ * A committed conversation turn has answered the person, whatever status its
+ * task keeps. An approval or an execution stage can hold the task, but neither
+ * presents that answer in the conversation. Only a pending thread interaction
+ * (a question or confirmation card) is the turn's visible response.
+ */
+export async function conversationTurnAnswered(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  runId: string;
+}): Promise<boolean> {
+  const [issue] = await input.db.select({ executionState: issues.executionState }).from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+  if (!issue) return false;
+  const gate = await pendingNativeGovernance({ ...input, executionState: record(issue.executionState) });
+  return gate?.kind !== "interaction";
+}
