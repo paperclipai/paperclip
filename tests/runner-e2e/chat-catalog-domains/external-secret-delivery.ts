@@ -268,7 +268,7 @@ export const secretDeliveryExternalCases = [
     },
     gradeSecretDelivery,
     {
-      oracleVersion: "paperclip.chat-catalog.external-least-scope-delivery.v10", authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.external-least-scope-delivery.v11", authentication: "human-session",
       // CEO turn, Morgan's check (plus at most one wake from a handoff
       // comment on the created task), and the CEO's confirmation.
       expectedRunCount: 4,

@@ -4971,7 +4971,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external-least-scope-delivery.v10",
+    "oracleVersion": "paperclip.chat-catalog.external-least-scope-delivery.v11",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
@@ -5096,7 +5096,7 @@
       "../../ui/src/pages/secrets/ImportFromVaultDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v8",
+    "oracleVersion": "paperclip.chat-catalog.external-vault-reference.v9",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,
