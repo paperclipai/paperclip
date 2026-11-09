@@ -768,6 +768,8 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,

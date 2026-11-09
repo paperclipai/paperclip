@@ -52,6 +52,7 @@ import {
   updateAgentSchema,
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
+  updateAgentPermissionGrantSchema,
   addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -1430,6 +1431,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
@@ -3844,6 +3846,16 @@ registry.registerPath({
     body: jsonBody(updateAgentPermissionsSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/agents/{id}/permission-grants",
+  tags: ["agents"],
+  summary: "Grant or revoke one explicit agent permission",
+  description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
