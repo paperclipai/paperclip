@@ -15149,6 +15149,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }
       : sourceRuntimeContext;
   let remotePrepared = false;
+  let continuityArchived = false;
   let remoteHarnessStatePrepared = false;
   // Set when this invocation's authority rotation moved the live Runner state
   // into its epoch archive. Later host preparation validates that snapshot
@@ -15698,7 +15699,8 @@ async function createRunnerdBackendWithinSessionClaim(
                       bytesTransferred: 0,
                     },
                   });
-                  if (sandboxLeaseAcquisition?.outcome === "resumed" && adoptedProcess &&
+                  const adoptedRunner = adoptedProcess;
+                  if (sandboxLeaseAcquisition?.outcome === "resumed" && adoptedRunner &&
                       (input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery)) {
                     // Active recovery and a verified idle warm handoff adopt the
                     // exact surviving process, rather than restoring a suspended
@@ -15707,7 +15709,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     // transport still authenticates the durable PRP authority.
                     await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", async () => {
                       await input.remoteWarmRecovery?.revalidate();
-                      if (!await adoptedProcess.isAlive()) {
+                      if (!await adoptedRunner.isAlive()) {
                         throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
                       }
                     });
@@ -16270,6 +16272,8 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     noteNativeRunnerEvidence(archivedAt);
     moveNativeContinuityState(root, archiveRoot);
+    continuityArchived = true;
+    adoptedProcess = undefined;
     remotePrepared = false;
     retainProviderPack = false;
     legacyProviderContinuity = false;
@@ -16283,7 +16287,7 @@ async function createRunnerdBackendWithinSessionClaim(
     input.restartRecovery?.kind === "reattach_existing_runner"
       ? input.restartRecovery.process
       : null;
-  const adoptedProcess =
+  let adoptedProcess =
     stagedRecovery && input.restartRecovery?.kind === "reattach_remote_runner"
       ? await verifyStagedRemoteRunner({ recovery: stagedRecovery, execution: input.execution, target, claim: input.restartRecovery })
       : input.remoteWarmRecovery
@@ -16573,7 +16577,7 @@ async function createRunnerdBackendWithinSessionClaim(
           normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
           turnId: input.remoteWarmRecovery.identity.turnId,
           itemId: input.remoteWarmRecovery.identity.itemId,
-        } : input.restartRecovery?.kind === "reattach_remote_runner" ? {
+        } : input.restartRecovery?.kind === "reattach_remote_runner" && !continuityArchived ? {
           // Reattachment verified all six durable fields against the surviving
           // Runner. Warm handoff uses opaque attachment turn/item IDs; deriving
           // replacements from runId would request a different same-run authority.
