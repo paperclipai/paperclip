@@ -1345,6 +1345,47 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
   }
 });
 
+it("fails closed with the schema issue when the runner keeps redelivering an invalid event (restart chaos t01)", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-schema-stall-"));
+  const commits = vi.fn(async () => undefined);
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "invalid-write-target-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  delete event.schemaVersion;
+  event.priority = 7;
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(client.socket.destroyed || client.socket.readyState === "closed"
+        || onProtocolIntegrityError.mock.calls.length > 0).toBe(true));
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(commits).not.toHaveBeenCalled();
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^event_schema_invalid:\/\S* at source seq 1$/);
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("fails closed when runner events keep failing to commit without progress", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
   const commits = vi.fn(async () => {

@@ -872,6 +872,12 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
   }
 }
 
+function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined): string {
+  const paths = [...new Set((issues ?? []).map(issue => typeof issue.path === "string" ? issue.path : "")
+    .map(path => path.replace(/[^A-Za-z0-9_./-]/g, "_").slice(0, 80)).filter(Boolean))];
+  return paths.length ? paths.slice(0, 3).join(",") : "unknown";
+}
+
 function eventCommitFailureCause(error: unknown): string {
   const code = isRecord(error) ? error.code : undefined;
   if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
@@ -4191,7 +4197,7 @@ export class DurablePrpControlPlane {
     }
     const validated = validatePrpEvent(envelope.payload);
     if (!validated.ok) {
-      connection.close();
+      this.#eventCommitFailed(connection, `event_schema_invalid:${eventSchemaIssuePaths(validated.issues)}`);
       return;
     }
     const event = validated.event;
