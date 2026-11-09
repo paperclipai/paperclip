@@ -149,11 +149,6 @@ export function AgentProviderConnection({
       ? managedAccount.intent.name
       : managedAccount.nameForMethod?.(authMethod) ?? managedAccount.intent.name,
   } : undefined;
-  const localLogin = useLocalAiLogin(companyId, managedIntent ?? {
-    provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
-    ownership: "personal", agentIds: [], allAgents: true,
-  }, !advanced && canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
-  );
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -168,6 +163,17 @@ export function AgentProviderConnection({
       ),
     enabled: !managedAccount && !advanced && adapterType !== "antigravity_runtime",
   });
+  const canUseLocalCli = !managedAccount && localEnvironment
+    && health.data?.deploymentMode === "local_trusted"
+    && (adapterType === "claude_local" || adapterType === "codex_local");
+  const checkingLocalCli = canUseLocalCli && auth.isPending;
+  const localCliReady = canUseLocalCli && auth.data?.localCli === "present"
+    && !savedSubscription && !storedLogin.data;
+  const localLogin = useLocalAiLogin(companyId, managedIntent ?? {
+    provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, !advanced && canUseLocalLogin && !checkingLocalCli && !localCliReady && method === "subscription" && !savedSubscription && !storedLogin.data,
+  );
   async function connect() {
     if (busy || managedAccount?.disabled) return;
     const run = ++epoch.current;
@@ -204,7 +210,7 @@ export function AgentProviderConnection({
                   }
                 : {}),
             };
-      if (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data) {
+      if (method === "subscription" && canUseLocalLogin && !localCliReady && !savedSubscription && !storedLogin.data) {
         savedManagedAccount.current ??= await localLogin.connect();
         connection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
       }
@@ -405,6 +411,10 @@ export function AgentProviderConnection({
                   onConnected(connection);
                 }}
               />
+            ) : localCliReady ? (
+              <p className="text-sm text-muted-foreground">Using your signed-in {adapterType === "claude_local" ? "Claude Code" : "Codex"} CLI account.</p>
+            ) : checkingLocalCli ? (
+              <p className="text-sm text-muted-foreground">Checking your local CLI sign-in…</p>
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
               <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
@@ -455,7 +465,7 @@ export function AgentProviderConnection({
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
           (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
-          (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
+          (method === "subscription" && canUseLocalLogin && !localCliReady && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
           (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||

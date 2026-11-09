@@ -56,11 +56,13 @@ async function mount(
   deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
   localAiLoginSupported = true,
   advancedConnection?: Parameters<typeof AgentProviderConnection>[0]["advancedConnection"],
+  localCli?: "present" | "absent" | "unknown",
 ) {
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   mocks.auth.mockResolvedValue({
     status: codexSubscriptions ? "unknown" : "present",
+    localCli,
   });
   mocks.login.mockImplementation(async () => {
     if (savedLogin) return { secretId: "oauth", latestVersion: 1 };
@@ -151,6 +153,17 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
+  it.each(["claude_local", "codex_local"] as const)("reuses the signed-in %s CLI without creating a login", async adapterType => {
+    const { test, connected } = await mount(adapterType, false, false, false, false, false, undefined, true, "local_trusted", true, undefined, "present");
+    openProvider();
+    await vi.waitFor(() => expect(host.textContent).toContain("Using your signed-in"));
+    click("Connect");
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledWith({ env: {} }));
+    expect(test).toHaveBeenCalledWith({ env: {} });
+    expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+    expect(managedApi.connectLocal).not.toHaveBeenCalled();
+  });
+
   it("keeps all three connection tiles visible while switching forms", async () => {
     await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {
       content: <div>Advanced connection picker</div>,

@@ -15,6 +15,7 @@ import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClau
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
+import { readLocalCliAuthSignal } from "../services/local-cli-auth.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { isAgentSetupDraft } from "../modules/agent-lifecycle/index.js";
@@ -3658,9 +3659,8 @@ export function agentRoutes(
   }
 
   // The cheap host-local authentication signal for one adapter type. The route
-  // reads host-local state only: a stored Claude login, a resolved environment
-  // env var, or the local Codex credential readiness check. It leases no
-  // sandbox, starts no shell command, and starts no model request. The two
+  // reads stored credentials and, for the local operator, CLI login status.
+  // It leases no sandbox and starts no model request. The two
   // access gates below run before any read, so a caller who cannot create
   // agents for the company and a foreign environment both fail closed before
   // the route touches a credential source.
@@ -3691,6 +3691,14 @@ export function agentRoutes(
       }
 
       const body: AdapterAuthSignalResponse = { status };
+      // Host sign-ins belong to the local operator, never to a remote user or
+      // an agent caller. Sandbox credentials must be checked in the sandbox.
+      if ((options.deploymentMode ?? "local_trusted") === "local_trusted" && req.actor.type === "board") {
+        const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
+        if (!environmentId || environment?.driver === "local") {
+          body.localCli = await readLocalCliAuthSignal(type);
+        }
+      }
       res.json(body);
     },
   );

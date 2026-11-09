@@ -539,10 +539,7 @@ function OnboardingWizardInner({
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
 
-  // Step 2
-  // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
-  // on the customer's behalf that they then have to notice and undo. It is the
-  // step's only question, and its CTA gates on it.
+  // Keep the name editable; quick connect supplies a default only when chosen.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
   const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(saved?.agentAppearance).data ?? randomAgentAppearance());
   // Defaults to `general` rather than empty. The arc stopped asking for a role
@@ -1094,13 +1091,6 @@ function OnboardingWizardInner({
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
-  const localLogin = useLocalAiLogin(createdCompanyId, {
-    provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
-    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
-    ownership: "personal", agentIds: [], allAgents: true,
-  }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
-  );
   useEffect(() => {
     autoConnectStartedRef.current = false;
     hiringAgentRef.current = null;
@@ -1111,6 +1101,9 @@ function OnboardingWizardInner({
     return () => { connectAttemptRef.current++; };
   }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
 
+  const canUseLocalCli = resolvedLoginEnvironment?.driver === "local"
+    && localLoginHealth.data?.deploymentMode === "local_trusted"
+    && (adapterType === "claude_local" || adapterType === "codex_local");
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&
@@ -1136,8 +1129,18 @@ function OnboardingWizardInner({
         resolvedLoginEnvironmentId ?? undefined,
       ),
     enabled:
-      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && (canShowAdapterLogin || canUseLocalCli),
   });
+  const checkingLocalCli = canUseLocalCli && authSignalQuery.isPending;
+  const localCliReady = canUseLocalCli && authSignalQuery.data?.localCli === "present"
+    && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep();
+  const localLogin = useLocalAiLogin(createdCompanyId, {
+    provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
+    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && !checkingLocalCli && !localCliReady && credentialMode !== "api" &&
+    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
+  );
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
@@ -1457,12 +1460,12 @@ function OnboardingWizardInner({
         !connectStepReady || connectStepNeedsLogin || connectCredentialStored ||
         credentialMode !== "subscription" ||
         (adapterType !== "claude_local" && adapterType !== "codex_local") ||
-        (!hasSavedSubscription && localLogin.status !== "ready") ||
+        (!hasSavedSubscription && !localCliReady && localLogin.status !== "ready") ||
         loading || autoConnectStartedRef.current) return;
     autoConnectStartedRef.current = true;
     void handleGiveHeartbeat();
   }, [effectiveOnboardingOpen, step, connectPhase, connectStepReady, connectStepNeedsLogin,
-    connectCredentialStored, credentialMode, adapterType, hasSavedSubscription, localLogin.status, loading]);
+    connectCredentialStored, credentialMode, adapterType, hasSavedSubscription, localCliReady, localLogin.status, loading]);
 
   /**
    * The beats, each waiting for the animation before it.
@@ -1541,10 +1544,16 @@ function OnboardingWizardInner({
    * easing width so those changes read as one control rather than four.
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+  const localSignInPending = canUseLocalLogin && credentialMode === "subscription"
+    && !hasSavedSubscription && !localCliReady && localLogin.status !== "ready";
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     setupError ? { label: "Retry", icon: "arrow", disabled: false }
       : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      : localSignInPending && connectPhase === "ready"
+      ? localLogin.error
+        ? { label: "Retry sign-in", icon: "arrow", disabled: false }
+        : { label: localLogin.authorizationUrl ? `Sign in to ${connectSourceLabel}` : "Preparing sign-in…", icon: localLogin.authorizationUrl ? "arrow" : "spinner", disabled: !localLogin.authorizationUrl }
       : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
       ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
@@ -1608,6 +1617,16 @@ function OnboardingWizardInner({
 
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (localSignInPending) {
+      if (localLogin.error) {
+        autoConnectStartedRef.current = false;
+        setError(null);
+        localLogin.retry();
+      } else if (localLogin.authorizationUrl) {
+        window.open(localLogin.authorizationUrl, "_blank", "noreferrer,noopener");
+      }
+      return;
+    }
     if (retryLogin) {
       setConnectAuthUrl(null);
       setSubmitLoginCode(null);
@@ -2474,7 +2493,7 @@ function OnboardingWizardInner({
         if (!grantId) throw new Error("Choose a connected API account before continuing.");
         if (!await selectManagedDefault(createdCompanyId, selectedApiKey.aiConnection.provider, grantId, isCurrent, grantId)) return;
       }
-      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
+      if (credentialMode !== "api" && canUseLocalLogin && !localCliReady && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         const account = await localLogin.connect();
         if (!isCurrent()) return;
         managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" }, grantId: account.grantId };
@@ -3046,16 +3065,38 @@ function OnboardingWizardInner({
                 </motion.div>
               )}
 
-              {/* Step 3: the name, and only the name. The role picker went with
-                  the question it was asking — a customer naming their first
-                  agent is describing what it does, and the placeholder carries
-                  the range of answers that fit. Hiring uses the neutral
-                  `general` role; a specific one can be set later, where there
-                  is context to choose it in. */}
+              {/* Step 3: quick subscription setup, with an optional agent name. */}
               {step === 3 && (
                 <motion.div key="step-3" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
+                  <div className="flex flex-col gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      Choose Claude or Codex to create your first agent. Paperclip will use your signed-in local CLI or help you sign in, then check the connection automatically.
+                    </p>
+                    <div className="flex gap-3">
+                      {recommendedAdapters.map((opt) => (
+                        <Button key={opt.type} type="button" variant="outline" className="h-auto flex-1 gap-2 py-4"
+                          onClick={() => {
+                            setAgentName(name => name.trim() || "Chief of staff");
+                            setCredentialMode("subscription");
+                            setAdapterType(opt.type);
+                            setRunner("auto");
+                            setModel("");
+                            autoConnectStartedRef.current = false;
+                            setSourcePicked(true);
+                            setConnectPhase("collapsing");
+                            setStep(4);
+                          }}>
+                          <span className="size-5 shrink-0"><ModelSourceMark type={opt.type} Fallback={opt.icon} /></span>
+                          {opt.type === "claude_local" ? "Connect Claude" : "Connect Codex"}
+                        </Button>
+                      ))}
+                    </div>
+                    {adapterRegistryLoaded && recommendedAdapters.length === 0 && (
+                      <p role="alert" className="text-sm text-muted-foreground">Claude and Codex are unavailable on this instance. Enable a provider in instance settings to continue.</p>
+                    )}
+                  </div>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">Agent name</Label>
+                    <Label htmlFor="onboarding-agent-name">Agent name (optional)</Label>
                     {/*
                       Filled, not outlined, and the column's full width — the
                       same field the naming step before the hand-off draws.
@@ -3068,7 +3109,7 @@ function OnboardingWizardInner({
                     <Input
                       id="onboarding-agent-name"
                       className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
-                      placeholder="e.g. Chief of staff"
+                      placeholder="Chief of staff"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       onKeyDown={(e) => {
@@ -3337,6 +3378,10 @@ function OnboardingWizardInner({
                           });
                         }}
                       />
+                    ) : localCliReady && credentialMode === "subscription" ? (
+                      <p className="text-sm text-muted-foreground">Using your signed-in {adapterType === "claude_local" ? "Claude Code" : "Codex"} CLI account.</p>
+                    ) : checkingLocalCli ? (
+                      <p className="text-sm text-muted-foreground">Checking your local CLI sign-in…</p>
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
                         <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />

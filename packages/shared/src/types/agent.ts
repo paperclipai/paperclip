@@ -352,11 +352,14 @@ export interface AdapterEnvironmentTestResult {
 // no usable credential yet, but the caller can add one. "unknown" means the
 // route could not check, or the adapter type has no cheap signal. The route
 // that returns this value reads host-local state only; it never leases a
-// sandbox and never runs a shell command or a model request.
+// sandbox or starts a model request. Local CLI detection may ask the CLI for
+// its login status.
 export type AdapterAuthSignal = "present" | "absent" | "unknown";
 
 export interface AdapterAuthSignalResponse {
   status: AdapterAuthSignal;
+  /** Subscription login owned by the local operator, only for local-trusted execution. */
+  localCli?: AdapterAuthSignal;
 }
 
 export type AgentInstructionSource = "seed" | "board" | "api" | "tool" | "cleanup" | "restore";
