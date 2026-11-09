@@ -73,10 +73,10 @@ export async function readSecretEndpointTaskBinding(ctx: ChatCatalogContext, age
   if (run.id !== runId || run.companyId !== ctx.input.fixtures.company.id || run.agentId !== agentId || run.status !== "running" || !run.startedAt || !Number.isFinite(Date.parse(run.startedAt)) || run.contextSnapshot?.issueId !== taskId)
     throw new Error("Secret consumer is not the actual active assigned run");
   const [task, view] = await Promise.all([
-    ctx.input.api.get<{ id: string; companyId: string; assigneeAgentId: string | null; parentId: string | null; executionWorkspaceId: string | null }>(`/api/issues/${taskId}`, { timeout: 4000 }),
+    ctx.input.api.get<{ id: string; companyId: string; assigneeAgentId: string | null; originIssueId?: string | null; executionWorkspaceId: string | null }>(`/api/issues/${taskId}`, { timeout: 4000 }),
     ctx.input.api.get<{ workspace: { id: string; companyId: string; cwd: string } }>(`/api/issues/${taskId}/workspace`, { timeout: 4000 }),
   ]);
-  if (task.id !== taskId || task.companyId !== run.companyId || task.assigneeAgentId !== agentId || task.parentId !== ctx.issue()!.id || !task.executionWorkspaceId || view.workspace.id !== task.executionWorkspaceId || view.workspace.companyId !== run.companyId)
+  if (task.id !== taskId || task.companyId !== run.companyId || task.assigneeAgentId !== agentId || task.originIssueId !== ctx.issue()!.id || !task.executionWorkspaceId || view.workspace.id !== task.executionWorkspaceId || view.workspace.companyId !== run.companyId)
     throw new Error("Secret consumer task workspace binding mismatch");
   const [owned, actual, reported] = await Promise.all([realpath(temporary), realpath(view.workspace.cwd), realpath(cwd)]);
   if (!actual.startsWith(owned + path.sep) || reported !== actual) throw new Error("Secret consumer is outside its actual owned task cwd");

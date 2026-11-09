@@ -14,7 +14,7 @@ async function fixture() {
   const cwd = path.join(await realpath(root), "task"); await mkdir(cwd);
   const runId = "11111111-1111-1111-1111-111111111111";
   const run = { id: runId, companyId: "company", agentId: "morgan", status: "running", startedAt: "2026-10-28T01:00:00Z", contextSnapshot: { issueId: "task" } };
-  const task = { id: "task", companyId: "company", assigneeAgentId: "morgan", parentId: "source", executionWorkspaceId: "workspace" };
+  const task = { id: "task", companyId: "company", assigneeAgentId: "morgan", parentId: null as string | null, originIssueId: "source", executionWorkspaceId: "workspace" };
   const workspace = { id: "workspace", companyId: "company", cwd };
   const privateSecrets: string[] = [];
   const ctx = { scenario: { id: "secrets.least-scope-delivery" }, input: { nonce: "owned-test", execution: { environment: { id: "local" } }, fixtures: { company: { id: "company" } }, privateSecrets, api: { baseURL: "http://fixture.invalid", get: async (url: string) => url.startsWith("/api/heartbeat-runs/") ? run : url.endsWith("/workspace") ? { workspace } : task } }, issue: () => ({ id: "source" }) } as unknown as ChatCatalogContext;
@@ -24,11 +24,11 @@ it("binds only the actual active Morgan run, delegated task and its persisted ow
   const f = await fixture();
   await expect(readSecretEndpointTaskBinding(f.ctx, "morgan", f.run.id, "task", f.cwd)).resolves.toEqual({ taskId: "task", workspaceId: "workspace", taskWorkspaceMatched: true });
 });
-it.each(["CEO", "wrong task", "wrong parent", "wrong cwd", "foreign company", "wrong workspace", "unstarted", "settled"])("rejects %s before endpoint success", async invalid => {
+it.each(["CEO", "wrong task", "wrong origin chat", "wrong cwd", "foreign company", "wrong workspace", "unstarted", "settled"])("rejects %s before endpoint success", async invalid => {
   const f = await fixture(); let cwd = f.cwd;
   if (invalid === "CEO") f.run.agentId = "ceo";
   if (invalid === "wrong task") f.run.contextSnapshot.issueId = "other";
-  if (invalid === "wrong parent") f.task.parentId = "other";
+  if (invalid === "wrong origin chat") f.task.originIssueId = "other";
   if (invalid === "wrong cwd") cwd = path.dirname(f.cwd);
   if (invalid === "foreign company") f.workspace.companyId = "foreign";
   if (invalid === "wrong workspace") f.task.executionWorkspaceId = "other";
