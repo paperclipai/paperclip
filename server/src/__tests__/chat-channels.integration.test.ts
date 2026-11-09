@@ -133,6 +133,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { retryTemporaryDirectoryCleanupNow } from "../services/temporary-directory-cleanup.js";
 import {
   agents,
   agentWakeupRequests,
@@ -1180,6 +1181,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       restartFailed: 0, exposureReservationDrift: [],
     });
     expect(readWorkspaceRuntimeIdleWork()).toBe("none");
+    await retryTemporaryDirectoryCleanupNow();
   }, 90_000);
 
   afterAll(async () => {
