@@ -149,6 +149,45 @@ describePostgres("saved harness account preflight", () => {
     expect(ambient).not.toHaveBeenCalled();
   });
 
+  it.each(["claude_local", "codex_local"])("verifies a cross-provider pool with the selected adapter instead of configured %s", async configuredAdapterType => {
+    vi.spyOn(modelCatalog, "listOpenRouterModels").mockResolvedValue([{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Fixture model" }]);
+    const pool = await harnessPoolService(db).save(agent.companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: "Cross-provider lifecycle pool", enabled: true, mode: "failover", members: [{
+        id: randomUUID(), harness: { type: "opencode" }, connection: { mode: "delegated", provider: "openrouter", method: "api_key", ...account },
+        model: "openrouter/anthropic/claude-sonnet-4.5",
+      }],
+    } }, userId);
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    const checkEnvironment = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(environmentTests.agentEnvironmentTestService).mockImplementation((database, manager) => ({
+      ...realEnvironmentTests(database, manager),
+      resolveAdapterTestEnvironmentId: vi.fn().mockResolvedValue(environment.id),
+      assertAdapterTestEnvironmentForCompany: checkEnvironment,
+      resolveAdapterTestExecutionContext: allocate,
+      testManagedEnvironment: probe,
+    }));
+    [agent] = await db.update(agents).set({ adapterType: configuredAdapterType, adapterConfig: { model: "source-model" },
+      runtimeConfig: { harnessPool: { poolId: pool.id } },
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
+    }).where(eq(agents.id, agent.id)).returning();
+
+    await expect(verify()).resolves.toBe("complete");
+    expect(checkEnvironment).toHaveBeenCalledWith(agent.companyId, environment.id, "opencode_local");
+    expect(allocate).toHaveBeenCalledWith(expect.objectContaining({ adapterType: "opencode_local", environmentId: environment.id }));
+    expect(probe).toHaveBeenCalledOnce();
+    expect(probe.mock.calls[0][0]).toBe("opencode_local");
+    expect(probe.mock.calls[0][1]).toMatchObject({ adapterType: "opencode_local",
+      config: { model: "openrouter/anthropic/claude-sonnet-4.5", env: { OPENROUTER_API_KEY: "fixture-preflight-key" } } });
+    expect(release).toHaveBeenCalledExactlyOnceWith("released");
+    const [verified] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(verified.adapterType).toBe(configuredAdapterType);
+    expect(verified.harnessVerifiedDigest).toMatch(/^v2:hmac-sha256:[a-f0-9]{64}$/);
+
+    await db.update(agents).set({ adapterType: "opencode_local" }).where(eq(agents.id, agent.id));
+    await expect(verify()).resolves.toBe("complete");
+    expect(probe).toHaveBeenCalledOnce();
+  });
+
   it("checks account access again after allocation and releases on revocation", async () => {
     allocate.mockImplementationOnce(async () => {
       await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
