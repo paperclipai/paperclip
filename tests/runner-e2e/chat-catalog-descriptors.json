@@ -1051,7 +1051,7 @@
       "public-mcp-client.ts",
       "chat-scenarios/assistant-connections.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external-decline-consent.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -1102,7 +1102,7 @@
       "../../server/src/services/public-mcp/oauth.ts",
       "chat-scenarios/assistant-connections.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external-revoke-personal-grant.v2",
     "expectedRunCount": 2,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
