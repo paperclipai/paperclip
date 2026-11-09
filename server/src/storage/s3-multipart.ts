@@ -147,6 +147,20 @@ function isRequestRateLimited(error: unknown) {
   return name === "SlowDown" || $metadata?.httpStatusCode === 503 || $metadata?.httpStatusCode === 429;
 }
 
+const TRANSIENT_FILE_REQUEST_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_FILE_REQUEST_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN",
+  "ENOTFOUND", "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+const TRANSIENT_FILE_REQUEST_NAMES = new Set(["RequestTimeout", "TimeoutError", "NetworkingError", "InternalError", "ServiceUnavailable"]);
+
+function isTransientFileRequestFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { name, code, $metadata } = error as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  const status = $metadata?.httpStatusCode;
+  if (typeof status === "number") return TRANSIENT_FILE_REQUEST_STATUS.has(status);
+  return (typeof code === "string" && TRANSIENT_FILE_REQUEST_CODES.has(code))
+    || (typeof name === "string" && TRANSIENT_FILE_REQUEST_NAMES.has(name));
+}
+
 export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
   for (let failures = 0, throttles = 0; ;) {
     signal?.throwIfAborted();
@@ -163,7 +177,7 @@ export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefine
         await delay(wait, undefined, { signal });
         continue;
       }
-      if (++failures >= FILE_PART_ATTEMPTS) throw error;
+      if (!isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
       recordStorageBackoff(failures * 500);
       await delay(failures * 500, undefined, { signal });
     }

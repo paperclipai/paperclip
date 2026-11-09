@@ -84,7 +84,7 @@ function isTransientBodyError(error: unknown) {
     || (typeof message === "string" && /socket hang up|aborted|premature close/i.test(message));
 }
 
-function resumableBody(first: Readable, reopen: (offset: number) => Promise<Readable>, signal?: AbortSignal) {
+function resumableBody(first: Readable, reopen: (offset: number) => Promise<Readable>, length: number, signal?: AbortSignal) {
   let current = first, closed = false;
   async function* chunks() {
     let offset = 0, resumes = 0;
@@ -98,6 +98,7 @@ function resumableBody(first: Readable, reopen: (offset: number) => Promise<Read
         return;
       } catch (error) {
         current.destroy();
+        if (offset >= length) return;
         if (closed || signal?.aborted || resumes >= BODY_RESUME_ATTEMPTS || !isTransientBodyError(error)) throw error;
         resumes += 1;
         current = await reopen(offset);
@@ -264,7 +265,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
         };
         const stream = etag && end !== undefined
-          ? resumableBody(first, reopen, input.signal)
+          ? resumableBody(first, reopen, end - start + 1, input.signal)
           : first;
         if (input.signal) addAbortSignal(input.signal, stream);
         return {

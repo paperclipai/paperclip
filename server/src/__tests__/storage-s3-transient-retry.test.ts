@@ -81,6 +81,32 @@ describe("S3 transient failures on saved files", () => {
     expect(seen[1]!.body).toBe(content);
   });
 
+  it("does not resend a small upload the store refused for good", async () => {
+    respond = (_req, res) => {
+      res.writeHead(403, { "content-type": "application/xml" });
+      res.end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`);
+    };
+
+    await expect(provider().putObject({ objectKey: "company/workspace.pcws", body: Buffer.alloc(0),
+      contentType: "application/octet-stream", contentLength: 5, sourceFile: await sourceFile("bytes") }))
+      .rejects.toMatchObject({ name: "AccessDenied" });
+    expect(seen.map(entry => entry.method)).toEqual(["PUT"]);
+  });
+
+  it("keeps a download complete when its connection breaks after the last byte", async () => {
+    const content = "0123456789abcdefghij";
+    respond = (_req, res) => {
+      res.writeHead(200, { "content-length": String(content.length + 5), etag: '"v1"' });
+      res.write(content);
+      setTimeout(() => res.socket?.destroy(), 20);
+    };
+
+    const object = await provider().getObject({ objectKey: "company/restore.pcws", range: { start: 0, end: content.length - 1 } });
+
+    expect(await readAll(object.stream)).toBe(content);
+    expect(seen.map(entry => entry.method)).toEqual(["GET"]);
+  });
+
   it("resumes a download whose body is cut off from the byte where it stopped", async () => {
     const content = "0123456789abcdefghij";
     respond = (req, res, _body, index) => {
