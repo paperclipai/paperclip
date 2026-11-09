@@ -188,7 +188,10 @@ function companyIdForResource(resource: AuthorizationResource) {
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
   if (isConnectionManagementAction(action)) return CONNECTION_MANAGEMENT_PERMISSIONS[action];
   if (action === "project:write_workspace") return "tasks:assign";
-  if (action === "agent_config:read" || action === "agent_config:update" || action === "agent_instructions:update" || action === "skill_config:update") {
+  if (action === "agent_config:read" || action === "agent_config:update") {
+    return "agents:update_config";
+  }
+  if (action === "agent_instructions:update" || action === "skill_config:update") {
     return null;
   }
   if (
@@ -204,18 +207,15 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     action === "runtime:confirm_owner_stop" ||
     action === "secrets:read" ||
     action === "secrets:propose"
+
   ) {
     return null;
   }
   if (action === "issue:comment" || action === "issue:mutate") return null;
   return action;
 }
-
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
-  // Raw agent rows may predate permission normalization; apply the same
-  // defaults the agent service applies on read so enforcement matches what
-  // the API reports.
   return normalizeAgentPermissions(agent.permissions).canCreateAgents;
 }
 
@@ -252,6 +252,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function objectIsEmpty(value: Record<string, unknown>) {
   return Object.keys(value).length === 0;
+}
+
 }
 
 function readPolicyObject(container: unknown, key: string): Record<string, unknown> | null {
