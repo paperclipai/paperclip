@@ -79,7 +79,8 @@ export function hasLink(o: InternalObservation, kind: "issues" | "projects" | "g
       const url = new URL(href, o.origin);
       if (url.origin !== new URL(o.origin).origin) return false;
       const parts = url.pathname.split("/").map(decodeURIComponent); const index = parts.indexOf(kind);
-      return index >= 0 && [row.id, row.identifier, row.urlKey].includes(parts[index + 1]);
+      const target = parts[index + 1];
+      return index >= 0 && !!target && [row.id, row.identifier, row.urlKey].filter(Boolean).includes(target);
     } catch { return false; }
   });
 }
