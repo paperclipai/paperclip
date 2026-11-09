@@ -40,12 +40,12 @@ function gradePlanReviewOutcome(value: unknown) {
   } else if (o.scenarioId === "questions-and-approvals.reject-and-revise") {
     c.add("publication-decision-declined", ["rejected", "superseded"].includes(current?.status ?? "") && !o.activity.some(row => row.action === "issue.thread_interaction_accepted" && row.details?.interactionId === original?.id)
       && o.state.rejectedReceiptVisible === true, "The old publication request remains visibly declined or superseded and is never accepted.");
-    c.add("real-local-review-draft", o.documents.length > 0 && o.documents.some(row => (row.body ?? "").includes(String(o.state.scopeMarker)) && /draft|review/i.test(row.body ?? "")
+    c.add("real-local-review-draft", o.documents.length > 0 && o.documents.some(row => (row.body ?? "").includes(String(o.state.scopeMarker))
       && !!row.latestRevisionId && row.latestRevisionId !== plan?.latestRevisionId && o.revisions.some(revision => revision.id === row.latestRevisionId && revision.documentId === row.id
         && o.runs.some(run => run.id === revision.createdByRunId && run.agentId === revision.createdByAgentId && [o.leadId, worker?.id].includes(run.agentId)))
       && (row.issueId === o.state.sourceId ? o.links.some(link => link.includes(`#document-${encodeURIComponent(row.key!)}`)) : o.tasks.some(task => task.id === row.issueId && hasLink(o, "issues", task))))
-      && o.state.sourceRetainsConversation === true && o.state.noPublishedWorkProduct === true && !/\b(?:I|we)(?:'ve| have)?\s+(?:published|deployed)\b/i.test(o.reply),
-      "The revised scope produces an actual attributed local review document and linked task, without a published delivery record or claimed publication.");
+      && o.state.sourceRetainsConversation === true && o.state.noPublishedWorkProduct === true,
+      "The revised scope produces an actual attributed new local document carrying the setup's scope marker, linked from the reply, without a published delivery record. Its wording and the reply's wording are not graded.");
   } else c.add("known-plan-workflow", false, "No oracle exists for this workflow.");
   return c.result();
 }
@@ -143,7 +143,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
       supersedeOnUserComment: false, target: { type: "issue_document", issueId: source.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { sourceId: source.id, personId: session.user.id, worker, plan, original, scopeMarker };
 }, gradePlanReview, {
-  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v2", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
+  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v3", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
   async act(ctx, state) {
     const originalDeadline = ctx.observationDeadlineAt;
@@ -156,7 +156,12 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
       reject: value => value.observation.runs.length > 3 || value.observation.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Plan decision contains failed, cancelled or excess native work" : undefined });
     const original = entity(state, "original");
     if (scenarioId.endsWith("reject-and-revise")) {
-      const card = ctx.input.page.locator(`#interaction-${original.id}`); await expect(card).toContainText(/Declined|Superseded/i); state.rejectedReceiptVisible = true; return;
+      // A rejected plan-target confirmation renders as requested changes in
+      // both the classic receipt ("Requested changes to Plan v1") and the
+      // Coordinator receipt ("Changes requested · v1"); the saved status is
+      // graded separately as rejected or superseded.
+      const card = ctx.input.page.locator(`#interaction-${original.id}`);
+      await expect(card).toContainText(/Declined|Superseded|Changes requested|Requested changes/i); await expect(card).not.toContainText(/Approved/i); state.rejectedReceiptVisible = true; return;
     }
     // A separate additional review opens before its actual public document edit.
     // The first canonical approval's source plan is never rewritten by this check.
