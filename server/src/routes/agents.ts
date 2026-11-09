@@ -288,6 +288,7 @@ import { buildOnboardingFirstAgentInstructionsBundle } from "../services/onboard
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { isReservedReviewHandoffIdempotencyKey } from "../services/recovery/review-handoff-retry.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
@@ -6170,11 +6171,20 @@ export function agentRoutes(
     source: HeartbeatSource | undefined;
     skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, payload: Record<string, unknown> | null) => unknown | Promise<unknown>;
   };
+  const assertCallerIdempotencyKeyAllowed = (key: unknown) => {
+    if (isReservedReviewHandoffIdempotencyKey(key)) {
+      throw unprocessable("This idempotency key prefix is reserved for server review handoffs.", {
+        code: "reserved_idempotency_key",
+      });
+    }
+  };
+
   const handleWakeupRoute = async (
     req: Request,
     res: Response,
     opts: WakeupRouteOpts,
   ): Promise<void> => {
+    assertCallerIdempotencyKeyAllowed(req.body?.idempotencyKey);
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
@@ -6452,6 +6462,7 @@ export function agentRoutes(
     if (req.body?.failedRunId !== undefined) {
       throw badRequest("Use the wakeup endpoint to retry an exact failed run.");
     }
+    assertCallerIdempotencyKeyAllowed(req.body?.idempotencyKey);
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;

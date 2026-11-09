@@ -73,6 +73,13 @@ export const agentWakeupRequests = pgTable(
       .where(
         sql`${table.idempotencyKey} LIKE 'issue_disposition_repair:%' AND ${table.status} <> 'skipped'`,
       ),
+    reviewHandoffRetryIdempotencyUq: uniqueIndex(
+      "agent_wakeup_requests_review_handoff_retry_idempotency_uq",
+    )
+      .on(table.companyId, table.idempotencyKey)
+      .where(
+        sql`${table.idempotencyKey} LIKE 'review-handoff:%' AND ${table.status} <> 'skipped'`,
+      ),
     questionResponseDeliveryIdempotencyUq: uniqueIndex(
       "agent_wakeup_requests_question_response_delivery_idempotency_uq",
     )
