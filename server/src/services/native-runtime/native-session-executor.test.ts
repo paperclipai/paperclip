@@ -13583,6 +13583,51 @@ describe("native session bounded recovery", () => {
     expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
   });
 
+  it("waits for an in-flight governance pause Stop to save its acknowledgement before judging a missing result", async () => {
+    let releaseCleanup!: () => void, endTurn!: () => void, opened!: () => void;
+    const turnEnded = new Promise<void>(resolve => { endTurn = resolve; });
+    const sessionOpen = new Promise<void>(resolve => { opened = resolve; });
+    state.cancel.mockReset().mockReturnValue({ cleanup: new Promise<void>(resolve => { releaseCleanup = resolve; }) });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession({ cancel: state.cancel });
+      opened();
+      await turnEnded;
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    const runResultJson: Record<string, unknown> = {};
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const outcome = executePaperclipNativeSession({ db: leaseDb(execution, {}, runResultJson, updates), execution, runnerInstanceId: "pause-stop-in-flight" })
+      .catch(error => error);
+    // The pause's fence recorded its cancellation before dispatch.
+    const persistence = cancellationDb({ resultJson: {
+      cancellation: { reason: "Agent lifecycle stop requested", source: "control_plane", expected: true,
+        initiator: { type: "system" }, recordedAt: new Date().toISOString() },
+      pauseStop: { holds: ["company_paused"], companyPauseReason: "budget" } } });
+    const transaction = persistence.db.transaction.bind(persistence.db);
+    // The executor reads the same durable run row the Stop writes.
+    (persistence.db as unknown as { transaction: typeof transaction }).transaction = (async (operation: Parameters<typeof transaction>[0]) => {
+      const result = await transaction(operation);
+      Object.assign(runResultJson, persistence.getResultJson());
+      return result;
+    }) as typeof transaction;
+    await sessionOpen;
+    const stopping = cancelNativeSession(execution.binding.runId, "Agent lifecycle stop requested", { db: persistence.db, scope: "run" });
+    try {
+      await vi.waitFor(() => expect(state.cancel).toHaveBeenCalledOnce());
+      // The interrupted turn ends before the Stop saves its acknowledgement.
+      endTurn();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+      releaseCleanup();
+      await stopping;
+      expect(await outcome).toMatchObject({ name: "NativeCancellationPendingRecoveryError" });
+      expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+      expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+      expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+    } finally { releaseCleanup(); endTurn(); await outcome; }
+  });
+
   it("still retries a missing result after a system Stop that is not a governance pause", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};

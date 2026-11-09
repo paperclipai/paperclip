@@ -11582,9 +11582,14 @@ async function executePaperclipNativeSessionWithinScope(
       }
       trace.activate(taskSettleScope);
       liveQuestions.close();
+      const activeAtFailure = activeNativeSessions.get(input.execution.binding.runId);
       activeNativeSessions.delete(input.execution.binding.runId);
       clearSteeringDeliveries(input.execution.binding.runId);
       clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
+      // A Stop interrupts the provider before it saves its acknowledgement.
+      // When the interrupted turn ends first, wait for that Stop to settle, so
+      // the checks below judge its saved receipt, not a failure.
+      if (activeAtFailure?.cancelRequested) await activeAtFailure.cancellationSettled?.catch(() => undefined);
       // Stop before paperclip_finish is normal. Bounded provider teardown has
       // finished; a missing result must not overwrite cancellation or trigger
       // another turn to perform completion bookkeeping.
