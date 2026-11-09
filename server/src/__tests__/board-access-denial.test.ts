@@ -50,6 +50,30 @@ describe("board-only denial", () => {
     expect(res.body.remediation).toContain(link);
   });
 
+  it("links the resolved project when an agent names the project by its short reference", async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = agentActor;
+      next();
+    });
+    const router = express.Router();
+    router.param("id", (req, _res, next, rawId) => {
+      req.params.id = rawId === "acquisition" ? AGENT_ID : rawId;
+      next();
+    });
+    router.post("/projects/:id/access-members", (req, res) => {
+      assertBoard(req);
+      res.json({ ok: true });
+    });
+    app.use("/api", router);
+    app.use(errorHandler);
+    const resolved = await request(app).post("/api/projects/acquisition/access-members").expect(403);
+    expect(resolved.body.remediation).toContain(`[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`);
+    const unresolved = await request(app).post("/api/projects/unknown-project/access-members").expect(403);
+    expect(unresolved.body.remediation).toContain("Link a page only if you already know its route");
+    expect(unresolved.body.remediation).not.toContain("](/");
+  });
+
   it("falls back to a general board instruction when no page is known", async () => {
     const res = await request(createApp(agentActor)).get(`/api/companies/${COMPANY_ID}/managed-agent-profiles`).expect(403);
     expect(res.body.code).toBe(BOARD_ACCESS_REQUIRED_CODE);
