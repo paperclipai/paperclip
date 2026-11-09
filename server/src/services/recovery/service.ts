@@ -4725,6 +4725,16 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        agent.lifecycleHolds.includes("manual") &&
+        issue.status === "todo" &&
+        !latestRun
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
