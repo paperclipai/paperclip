@@ -574,9 +574,16 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     try {
       expect(await reopened.recover(call)).toEqual({ result });
       expect(await reopened.execute(call)).toEqual(result);
-      await expect(reopened.execute({ ...call, callId: "new-bodyless-patch" })).rejects.toThrow(/not sent.*requires body/);
+      const rejected = { ...call, callId: "new-bodyless-patch" };
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
+    // The rejected call reserved no receipt, so its callId stays usable for the corrected call.
+    const [after] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(Object.keys((after.resultJson as Record<string, any>).apiToolReceipts)).not.toContain(sha("new-bodyless-patch"));
+    expect(await reopened.execute({ tool: "call_api", callId: "new-bodyless-patch", arguments: { ...bodyless, body: { name: "Corrected" } } }))
+      .toMatchObject({ ok: true, status: 200, data: { name: "Corrected" } });
   });
 
   it("returns and replays scoped secret values without plaintext receipts or response assets", async () => {
