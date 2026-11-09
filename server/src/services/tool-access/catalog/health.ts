@@ -226,7 +226,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
         ...githubRecovery,
-        ...unreachableServerRemediation(error, connection.id, actor),
+        ...unreachableServerRemediation(error, actor),
       }));
     }
   }
