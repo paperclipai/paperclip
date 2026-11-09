@@ -121,6 +121,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .toEqual([f.parent.id, ...dependents.map(dependent => dependent.id)].sort());
   });
 
+  it("pages past waiters whose agents take no wakes, so later waiters are reached", async () => {
+    const f = await fixture();
+    const [sleepy, awake] = [randomUUID(), randomUUID()];
+    await db.insert(agents).values([
+      { id: sleepy, companyId: f.companyId, name: "Sleepy", role: "engineer", status: "paused" },
+      { id: awake, companyId: f.companyId, name: "Awake", role: "engineer", status: "idle" },
+    ]);
+    companyIdOf.set(sleepy, f.companyId); companyIdOf.set(awake, f.companyId);
+    const rows = Array.from({ length: 101 }, (_, index) => ({ id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      companyId: f.companyId, title: `Waiter ${index}`, status: "todo" as const, assigneeAgentId: index < 100 ? sleepy : awake }));
+    await db.insert(issues).values(rows);
+    await db.insert(issueRelations).values(rows.map(row => ({ companyId: f.companyId, issueId: f.child.id,
+      relatedIssueId: row.id, type: "blocks" as const })));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const result = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, issueId: f.child.id });
+    expect(calls.map(call => call.input.payload.issueId)).toContain(rows[100]!.id);
+    expect(result.deferred).toBe(100);
+  });
+
   it("wakes the dependent when the blocker's board action resolved as blocked (t05 shape)", async () => {
     // t05: CHA-8 blocks CHA-5. Its board-owned action was resolved with outcome
     // "blocked" six seconds after creation, as the issue moved to blocked for
@@ -222,8 +241,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       contextSnapshot: { ...calls[0]!.input.contextSnapshot, wakeReason: "workspace_busy_retry", retryOfRunId: randomUUID() } }).returning();
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(1);
-    // A retry chain that was itself cancelled no longer counts.
-    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
+    // A retry chain that was itself cancelled, or failed before the agent ran, no longer counts.
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, retry.id));
     await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
     expect(calls).toHaveLength(2);
   });

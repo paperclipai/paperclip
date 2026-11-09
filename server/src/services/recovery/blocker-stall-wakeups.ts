@@ -33,8 +33,12 @@ const WAKEABLE_WAITER_STATUSES = ["todo", "in_progress", "in_review", "blocked"]
 const MAX_STALLS_PER_PASS = 200;
 /** A wake row with one of these statuses was delivered or is still pending. */
 const DELIVERED_OR_PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed", "coalesced", "completed"];
-/** Waiters of one stall woken per pass; delivered ones drop out, so later passes reach the rest. */
+/** Waiters of one stall read per page, and scanned per pass before a cursor resumes the rest. */
 const MAX_WAITERS_PER_STALL = 100;
+const MAX_WAITERS_SCANNED_PER_STALL = 500;
+const waiterCursors = new Map<string, string>();
+/** Runs that still hold, or already delivered, a stall prompt. A failed setup never did. */
+const DELIVERING_RUN_STATUSES = ["queued", "scheduled_retry", "running", "succeeded"];
 /** A refused wake (skipped, failed, cancelled) is retried, but not more often than this. */
 const REFUSED_WAKE_RETRY_MS = 10 * 60_000;
 const NON_INVOKABLE_AGENT_STATUSES = ["paused", "terminated", "pending_approval"];
@@ -191,93 +195,104 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
 
   for (const stall of stalled) {
     result.stalls += 1;
-    const waiters = await db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
-      status: issues.status, responsibleUserId: issues.responsibleUserId,
-      relation: sql<"child" | "blocker">`case when ${issues.id} = ${stall.parentId ?? null} then 'child' else 'blocker' end` })
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, stall.companyId),
-        ne(issues.id, stall.issueId),
-        inArray(issues.status, WAKEABLE_WAITER_STATUSES),
-        isNull(issues.hiddenAt),
-        sql`${issues.assigneeAgentId} is not null`,
-        // A waiter's own sweep wakes only that waiter for its children and
-        // blockers; the stalled issue's own pass covers all of its waiters.
-        opts.issueId && stall.issueId !== opts.issueId ? eq(issues.id, opts.issueId) : undefined,
-        sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
-          and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
-          and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
-        or(
-          stall.parentId ? eq(issues.id, stall.parentId) : sql`false`,
-          sql`exists (select 1 from ${issueRelations} r where r.company_id = ${stall.companyId}
-            and r.type = 'blocks' and r.issue_id = ${stall.issueId} and r.related_issue_id = ${issues.id})`,
-        ),
-      )).orderBy(issues.id).limit(MAX_WAITERS_PER_STALL);
-    for (const waiter of waiters) {
-      const idempotencyKey = issueBlockerStalledWakeKey({ waiterIssueId: waiter.id, stalledIssueId: stall.issueId, recoveryActionId: stall.actionId });
-      // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.
-      // A delivered or pending wake ends it. A refused one (wake-on-demand off,
-      // agent paused) is retried once the refusal is old, so re-enabling wakes
-      // still delivers the stall.
-      const [existing] = await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status,
-        requestedAt: agentWakeupRequests.requestedAt }).from(agentWakeupRequests)
-        .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
-          sql`${agentWakeupRequests.payload}->>'issueId' = ${waiter.id}`,
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-          or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES),
-            gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
-      if (existing) {
-        result.alreadyWoken += 1;
-        // A recent refusal is retried once it is old; the worker comes back then.
-        if (!(DELIVERED_OR_PENDING_WAKE_STATUSES as readonly string[]).includes(existing.status))
-          retryAt(existing.requestedAt.getTime() + REFUSED_WAKE_RETRY_MS);
-        continue;
+    const cursorKey = `${stall.actionId}:${opts.issueId ?? "*"}`;
+    let after = waiterCursors.get(cursorKey) ?? null;
+    let scanned = 0;
+    for (;;) {
+      const waiters = await db.select({ id: issues.id, identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status, responsibleUserId: issues.responsibleUserId,
+        relation: sql<"child" | "blocker">`case when ${issues.id} = ${stall.parentId ?? null} then 'child' else 'blocker' end` })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, stall.companyId),
+          ne(issues.id, stall.issueId),
+          inArray(issues.status, WAKEABLE_WAITER_STATUSES),
+          isNull(issues.hiddenAt),
+          sql`${issues.assigneeAgentId} is not null`,
+          // A waiter's own sweep wakes only that waiter for its children and
+          // blockers; the stalled issue's own pass covers all of its waiters.
+          opts.issueId && stall.issueId !== opts.issueId ? eq(issues.id, opts.issueId) : undefined,
+          after ? gt(issues.id, after) : undefined,
+          sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
+            and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
+            and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
+          or(
+            stall.parentId ? eq(issues.id, stall.parentId) : sql`false`,
+            sql`exists (select 1 from ${issueRelations} r where r.company_id = ${stall.companyId}
+              and r.type = 'blocks' and r.issue_id = ${stall.issueId} and r.related_issue_id = ${issues.id})`,
+          ),
+        )).orderBy(issues.id).limit(MAX_WAITERS_PER_STALL);
+      for (const waiter of waiters) {
+        const idempotencyKey = issueBlockerStalledWakeKey({ waiterIssueId: waiter.id, stalledIssueId: stall.issueId, recoveryActionId: stall.actionId });
+        // (company_id, payload->>'issueId') is indexed; the key narrows to this stall.
+        // A delivered or pending wake ends it. A refused one (wake-on-demand off,
+        // agent paused) is retried once the refusal is old, so re-enabling wakes
+        // still delivers the stall.
+        const [existing] = await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status,
+          requestedAt: agentWakeupRequests.requestedAt }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${waiter.id}`,
+            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES),
+              gt(agentWakeupRequests.requestedAt, new Date(Date.now() - REFUSED_WAKE_RETRY_MS))))).limit(1);
+        if (existing) {
+          result.alreadyWoken += 1;
+          // A recent refusal is retried once it is old; the worker comes back then.
+          if (!(DELIVERED_OR_PENDING_WAKE_STATUSES as readonly string[]).includes(existing.status))
+            retryAt(existing.requestedAt.getTime() + REFUSED_WAKE_RETRY_MS);
+          continue;
+        }
+        // A resource wait cancels the stall wake's run and schedules a retry
+        // with no idempotency key; the retry keeps the stall in its context.
+        const [carried] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, stall.companyId), eq(heartbeatRuns.agentId, waiter.assigneeAgentId!),
+            inArray(heartbeatRuns.status, DELIVERING_RUN_STATUSES),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${waiter.id}`,
+            sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
+            sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`)).limit(1);
+        if (carried) { result.alreadyWoken += 1; continue; }
+        if (!(await acceptsWakes(waiter.assigneeAgentId!))) {
+          result.deferred += 1;
+          retryAt(Date.now() + REFUSED_WAKE_RETRY_MS);
+          continue;
+        }
+        // A private stalled issue's details never reach an agent that cannot read it.
+        const readable = await agentCanRead(waiter.assigneeAgentId!, waiter.responsibleUserId, stall);
+        const context = readable ? stallContext(stall, waiter.relation) : redactedStallContext(stall, waiter.relation);
+        try {
+          const wake = await enqueueWakeup(waiter.assigneeAgentId!, {
+            source: "automation", triggerDetail: "system", reason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
+            payload: { issueId: waiter.id, ...context }, idempotencyKey,
+            requestedByActorType: "system", requestedByActorId: "issue-blocker-stall",
+            contextSnapshot: { issueId: waiter.id, taskId: waiter.id, wakeReason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
+              source: "issue.blocker_stalled", blockerStall: context },
+            // One stall per run: coalescing would keep only the last blockerStall
+            // context while marking every merged stall as delivered.
+            allowRunCoalescing: false,
+            issueStateGuard: { statuses: WAKEABLE_WAITER_STATUSES, assigneeAgentId: waiter.assigneeAgentId! },
+          });
+          // Null is a normal deferral (for example wake-on-demand disabled): no
+          // wake row exists yet, so a later sweep tries again.
+          if (!wake) { result.deferred += 1; continue; }
+          await logActivity(db, {
+            companyId: stall.companyId, actorType: "system", actorId: "issue-blocker-stall",
+            action: "issue.blocker_stalled_wake", entityType: "issue", entityId: waiter.id,
+            agentId: waiter.assigneeAgentId, issueId: waiter.id,
+            details: { stalledIssueId: stall.issueId, stalledIssueIdentifier: readable ? stall.identifier : null,
+              relation: waiter.relation, recoveryActionId: stall.actionId,
+              recoveryActionKind: readable ? stall.kind : null, recoveryActionStatus: stall.status, detailsWithheld: !readable },
+          });
+          result.woken += 1;
+        } catch {
+          // The next sweep retries: no wake row with this key exists yet.
+          result.failed += 1;
+        }
       }
-      // A resource wait cancels the stall wake's run and schedules a retry
-      // with no idempotency key; the retry keeps the stall in its context.
-      const [carried] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, stall.companyId), eq(heartbeatRuns.agentId, waiter.assigneeAgentId!),
-          ne(heartbeatRuns.status, "cancelled"),
-          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${waiter.id}`,
-          sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,stalledIssueId}' = ${stall.issueId}`,
-          sql`${heartbeatRuns.contextSnapshot}#>>'{blockerStall,recoveryAction,id}' = ${stall.actionId}`)).limit(1);
-      if (carried) { result.alreadyWoken += 1; continue; }
-      if (!(await acceptsWakes(waiter.assigneeAgentId!))) {
-        result.deferred += 1;
-        retryAt(Date.now() + REFUSED_WAKE_RETRY_MS);
-        continue;
-      }
-      // A private stalled issue's details never reach an agent that cannot read it.
-      const readable = await agentCanRead(waiter.assigneeAgentId!, waiter.responsibleUserId, stall);
-      const context = readable ? stallContext(stall, waiter.relation) : redactedStallContext(stall, waiter.relation);
-      try {
-        const wake = await enqueueWakeup(waiter.assigneeAgentId!, {
-          source: "automation", triggerDetail: "system", reason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
-          payload: { issueId: waiter.id, ...context }, idempotencyKey,
-          requestedByActorType: "system", requestedByActorId: "issue-blocker-stall",
-          contextSnapshot: { issueId: waiter.id, taskId: waiter.id, wakeReason: ISSUE_BLOCKER_STALLED_WAKE_REASON,
-            source: "issue.blocker_stalled", blockerStall: context },
-          // One stall per run: coalescing would keep only the last blockerStall
-          // context while marking every merged stall as delivered.
-          allowRunCoalescing: false,
-          issueStateGuard: { statuses: WAKEABLE_WAITER_STATUSES, assigneeAgentId: waiter.assigneeAgentId! },
-        });
-        // Null is a normal deferral (for example wake-on-demand disabled): no
-        // wake row exists yet, so a later sweep tries again.
-        if (!wake) { result.deferred += 1; continue; }
-        await logActivity(db, {
-          companyId: stall.companyId, actorType: "system", actorId: "issue-blocker-stall",
-          action: "issue.blocker_stalled_wake", entityType: "issue", entityId: waiter.id,
-          agentId: waiter.assigneeAgentId, issueId: waiter.id,
-          details: { stalledIssueId: stall.issueId, stalledIssueIdentifier: readable ? stall.identifier : null,
-            relation: waiter.relation, recoveryActionId: stall.actionId,
-            recoveryActionKind: readable ? stall.kind : null, recoveryActionStatus: stall.status, detailsWithheld: !readable },
-        });
-        result.woken += 1;
-      } catch {
-        // The next sweep retries: no wake row with this key exists yet.
-        result.failed += 1;
-      }
+      scanned += waiters.length;
+      if (waiters.length < MAX_WAITERS_PER_STALL) { waiterCursors.delete(cursorKey); break; }
+      after = waiters.at(-1)!.id;
+      // Skipped waiters (agents taking no wakes) never pin later ones: the next pass resumes here.
+      if (scanned >= MAX_WAITERS_SCANNED_PER_STALL) { waiterCursors.set(cursorKey, after); retryAt(Date.now()); break; }
     }
   }
   return result;
