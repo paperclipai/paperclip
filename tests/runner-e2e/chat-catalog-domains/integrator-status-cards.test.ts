@@ -131,6 +131,11 @@ describe("saved card state and truthful generation controls", () => {
     // A read in the earlier refresh turn does not answer the later question.
     const earlier = structuredClone(o); delete earlier.cardOperations!["ceo-four"]; earlier.cardOperations!["ceo-three"]!.push("GET /api/status-cards/{id}/updates");
     expect(gradeIntegratorCards(earlier).passed).toBe(false);
+    // The company card list carries the card's error state, so reading it answers the question; revisions alone do not.
+    const listed = structuredClone(o); listed.cardOperations!["ceo-four"] = ["GET /api/companies/{companyId}/status-cards", "GET /api/status-cards/{id}/summary-revisions"];
+    expect(gradeIntegratorCards(listed).passed).toBe(true);
+    const revisionsOnly = structuredClone(o); revisionsOnly.cardOperations!["ceo-four"] = ["GET /api/status-cards/{id}/summary-revisions"];
+    expect(gradeIntegratorCards(revisionsOnly).passed).toBe(false);
     const checkpoint = (o.state as Record<string, unknown>).successfulRefreshResult as ReturnType<typeof valid>;
     expect(gradeIntegratorCards({ ...o, reply: checkpoint.reply }).passed).toBe(false);
     // Wording is not graded: a reworded account passes.
@@ -145,8 +150,9 @@ it("reads the status-card operations a run started from its tool-call events", (
     started("call_api", { data: "***REDACTED***", operationId: "GET /api/status-cards/{id}" }),
     started("call_api", { operationId: "GET /api/issues/{id}" }),
     started("search_api", { query: "status card" }),
+    started("call_api", { operationId: "GET /api/companies/{companyId}/status-cards" }),
     { eventType: "item.completed", payload: { prpEvent: { payload: { item: { type: "tool_use", input: { operationId: "GET /api/status-cards/{id}/updates" } } } } } },
-  ])).toEqual(["GET /api/status-cards/{id}"]);
+  ])).toEqual(["GET /api/status-cards/{id}", "GET /api/companies/{companyId}/status-cards"]);
 });
 it("grades a created card by saved state and its link, not by the reply's wording", () => {
   const o = valid("status-cards.create-card");

@@ -20,7 +20,7 @@ export function statusCardOperations(events: readonly Record<string, unknown>[])
   for (const row of events) {
     if (row.eventType !== "item.started") continue;
     const item = objectRecord(objectRecord(objectRecord(objectRecord(row.payload).prpEvent).payload).item), operation = objectRecord(item.input).operationId;
-    if (item.type === "tool_use" && typeof operation === "string" && operation.includes("/api/status-cards/")) operations.push(operation);
+    if (item.type === "tool_use" && typeof operation === "string" && /\/status-cards(?:\/|$)/.test(operation)) operations.push(operation);
   }
   return operations;
 }
@@ -55,6 +55,8 @@ async function observeCardOperations(ctx: ChatCatalogContext, base: InternalObse
   return Object.fromEntries(await Promise.all(base.runs.filter(run => run.agentId === base.leadId).map(async run => [run.id,
     statusCardOperations(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)))])));
 }
+/** Reads that return the card's saved state: the company list and the card both carry state, failureReason and lastGeneratedAt. */
+const CARD_STATE_READS = ["GET /api/companies/{companyId}/status-cards", "GET /api/status-cards/{id}"];
 /** True when one of the lead's runs in this turn read the card's saved state. */
 function turnReadCard(o: CardsObservation, runIds: readonly string[], operations: readonly string[]) {
   return runIds.some(id => o.cardOperations?.[id]?.some(operation => operations.includes(operation)));
@@ -152,7 +154,7 @@ export function gradeIntegratorCards(value: unknown) {
     const initialRunIds = new Set(initial?.runs.map(run => run.id));
     const resultTurn = successfulResult ? leadRuns(successfulResult.runs).filter(id => !initialRunIds.has(id)) : [];
     const finalReply = initial && successfulResult?.reply.startsWith(initial.reply) ? successfulResult.reply.slice(initial.reply.length) : "";
-    c.add("actual-result-reported-after-generation", finalReply.trim().length > 0 && turnReadCard(o, resultTurn, ["GET /api/status-cards/{id}", "GET /api/status-cards/{id}/summary-revisions", "GET /api/status-cards/{id}/updates"]),
+    c.add("actual-result-reported-after-generation", finalReply.trim().length > 0 && turnReadCard(o, resultTurn, [...CARD_STATE_READS, "GET /api/status-cards/{id}/summary-revisions", "GET /api/status-cards/{id}/updates"]),
       "After the summarizer finished, the lead's answer to the later question came from a fresh read of the saved card or its revisions.");
     const recipe = o.state.cardRecipe as CardRecipe | undefined;
     const initialUpdate = (o.state.originalUpdates as StatusCardUpdate[] | undefined)?.find(row => row.kind !== "compile" && row.status === "ok");
@@ -170,7 +172,7 @@ export function gradeIntegratorCards(value: unknown) {
       && JSON.stringify(o.summaries[card.id]) === JSON.stringify(successfulResult.summaries[card.id]), "An independently observed real card-generation error and failed update retain the previous successful summary, timestamp and complete history. A failed native row without card error does not qualify.");
     const beforeFailureQuestion = new Set(o.state.failureQuestionRunIds as string[] | undefined);
     const failureTurn = Array.isArray(o.state.failureQuestionRunIds) ? leadRuns(o.runs).filter(id => !beforeFailureQuestion.has(id)) : [];
-    c.add("actual-generation-error-reported", failureReply.trim().length > 0 && turnReadCard(o, failureTurn, ["GET /api/status-cards/{id}", "GET /api/status-cards/{id}/updates"]),
+    c.add("actual-generation-error-reported", failureReply.trim().length > 0 && turnReadCard(o, failureTurn, [...CARD_STATE_READS, "GET /api/status-cards/{id}/updates"]),
       "The failed-attempt question is answered from a fresh read of the card's saved error state or update history, which holds the error and the retained summary.");
   } else if (o.scenarioId === "status-cards.other-authors-card") {
     c.add("morgan-card-not-evaded", !!before && !!card && card.createdByAgentId === (o.state.worker as Entity | undefined)?.id && o.cards.length === 1
@@ -313,7 +315,7 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   }),
   define("status-cards.refresh-card", "ceo", { expectedRunCount: 7, expectedHumanMessageCount: 4, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 7 } },
-    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v4",
+    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v5",
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
 
     async act(ctx, state) {
