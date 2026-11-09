@@ -95,6 +95,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "storm-minutes": { type: "string" },
       lifecycle: { type: "string" },
       "k4-hold-max-seconds": { type: "string" },
+      "fault-after-seconds": { type: "string" },
       "crash-point": { type: "string" },
       "crash-point-hold-ms": { type: "string" },
       "upgrade-from": { type: "string" },
@@ -108,7 +109,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -163,10 +164,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
     ...(values["k4-hold-max-seconds"] !== undefined
       ? { k4HoldMaxMs: integer(values["k4-hold-max-seconds"], "k4-hold-max-seconds", 300, 120, 600) * 1000 } : {}),
+    ...(values["fault-after-seconds"] !== undefined
+      ? { faultAfterMs: integer(values["fault-after-seconds"], "fault-after-seconds", 60, 5, 3_600) * 1000 } : {}),
     ...(crashPoint ? { crashPoint } : {}),
     ...(crashPoint && values["crash-point-hold-ms"] !== undefined
       ? { crashPointHoldMs: integer(values["crash-point-hold-ms"], "crash-point-hold-ms", 0, 0, 600_000) } : {}),
   };
+  if (values["fault-after-seconds"] !== undefined && (stormMinutes || crashPoint)) {
+    throw new Error("--fault-after-seconds sets planned fault times; a storm or crash-point wave has none");
+  }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
