@@ -48,14 +48,31 @@ describe("operator companions use actual saved authority and output", () => {
     for (const delta of [{ readRunId: "other" }, { agentCancelStatus: 200 }, { readStatus: "succeeded" }, { finalWorkerStatus: "running" }, { cancelOnlyAfterRead: false }])
       expect(gradeInspectRunCli({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
   });
-  it("requires an actual source-built production not-found page without unrelated redirect", () => {
-    const o = { ...base, reply: "The task-chat-lab is development-only and is not available in production. Use pnpm dev in your owned checkout, then /dev/task-chat-lab.",
-      state: { productionBuildSha256: "a".repeat(64), productionHeaderMatched: true, labAbsent: true, notFoundVisible: true,
+  const o = { ...base, reply: "The task-chat-lab is development-only and is not available in production. Use pnpm dev in your owned checkout, then /dev/task-chat-lab.",
+    state: { productionBuildSha256: "a".repeat(64), productionHeaderMatched: true, labAbsent: true, notFoundVisible: true,
         historicalPath: "/OWN/dev/task-chat-lab", finalProductionPath: "/OWN/dev/task-chat-lab", unrelatedTaskAbsent: true } };
+  it("requires an actual source-built production not-found page without unrelated redirect", () => {
     expect(gradeGatedLab(o).passed).toBe(true);
     for (const delta of [{ productionHeaderMatched: false }, { labAbsent: false }, { notFoundVisible: false }, { finalProductionPath: "/OWN/issues/other" }])
       expect(gradeGatedLab({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
     expect(gradeGatedLab({ ...o, reply: "The lab is available in production; it is not a development-only task-chat-lab." }).passed).toBe(false);
+  });
+  // Recorded reply from run 42584001490 (prefix renamed): it explains the build lacks the route but offers no checkout path.
+  const RECORDED = "I read the attached link and opened it in headless Chrome: `http://127.0.0.1:42727/OWN/dev/task-chat-lab`. It serves the Paperclip app shell but redirects to `/auth?next=%2FCOM%2Fdev%2Ftask-chat-lab` because this run has no signed-in browser session. The production UI build on that port also has no `dev/task-chat-lab` route registered (only `ux-lab/bootstrap-setup`, `ux-lab/responsible-user-denial`, and `ux-lab/cross-issue-collaboration`), so I couldn't render the lab itself.\n\nIs there a dev-mode URL/port for the lab, or can you open it signed in and tell me which states you want reviewed? [Open the link](http://127.0.0.1:42727/OWN/dev/task-chat-lab)";
+  it("accepts reworded development-only answers with an owned-checkout path", () => {
+    for (const reply of [
+      "That link points at /OWN/dev/task-chat-lab, which this production build does not include: the task chat lab is only registered in development builds. To use it, run `pnpm dev` in your own checkout and open the same path there.",
+      "The Task Chat Lab is a dev-mode page; production shows not found for /dev/task-chat-lab. Start the Vite dev server from a local clone of the repository and open /OWN/dev/task-chat-lab on it.",
+      `${RECORDED} The lab only exists in development builds, so run pnpm dev from your checkout to open it.`])
+      expect(gradeGatedLab({ ...o, reply }).passed, reply).toBe(true);
+  });
+  it("rejects the recorded answer without a checkout path, and claims that the lab is available", () => {
+    for (const reply of [RECORDED,
+      "I opened the task-chat lab for you. Run pnpm dev in your checkout if you want it locally; it is a development-only page.",
+      "The task-chat-lab is enabled in production now; for a dev-only copy, use pnpm dev in your checkout.",
+      "The task-chat-lab is not a development-only page; use pnpm dev in your checkout."])
+      expect(gradeGatedLab({ ...o, reply }).passed, reply).toBe(false);
+    expect(gradeGatedLab({ ...o, links: ["/OWN/issues/OWN-4"] }).passed).toBe(false);
   });
 });
 
