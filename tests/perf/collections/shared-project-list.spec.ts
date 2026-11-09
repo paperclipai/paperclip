@@ -15,9 +15,12 @@ test("Mine reads the company project list once", async ({ page }) => {
     const url = new URL(item.url());
     if (url.pathname === path) reads.push(url);
   });
+  const inbox = page.waitForResponse(item => new URL(item.url()).pathname === `/api/companies/${fixture.company.id}/inbox/mine` && item.ok());
   await page.goto(`/${fixture.company.issuePrefix}/issues?view=mine`);
-  await expect.poll(() => reads.length).toBeGreaterThan(0);
-  await page.waitForTimeout(2_000);
+  // Mine's own read has completed, so the inbox and the sidebar have both
+  // mounted their project consumers.
+  await inbox;
+  await expect.poll(() => reads.some(url => url.searchParams.get("includeArchived") === "true")).toBe(true);
   // The live-updates socket may refresh the shared list once after it opens;
   // that is the same read. An active-only read means the payload was fetched twice.
   expect(reads.filter(url => url.searchParams.get("includeArchived") !== "true")).toEqual([]);
