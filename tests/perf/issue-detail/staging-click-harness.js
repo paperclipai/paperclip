@@ -61,6 +61,7 @@
     const latestChanges = [];
     const latestMoves = [];
     let latestKey = null;
+    let latestElement = null;
     let latestTop = null;
     // Resource Timing has no entry for a request that is still running, so
     // record fetch starts too. In-flight fetches are reported as pending.
@@ -92,14 +93,21 @@
           if (marks.latestVisible === undefined) marks.latestVisible = t;
           // Text appended to a live message, or a message that grows in place,
           // counts as a change, so `settled` waits for the output to stop.
+          const rect = latest.getBoundingClientRect();
           const text = latest.textContent || "";
-          const key = `${messages.length}|${text.length}|${text.slice(-80)}|${Math.round(latest.getBoundingClientRect().height)}`;
+          const key = `${messages.length}|${text.length}|${text.slice(-80)}|${Math.round(rect.height)}`;
           if (key !== latestKey) {
             latestChanges.push(Math.round(t));
             latestKey = key;
+          }
+          // Compare positions only for the same message element. A message
+          // that grows upward while the chat stays pinned to the bottom is a
+          // move; a different latest message starts a new position baseline.
+          if (latest !== latestElement) {
+            latestElement = latest;
             latestTop = null;
           }
-          const top = latest.getBoundingClientRect().top;
+          const top = rect.top;
           if (latestTop !== null && Math.abs(top - latestTop) > 2) latestMoves.push({ t: Math.round(t), dy: Math.round(top - latestTop) });
           latestTop = top;
         }
