@@ -41,6 +41,10 @@ describe("board-only denial", () => {
     ["post", `/api/agents/${AGENT_ID}/pause`, `[Open the agent's profile](/<prefix>/agents/${AGENT_ID})`],
     ["post", `/api/projects/${AGENT_ID}/access-members`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
     ["delete", `/api/projects/${AGENT_ID}/access-members/m-1`, `[Open the project's access settings](/<prefix>/projects/${AGENT_ID}/configuration)`],
+    ["get", "/api/plugins", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
+    ["post", "/api/plugins/install", "[Open plugin settings](/<prefix>/company/settings/instance/plugins)"],
+    ["post", `/api/plugins/${AGENT_ID}/config`, `[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/${AGENT_ID})`],
+    ["post", "/api/plugins/acme.website-preview/disable", "[Open the plugin's settings](/<prefix>/company/settings/instance/plugins/acme.website-preview)"],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {
     const res = await request(createApp(agentActor))[method](path).expect(403);
     expect(res.body.error).toBe("Board access required");
@@ -62,6 +66,19 @@ describe("board-only denial", () => {
   it("does not link connection settings for fast responses, whose controls an experiment can hide", async () => {
     const res = await request(createApp(agentActor)).put(`/api/companies/${COMPANY_ID}/fast-response`).expect(403);
     expect(res.body.remediation).not.toContain("/company/settings/connections");
+  });
+
+  it("does not link plugin settings while the operator hides plugin management", async () => {
+    const previous = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.plugins";
+    try {
+      const res = await request(createApp(agentActor)).post(`/api/plugins/${AGENT_ID}/config`).expect(403);
+      expect(res.body.remediation).toContain("this denial is final");
+      expect(res.body.remediation).not.toContain("/instance/plugins");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previous;
+    }
   });
 
   it("applies through the org-access guard", async () => {
