@@ -253,6 +253,70 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     expect(commentRow?.body).toBe("edited body");
   });
 
+  it("builds the queue snapshot when the wake envelope carries a malformed comment id", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    // An 8-char short form, like the id observed in a live wake payload: not
+    // a uuid, so it can never match a comment row, but it used to abort the
+    // snapshot's `inArray` statement on Postgres uuid parsing.
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId, "0422d095"] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const queue = await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) =>
+        transaction.buildQueueSnapshot({
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+          wake: locked.wake,
+          state: locked.state,
+          queueRun: locked.queueRun,
+          activeRun: locked.activeRun,
+        }),
+    );
+
+    expect(queue.entries).toHaveLength(1);
+    expect((queue.entries[0]!.comment as { id: string }).id).toBe(commentId);
+  });
+
+  it("builds the queue snapshot when the wake envelope carries a whitespace-padded comment id", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    // isUuidLike accepts the padded form (it tests the trimmed value), so
+    // the id must be trimmed before use: the padded string itself matches
+    // no comment row and would silently drop the comment from the snapshot.
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [`  ${commentId}  `] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const queue = await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) =>
+        transaction.buildQueueSnapshot({
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+          wake: locked.wake,
+          state: locked.state,
+          queueRun: locked.queueRun,
+          activeRun: locked.activeRun,
+        }),
+    );
+
+    expect(queue.entries).toHaveLength(1);
+    expect((queue.entries[0]!.comment as { id: string }).id).toBe(commentId);
+  });
+
   it("rolls back an already-applied comment edit when its own activity insert fails", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
