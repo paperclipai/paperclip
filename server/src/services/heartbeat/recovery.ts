@@ -1326,6 +1326,19 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         }
         // Settlement can save restore-failure evidence after the shutdown CAS.
         let interrupted = (control && await getRun(run.id, { includeExecutionEvidence: true })) ?? interruptedStatus.run;
+        if (interrupted.runtimeMode === "legacy" && hasProviderQuotaRetryBudget(run) &&
+            interrupted.executionStage === "preparing" && !interrupted.processPid && !interrupted.processGroupId) {
+          const [certified] = await db.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+              errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+            })}::jsonb`,
+            updatedAt: new Date(),
+          }).where(and(eq(heartbeatRuns.id, interrupted.id), eq(heartbeatRuns.status, "interrupted"),
+            eq(heartbeatRuns.errorCode, "server_shutdown_interrupted"), eq(heartbeatRuns.executionStage, "preparing"),
+            isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId))).returning();
+          interrupted = certified ?? (await getRun(run.id, { includeExecutionEvidence: true })) ?? interrupted;
+        }
+
         await setWakeupStatus(run.wakeupRequestId, "cancelled", {
           finishedAt: now,
           error: null,
